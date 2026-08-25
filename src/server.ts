@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
 import { PgStore } from './store.js';
@@ -20,7 +21,12 @@ const Env = z.object({
 });
 
 const env = Env.parse(process.env);
-const store = await PgStore.connect(env.DATABASE_URL, 'src/bridge/migrations/001_init.sql');
+// La ruta se resuelve contra ESTE modulo, no contra el working directory del
+// proceso: un 'src/bridge/migrations/...' relativo funciona solo si Render
+// arranca parado en la raiz del repo, y si no, el bridge no levanta. Desde
+// src/ y desde dist/ el '..' cae en el mismo lugar.
+const MIGRACION_INIT = fileURLToPath(new URL('../migrations/001_init.sql', import.meta.url));
+const store = await PgStore.connect(env.DATABASE_URL, MIGRACION_INIT);
 
 const bot = buildBot({
   botToken: env.TELEGRAM_BOT_TOKEN,
