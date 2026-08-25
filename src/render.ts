@@ -34,13 +34,14 @@ export function parseApprovalData(data: string): { kind: BotonKind; approvalId: 
 }
 
 export function renderApproval(a: ApprovalRequest): { text: string; buttons: Boton[][] } {
-  const text = [
-    `🔐 ${a.agent.toUpperCase()} pide permiso`,
-    '',
-    a.summary,
-    '',
-    'Tenes 15 minutos para contestar; despues lo cancelo solo.',
-  ].join('\n');
+  // Una tarea de build tarda y hace cola: decirlo baja la ansiedad de mirar un
+  // mensaje que no se mueve por dos minutos.
+  const esRun = a.tool === 'mcp__multicodigo__run';
+  const nota = esRun
+    ? 'Puede tardar: hay un solo turno de build para toda la maquina.'
+    : 'Tenes 15 minutos para contestar; despues lo cancelo solo.';
+
+  const text = [`🔐 ${a.agent.toUpperCase()} pide permiso`, '', a.summary, '', nota].join('\n');
 
   return {
     text,

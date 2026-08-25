@@ -143,3 +143,26 @@ describe('poller de aprobaciones', () => {
     expect(parado).toBe(true);
   });
 });
+
+describe('mensajes de error del plan 3', () => {
+  for (const [code, esperado] of [
+    ['run_timeout', /tiempo|corte/i],
+    ['unknown_task', /tarea/i],
+    ['worktree_dirty', /sin (commitear|guardar)/i],
+  ] as const) {
+    it(`traduce ${code} a algo que se entiende`, async () => {
+      const d = deps({
+        ask: async () => {
+          throw new Error(code);
+        },
+      });
+      const out = await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+      expect(out.kind).toBe('error');
+      if (out.kind !== 'error') throw new Error('esperaba error');
+      expect(out.text).toMatch(esperado);
+      // Nunca el codigo crudo: el usuario no tiene por que saber que es
+      // "worktree_dirty".
+      expect(out.text).not.toContain(code);
+    });
+  }
+});

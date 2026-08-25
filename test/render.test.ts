@@ -59,3 +59,21 @@ describe('renderApproval', () => {
     expect(renderApproval(A).text).toContain('15');
   });
 });
+
+describe('renderApproval — tarea de build', () => {
+  const CORRER: ApprovalRequest = {
+    ...A,
+    tool: 'mcp__multicodigo__run',
+    summary: 'Quiere correr la tarea test.',
+  };
+
+  it('avisa que puede tardar y que hay un solo turno de build', () => {
+    const r = renderApproval(CORRER);
+    expect(r.text).toContain('test');
+    expect(r.text).toMatch(/turno|cola|tardar/i);
+  });
+
+  it('sigue teniendo los tres botones', () => {
+    expect(renderApproval(CORRER).buttons.flat()).toHaveLength(3);
+  });
+});

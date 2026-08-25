@@ -46,6 +46,10 @@ const ERROR_TEXT: Record<string, string> = {
   approval_timeout: 'Me quede esperando tu OK 15 minutos y lo cancele.',
   forbidden_branch: 'Esa branch no se puede tocar.',
   git_failed: 'Git fallo. Fijate el detalle en el ultimo mensaje del agente.',
+  run_failed: 'La tarea fallo. El agente te cuenta el detalle en su respuesta.',
+  run_timeout: 'La tarea tardo demasiado y la corte.',
+  unknown_task: 'Esa tarea no esta configurada para el proyecto.',
+  worktree_dirty: 'El worktree tiene cambios sin commitear, asi que no lo actualice.',
 };
 
 export async function handleIncoming(
