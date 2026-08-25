@@ -73,7 +73,12 @@ describe('buildWebhookServer', () => {
       payload: { update_id: 1 },
     });
     expect(res.statusCode).toBe(200);
-    expect(Date.now() - started).toBeLessThan(100);
+    // El bot falso tarda 3000 ms. Lo que se prueba es que NO se lo espera, y
+    // para eso alcanza cualquier umbral bien por debajo de esos 3 segundos.
+    // Con 100 ms el test fallaba cuando el suite completo corria en paralelo y
+    // la maquina estaba cargada: medir "es rapido" en vez de "no espera" lo
+    // hacia depender del hardware.
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   it('rechaza con 401 si el secreto no coincide', async () => {
