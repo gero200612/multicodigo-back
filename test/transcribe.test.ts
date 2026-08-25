@@ -3,8 +3,11 @@ import { transcribeAudio } from '../src/transcribe.js';
 
 const audio = new Uint8Array([1, 2, 3]);
 
+// El generico de vi.fn es lo que le da tipo a `mock.calls[0][1]`; sin el,
+// vitest infiere los argumentos de la lambda (ninguno) y la lectura queda en
+// `never`.
 function geminiOk(text: string) {
-  return vi.fn(
+  return vi.fn<typeof fetch>(
     async () =>
       new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] }), {
         status: 200,
