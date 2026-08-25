@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
 import { PgStore } from './store.js';
 import { askAgent } from './agents-client.js';
+import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
 import { buildBot } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
@@ -30,15 +31,22 @@ const MIGRACIONES = ['001_init.sql', '002_approvals.sql'].map((f) =>
 );
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 
+// Un solo lugar con la URL y el token del gateway: prompt, aprobaciones y git
+// salen todos por ahi.
+const gatewayDeps = { gatewayUrl: env.GATEWAY_URL, token: env.GATEWAY_TOKEN };
+
 const bot = buildBot({
   botToken: env.TELEGRAM_BOT_TOKEN,
   allowedUserIds: env.TELEGRAM_ALLOWED_USER_IDS.split(',').map((s) => Number(s.trim())),
   store,
   defaultAgent: env.DEFAULT_AGENT,
   project: env.DEFAULT_PROJECT,
-  ask: (req) => askAgent(req, { gatewayUrl: env.GATEWAY_URL, token: env.GATEWAY_TOKEN }),
+  ask: (req) => askAgent(req, gatewayDeps),
   transcribe: (bytes, mimeType) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),
+  fetchPending: (agent) => fetchPending(agent, gatewayDeps),
+  sendDecision: (agent, approvalId, decision) =>
+    sendDecision(agent, approvalId, decision, gatewayDeps),
 });
 
 await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start()

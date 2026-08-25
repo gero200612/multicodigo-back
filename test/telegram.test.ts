@@ -93,3 +93,78 @@ describe('buildWebhookServer', () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+import { decidirAprobacion } from '../src/telegram.js';
+import { InMemoryStore } from '../src/store.js';
+
+describe('decidirAprobacion', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const REC = {
+    approvalId: ID,
+    jobId: '22222222-2222-4222-8222-222222222222',
+    chatId: 5,
+    messageId: 9,
+    agent: 'c1' as const,
+    tool: 'Write',
+    summary: 's',
+  };
+
+  async function conAprobacion() {
+    const store = new InMemoryStore();
+    await store.recordApproval(REC);
+    return store;
+  }
+
+  it('manda allow al agente y confirma', async () => {
+    const store = await conAprobacion();
+    const mandadas: unknown[] = [];
+    const r = await decidirAprobacion(
+      { kind: 'ok', approvalId: ID },
+      { store, send: async (_a, _id, d) => void mandadas.push(d) },
+    );
+    expect(mandadas).toEqual([{ decision: 'allow' }]);
+    expect(r.text).toContain('Aprobado');
+  });
+
+  // El caso del boton tocado tres veces: no se manda nada al agente.
+  it('el segundo toque no vuelve a mandar la decision', async () => {
+    const store = await conAprobacion();
+    let veces = 0;
+    const deps = { store, send: async () => void (veces += 1) };
+    await decidirAprobacion({ kind: 'ok', approvalId: ID }, deps);
+    const r = await decidirAprobacion({ kind: 'ok', approvalId: ID }, deps);
+    expect(veces).toBe(1);
+    expect(r.text).toContain('ya');
+  });
+
+  it('rechazar manda deny sin feedback', async () => {
+    const store = await conAprobacion();
+    const mandadas: unknown[] = [];
+    await decidirAprobacion(
+      { kind: 'no', approvalId: ID },
+      { store, send: async (_a, _id, d) => void mandadas.push(d) },
+    );
+    expect(mandadas).toEqual([{ decision: 'deny' }]);
+  });
+
+  // "Rechazar y explicar" no decide todavia: deja el chat esperando el motivo.
+  it('explicar no manda nada y deja el chat esperando el motivo', async () => {
+    const store = await conAprobacion();
+    let veces = 0;
+    const r = await decidirAprobacion(
+      { kind: 'ex', approvalId: ID },
+      { store, send: async () => void (veces += 1) },
+    );
+    expect(veces).toBe(0);
+    expect(await store.getAwaitingFeedback(5)).toBe(ID);
+    expect(r.text).toContain('Contame');
+  });
+
+  it('una aprobacion desconocida no rompe', async () => {
+    const r = await decidirAprobacion(
+      { kind: 'ok', approvalId: '99999999-9999-4999-8999-999999999999' },
+      { store: new InMemoryStore(), send: async () => {} },
+    );
+    expect(r.text).toContain('no');
+  });
+});
