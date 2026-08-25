@@ -15,6 +15,19 @@ export interface PipelineDeps {
   project: string;
   ask: (req: PromptRequest) => Promise<PromptResponse>;
   transcribe: (bytes: Uint8Array, mimeType: string) => Promise<string>;
+  /**
+   * Arranca el poller de aprobaciones de este job y devuelve como pararlo.
+   *
+   * Es opcional para que el pipeline siga siendo testeable sin el, pero sin
+   * esto el turno se cuelga en silencio: el hijo bloquea esperando un OK que
+   * nadie va a ir a buscar, porque el hijo no tiene egress a Render.
+   */
+  watchApprovals?: (ctx: {
+    agent: AgentId;
+    jobId: string;
+    messageId: number;
+    chatId: number;
+  }) => () => void;
 }
 
 export type PipelineOutcome =
@@ -30,6 +43,9 @@ const ERROR_TEXT: Record<string, string> = {
   agent_timeout: 'El agente tardo demasiado y corte la espera.',
   unknown_agent: 'Ese agente no existe.',
   unknown_project: 'Ese proyecto no esta configurado en el agente.',
+  approval_timeout: 'Me quede esperando tu OK 15 minutos y lo cancele.',
+  forbidden_branch: 'Esa branch no se puede tocar.',
+  git_failed: 'Git fallo. Fijate el detalle en el ultimo mensaje del agente.',
 };
 
 export async function handleIncoming(
@@ -70,6 +86,10 @@ export async function handleIncoming(
     messageId: input.messageId,
   });
 
+  const stopWatching =
+    deps.watchApprovals?.({ agent, jobId, messageId: input.messageId, chatId: input.chatId }) ??
+    (() => {});
+
   try {
     const response = await deps.ask({
       jobId,
@@ -91,5 +111,9 @@ export async function handleIncoming(
     const code = err instanceof Error ? err.message : 'internal';
     await deps.store.finishJob(jobId, 'failed', code);
     return { kind: 'error', text: ERROR_TEXT[code] ?? `Fallo el agente: ${code}`, jobId };
+  } finally {
+    // En `finally`: si el turno explota, el poller tiene que morir igual o
+    // queda un setInterval vivo por cada mensaje que fallo.
+    stopWatching();
   }
 }

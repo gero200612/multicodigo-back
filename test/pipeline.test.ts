@@ -103,3 +103,43 @@ describe('handleIncoming', () => {
     expect(await d.store.getJobStatus(jobId)).toBe('failed');
   });
 });
+
+describe('poller de aprobaciones', () => {
+  it('lo arranca con los datos del job', async () => {
+    let visto: unknown = null;
+    const d = deps({
+      watchApprovals: (ctx) => {
+        visto = ctx;
+        return () => {};
+      },
+    });
+    await handleIncoming({ chatId: 7, messageId: 9, text: 'hola' }, d);
+    expect(visto).toMatchObject({ agent: 'c1', chatId: 7, messageId: 9 });
+  });
+
+  // Sin el finally quedaria un setInterval vivo por cada mensaje que fallo.
+  it('para el poller aunque el agente falle', async () => {
+    let parado = false;
+    const d = deps({
+      ask: async () => {
+        throw new Error('agent_unavailable');
+      },
+      watchApprovals: () => () => {
+        parado = true;
+      },
+    });
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    expect(parado).toBe(true);
+  });
+
+  it('para el poller cuando el turno termina bien', async () => {
+    let parado = false;
+    const d = deps({
+      watchApprovals: () => () => {
+        parado = true;
+      },
+    });
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    expect(parado).toBe(true);
+  });
+});

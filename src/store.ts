@@ -1,9 +1,29 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
-import type { AgentId } from '@multicodigo/shared';
+import type { AgentId, ApprovalDecision } from '@multicodigo/shared';
 
-export type JobStatus = 'running' | 'done' | 'failed';
+export type JobStatus = 'running' | 'awaiting_approval' | 'done' | 'failed';
+
+export type ClaimResult = 'claimed' | 'already_decided' | 'unknown';
+
+/**
+ * Una aprobacion, del lado del bridge.
+ *
+ * El registro del hijo se pierde si el contenedor reinicia; esta tabla es la
+ * que hace que el boton siga siendo idempotente igual, porque Render sobrevive
+ * a ese reinicio. Guarda chat y mensaje para poder contestar en el lugar
+ * correcto cuando la decision llega minutos despues.
+ */
+export interface ApprovalRecord {
+  approvalId: string;
+  jobId: string;
+  chatId: number;
+  messageId: number;
+  agent: AgentId;
+  tool: string;
+  summary: string;
+}
 
 export interface NewJob {
   chatId: number;
@@ -22,6 +42,13 @@ export interface Store {
   finishJob(jobId: string, status: JobStatus, error?: string): Promise<void>;
   getJobStatus(jobId: string): Promise<JobStatus | undefined>;
   getJobError(jobId: string): Promise<string | undefined>;
+  /** true si es la primera vez que se ve esta aprobacion (o sea: hay que anunciarla). */
+  recordApproval(rec: ApprovalRecord): Promise<boolean>;
+  getApproval(approvalId: string): Promise<ApprovalRecord | undefined>;
+  /** Toma la decision de forma atomica. Solo el primer llamado gana. */
+  claimApproval(approvalId: string, decision: ApprovalDecision): Promise<ClaimResult>;
+  setAwaitingFeedback(chatId: number, approvalId: string | null): Promise<void>;
+  getAwaitingFeedback(chatId: number): Promise<string | undefined>;
 }
 
 export class InMemoryStore implements Store {
@@ -59,14 +86,48 @@ export class InMemoryStore implements Store {
   async getJobError(jobId: string) {
     return this.jobs.get(jobId)?.error;
   }
+
+  private approvals = new Map<string, { rec: ApprovalRecord; decided: boolean }>();
+  private awaiting = new Map<number, string>();
+
+  async recordApproval(rec: ApprovalRecord) {
+    if (this.approvals.has(rec.approvalId)) return false;
+    this.approvals.set(rec.approvalId, { rec, decided: false });
+    return true;
+  }
+
+  async getApproval(approvalId: string) {
+    return this.approvals.get(approvalId)?.rec;
+  }
+
+  async claimApproval(approvalId: string, _decision: ApprovalDecision): Promise<ClaimResult> {
+    const entry = this.approvals.get(approvalId);
+    if (!entry) return 'unknown';
+    if (entry.decided) return 'already_decided';
+    entry.decided = true;
+    return 'claimed';
+  }
+
+  async setAwaitingFeedback(chatId: number, approvalId: string | null) {
+    if (approvalId === null) this.awaiting.delete(chatId);
+    else this.awaiting.set(chatId, approvalId);
+  }
+
+  async getAwaitingFeedback(chatId: number) {
+    return this.awaiting.get(chatId);
+  }
 }
 
 export class PgStore implements Store {
   constructor(private pool: Pool) {}
 
-  static async connect(connectionString: string, migrationPath: string): Promise<PgStore> {
+  static async connect(connectionString: string, migrationPaths: string[]): Promise<PgStore> {
     const pool = new Pool({ connectionString });
-    await pool.query(await readFile(migrationPath, 'utf8'));
+    // En orden: cada archivo es idempotente (IF NOT EXISTS), asi que correrlos
+    // en cada arranque es seguro y evita un runner de migraciones aparte.
+    for (const path of migrationPaths) {
+      await pool.query(await readFile(path, 'utf8'));
+    }
     return new PgStore(pool);
   }
 
@@ -133,5 +194,82 @@ export class PgStore implements Store {
       [jobId],
     );
     return r.rows[0]?.error ?? undefined;
+  }
+
+  async recordApproval(rec: ApprovalRecord) {
+    const r = await this.pool.query(
+      `INSERT INTO approvals (approval_id, job_id, chat_id, message_id, agent, tool, summary)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (approval_id) DO NOTHING`,
+      [rec.approvalId, rec.jobId, rec.chatId, rec.messageId, rec.agent, rec.tool, rec.summary],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  async getApproval(approvalId: string) {
+    const r = await this.pool.query<{
+      approval_id: string;
+      job_id: string;
+      chat_id: string;
+      message_id: string;
+      agent: AgentId;
+      tool: string;
+      summary: string;
+    }>(
+      `SELECT approval_id, job_id, chat_id, message_id, agent, tool, summary
+       FROM approvals WHERE approval_id = $1`,
+      [approvalId],
+    );
+    const row = r.rows[0];
+    if (!row) return undefined;
+    return {
+      approvalId: row.approval_id,
+      jobId: row.job_id,
+      // pg devuelve BIGINT como string para no perder precision; los ids de
+      // Telegram entran en un number sin problema.
+      chatId: Number(row.chat_id),
+      messageId: Number(row.message_id),
+      agent: row.agent,
+      tool: row.tool,
+      summary: row.summary,
+    };
+  }
+
+  async claimApproval(approvalId: string, decision: ApprovalDecision): Promise<ClaimResult> {
+    // UN solo UPDATE condicional, no un SELECT y despues un UPDATE: dos toques
+    // del boton que lleguen a la vez son dos requests concurrentes de Render, y
+    // con SELECT-despues-UPDATE los dos leerian "pendiente" y los dos
+    // avanzarian. `WHERE decision IS NULL` lo resuelve en la base.
+    const r = await this.pool.query(
+      `UPDATE approvals SET decision = $2, feedback = $3, decided_at = now()
+       WHERE approval_id = $1 AND decision IS NULL
+       RETURNING approval_id`,
+      [approvalId, decision.decision, decision.feedback ?? null],
+    );
+    if ((r.rowCount ?? 0) > 0) return 'claimed';
+    const existe = await this.pool.query('SELECT 1 FROM approvals WHERE approval_id = $1', [
+      approvalId,
+    ]);
+    return (existe.rowCount ?? 0) > 0 ? 'already_decided' : 'unknown';
+  }
+
+  async setAwaitingFeedback(chatId: number, approvalId: string | null) {
+    if (approvalId === null) {
+      await this.pool.query('DELETE FROM awaiting_feedback WHERE chat_id = $1', [chatId]);
+      return;
+    }
+    await this.pool.query(
+      `INSERT INTO awaiting_feedback (chat_id, approval_id) VALUES ($1, $2)
+       ON CONFLICT (chat_id) DO UPDATE SET approval_id = $2, created_at = now()`,
+      [chatId, approvalId],
+    );
+  }
+
+  async getAwaitingFeedback(chatId: number) {
+    const r = await this.pool.query<{ approval_id: string }>(
+      'SELECT approval_id FROM awaiting_feedback WHERE chat_id = $1',
+      [chatId],
+    );
+    return r.rows[0]?.approval_id;
   }
 }
