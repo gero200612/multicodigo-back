@@ -142,3 +142,58 @@ describe('aprobaciones en el store', () => {
     expect(await s.getAwaitingFeedback(5)).toBeUndefined();
   });
 });
+
+describe('estados del job (spec §5)', () => {
+  it('un job nace en running', async () => {
+    const s = new InMemoryStore();
+    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    expect(await s.getJobStatus(id)).toBe('running');
+  });
+
+  // Sin esto, la tabla dice 'running' mientras el agente lleva 10 minutos
+  // esperando un OK: no se puede distinguir "pensando" de "trabado".
+  it('marca awaiting_approval sin cerrar el job', async () => {
+    const s = new InMemoryStore();
+    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    await s.setJobStatus(id, 'awaiting_approval');
+    expect(await s.getJobStatus(id)).toBe('awaiting_approval');
+  });
+
+  it('marca awaiting_build mientras hace cola', async () => {
+    const s = new InMemoryStore();
+    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    await s.setJobStatus(id, 'awaiting_build');
+    expect(await s.getJobStatus(id)).toBe('awaiting_build');
+  });
+
+  it('vuelve a running cuando la aprobacion se resuelve', async () => {
+    const s = new InMemoryStore();
+    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    await s.setJobStatus(id, 'awaiting_approval');
+    await s.setJobStatus(id, 'running');
+    expect(await s.getJobStatus(id)).toBe('running');
+  });
+
+  it('finishJob cierra con done y no lo revive setJobStatus', async () => {
+    const s = new InMemoryStore();
+    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    await s.finishJob(id, 'done');
+    // Un estado transitorio que llega tarde —el poller vio una aprobacion
+    // justo cuando el turno terminaba— no puede reabrir un job cerrado.
+    await s.setJobStatus(id, 'awaiting_approval');
+    expect(await s.getJobStatus(id)).toBe('done');
+  });
+
+  it('tampoco revive un job que fallo', async () => {
+    const s = new InMemoryStore();
+    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    await s.finishJob(id, 'failed', 'agent_unavailable');
+    await s.setJobStatus(id, 'running');
+    expect(await s.getJobStatus(id)).toBe('failed');
+  });
+
+  it('setJobStatus sobre un job que no existe no rompe', async () => {
+    const s = new InMemoryStore();
+    await expect(s.setJobStatus('no-existe', 'running')).resolves.toBeUndefined();
+  });
+});

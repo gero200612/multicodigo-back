@@ -61,6 +61,12 @@ export async function decidirAprobacion(
   if (claim === 'already_decided') return { text: 'Eso ya lo habias contestado.' };
   if (claim === 'unknown') return { text: 'Esa aprobacion no existe.' };
 
+  // El turno vuelve a correr: tanto aprobar como rechazar lo desbloquean —con
+  // deny el agente sigue vivo hasta que decida cerrar—. `setJobStatus` no
+  // reabre un job ya cerrado, asi que una decision que llega tarde no lo
+  // revive.
+  await deps.store.setJobStatus(rec.jobId, 'running');
+
   await deps.send(rec.agent, accion.approvalId, decision);
   return { text: accion.kind === 'ok' ? '✅ Aprobado.' : '❌ Rechazado.' };
 }
@@ -180,6 +186,14 @@ export function buildBot(deps: BridgeDeps): Bot {
                     summary: a.summary,
                   });
                   if (!nueva) return;
+
+                  // El turno esta bloqueado esperando el OK. Sin esto la tabla
+                  // dice 'running' y no hay forma de distinguir un agente que
+                  // piensa de uno que espera hace diez minutos.
+                  const estado =
+                    a.tool === 'mcp__multicodigo__run' ? 'awaiting_build' : 'awaiting_approval';
+                  await deps.store.setJobStatus(jobId, estado);
+
                   const { text, buttons } = renderApproval(a);
                   const teclado = new InlineKeyboard();
                   for (const fila of buttons) {

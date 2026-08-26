@@ -3,7 +3,24 @@ import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import type { AgentId, ApprovalDecision } from '@multicodigo/shared';
 
-export type JobStatus = 'running' | 'awaiting_approval' | 'done' | 'failed';
+/**
+ * Los estados del spec 5.
+ *
+ * Los transitorios (running, awaiting_*) cuentan donde esta parado el turno;
+ * los finales (done, failed) lo cierran. La distincion importa: sin
+ * awaiting_approval la tabla dice 'running' mientras el agente lleva diez
+ * minutos esperando un OK, y no hay forma de distinguir 'pensando' de
+ * 'trabado'.
+ */
+export type JobStatus =
+  | 'running'
+  | 'awaiting_approval'
+  | 'awaiting_build'
+  | 'done'
+  | 'failed';
+
+/** Estados que cierran el job. Un job cerrado ya no vuelve a moverse. */
+const ESTADOS_FINALES: readonly JobStatus[] = ['done', 'failed'];
 
 export type ClaimResult = 'claimed' | 'already_decided' | 'unknown';
 
@@ -40,6 +57,12 @@ export interface Store {
   setSession(chatId: number, agent: AgentId, project: string, sessionId: string): Promise<void>;
   createJob(job: NewJob): Promise<string>;
   finishJob(jobId: string, status: JobStatus, error?: string): Promise<void>;
+  /**
+   * Mueve un job entre estados transitorios. No reabre uno ya cerrado: un
+   * estado que llega tarde —el poller vio una aprobacion justo cuando el turno
+   * terminaba— no puede revivir un job en done.
+   */
+  setJobStatus(jobId: string, status: JobStatus): Promise<void>;
   getJobStatus(jobId: string): Promise<JobStatus | undefined>;
   getJobError(jobId: string): Promise<string | undefined>;
   /** true si es la primera vez que se ve esta aprobacion (o sea: hay que anunciarla). */
@@ -79,6 +102,12 @@ export class InMemoryStore implements Store {
   }
   async finishJob(jobId: string, status: JobStatus, error?: string) {
     this.jobs.set(jobId, { status, error });
+  }
+  async setJobStatus(jobId: string, status: JobStatus) {
+    const job = this.jobs.get(jobId);
+    if (!job) return;
+    if (ESTADOS_FINALES.includes(job.status)) return;
+    job.status = status;
   }
   async getJobStatus(jobId: string) {
     return this.jobs.get(jobId)?.status;
@@ -178,6 +207,16 @@ export class PgStore implements Store {
     await this.pool.query(
       'UPDATE jobs SET status = $2, error = $3, ended_at = now() WHERE id = $1',
       [jobId, status, error ?? null],
+    );
+  }
+
+  async setJobStatus(jobId: string, status: JobStatus) {
+    // El WHERE hace el guard en la base: dos requests concurrentes —el poller
+    // marcando awaiting_approval y el turno cerrando en done— no pueden dejar
+    // el job en un estado transitorio para siempre.
+    await this.pool.query(
+      `UPDATE jobs SET status = $2 WHERE id = $1 AND status NOT IN ('done', 'failed')`,
+      [jobId, status],
     );
   }
 

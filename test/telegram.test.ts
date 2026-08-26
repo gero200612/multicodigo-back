@@ -173,3 +173,66 @@ describe('decidirAprobacion', () => {
     expect(r.text).toContain('no');
   });
 });
+
+describe('el job cambia de estado con la aprobacion', () => {
+  const ID = '11111111-1111-4111-8111-111111111111';
+  const JOB = '22222222-2222-4222-8222-222222222222';
+  const REC = {
+    approvalId: ID,
+    jobId: JOB,
+    chatId: 5,
+    messageId: 9,
+    agent: 'c1' as const,
+    tool: 'Write',
+    summary: 's',
+  };
+
+  async function conJobYAprobacion() {
+    const store = new InMemoryStore();
+    // Se fuerza el id del job para poder seguirlo: createJob genera uno propio.
+    await store.recordApproval(REC);
+    return store;
+  }
+
+  // Lo que arregla el hueco: mientras espera el OK, el job NO dice 'running'.
+  it('decidir devuelve el job a running', async () => {
+    const store = await conJobYAprobacion();
+    const jobId = await store.createJob({
+      chatId: 5, agent: 'c1', project: 'demo', prompt: 'x', messageId: 9,
+    });
+    await store.recordApproval({ ...REC, approvalId: 'otra', jobId });
+    await store.setJobStatus(jobId, 'awaiting_approval');
+    expect(await store.getJobStatus(jobId)).toBe('awaiting_approval');
+
+    await decidirAprobacion(
+      { kind: 'ok', approvalId: 'otra' },
+      { store, send: async () => {} },
+    );
+    expect(await store.getJobStatus(jobId)).toBe('running');
+  });
+
+  it('rechazar tambien lo devuelve a running: el turno sigue vivo hasta que cierre', async () => {
+    const store = new InMemoryStore();
+    const jobId = await store.createJob({
+      chatId: 5, agent: 'c1', project: 'demo', prompt: 'x', messageId: 9,
+    });
+    await store.recordApproval({ ...REC, jobId });
+    await store.setJobStatus(jobId, 'awaiting_approval');
+
+    await decidirAprobacion({ kind: 'no', approvalId: ID }, { store, send: async () => {} });
+    expect(await store.getJobStatus(jobId)).toBe('running');
+  });
+
+  it('un doble toque no toca el estado del job', async () => {
+    const store = new InMemoryStore();
+    const jobId = await store.createJob({
+      chatId: 5, agent: 'c1', project: 'demo', prompt: 'x', messageId: 9,
+    });
+    await store.recordApproval({ ...REC, jobId });
+    await decidirAprobacion({ kind: 'ok', approvalId: ID }, { store, send: async () => {} });
+    await store.finishJob(jobId, 'done');
+    // El segundo toque llega tarde; no puede reabrir el job.
+    await decidirAprobacion({ kind: 'ok', approvalId: ID }, { store, send: async () => {} });
+    expect(await store.getJobStatus(jobId)).toBe('done');
+  });
+});

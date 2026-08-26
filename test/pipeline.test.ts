@@ -166,3 +166,36 @@ describe('mensajes de error del plan 3', () => {
     });
   }
 });
+
+describe('el job refleja donde esta parado el turno', () => {
+  it('queda en running mientras el agente piensa', async () => {
+    const store = new InMemoryStore();
+    let estadoDurante: string | undefined;
+    let jobId = '';
+    const d = deps({
+      store,
+      ask: async (req) => {
+        jobId = req.jobId;
+        estadoDurante = await store.getJobStatus(req.jobId);
+        return { jobId: req.jobId, sessionId: 's1', text: 'ok', turns: 1 };
+      },
+    });
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    expect(estadoDurante).toBe('running');
+    expect(await store.getJobStatus(jobId)).toBe('done');
+  });
+
+  it('cierra en failed cuando el agente falla', async () => {
+    const store = new InMemoryStore();
+    let jobId = '';
+    const d = deps({
+      store,
+      ask: async (req) => {
+        jobId = req.jobId;
+        throw new Error('agent_unavailable');
+      },
+    });
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    expect(await store.getJobStatus(jobId)).toBe('failed');
+  });
+});
