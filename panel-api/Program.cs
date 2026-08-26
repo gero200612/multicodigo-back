@@ -30,6 +30,21 @@ var supabaseAnonKey = Requerido("SUPABASE_ANON_KEY");
 var proyecto = cfg["PANEL_PROJECT"] ?? "demo";
 var audiencia = cfg["SUPABASE_JWT_AUD"] ?? "authenticated";
 
+// El JWKS de Supabase viaja por la red y con el se verifican TODAS las
+// sesiones: por http, cualquiera en el camino lo reemplaza por su propia clave
+// y firma tokens validos. Fuera de Development se exige https, y se chequea ACA
+// para que un SUPABASE_URL con http mate el proceso al arrancar. Sin este
+// guard, la configuracion invalida no explota hasta el primer request, y ahi se
+// lleva puesto hasta /health: el healthcheck de docker daria el contenedor por
+// sano un rato y despues por muerto, sin decir por que.
+var esDesarrollo = builder.Environment.IsDevelopment();
+if (!esDesarrollo && !supabaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+{
+    throw new InvalidOperationException(
+        $"SUPABASE_URL tiene que ser https fuera de Development (es {supabaseUrl}): " +
+        "el JWKS que verifica las sesiones no puede viajar en claro");
+}
+
 // Los bearers de los otros servicios son secretos compartidos: un token corto
 // es fuerza-bruteable, y uno vacio haria que `Bearer ` a secas autentique del
 // otro lado. Mismo piso que el gateway y el servicio de login.
@@ -93,6 +108,9 @@ builder.Services
     .AddJwtBearer(o =>
     {
         o.MetadataAddress = $"{supabaseUrl}/auth/v1/.well-known/openid-configuration";
+        // Solo en Development, y el guard de arriba ya garantizo que en
+        // cualquier otro entorno la URL es https.
+        o.RequireHttpsMetadata = !esDesarrollo;
         o.TokenValidationParameters = new TokenValidationParameters
         {
             ValidIssuer = $"{supabaseUrl}/auth/v1",
