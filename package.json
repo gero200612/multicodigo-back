@@ -2,7 +2,7 @@
   "name": "@multicodigo/bridge",
   "version": "0.0.0",
   "type": "module",
-  "main": "./dist/server.js",
+  "main": "./dist/main.js",
   "dependencies": {
     "@multicodigo/shared": "workspace:*",
     "fastify": "^5.0.0",

@@ -1,3 +1,11 @@
+/**
+ * Punto de entrada del bridge.
+ *
+ * Se llamaba server.ts, pero no construia nada: era todo arranque. El
+ * constructor de verdad vive en webhook.ts (buildWebhookServer), asi que el
+ * nombre mentia y ademas rompia la simetria con el agente y el gateway, que ya
+ * tienen su main.ts separado.
+ */
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
