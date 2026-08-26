@@ -91,6 +91,22 @@ describe('handleIncoming', () => {
     expect(out.kind === 'error' && out.text).toContain('re-login');
   });
 
+  // Un slot del pool sin cuenta cargada todavia es el estado inicial de los
+  // seis, asi que este mensaje se va a ver seguido y tiene que decir que hacer.
+  it('explica que el slot no tiene cuenta cargada', async () => {
+    const d = deps({
+      ask: vi.fn(async () => {
+        throw new Error('sin_credencial');
+      }),
+    });
+    const out = await handleIncoming({ chatId: 1, messageId: 5, text: 'hola' }, d);
+    expect(out.kind).toBe('error');
+    expect(out.kind === 'error' && out.text).toMatch(/cuenta/i);
+    // No puede confundirse con auth_expired: ese es "vencio", este es "nunca
+    // hubo". La accion del usuario es distinta.
+    expect(out.kind === 'error' && out.text).not.toMatch(/vencio/i);
+  });
+
   it('marca el job como failed cuando el agente falla', async () => {
     const d = deps({
       ask: vi.fn(async () => {

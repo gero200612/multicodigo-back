@@ -40,6 +40,10 @@ export type PipelineOutcome =
 
 const ERROR_TEXT: Record<string, string> = {
   auth_expired: 'Ese agente necesita re-login: su credencial vencio.',
+  // Distinto de auth_expired a proposito: ahi habia una cuenta y se vencio, aca
+  // nunca hubo ninguna. La accion del usuario es otra, asi que el mensaje no
+  // puede ser el mismo.
+  sin_credencial: 'Ese slot todavia no tiene una cuenta de Claude cargada. Cargasela y volve a escribir.',
   agent_unavailable: 'No pude contactar al agente. Puede estar reiniciandose.',
   agent_timeout: 'El agente tardo demasiado y corte la espera.',
   unknown_agent: 'Ese agente no existe.',
