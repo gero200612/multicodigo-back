@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Un warning de compilacion en este servicio es un error: es el unico
+         expuesto a internet y el que administra credenciales. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Los tests necesitan ver los tipos internos sin volverlos publicos. -->
+    <InternalsVisibleTo>MultiCodigo.Panel.Tests</InternalsVisibleTo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Microsoft.AspNetCore.OpenApi salio a proposito: arrastraba
+         Microsoft.OpenApi 2.0.0, que tiene una vulnerabilidad alta conocida
+         (GHSA-v5pm-xwqc-g5wc), y este servicio no publica un swagger. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3" />
+  </ItemGroup>
+
+</Project>
