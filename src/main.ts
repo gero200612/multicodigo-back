@@ -34,7 +34,7 @@ const env = Env.parse(process.env);
 // proceso: un 'src/bridge/migrations/...' relativo funciona solo si Render
 // arranca parado en la raiz del repo, y si no, el bridge no levanta. Desde
 // src/ y desde dist/ el '..' cae en el mismo lugar.
-const MIGRACIONES = ['001_init.sql', '002_approvals.sql'].map((f) =>
+const MIGRACIONES = ['001_init.sql', '002_approvals.sql', '003_multiproyecto.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);

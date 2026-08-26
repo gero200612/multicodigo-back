@@ -38,3 +38,42 @@ describe('parseCommand', () => {
     expect(parseCommand('/c1@mi_bot hola')).toEqual({ kind: 'prompt', agent: 'c1', text: 'hola' });
   });
 });
+
+describe('parseCommand — proyecto', () => {
+  it('/proyecto <nombre> cambia el proyecto activo', () => {
+    const c = parseCommand('/proyecto sincroresto');
+    expect(c.kind).toBe('project');
+    if (c.kind !== 'project') throw new Error('esperaba project');
+    expect(c.project).toBe('sincroresto');
+  });
+
+  // Sin nombre es una pregunta, no un cambio: "¿en cuál estoy?".
+  it('/proyecto solo pregunta cual esta activo', () => {
+    const c = parseCommand('/proyecto');
+    expect(c.kind).toBe('project');
+    if (c.kind !== 'project') throw new Error('esperaba project');
+    expect(c.project).toBeUndefined();
+  });
+
+  it('acepta el alias corto /p', () => {
+    const c = parseCommand('/p demo');
+    expect(c.kind).toBe('project');
+    if (c.kind !== 'project') throw new Error('esperaba project');
+    expect(c.project).toBe('demo');
+  });
+
+  // El nombre va a una ruta de filesystem: no puede traer separadores.
+  it('rechaza un nombre con barra, que escaparia del directorio', () => {
+    expect(parseCommand('/proyecto ../otro').kind).toBe('prompt');
+  });
+
+  it('rechaza un nombre con espacios en el medio', () => {
+    expect(parseCommand('/proyecto mi proyecto').kind).toBe('prompt');
+  });
+
+  it('ignora mayusculas en el comando pero respeta el nombre', () => {
+    const c = parseCommand('/Proyecto MiRepo');
+    if (c.kind !== 'project') throw new Error('esperaba project');
+    expect(c.project).toBe('MiRepo');
+  });
+});

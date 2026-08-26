@@ -53,6 +53,16 @@ export interface NewJob {
 export interface Store {
   getActiveAgent(chatId: number): Promise<AgentId | undefined>;
   setActiveAgent(chatId: number, agent: AgentId): Promise<void>;
+  /**
+   * El proyecto activo del chat. Como el agente activo, queda pegado hasta que
+   * se lo cambie.  = usar el DEFAULT_PROJECT del bridge.
+   */
+  /**
+   * El proyecto activo del chat. Como el agente activo, queda pegado hasta que
+   * se lo cambie; `undefined` significa "usar el DEFAULT_PROJECT del bridge".
+   */
+  getActiveProject(chatId: number): Promise<string | undefined>;
+  setActiveProject(chatId: number, project: string): Promise<void>;
   getSession(chatId: number, agent: AgentId, project: string): Promise<string | undefined>;
   setSession(chatId: number, agent: AgentId, project: string, sessionId: string): Promise<void>;
   createJob(job: NewJob): Promise<string>;
@@ -76,6 +86,7 @@ export interface Store {
 
 export class InMemoryStore implements Store {
   private active = new Map<number, AgentId>();
+  private activeProject = new Map<number, string>();
   private sessions = new Map<string, string>();
   private jobs = new Map<string, { status: JobStatus; error?: string }>();
 
@@ -88,6 +99,12 @@ export class InMemoryStore implements Store {
   }
   async setActiveAgent(chatId: number, agent: AgentId) {
     this.active.set(chatId, agent);
+  }
+  async getActiveProject(chatId: number) {
+    return this.activeProject.get(chatId);
+  }
+  async setActiveProject(chatId: number, project: string) {
+    this.activeProject.set(chatId, project);
   }
   async getSession(chatId: number, agent: AgentId, project: string) {
     return this.sessions.get(this.key(chatId, agent, project));
@@ -173,6 +190,24 @@ export class PgStore implements Store {
       `INSERT INTO chat_state (chat_id, active_agent) VALUES ($1, $2)
        ON CONFLICT (chat_id) DO UPDATE SET active_agent = $2, updated_at = now()`,
       [chatId, agent],
+    );
+  }
+
+  async getActiveProject(chatId: number) {
+    const r = await this.pool.query<{ active_project: string | null }>(
+      'SELECT active_project FROM chat_state WHERE chat_id = $1',
+      [chatId],
+    );
+    return r.rows[0]?.active_project ?? undefined;
+  }
+
+  async setActiveProject(chatId: number, project: string) {
+    // El INSERT necesita un active_agent porque la columna es NOT NULL; si la
+    // fila ya existe, el DO UPDATE no lo toca.
+    await this.pool.query(
+      `INSERT INTO chat_state (chat_id, active_agent, active_project) VALUES ($1, 'c1', $2)
+       ON CONFLICT (chat_id) DO UPDATE SET active_project = $2, updated_at = now()`,
+      [chatId, project],
     );
   }
 

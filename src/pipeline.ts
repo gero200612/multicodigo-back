@@ -34,6 +34,7 @@ export type PipelineOutcome =
   | { kind: 'answer'; text: string; agent: AgentId; jobId: string; transcript?: string }
   | { kind: 'switched'; agent: AgentId }
   | { kind: 'status'; agent: AgentId }
+  | { kind: 'project'; project: string }
   | { kind: 'ignored' }
   | { kind: 'error'; text: string; jobId: string };
 
@@ -73,6 +74,13 @@ export async function handleIncoming(
     return { kind: 'switched', agent: command.agent };
   }
 
+  if (command.kind === 'project') {
+    if (command.project) await deps.store.setActiveProject(input.chatId, command.project);
+    const activo =
+      command.project ?? (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
+    return { kind: 'project', project: activo };
+  }
+
   if (command.kind === 'status') {
     const active = (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
     return { kind: 'status', agent: active };
@@ -80,12 +88,14 @@ export async function handleIncoming(
 
   const agent =
     command.agent ?? (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
-  const sessionId = await deps.store.getSession(input.chatId, agent, deps.project);
+  // El proyecto del turno: lo que eligio el chat, o el default del bridge.
+  const project = (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
+  const sessionId = await deps.store.getSession(input.chatId, agent, project);
 
   const jobId = await deps.store.createJob({
     chatId: input.chatId,
     agent,
-    project: deps.project,
+    project,
     prompt: command.text,
     messageId: input.messageId,
   });
@@ -98,11 +108,11 @@ export async function handleIncoming(
     const response = await deps.ask({
       jobId,
       agent,
-      project: deps.project,
+      project,
       prompt: command.text,
       sessionId,
     });
-    await deps.store.setSession(input.chatId, agent, deps.project, response.sessionId);
+    await deps.store.setSession(input.chatId, agent, project, response.sessionId);
     await deps.store.finishJob(jobId, 'done');
     return {
       kind: 'answer',

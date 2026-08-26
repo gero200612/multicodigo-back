@@ -21,6 +21,8 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return `Listo, ahora hablas con ${outcome.agent.toUpperCase()}.`;
     case 'status':
       return `Agente activo: ${outcome.agent.toUpperCase()}.`;
+    case 'project':
+      return `Proyecto activo: ${outcome.project}.`;
     case 'error':
       return `⚠️ ${outcome.text}`;
     case 'ignored':

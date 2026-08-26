@@ -71,6 +71,7 @@ describe.skipIf(!url)('PgStore contra postgres real', () => {
     store = await PgStore.connect(url!, [
       'src/bridge/migrations/001_init.sql',
       'src/bridge/migrations/002_approvals.sql',
+      'src/bridge/migrations/003_multiproyecto.sql',
     ]);
     await store.setActiveAgent(999, 'c2');
     expect(await store.getActiveAgent(999)).toBe('c2');
@@ -195,5 +196,33 @@ describe('estados del job (spec §5)', () => {
   it('setJobStatus sobre un job que no existe no rompe', async () => {
     const s = new InMemoryStore();
     await expect(s.setJobStatus('no-existe', 'running')).resolves.toBeUndefined();
+  });
+});
+
+describe('proyecto activo por chat', () => {
+  it('sin estado previo no hay proyecto activo', async () => {
+    expect(await new InMemoryStore().getActiveProject(7)).toBeUndefined();
+  });
+
+  it('guarda y devuelve el proyecto activo', async () => {
+    const s = new InMemoryStore();
+    await s.setActiveProject(7, 'sincroresto');
+    expect(await s.getActiveProject(7)).toBe('sincroresto');
+  });
+
+  it('lo sobreescribe', async () => {
+    const s = new InMemoryStore();
+    await s.setActiveProject(7, 'uno');
+    await s.setActiveProject(7, 'dos');
+    expect(await s.getActiveProject(7)).toBe('dos');
+  });
+
+  // Cada chat lleva el suyo, igual que el agente activo.
+  it('es por chat', async () => {
+    const s = new InMemoryStore();
+    await s.setActiveProject(7, 'uno');
+    await s.setActiveProject(8, 'dos');
+    expect(await s.getActiveProject(7)).toBe('uno');
+    expect(await s.getActiveProject(8)).toBe('dos');
   });
 });

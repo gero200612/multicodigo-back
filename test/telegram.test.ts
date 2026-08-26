@@ -236,3 +236,10 @@ describe('el job cambia de estado con la aprobacion', () => {
     expect(await store.getJobStatus(jobId)).toBe('done');
   });
 });
+
+describe('renderOutcome — proyecto', () => {
+  it('confirma el proyecto activo', () => {
+    const out = renderOutcome({ kind: 'project', project: 'sincroresto' });
+    expect(out).toContain('sincroresto');
+  });
+});

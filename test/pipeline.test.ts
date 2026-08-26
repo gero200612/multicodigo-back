@@ -199,3 +199,76 @@ describe('el job refleja donde esta parado el turno', () => {
     expect(await store.getJobStatus(jobId)).toBe('failed');
   });
 });
+
+describe('multi-proyecto', () => {
+  it('usa el proyecto activo del chat cuando hay uno', async () => {
+    const store = new InMemoryStore();
+    await store.setActiveProject(1, 'sincroresto');
+    let visto = '';
+    const d = deps({
+      store,
+      ask: async (req) => {
+        visto = req.project;
+        return { jobId: req.jobId, sessionId: 's', text: 'ok', turns: 1 };
+      },
+    });
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    expect(visto).toBe('sincroresto');
+  });
+
+  it('cae al proyecto por defecto cuando el chat no eligio ninguno', async () => {
+    let visto = '';
+    const d = deps({
+      project: 'demo',
+      ask: async (req) => {
+        visto = req.project;
+        return { jobId: req.jobId, sessionId: 's', text: 'ok', turns: 1 };
+      },
+    });
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    expect(visto).toBe('demo');
+  });
+
+  it('/proyecto <nombre> lo cambia y lo confirma', async () => {
+    const store = new InMemoryStore();
+    const out = await handleIncoming(
+      { chatId: 1, messageId: 2, text: '/proyecto sincroresto' },
+      deps({ store }),
+    );
+    expect(out.kind).toBe('project');
+    expect(await store.getActiveProject(1)).toBe('sincroresto');
+  });
+
+  it('/proyecto sin nombre dice cual esta activo, sin cambiar nada', async () => {
+    const store = new InMemoryStore();
+    await store.setActiveProject(1, 'uno');
+    const out = await handleIncoming({ chatId: 1, messageId: 2, text: '/proyecto' }, deps({ store }));
+    if (out.kind !== 'project') throw new Error('esperaba project');
+    expect(out.project).toBe('uno');
+    expect(await store.getActiveProject(1)).toBe('uno');
+  });
+
+  // La sesion es por (chat, agente, proyecto): cambiar de proyecto no debe
+  // arrastrar la conversacion del anterior.
+  it('la sesion no se cruza entre proyectos', async () => {
+    const store = new InMemoryStore();
+    const sesiones: (string | undefined)[] = [];
+    const d = deps({
+      store,
+      ask: async (req) => {
+        sesiones.push(req.sessionId);
+        return { jobId: req.jobId, sessionId: `s-${req.project}`, text: 'ok', turns: 1 };
+      },
+    });
+
+    await store.setActiveProject(1, 'uno');
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    await store.setActiveProject(1, 'dos');
+    await handleIncoming({ chatId: 1, messageId: 3, text: 'hola' }, d);
+    await store.setActiveProject(1, 'uno');
+    await handleIncoming({ chatId: 1, messageId: 4, text: 'hola' }, d);
+
+    // Primer turno de cada proyecto sin sesion; al volver a 'uno', la recupera.
+    expect(sesiones).toEqual([undefined, undefined, 's-uno']);
+  });
+});
