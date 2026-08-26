@@ -50,6 +50,29 @@ export interface NewJob {
   messageId: number;
 }
 
+/**
+ * Un job para mostrar en el panel. NO es la fila entera de `jobs`: el prompt
+ * viene recortado y el chat_id no viaja.
+ */
+export interface JobResumen {
+  id: string;
+  agent: string;
+  project: string;
+  prompt: string;
+  status: JobStatus;
+  createdAt: string;
+  error?: string;
+}
+
+/** El prompt se muestra en una lista; mandarlo entero seria kilobytes por refresco. */
+export const LARGO_PROMPT_RESUMEN = 160;
+
+export function recortar(texto: string): string {
+  return texto.length <= LARGO_PROMPT_RESUMEN
+    ? texto
+    : `${texto.slice(0, LARGO_PROMPT_RESUMEN - 1)}…`;
+}
+
 export interface Store {
   getActiveAgent(chatId: number): Promise<AgentId | undefined>;
   setActiveAgent(chatId: number, agent: AgentId): Promise<void>;
@@ -66,6 +89,14 @@ export interface Store {
   getSession(chatId: number, agent: AgentId, project: string): Promise<string | undefined>;
   setSession(chatId: number, agent: AgentId, project: string, sessionId: string): Promise<void>;
   createJob(job: NewJob): Promise<string>;
+  /**
+   * Las ultimas peticiones, de la mas nueva a la mas vieja.
+   *
+   * Es la vista de "que le vengo pidiendo al sistema" del panel. Sale de la
+   * misma tabla que usa el flujo de Telegram, asi que no hay un segundo
+   * registro que se pueda desincronizar.
+   */
+  recentJobs(limite: number): Promise<JobResumen[]>;
   finishJob(jobId: string, status: JobStatus, error?: string): Promise<void>;
   /**
    * Mueve un job entre estados transitorios. No reabre uno ya cerrado: un
@@ -88,7 +119,7 @@ export class InMemoryStore implements Store {
   private active = new Map<number, AgentId>();
   private activeProject = new Map<number, string>();
   private sessions = new Map<string, string>();
-  private jobs = new Map<string, { status: JobStatus; error?: string }>();
+  private jobs = new Map<string, { status: JobStatus; error?: string; resumen?: JobResumen }>();
 
   private key(chatId: number, agent: AgentId, project: string) {
     return `${chatId}:${agent}:${project}`;
@@ -112,10 +143,28 @@ export class InMemoryStore implements Store {
   async setSession(chatId: number, agent: AgentId, project: string, sessionId: string) {
     this.sessions.set(this.key(chatId, agent, project), sessionId);
   }
-  async createJob(_job: NewJob) {
+  async createJob(job: NewJob) {
     const id = randomUUID();
-    this.jobs.set(id, { status: 'running' });
+    this.jobs.set(id, {
+      status: 'running',
+      resumen: {
+        id,
+        agent: job.agent,
+        project: job.project,
+        prompt: recortar(job.prompt),
+        status: 'running',
+        createdAt: new Date().toISOString(),
+      },
+    });
     return id;
+  }
+
+  async recentJobs(limite: number): Promise<JobResumen[]> {
+    return [...this.jobs.values()]
+      .filter((j): j is typeof j & { resumen: JobResumen } => j.resumen !== undefined)
+      .map((j) => ({ ...j.resumen, status: j.status, ...(j.error ? { error: j.error } : {}) }))
+      .reverse()
+      .slice(0, limite);
   }
   async finishJob(jobId: string, status: JobStatus, error?: string) {
     this.jobs.set(jobId, { status, error });
@@ -243,6 +292,35 @@ export class PgStore implements Store {
       'UPDATE jobs SET status = $2, error = $3, ended_at = now() WHERE id = $1',
       [jobId, status, error ?? null],
     );
+  }
+
+  async recentJobs(limite: number): Promise<JobResumen[]> {
+    // El recorte va en SQL y no en JS: un prompt de 50 kB no tiene por que
+    // viajar desde la base para que despues lo tiremos.
+    const { rows } = await this.pool.query<{
+      id: string;
+      agent: string;
+      project: string;
+      prompt: string;
+      status: JobStatus;
+      created_at: Date;
+      error: string | null;
+    }>(
+      `SELECT id, agent, project, left(prompt, $2) AS prompt, status, created_at, error
+         FROM jobs
+        ORDER BY created_at DESC
+        LIMIT $1`,
+      [limite, LARGO_PROMPT_RESUMEN],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      agent: r.agent,
+      project: r.project,
+      prompt: r.prompt,
+      status: r.status,
+      createdAt: r.created_at.toISOString(),
+      ...(r.error ? { error: r.error } : {}),
+    }));
   }
 
   async setJobStatus(jobId: string, status: JobStatus) {

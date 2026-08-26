@@ -37,7 +37,7 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
     it('crea un job en running y lo cierra en done', async () => {
       const id = await store.createJob({
         chatId,
-        agent: 'c1',
+        agent: 'c1' as const,
         project: 'sincroresto',
         prompt: 'hola',
         messageId: 7,
@@ -50,7 +50,7 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
     it('cierra un job en failed guardando el error', async () => {
       const id = await store.createJob({
         chatId,
-        agent: 'c1',
+        agent: 'c1' as const,
         project: 'x',
         prompt: 'y',
         messageId: 1,
@@ -147,7 +147,7 @@ describe('aprobaciones en el store', () => {
 describe('estados del job (spec §5)', () => {
   it('un job nace en running', async () => {
     const s = new InMemoryStore();
-    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    const id = await s.createJob({ chatId: 1, agent: 'c1' as const, project: 'demo', prompt: 'x', messageId: 2 });
     expect(await s.getJobStatus(id)).toBe('running');
   });
 
@@ -155,21 +155,21 @@ describe('estados del job (spec §5)', () => {
   // esperando un OK: no se puede distinguir "pensando" de "trabado".
   it('marca awaiting_approval sin cerrar el job', async () => {
     const s = new InMemoryStore();
-    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    const id = await s.createJob({ chatId: 1, agent: 'c1' as const, project: 'demo', prompt: 'x', messageId: 2 });
     await s.setJobStatus(id, 'awaiting_approval');
     expect(await s.getJobStatus(id)).toBe('awaiting_approval');
   });
 
   it('marca awaiting_build mientras hace cola', async () => {
     const s = new InMemoryStore();
-    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    const id = await s.createJob({ chatId: 1, agent: 'c1' as const, project: 'demo', prompt: 'x', messageId: 2 });
     await s.setJobStatus(id, 'awaiting_build');
     expect(await s.getJobStatus(id)).toBe('awaiting_build');
   });
 
   it('vuelve a running cuando la aprobacion se resuelve', async () => {
     const s = new InMemoryStore();
-    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    const id = await s.createJob({ chatId: 1, agent: 'c1' as const, project: 'demo', prompt: 'x', messageId: 2 });
     await s.setJobStatus(id, 'awaiting_approval');
     await s.setJobStatus(id, 'running');
     expect(await s.getJobStatus(id)).toBe('running');
@@ -177,7 +177,7 @@ describe('estados del job (spec §5)', () => {
 
   it('finishJob cierra con done y no lo revive setJobStatus', async () => {
     const s = new InMemoryStore();
-    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    const id = await s.createJob({ chatId: 1, agent: 'c1' as const, project: 'demo', prompt: 'x', messageId: 2 });
     await s.finishJob(id, 'done');
     // Un estado transitorio que llega tarde —el poller vio una aprobacion
     // justo cuando el turno terminaba— no puede reabrir un job cerrado.
@@ -187,7 +187,7 @@ describe('estados del job (spec §5)', () => {
 
   it('tampoco revive un job que fallo', async () => {
     const s = new InMemoryStore();
-    const id = await s.createJob({ chatId: 1, agent: 'c1', project: 'demo', prompt: 'x', messageId: 2 });
+    const id = await s.createJob({ chatId: 1, agent: 'c1' as const, project: 'demo', prompt: 'x', messageId: 2 });
     await s.finishJob(id, 'failed', 'agent_unavailable');
     await s.setJobStatus(id, 'running');
     expect(await s.getJobStatus(id)).toBe('failed');
@@ -224,5 +224,47 @@ describe('proyecto activo por chat', () => {
     await s.setActiveProject(8, 'dos');
     expect(await s.getActiveProject(7)).toBe('uno');
     expect(await s.getActiveProject(8)).toBe('dos');
+  });
+});
+
+describe('recentJobs', () => {
+  it('devuelve los mas nuevos primero', async () => {
+    const store = new InMemoryStore();
+    const a = await store.createJob({ chatId: 1, agent: 'c1' as const, project: 'demo', prompt: 'uno', messageId: 1 });
+    const b = await store.createJob({ chatId: 1, agent: 'c2' as const, project: 'demo', prompt: 'dos', messageId: 1 });
+    const jobs = await store.recentJobs(10);
+    expect(jobs.map((j) => j.id)).toEqual([b, a]);
+  });
+
+  it('respeta el limite', async () => {
+    const store = new InMemoryStore();
+    for (let i = 0; i < 5; i++) {
+      await store.createJob({ chatId: 1, agent: 'c1' as const, project: 'demo', prompt: `p${i}`, messageId: 1 });
+    }
+    expect(await store.recentJobs(3)).toHaveLength(3);
+  });
+
+  it('trae el estado y el agente de cada uno', async () => {
+    const store = new InMemoryStore();
+    const id = await store.createJob({ chatId: 7, agent: 'c2' as const, project: 'sincroresto', prompt: 'que hace el stock', messageId: 1 });
+    await store.setJobStatus(id, 'awaiting_approval');
+    const [job] = await store.recentJobs(1);
+    expect(job).toMatchObject({
+      id,
+      agent: 'c2' as const,
+      project: 'sincroresto',
+      status: 'awaiting_approval',
+      prompt: 'que hace el stock',
+    });
+    expect(typeof job!.createdAt).toBe('string');
+  });
+
+  // El prompt puede ser largo y esto se muestra en una lista. Cortarlo en el
+  // store y no en el front evita mandar kilobytes por cada refresco.
+  it('recorta el prompt', async () => {
+    const store = new InMemoryStore();
+    await store.createJob({ chatId: 1, agent: 'c1' as const, project: 'demo', prompt: 'x'.repeat(500), messageId: 1 });
+    const [job] = await store.recentJobs(1);
+    expect(job!.prompt.length).toBeLessThanOrEqual(160);
   });
 });

@@ -26,6 +26,9 @@ const Env = z.object({
   DATABASE_URL: z.string().min(1),
   DEFAULT_AGENT: AgentId.default('c1'),
   DEFAULT_PROJECT: z.string().min(1),
+  // Credencial de la API de lectura que consume el panel. Distinta del secret
+  // del webhook a proposito: son dos cosas con dueños distintos.
+  BRIDGE_API_TOKEN: z.string().min(16),
   PORT: z.coerce.number().int().positive().default(3000),
 });
 
@@ -59,5 +62,8 @@ const bot = buildBot({
 
 await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start()
 
-export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET);
+export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
+  store,
+  apiToken: env.BRIDGE_API_TOKEN,
+});
 await app.listen({ port: env.PORT, host: '0.0.0.0' });
