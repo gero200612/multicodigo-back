@@ -2,3 +2,12 @@ node_modules/
 dist/
 .env
 *.tsbuildinfo
+
+# Volumenes del compose de desarrollo. Ninguno de los tres se versiona.
+#
+# .creds/ es el que importa: tiene los tokens OAuth de las cuentas de Claude,
+# uno por slot, en texto plano. Es el directorio que el servicio de login
+# escribe y que los hijos montan de solo lectura.
+.creds/
+.work/
+.repos/
