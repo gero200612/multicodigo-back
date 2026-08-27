@@ -322,9 +322,15 @@ api.MapPut("/slots/{slot}/nombre", async (
 
 // --- el front -------------------------------------------------------------
 //
-// El bundle de Angular, servido por el mismo proceso. Mismo origen: sin CORS y
-// sin un segundo hosting. Va DESPUES de las rutas para que ningun archivo
-// estatico pueda tapar una de /api.
+// En el despliegue de hoy esto NO sirve nada: el front vive en su propio repo y
+// en su propia imagen, y es el nginx de esa imagen el que sirve el bundle y
+// hace de proxy hacia aca. La imagen de este servicio ya no tiene wwwroot, asi
+// que estas tres lineas son inertes y el fallback devuelve 404.
+//
+// Se dejan igual porque siguen siendo utiles corriendo el panel a mano con un
+// wwwroot al lado, que es lo mas rapido para reproducir un bug de integracion
+// sin levantar los dos contenedores. Van DESPUES de las rutas para que ningun
+// archivo estatico pueda tapar una de /api.
 app.UseDefaultFiles();
 app.UseStaticFiles();
 // Angular maneja el ruteo del lado del cliente: cualquier ruta que no sea /api
