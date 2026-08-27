@@ -96,6 +96,14 @@ builder.Services.AddHttpClient<IHistorialClient, HistorialClient>(c =>
     .AddTypedClient<IHistorialClient>((http, sp) =>
         new HistorialClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<HistorialClient>>()));
 
+builder.Services.AddHttpClient<INombresClient, NombresClient>(c =>
+    {
+        c.BaseAddress = new Uri(supabaseUrl);
+        c.Timeout = TimeSpan.FromSeconds(10);
+    })
+    .AddTypedClient<INombresClient>((http, sp) =>
+        new NombresClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<NombresClient>>()));
+
 builder.Services.AddScoped<PanoramaService>();
 
 // --- autenticacion --------------------------------------------------------
@@ -193,7 +201,7 @@ api.MapPost("/slots/{slot}/test", async (
     return Results.Ok(r);
 });
 
-api.MapPost("/slots/{slot}/login/start", async (string slot, ILoginClient login, CancellationToken ct) =>
+api.MapGet("/slots/{slot}/login/start", async (string slot, ILoginClient login, CancellationToken ct) =>
 {
     if (SlotInvalido(slot) is { } malo) return malo;
     try
@@ -258,6 +266,57 @@ api.MapDelete("/slots/{slot}/login", async (string slot, ILoginClient login, Can
     catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
     {
         return Results.BadRequest(new { code = "login_failed", message = ex.Message });
+    }
+});
+
+// --- nombres de slot ------------------------------------------------------
+//
+// Los nombres los pone el usuario y viven en Supabase, no en el compose: el
+// gateway descubre los slots por sus URLs y no sabe ni le importa como se
+// llaman. Por eso son un recurso aparte y no un campo del panorama.
+
+/// El limite es de presentacion: entra en la franja de la tarjeta sin cortarse.
+const int LargoMaximoNombre = 60;
+
+api.MapGet("/slots/nombres", async (HttpContext ctx, INombresClient nombres, CancellationToken ct) =>
+    Results.Ok(await nombres.TodosAsync(await JwtDe(ctx), ct)));
+
+api.MapPut("/slots/{slot}/nombre", async (
+    string slot,
+    NuevoNombre cuerpo,
+    HttpContext ctx,
+    INombresClient nombres,
+    CancellationToken ct) =>
+{
+    if (SlotInvalido(slot) is { } malo) return malo;
+
+    // Recortado antes de validar: "   " tiene largo 3 pero es un nombre vacio, y
+    // guardarlo dejaria la tarjeta sin titulo.
+    var nombre = cuerpo.Nombre?.Trim() ?? "";
+    if (nombre.Length == 0)
+    {
+        return Results.BadRequest(new { code = "nombre_vacio", message = "el nombre no puede estar vacío" });
+    }
+    if (nombre.Length > LargoMaximoNombre)
+    {
+        return Results.BadRequest(new
+        {
+            code = "nombre_largo",
+            message = $"el nombre no puede pasar de {LargoMaximoNombre} caracteres",
+        });
+    }
+
+    try
+    {
+        await nombres.GuardarAsync(await JwtDe(ctx), slot, nombre, ct);
+        return Results.Ok(new { slot, nombre });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        app.Logger.LogError(ex, "no se pudo guardar el nombre de {Slot}", slot);
+        return Results.Json(
+            new { code = "nombre_no_guardado", message = "no se pudo guardar el nombre" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 });
 

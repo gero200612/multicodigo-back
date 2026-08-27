@@ -101,3 +101,25 @@ public sealed class HistorialFalso : IHistorialClient
         return Task.CompletedTask;
     }
 }
+
+public sealed class NombresFalso : INombresClient
+{
+    public Dictionary<string, string> Guardados { get; } = [];
+    /// <summary>Los JWT con los que se leyó, para verificar que se reenvía el del usuario.</summary>
+    public List<string> JwtsLeidos { get; } = [];
+    public bool Falla { get; set; }
+
+    public Task<IReadOnlyDictionary<string, string>> TodosAsync(string jwt, CancellationToken ct = default)
+    {
+        JwtsLeidos.Add(jwt);
+        return Task.FromResult<IReadOnlyDictionary<string, string>>(
+            new Dictionary<string, string>(Guardados));
+    }
+
+    public Task GuardarAsync(string jwt, string slot, string nombre, CancellationToken ct = default)
+    {
+        if (Falla) throw new UpstreamException("no se pudo guardar el nombre");
+        Guardados[slot] = nombre;
+        return Task.CompletedTask;
+    }
+}

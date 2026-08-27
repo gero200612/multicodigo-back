@@ -70,3 +70,6 @@ public sealed record CuerpoCodigo([property: JsonPropertyName("code")] string? C
 public sealed record CuerpoToken(
     [property: JsonPropertyName("token")] string? Token,
     [property: JsonPropertyName("account")] string? Account);
+
+public sealed record NuevoNombre(
+    [property: JsonPropertyName("nombre")] string? Nombre);

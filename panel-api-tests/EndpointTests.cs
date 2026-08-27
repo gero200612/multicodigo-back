@@ -63,6 +63,7 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
     public LoginFalso Login { get; } = new();
     public BridgeFalso Bridge { get; } = new();
     public HistorialFalso Historial { get; } = new();
+    public NombresFalso Nombres { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -83,6 +84,7 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
             s.AddSingleton<ILoginClient>(Login);
             s.AddSingleton<IBridgeClient>(Bridge);
             s.AddSingleton<IHistorialClient>(Historial);
+            s.AddSingleton<INombresClient>(Nombres);
 
             s.AddAuthentication(AuthDePrueba.Esquema)
                 .AddScheme<AuthenticationSchemeOptions, AuthDePrueba>(AuthDePrueba.Esquema, _ => { });
@@ -228,7 +230,7 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
     [Fact]
     public async Task IniciarLoginDevuelveLaUrl()
     {
-        var r = await Cliente().PostAsync("/api/slots/c1/login/start", null);
+        var r = await Cliente().GetAsync("/api/slots/c1/login/start");
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
         Assert.Contains("claude.ai", await r.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
@@ -299,10 +301,93 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
     {
         var c = Cliente();
         Assert.Equal(HttpStatusCode.NotFound, (await c.PostAsync($"/api/slots/{slot}/test", null)).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await c.PostAsync($"/api/slots/{slot}/login/start", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/api/slots/{slot}/login/start")).StatusCode);
         Assert.Equal(
             HttpStatusCode.NotFound,
             (await c.PostAsJsonAsync($"/api/slots/{slot}/login/code", new { code = "x" })).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await c.DeleteAsync($"/api/slots/{slot}/login")).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await c.PutAsJsonAsync($"/api/slots/{slot}/nombre", new { nombre = "x" })).StatusCode);
+    }
+
+    // --- nombres de slot ---
+
+    [Fact]
+    public async Task NombresPideSesion()
+    {
+        var r = await Cliente(conSesion: false).GetAsync("/api/slots/nombres");
+        Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+
+        var p = await Cliente(conSesion: false).PutAsJsonAsync("/api/slots/c1/nombre", new { nombre = "x" });
+        Assert.Equal(HttpStatusCode.Unauthorized, p.StatusCode);
+    }
+
+    [Fact]
+    public async Task GuardaYDevuelveElNombre()
+    {
+        var c = Cliente();
+        var r = await c.PutAsJsonAsync("/api/slots/c3/nombre", new { nombre = "Revisión mobile" });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+
+        var mapa = await c.GetFromJsonAsync<Dictionary<string, string>>("/api/slots/nombres");
+        Assert.Equal("Revisión mobile", mapa!["c3"]);
+    }
+
+    /// <summary>
+    /// El panel no tiene credencial de escritura contra Supabase: escribe con el
+    /// JWT del usuario para que decida RLS. Si esto dejara de pasar, el panel
+    /// podría renombrar slots de cualquiera.
+    /// </summary>
+    [Fact]
+    public async Task ReenviaElJwtDelUsuarioAlLeerNombres()
+    {
+        await Cliente().GetAsync("/api/slots/nombres");
+        Assert.Contains(AuthDePrueba.TokenValido, f.Nombres.JwtsLeidos);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task RechazaNombreVacio(string nombre)
+    {
+        var r = await Cliente().PutAsJsonAsync("/api/slots/c1/nombre", new { nombre });
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task RechazaNombreDeMasDe60()
+    {
+        var r = await Cliente().PutAsJsonAsync("/api/slots/c1/nombre", new { nombre = new string('a', 61) });
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+
+        var ok = await Cliente().PutAsJsonAsync("/api/slots/c1/nombre", new { nombre = new string('a', 60) });
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+    }
+
+    [Fact]
+    public async Task RecortaLosEspaciosDelNombre()
+    {
+        await Cliente().PutAsJsonAsync("/api/slots/c2/nombre", new { nombre = "  Backend y APIs  " });
+        Assert.Equal("Backend y APIs", f.Nombres.Guardados["c2"]);
+    }
+
+    /// <summary>
+    /// Al revés que el historial: si el nombre no se guardó, el usuario tiene que
+    /// enterarse. Un 200 acá le haría creer que quedó.
+    /// </summary>
+    [Fact]
+    public async Task AvisaCuandoNoSePudoGuardarElNombre()
+    {
+        f.Nombres.Falla = true;
+        try
+        {
+            var r = await Cliente().PutAsJsonAsync("/api/slots/c1/nombre", new { nombre = "Algo" });
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, r.StatusCode);
+        }
+        finally
+        {
+            f.Nombres.Falla = false;
+        }
     }
 }

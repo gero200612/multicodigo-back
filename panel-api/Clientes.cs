@@ -42,6 +42,24 @@ public interface IHistorialClient
     Task GuardarAsync(string jwt, string slot, ResultadoTest r, CancellationToken ct = default);
 }
 
+public interface INombresClient
+{
+    /// <summary>
+    /// Nunca lanza: un slot sin nombre guardado cae en su id (c1, c2…), que es
+    /// cierto y suficiente. Perder los nombres no puede voltear la página.
+    /// </summary>
+    Task<IReadOnlyDictionary<string, string>> TodosAsync(string jwt, CancellationToken ct = default);
+
+    /// <summary>
+    /// Lanza <see cref="UpstreamException"/> si no se pudo guardar.
+    ///
+    /// Al revés que el historial: acá el usuario apretó Guardar y espera que el
+    /// nombre quede. Un fallo silencioso le haría creer que se guardó, y lo
+    /// descubriría recién al recargar.
+    /// </summary>
+    Task GuardarAsync(string jwt, string slot, string nombre, CancellationToken ct = default);
+}
+
 /// <summary>Lo que el llamador puede leer: nunca la excepción cruda.</summary>
 public sealed class UpstreamException(string mensaje) : Exception(mensaje);
 
@@ -128,7 +146,7 @@ public sealed class LoginClient(HttpClient http) : ILoginClient
 
     public async Task<string> IniciarAsync(string slot, CancellationToken ct = default)
     {
-        var res = await http.PostAsync($"/login/{slot}/start", null, ct);
+        var res = await http.GetAsync($"/login/{slot}/start", ct);
         await LanzarSiFallo(res, ct);
         var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaInicio>(Json.Opciones, ct);
         return cuerpo?.Url ?? throw new UpstreamException("el login no devolvió ninguna URL");
@@ -248,6 +266,86 @@ public sealed class HistorialClient(HttpClient http, string anonKey, ILogger<His
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             log.LogError(ex, "no se pudo guardar el test de {Slot}", slot);
+        }
+    }
+}
+
+// --- nombres de slot ------------------------------------------------------
+
+/// <summary>
+/// Los nombres que el usuario le pone a cada slot, en Supabase.
+///
+/// Mismo trato que el historial: se reenvía el JWT del usuario y decide RLS. El
+/// panel no tiene credencial de escritura propia, así que no puede escribir
+/// nombres de nadie más aunque quisiera.
+/// </summary>
+public sealed class NombresClient(HttpClient http, string anonKey, ILogger<NombresClient> log)
+    : INombresClient
+{
+    private sealed record Fila(string Slot, string Nombre);
+
+    private HttpRequestMessage Pedido(HttpMethod metodo, string url, string jwt)
+    {
+        var req = new HttpRequestMessage(metodo, url);
+        req.Headers.TryAddWithoutValidation("apikey", anonKey);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+        return req;
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> TodosAsync(
+        string jwt, CancellationToken ct = default)
+    {
+        try
+        {
+            var req = Pedido(HttpMethod.Get, "/rest/v1/slot_nombres?select=slot,nombre", jwt);
+            var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                log.LogError("no se pudieron leer los nombres: {Status}", (int)res.StatusCode);
+                return new Dictionary<string, string>();
+            }
+
+            var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct) ?? [];
+            // Se filtra por forma de slot ACÁ y no sólo al escribir: la tabla es
+            // de otro proceso y una fila con un slot raro no puede meterse en el
+            // mapa que el front usa para indexar.
+            return filas
+                .Where(f => Slot.EsValido(f.Slot) && !string.IsNullOrWhiteSpace(f.Nombre))
+                .GroupBy(f => f.Slot)
+                .ToDictionary(g => g.Key, g => g.First().Nombre);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            log.LogError(ex, "no se pudieron leer los nombres");
+            return new Dictionary<string, string>();
+        }
+    }
+
+    public async Task GuardarAsync(
+        string jwt, string slot, string nombre, CancellationToken ct = default)
+    {
+        if (!Slot.EsValido(slot)) throw new UpstreamException($"slot desconocido: {slot}");
+
+        try
+        {
+            // upsert: el slot es la clave primaria y renombrar es lo normal, no
+            // la excepción. Sin `resolution=merge-duplicates` el segundo rename
+            // del mismo slot daría 409.
+            var req = Pedido(HttpMethod.Post, "/rest/v1/slot_nombres", jwt);
+            req.Headers.TryAddWithoutValidation("Prefer", "resolution=merge-duplicates");
+            req.Content = JsonContent.Create(new { slot, nombre }, options: Json.Opciones);
+
+            var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                log.LogError("no se pudo guardar el nombre de {Slot}: {Status}", slot, (int)res.StatusCode);
+                throw new UpstreamException("no se pudo guardar el nombre");
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            log.LogError(ex, "no se pudo guardar el nombre de {Slot}", slot);
+            throw new UpstreamException("no se pudo guardar el nombre");
         }
     }
 }
