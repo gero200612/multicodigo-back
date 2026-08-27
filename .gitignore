@@ -11,3 +11,6 @@ dist/
 .creds/
 .work/
 .repos/
+
+# El companion de brainstorming escribe sus mockups y su estado aca.
+.superpowers/
