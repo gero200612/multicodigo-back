@@ -1,0 +1,11 @@
+# El Dockerfile hace `COPY panel-api/ ./` y despues `dotnet publish`. Sin esto se
+# copian el bin/ y el obj/ del host: `obj/` guarda rutas ABSOLUTAS de la maquina
+# que compilo, asi que un build hecho en Windows rompe el build de la imagen con
+# un error que no dice nada del problema real
+# ("Unable to find fallback package folder 'C:\Program Files (x86)\...'").
+**/bin
+**/obj
+
+.git
+.vs
+*.user
