@@ -80,6 +80,7 @@ const TODAS_LAS_MIGRACIONES = [
   '002_approvals.sql',
   '003_multiproyecto.sql',
   '004_proyectos.sql',
+  '005_agentes.sql',
 ].map(migracion);
 
 describe.skipIf(!url)('PgStore contra postgres real', () => {
@@ -116,6 +117,34 @@ describe.skipIf(!url)('PgStore contra postgres real', () => {
     ).rejects.toThrow(/miembros_rol_valido/);
 
     await pool.query(`DELETE FROM proyectos WHERE id = $1`, [proyectoId]);
+  });
+
+  it('un agente pertenece a un proyecto y su slot respeta AgentId', async () => {
+    const pool = store['pool'];
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO proyectos (nombre) VALUES ('plan1-agentes') RETURNING id`,
+    );
+    const proyectoId = rows[0]!.id;
+
+    await pool.query(
+      `INSERT INTO agentes (slot, proyecto_id, nombre) VALUES ('c7', $1, 'Backend')`,
+      [proyectoId],
+    );
+
+    const { rows: leidos } = await pool.query<{ nombre: string }>(
+      `SELECT nombre FROM agentes WHERE slot = 'c7'`,
+    );
+    expect(leidos[0]!.nombre).toBe('Backend');
+
+    // 'c0' no es un slot valido: el regex de AgentId prohibe el cero.
+    await expect(
+      pool.query(`INSERT INTO agentes (slot, proyecto_id) VALUES ('c0', $1)`, [proyectoId]),
+    ).rejects.toThrow(/agentes_slot_forma/);
+
+    // Borrar el proyecto se lleva sus agentes: un slot huerfano no significa nada.
+    await pool.query(`DELETE FROM proyectos WHERE id = $1`, [proyectoId]);
+    const { rows: quedan } = await pool.query(`SELECT 1 FROM agentes WHERE slot = 'c7'`);
+    expect(quedan).toHaveLength(0);
   });
 
   afterAll(async () => {
