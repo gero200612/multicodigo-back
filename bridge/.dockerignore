@@ -1,0 +1,8 @@
+# El Dockerfile hace `COPY . .` y despues `pnpm install`: sin esto se copian los
+# node_modules del host —Windows— y el install de adentro queda mezclado con
+# binarios nativos de otra plataforma.
+node_modules
+dist
+*.tsbuildinfo
+.git
+.env
