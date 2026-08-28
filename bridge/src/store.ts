@@ -73,6 +73,17 @@ export function recortar(texto: string): string {
     : `${texto.slice(0, LARGO_PROMPT_RESUMEN - 1)}…`;
 }
 
+export interface Proyecto {
+  id: string;
+  nombre: string;
+}
+
+export interface AgenteResumen {
+  slot: AgentId;
+  nombre?: string;
+  cuenta?: string;
+}
+
 export interface Store {
   getActiveAgent(chatId: number): Promise<AgentId | undefined>;
   setActiveAgent(chatId: number, agent: AgentId): Promise<void>;
@@ -113,6 +124,19 @@ export interface Store {
   claimApproval(approvalId: string, decision: ApprovalDecision): Promise<ClaimResult>;
   setAwaitingFeedback(chatId: number, approvalId: string | null): Promise<void>;
   getAwaitingFeedback(chatId: number): Promise<string | undefined>;
+  /**
+   * Los proyectos donde el usuario es miembro, por nombre.
+   *
+   * Ordenados para que el menu del bot no cambie el orden de los botones entre
+   * dos llamados: un boton que se mueve solo es un toque equivocado.
+   */
+  proyectosDeUsuario(usuarioId: string): Promise<Proyecto[]>;
+  /** Crea el proyecto y deja a quien lo crea como dueño. Devuelve su id. */
+  crearProyecto(nombre: string, dueñoId: string): Promise<string>;
+  /** Los agentes del proyecto, por slot. */
+  agentesDeProyecto(proyectoId: string): Promise<AgenteResumen[]>;
+  /** Anota que el slot pertenece al proyecto. NO crea el contenedor. */
+  registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void>;
 }
 
 export class InMemoryStore implements Store {
@@ -210,6 +234,36 @@ export class InMemoryStore implements Store {
 
   async getAwaitingFeedback(chatId: number) {
     return this.awaiting.get(chatId);
+  }
+
+  private proyectos = new Map<string, { nombre: string }>();
+  private membresias: { proyectoId: string; usuarioId: string }[] = [];
+  private agentes = new Map<string, { proyectoId: string; nombre?: string; cuenta?: string }>();
+
+  async proyectosDeUsuario(usuarioId: string): Promise<Proyecto[]> {
+    return this.membresias
+      .filter((m) => m.usuarioId === usuarioId)
+      .map((m) => ({ id: m.proyectoId, nombre: this.proyectos.get(m.proyectoId)!.nombre }))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }
+
+  async crearProyecto(nombre: string, dueñoId: string): Promise<string> {
+    const id = randomUUID();
+    this.proyectos.set(id, { nombre });
+    this.membresias.push({ proyectoId: id, usuarioId: dueñoId });
+    return id;
+  }
+
+  async agentesDeProyecto(proyectoId: string): Promise<AgenteResumen[]> {
+    return [...this.agentes.entries()]
+      .filter(([, a]) => a.proyectoId === proyectoId)
+      .map(([slot, a]) => ({ slot: slot as AgentId, nombre: a.nombre, cuenta: a.cuenta }))
+      .sort((a, b) => a.slot.localeCompare(b.slot));
+  }
+
+  async registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void> {
+    const previo = this.agentes.get(slot);
+    this.agentes.set(slot, { proyectoId, nombre: nombre ?? previo?.nombre, cuenta: previo?.cuenta });
   }
 }
 
@@ -423,5 +477,63 @@ export class PgStore implements Store {
       [chatId],
     );
     return r.rows[0]?.approval_id;
+  }
+
+  async proyectosDeUsuario(usuarioId: string): Promise<Proyecto[]> {
+    const r = await this.pool.query<{ id: string; nombre: string }>(
+      `SELECT p.id, p.nombre
+         FROM proyectos p
+         JOIN miembros m ON m.proyecto_id = p.id
+        WHERE m.usuario_id = $1
+        ORDER BY p.nombre`,
+      [usuarioId],
+    );
+    return r.rows;
+  }
+
+  async crearProyecto(nombre: string, dueñoId: string): Promise<string> {
+    // Las dos filas van juntas o no va ninguna: un proyecto sin dueño no lo ve
+    // nadie —la policy pregunta por membresia— y quedaria invisible para
+    // siempre.
+    const cliente = await this.pool.connect();
+    try {
+      await cliente.query('BEGIN');
+      const r = await cliente.query<{ id: string }>(
+        `INSERT INTO proyectos (nombre) VALUES ($1) RETURNING id`,
+        [nombre],
+      );
+      const id = r.rows[0]!.id;
+      await cliente.query(
+        `INSERT INTO miembros (proyecto_id, usuario_id, rol) VALUES ($1, $2, 'dueño')`,
+        [id, dueñoId],
+      );
+      await cliente.query('COMMIT');
+      return id;
+    } catch (e) {
+      await cliente.query('ROLLBACK');
+      throw e;
+    } finally {
+      cliente.release();
+    }
+  }
+
+  async agentesDeProyecto(proyectoId: string): Promise<AgenteResumen[]> {
+    const r = await this.pool.query<{ slot: AgentId; nombre: string | null; cuenta: string | null }>(
+      `SELECT slot, nombre, cuenta FROM agentes WHERE proyecto_id = $1 ORDER BY slot`,
+      [proyectoId],
+    );
+    return r.rows.map((f) => ({
+      slot: f.slot,
+      nombre: f.nombre ?? undefined,
+      cuenta: f.cuenta ?? undefined,
+    }));
+  }
+
+  async registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO agentes (slot, proyecto_id, nombre) VALUES ($1, $2, $3)
+       ON CONFLICT (slot) DO UPDATE SET proyecto_id = $2, nombre = COALESCE($3, agentes.nombre)`,
+      [slot, proyectoId, nombre ?? null],
+    );
   }
 }

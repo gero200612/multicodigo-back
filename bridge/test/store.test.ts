@@ -60,6 +60,40 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
       expect(await store.getJobStatus(id)).toBe('failed');
       expect(await store.getJobError(id)).toBe('agent_unavailable');
     });
+
+    it('sin membresias no hay proyectos', async () => {
+      expect(await store.proyectosDeUsuario('55555555-5555-4555-8555-555555555555'))
+        .toEqual([]);
+    });
+
+    it('devuelve los proyectos del usuario ordenados por nombre', async () => {
+      const usuario = '55555555-5555-4555-8555-555555555555';
+      const b = await store.crearProyecto('zeta', usuario);
+      const a = await store.crearProyecto('alfa', usuario);
+
+      const proyectos = await store.proyectosDeUsuario(usuario);
+      expect(proyectos.map((p) => p.nombre)).toEqual(['alfa', 'zeta']);
+      expect(proyectos.map((p) => p.id)).toEqual([a, b]);
+    });
+
+    it('no devuelve proyectos de otro usuario', async () => {
+      const mio = '55555555-5555-4555-8555-555555555555';
+      const ajeno = '66666666-6666-4666-8666-666666666666';
+      await store.crearProyecto('mio', mio);
+
+      expect(await store.proyectosDeUsuario(ajeno)).toEqual([]);
+    });
+
+    it('lista los agentes de un proyecto ordenados por slot', async () => {
+      const usuario = '55555555-5555-4555-8555-555555555555';
+      const proyecto = await store.crearProyecto('con-agentes', usuario);
+      await store.registrarAgente(proyecto, 'c2', 'Frontend');
+      await store.registrarAgente(proyecto, 'c1', 'Backend');
+
+      const agentes = await store.agentesDeProyecto(proyecto);
+      expect(agentes.map((a) => a.slot)).toEqual(['c1', 'c2']);
+      expect(agentes[0]!.nombre).toBe('Backend');
+    });
   },
 );
 
