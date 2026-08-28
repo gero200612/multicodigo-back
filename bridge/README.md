@@ -8,8 +8,9 @@ repartieron por destino de despliegue. Lo unico que cambio con la mudanza:
 - Dejo de ser un paquete del workspace de `vm`. Tiene su propio `package.json`,
   su lockfile y su tsconfig.
 - `@multicodigo/shared` —el contrato de zod con el gateway y los agentes— pasa
-  de `workspace:*` a una dependencia publicada. **Un cambio en el contrato ahora
-  son tres pasos**, ver el README de ese repo.
+  de `workspace:*` a una dependencia **de git**, pinneada a un tag. **Un cambio
+  en el contrato ahora son tres pasos**, ver el README de ese repo. Por eso la
+  imagen instala `git`: lo necesita el install, no el runtime.
 - El contexto de build de la imagen es este directorio, no la raiz del repo, y
   el `CMD` es `dist/main.js` (antes `src/bridge/dist/main.js`).
 
