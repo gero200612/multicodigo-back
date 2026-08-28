@@ -82,6 +82,7 @@ const TODAS_LAS_MIGRACIONES = [
   '004_proyectos.sql',
   '005_agentes.sql',
   '006_telegram.sql',
+  '007_jobs.sql',
 ].map(migracion);
 
 describe.skipIf(!url)('PgStore contra postgres real', () => {
@@ -190,6 +191,38 @@ describe.skipIf(!url)('PgStore contra postgres real', () => {
     expect(segundo.rowCount).toBe(0);
 
     await pool.query(`DELETE FROM telegram_codigos WHERE codigo = 'ABC12345'`);
+  });
+
+  it('un job guarda de quien es, de donde vino y que contesto el agente', async () => {
+    const pool = store['pool'];
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO proyectos (nombre) VALUES ('plan1-jobs') RETURNING id`,
+    );
+    const proyectoId = rows[0]!.id;
+    const jobId = '44444444-4444-4444-8444-444444444444';
+
+    await pool.query(
+      `INSERT INTO jobs (id, chat_id, agent, project, prompt, status,
+                         proyecto_id, usuario_id, origen, respuesta)
+       VALUES ($1, 1, 'c1', 'plan1-jobs', 'hola', 'done',
+               $2, gen_random_uuid(), 'telegram', 'hola, en que te ayudo')`,
+      [jobId, proyectoId],
+    );
+
+    const { rows: leidos } = await pool.query<{ origen: string; respuesta: string }>(
+      `SELECT origen, respuesta FROM jobs WHERE id = $1`,
+      [jobId],
+    );
+    expect(leidos[0]!.origen).toBe('telegram');
+    expect(leidos[0]!.respuesta).toBe('hola, en que te ayudo');
+
+    // El origen es cerrado: o vino del bot o vino del panel.
+    await expect(
+      pool.query(`UPDATE jobs SET origen = 'sms' WHERE id = $1`, [jobId]),
+    ).rejects.toThrow(/jobs_origen_valido/);
+
+    await pool.query(`DELETE FROM jobs WHERE id = $1`, [jobId]);
+    await pool.query(`DELETE FROM proyectos WHERE id = $1`, [proyectoId]);
   });
 
   afterAll(async () => {
