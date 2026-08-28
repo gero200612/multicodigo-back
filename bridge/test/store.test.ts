@@ -79,6 +79,7 @@ const TODAS_LAS_MIGRACIONES = [
   '001_init.sql',
   '002_approvals.sql',
   '003_multiproyecto.sql',
+  '004_proyectos.sql',
 ].map(migracion);
 
 describe.skipIf(!url)('PgStore contra postgres real', () => {
@@ -88,6 +89,33 @@ describe.skipIf(!url)('PgStore contra postgres real', () => {
     store = await PgStore.connect(url!, TODAS_LAS_MIGRACIONES);
     await store.setActiveAgent(999, 'c2');
     expect(await store.getActiveAgent(999)).toBe('c2');
+  });
+
+  it('crea un proyecto con su dueño y rechaza un nombre con barra', async () => {
+    const pool = store['pool'];
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO proyectos (nombre, repo_url, tareas)
+       VALUES ('plan1-demo', 'git@github.com:ejemplo/demo.git', '{"test":["pnpm","test"]}'::jsonb)
+       RETURNING id`,
+    );
+    const proyectoId = rows[0]!.id;
+    expect(proyectoId).toMatch(/^[0-9a-f-]{36}$/);
+
+    // El nombre viaja a una ruta de filesystem: una barra lo sacaria de /srv/work.
+    await expect(
+      pool.query(`INSERT INTO proyectos (nombre) VALUES ('con/barra')`),
+    ).rejects.toThrow(/proyectos_nombre_forma/);
+
+    // El rol es cerrado: sólo dueño o miembro.
+    await expect(
+      pool.query(
+        `INSERT INTO miembros (proyecto_id, usuario_id, rol)
+         VALUES ($1, gen_random_uuid(), 'jefe')`,
+        [proyectoId],
+      ),
+    ).rejects.toThrow(/miembros_rol_valido/);
+
+    await pool.query(`DELETE FROM proyectos WHERE id = $1`, [proyectoId]);
   });
 
   afterAll(async () => {
