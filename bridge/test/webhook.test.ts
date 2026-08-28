@@ -71,6 +71,54 @@ describe('GET /jobs', () => {
   });
 });
 
+describe('POST /vinculos', () => {
+  it('rechaza sin bearer', async () => {
+    const { app } = await servidor();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/vinculos',
+      payload: { codigo: 'ABCD2345', usuarioId: '99999999-9999-4999-8999-999999999999' },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('canjea un codigo valido', async () => {
+    const { app, store } = await servidor();
+    const codigo = await store.crearCodigoVinculacion(600, 10);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/vinculos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { codigo, usuarioId: '99999999-9999-4999-8999-999999999999' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await store.usuarioDeChat(600)).toBe('99999999-9999-4999-8999-999999999999');
+  });
+
+  it('distingue los tres modos de falla', async () => {
+    const { app, store } = await servidor();
+    const usuario = '99999999-9999-4999-8999-999999999999';
+    const pedir = (codigo: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/vinculos',
+        headers: { authorization: `Bearer ${API_TOKEN}` },
+        payload: { codigo, usuarioId: usuario },
+      });
+
+    const desconocido = await pedir('NOEXISTE');
+    expect(desconocido.statusCode).toBe(400);
+    expect(desconocido.json().code).toBe('codigo_desconocido');
+
+    const vencido = await store.crearCodigoVinculacion(601, -1);
+    expect((await pedir(vencido)).json().code).toBe('codigo_vencido');
+
+    const usado = await store.crearCodigoVinculacion(602, 10);
+    await pedir(usado);
+    expect((await pedir(usado)).json().code).toBe('codigo_usado');
+  });
+});
+
 describe('el webhook sigue andando', () => {
   it('rechaza un secret equivocado', async () => {
     const { app } = await servidor();

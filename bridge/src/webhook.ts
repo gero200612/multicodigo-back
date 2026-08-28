@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Bot } from 'grammy';
 import { isTokenValid } from '@multicodigo/shared';
+import { z } from 'zod';
 import type { Store } from './store.js';
 
 /** Tope duro. Sin esto, un `?limit=` de la URL deja pedir la tabla entera. */
@@ -14,7 +15,7 @@ const JOBS_POR_DEFECTO = 20;
  * es como arranco. Los tests que no la ejercitan no la pasan.
  */
 export interface ApiDeps {
-  store: Pick<Store, 'recentJobs'>;
+  store: Pick<Store, 'recentJobs' | 'canjearCodigo' | 'usuarioDeChat'>;
   /**
    * Credencial propia, distinta del secret del webhook.
    *
@@ -60,6 +61,41 @@ export function buildWebhookServer(
       const limite = Number.isFinite(pedido) && pedido > 0 ? Math.min(pedido, MAX_JOBS) : JOBS_POR_DEFECTO;
 
       return reply.code(200).send({ jobs: await api.store.recentJobs(limite) });
+    });
+
+    const CuerpoVinculo = z.object({
+      codigo: z.string().min(1).max(32),
+      usuarioId: z.string().uuid(),
+    });
+
+    /**
+     * Canjea un codigo de vinculacion a nombre de un usuario del panel.
+     *
+     * Lo llama el panel, no el navegador: el `usuarioId` viene del JWT que el
+     * panel ya verifico. Si esto lo pudiera llamar el navegador, cualquiera
+     * vincularia un chat a la cuenta de otro.
+     */
+    app.post('/vinculos', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+
+      const cuerpo = CuerpoVinculo.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta codigo o usuarioId' });
+      }
+
+      const r = await api.store.canjearCodigo(cuerpo.data.codigo, cuerpo.data.usuarioId);
+      if (r === 'ok') return reply.code(200).send({ estado: 'ok' });
+
+      // Los tres se explican distinto en el panel: "pedi uno nuevo" no es lo
+      // mismo que "ese ya lo usaste".
+      const codigos = {
+        vencido: 'codigo_vencido',
+        usado: 'codigo_usado',
+        desconocido: 'codigo_desconocido',
+      } as const;
+      return reply.code(400).send({ code: codigos[r], message: 'el codigo no sirve' });
     });
   }
 
