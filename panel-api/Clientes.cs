@@ -28,6 +28,14 @@ public interface ILoginClient
 public interface IBridgeClient
 {
     Task<IReadOnlyList<JobResumen>> JobsAsync(int limite, CancellationToken ct = default);
+    /// <summary>
+    /// Canjea un codigo de vinculacion a nombre del usuario. Lo llamamos desde
+    /// el endpoint POST /api/telegram/vincular que le expone el panel al front.
+    ///
+    /// Devuelve 'ok' o lanza UpstreamException con el codigo de error (vencido,
+    /// usado o desconocido).
+    /// </summary>
+    Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -186,6 +194,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     private sealed record JobDto(
         string Id, string Agent, string Project, string Prompt,
         string Status, string CreatedAt, string? Error);
+    private sealed record ErrorVinculo(string Code, string Message);
 
     public async Task<IReadOnlyList<JobResumen>> JobsAsync(int limite, CancellationToken ct = default)
     {
@@ -194,6 +203,23 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
             ? []
             : [.. r.Jobs.Select(j => new JobResumen(
                 j.Id, j.Agent, j.Project, j.Prompt, j.Status, j.CreatedAt, j.Error))];
+    }
+
+    public async Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync(
+            "/vinculos",
+            new { codigo, usuarioId },
+            Json.Opciones,
+            ct);
+
+        if (res.IsSuccessStatusCode) return;
+
+        ErrorVinculo? e = null;
+        try { e = await res.Content.ReadFromJsonAsync<ErrorVinculo>(Json.Opciones, ct); }
+        catch (JsonException) { /* sin cuerpo util; se usa el status */ }
+
+        throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
     }
 }
 

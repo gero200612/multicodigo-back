@@ -73,3 +73,6 @@ public sealed record CuerpoToken(
 
 public sealed record NuevoNombre(
     [property: JsonPropertyName("nombre")] string? Nombre);
+
+public sealed record CuerpoVinculo(
+    [property: JsonPropertyName("codigo")] string? Codigo);

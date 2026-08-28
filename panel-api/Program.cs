@@ -320,6 +320,40 @@ api.MapPut("/slots/{slot}/nombre", async (
     }
 });
 
+// --- vinculacion de telegram ----------------------------------------------
+
+api.MapPost("/telegram/vincular", async (
+    CuerpoVinculo cuerpo,
+    HttpContext ctx,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(cuerpo.Codigo))
+    {
+        return Results.BadRequest(new { code = "codigo_vacio", message = "el codigo no puede estar vacio" });
+    }
+
+    // El usuarioId sale del JWT: confiar en lo que el usuario envia seria un
+    // agujero. El JWT ya esta verificado por el middleware de autenticacion.
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId))
+    {
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        await bridge.CanjearVinculoAsync(cuerpo.Codigo, usuarioId, ct);
+        return Results.Ok(new { estado = "ok" });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        // Un codigo vencido, usado o desconocido no es un error del endpoint:
+        // el endpoint funciono y devolvio la razon especifica por la que fallo.
+        return Results.BadRequest(new { code = "vinculo_fallo", message = ex.Message });
+    }
+});
+
 // --- el front -------------------------------------------------------------
 //
 // En el despliegue de hoy esto NO sirve nada: el front vive en su propio repo y
