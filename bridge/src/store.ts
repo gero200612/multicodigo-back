@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import type { AgentId, ApprovalDecision } from '@multicodigo/shared';
@@ -84,6 +84,20 @@ export interface AgenteResumen {
   cuenta?: string;
 }
 
+/**
+ * Un codigo corto que una persona pueda leer de la pantalla del celular y
+ * tipear en el navegador.
+ *
+ * Sin I, O, 0 ni 1: son los que se confunden al copiar a mano. Ocho caracteres
+ * de este alfabeto son ~41 bits, de sobra para algo que vence en diez minutos.
+ */
+const ALFABETO = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function codigoLegible(): string {
+  const bytes = randomBytes(8);
+  return [...bytes].map((b) => ALFABETO[b % ALFABETO.length]).join('');
+}
+
 export interface Store {
   getActiveAgent(chatId: number): Promise<AgentId | undefined>;
   setActiveAgent(chatId: number, agent: AgentId): Promise<void>;
@@ -137,6 +151,20 @@ export interface Store {
   agentesDeProyecto(proyectoId: string): Promise<AgenteResumen[]>;
   /** Anota que el slot pertenece al proyecto. NO crea el contenedor. */
   registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void>;
+  /** El usuario del panel dueño de este chat, o undefined si no esta vinculado. */
+  usuarioDeChat(chatId: number): Promise<string | undefined>;
+  /** Un codigo de un solo uso para vincular este chat. */
+  crearCodigoVinculacion(chatId: number, minutos: number): Promise<string>;
+  /**
+   * Canjea el codigo a nombre del usuario.
+   *
+   * Distingue los tres modos de falla porque el panel los explica distinto:
+   * "pedí uno nuevo" no es lo mismo que "ese ya lo usaste".
+   */
+  canjearCodigo(
+    codigo: string,
+    usuarioId: string,
+  ): Promise<'ok' | 'vencido' | 'usado' | 'desconocido'>;
 }
 
 export class InMemoryStore implements Store {
@@ -264,6 +292,29 @@ export class InMemoryStore implements Store {
   async registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void> {
     const previo = this.agentes.get(slot);
     this.agentes.set(slot, { proyectoId, nombre: nombre ?? previo?.nombre, cuenta: previo?.cuenta });
+  }
+
+  private vinculos = new Map<number, string>();
+  private codigos = new Map<string, { chatId: number; expira: number; usado: boolean }>();
+
+  async usuarioDeChat(chatId: number): Promise<string | undefined> {
+    return this.vinculos.get(chatId);
+  }
+
+  async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {
+    const codigo = codigoLegible();
+    this.codigos.set(codigo, { chatId, expira: Date.now() + minutos * 60_000, usado: false });
+    return codigo;
+  }
+
+  async canjearCodigo(codigo: string, usuarioId: string) {
+    const c = this.codigos.get(codigo);
+    if (!c) return 'desconocido' as const;
+    if (c.usado) return 'usado' as const;
+    if (c.expira <= Date.now()) return 'vencido' as const;
+    c.usado = true;
+    this.vinculos.set(c.chatId, usuarioId);
+    return 'ok' as const;
   }
 }
 
@@ -535,5 +586,51 @@ export class PgStore implements Store {
        ON CONFLICT (slot) DO UPDATE SET proyecto_id = $2, nombre = COALESCE($3, agentes.nombre)`,
       [slot, proyectoId, nombre ?? null],
     );
+  }
+
+  async usuarioDeChat(chatId: number): Promise<string | undefined> {
+    const r = await this.pool.query<{ usuario_id: string }>(
+      'SELECT usuario_id FROM telegram_vinculos WHERE chat_id = $1',
+      [chatId],
+    );
+    return r.rows[0]?.usuario_id;
+  }
+
+  async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {
+    const codigo = codigoLegible();
+    await this.pool.query(
+      `INSERT INTO telegram_codigos (codigo, chat_id, expira_en)
+       VALUES ($1, $2, now() + ($3 || ' minutes')::interval)`,
+      [codigo, chatId, String(minutos)],
+    );
+    return codigo;
+  }
+
+  async canjearCodigo(codigo: string, usuarioId: string) {
+    // Marcar usado y leer el chat en UNA sentencia: si fueran dos, dos canjes
+    // simultaneos del mismo codigo pasarian los dos.
+    const r = await this.pool.query<{ chat_id: string }>(
+      `UPDATE telegram_codigos SET usado_en = now()
+        WHERE codigo = $1 AND usado_en IS NULL AND expira_en > now()
+        RETURNING chat_id`,
+      [codigo],
+    );
+
+    if (r.rowCount === 0) {
+      const existe = await this.pool.query<{ usado_en: Date | null; expira_en: Date }>(
+        'SELECT usado_en, expira_en FROM telegram_codigos WHERE codigo = $1',
+        [codigo],
+      );
+      const fila = existe.rows[0];
+      if (!fila) return 'desconocido' as const;
+      return fila.usado_en ? ('usado' as const) : ('vencido' as const);
+    }
+
+    await this.pool.query(
+      `INSERT INTO telegram_vinculos (chat_id, usuario_id) VALUES ($1, $2)
+       ON CONFLICT (chat_id) DO UPDATE SET usuario_id = $2, vinculado_en = now()`,
+      [Number(r.rows[0]!.chat_id), usuarioId],
+    );
+    return 'ok' as const;
   }
 }

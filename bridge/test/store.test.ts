@@ -94,6 +94,40 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
       expect(agentes.map((a) => a.slot)).toEqual(['c1', 'c2']);
       expect(agentes[0]!.nombre).toBe('Backend');
     });
+
+    it('un chat sin vincular no tiene usuario', async () => {
+      expect(await store.usuarioDeChat(123)).toBeUndefined();
+    });
+
+    it('canjear un codigo vincula el chat al usuario', async () => {
+      const usuario = '77777777-7777-4777-8777-777777777777';
+      const codigo = await store.crearCodigoVinculacion(123, 10);
+
+      expect(await store.canjearCodigo(codigo, usuario)).toBe('ok');
+      expect(await store.usuarioDeChat(123)).toBe(usuario);
+    });
+
+    it('un codigo no se puede canjear dos veces', async () => {
+      const codigo = await store.crearCodigoVinculacion(124, 10);
+      await store.canjearCodigo(codigo, '77777777-7777-4777-8777-777777777777');
+
+      expect(await store.canjearCodigo(codigo, '88888888-8888-4888-8888-888888888888'))
+        .toBe('usado');
+      // Y el chat sigue siendo del primero.
+      expect(await store.usuarioDeChat(124)).toBe('77777777-7777-4777-8777-777777777777');
+    });
+
+    it('un codigo vencido no sirve', async () => {
+      const codigo = await store.crearCodigoVinculacion(125, -1);
+      expect(await store.canjearCodigo(codigo, '77777777-7777-4777-8777-777777777777'))
+        .toBe('vencido');
+      expect(await store.usuarioDeChat(125)).toBeUndefined();
+    });
+
+    it('un codigo que no existe se distingue de uno usado', async () => {
+      expect(await store.canjearCodigo('NOEXISTE', '77777777-7777-4777-8777-777777777777'))
+        .toBe('desconocido');
+    });
   },
 );
 
