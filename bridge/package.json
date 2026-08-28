@@ -1,0 +1,14 @@
+{
+  "name": "@multicodigo/bridge",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./dist/main.js",
+  "dependencies": {
+    "@multicodigo/shared": "workspace:*",
+    "fastify": "^5.0.0",
+    "grammy": "^1.30.0",
+    "pg": "^8.13.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": { "@types/pg": "^8.11.0" }
+}
