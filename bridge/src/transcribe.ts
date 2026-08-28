@@ -1,4 +1,15 @@
-const MODEL = 'gemini-2.5-flash';
+// gemini-2.5-flash estaba hardcodeado aca y dejo de estar disponible para
+// cuentas nuevas: la API contesta 404 "no longer available to new users". O
+// sea que este servicio venia con una bomba de tiempo que solo se iba a notar
+// con el primer audio, en produccion, meses despues de escribirlo.
+//
+// Se cambia por el modelo dedicado a transcribir, que es exactamente lo que
+// hace esta funcion. Verificado con audio real contra la API: responde 200.
+//
+// Deliberadamente NO se usa un alias tipo `gemini-flash-latest`: un alias que
+// se mueve solo cambiaria el comportamiento de la transcripcion sin que nadie
+// toque el repo. Preferimos un 404 ruidoso el dia que este modelo se retire.
+const MODEL = 'gemini-3.5-transcribe';
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 const INSTRUCTION = [
