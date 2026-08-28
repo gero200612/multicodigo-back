@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { InMemoryStore, PgStore, type Store } from '../src/store.js';
 
 const chatId = 42;
@@ -64,15 +65,27 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
 
 const url = process.env.DATABASE_URL;
 
+/**
+ * Las rutas se resuelven contra ESTE archivo y no contra el working directory:
+ * un 'migrations/001_init.sql' relativo solo funciona si vitest corre parado en
+ * `bridge/`. Antes decian 'src/bridge/migrations/...', que era la ruta de
+ * cuando el bridge vivia en el monorepo, y como el bloque se saltea sin
+ * DATABASE_URL nadie lo noto.
+ */
+const migracion = (nombre: string) =>
+  fileURLToPath(new URL('../migrations/' + nombre, import.meta.url));
+
+const TODAS_LAS_MIGRACIONES = [
+  '001_init.sql',
+  '002_approvals.sql',
+  '003_multiproyecto.sql',
+].map(migracion);
+
 describe.skipIf(!url)('PgStore contra postgres real', () => {
   let store: PgStore;
 
   it('aplica la migracion y persiste el agente activo', async () => {
-    store = await PgStore.connect(url!, [
-      'src/bridge/migrations/001_init.sql',
-      'src/bridge/migrations/002_approvals.sql',
-      'src/bridge/migrations/003_multiproyecto.sql',
-    ]);
+    store = await PgStore.connect(url!, TODAS_LAS_MIGRACIONES);
     await store.setActiveAgent(999, 'c2');
     expect(await store.getActiveAgent(999)).toBe('c2');
   });
