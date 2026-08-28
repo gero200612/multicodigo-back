@@ -6,11 +6,6 @@ import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
 import type { Store } from './store.js';
 
-export function isAllowedUser(userId: number | undefined, allowed: number[]): boolean {
-  if (userId === undefined) return false;
-  return allowed.includes(userId);
-}
-
 export function renderOutcome(outcome: PipelineOutcome): string {
   switch (outcome.kind) {
     case 'answer': {
@@ -27,12 +22,15 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return `⚠️ ${outcome.text}`;
     case 'ignored':
       return '';
-    // Texto provisorio: la Task 4 lo reemplaza por el mensaje final con el
-    // link al panel. Esto solo existe para que el pipeline compile.
     case 'sin_vincular':
-      return outcome.yaEstaba ? 'Ya estas vinculado.' : 'Este chat todavia no esta vinculado.';
+      return outcome.yaEstaba
+        ? 'Este chat ya esta vinculado a una cuenta.'
+        : 'No te tengo vinculado a ninguna cuenta. Mandame /vincular y te doy un codigo para pegar en el panel.';
     case 'codigo':
-      return `Tu codigo: ${outcome.codigo} (vale ${outcome.minutos} minutos).`;
+      return (
+        `Tu codigo es:\n\n<code>${outcome.codigo}</code>\n\n` +
+        `Pegalo en el panel, en Configuracion. Vence en ${outcome.minutos} minutos.`
+      );
   }
 }
 
@@ -81,7 +79,6 @@ export async function decidirAprobacion(
 
 export interface BridgeDeps extends PipelineDeps {
   botToken: string;
-  allowedUserIds: number[];
   fetchPending: (agent: AgentId) => Promise<ApprovalRequest[]>;
   sendDecision: (agent: AgentId, approvalId: string, decision: ApprovalDecision) => Promise<void>;
 }
@@ -103,8 +100,6 @@ export function buildBot(deps: BridgeDeps): Bot {
   const bot = new Bot(deps.botToken);
 
   bot.on('callback_query:data', async (ctx) => {
-    if (!isAllowedUser(ctx.from?.id, deps.allowedUserIds)) return;
-
     const accion = parseApprovalData(ctx.callbackQuery.data);
     if (!accion) {
       await ctx.answerCallbackQuery();
@@ -124,8 +119,9 @@ export function buildBot(deps: BridgeDeps): Bot {
   });
 
   bot.on('message', async (ctx) => {
-    if (!isAllowedUser(ctx.from?.id, deps.allowedUserIds)) return; // silencio, no error
-
+    // Antes habia aca un filtro por TELEGRAM_ALLOWED_USER_IDS. Quien puede
+    // hablarle al bot ahora sale de telegram_vinculos, y lo resuelve el
+    // pipeline: un chat sin vincular recibe una linea y nada mas.
     const voice = ctx.message.voice ?? ctx.message.audio;
     if (!voice && !ctx.message.text) return;
 

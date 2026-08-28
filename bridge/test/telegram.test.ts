@@ -1,26 +1,25 @@
 import { describe, it, expect } from 'vitest';
-import { isAllowedUser, renderOutcome } from '../src/telegram.js';
+import { renderOutcome } from '../src/telegram.js';
 import { buildWebhookServer } from '../src/webhook.js';
 
-describe('isAllowedUser', () => {
-  it('acepta un usuario de la whitelist', () => {
-    expect(isAllowedUser(111, [111, 222])).toBe(true);
-  });
-
-  it('rechaza un usuario que no esta', () => {
-    expect(isAllowedUser(333, [111])).toBe(false);
-  });
-
-  it('rechaza cuando no hay usuario', () => {
-    expect(isAllowedUser(undefined, [111])).toBe(false);
-  });
-
-  it('con whitelist vacia rechaza todo', () => {
-    expect(isAllowedUser(111, [])).toBe(false);
-  });
-});
-
 describe('renderOutcome', () => {
+  it('explica que hay que vincularse, sin decir como por dentro', () => {
+    const texto = renderOutcome({ kind: 'sin_vincular', yaEstaba: false });
+    expect(texto).toContain('/vincular');
+  });
+
+  it('a un chat ya vinculado le dice que ya lo esta', () => {
+    const texto = renderOutcome({ kind: 'sin_vincular', yaEstaba: true });
+    expect(texto).toContain('ya');
+    expect(texto).not.toContain('/vincular');
+  });
+
+  it('muestra el codigo y cuanto dura', () => {
+    const texto = renderOutcome({ kind: 'codigo', codigo: 'ABCD2345', minutos: 10 });
+    expect(texto).toContain('ABCD2345');
+    expect(texto).toContain('10');
+  });
+
   it('muestra la respuesta con el agente que la dio', () => {
     const out = renderOutcome({
       kind: 'answer',

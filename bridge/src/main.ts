@@ -20,7 +20,8 @@ import { LimitePorChat } from './vinculacion.js';
 const Env = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_WEBHOOK_SECRET: z.string().min(16),
-  TELEGRAM_ALLOWED_USER_IDS: z.string().min(1),
+  // TELEGRAM_ALLOWED_USER_IDS se fue: quien puede hablarle al bot sale de
+  // telegram_vinculos.
   GEMINI_API_KEY: z.string().min(1),
   GATEWAY_URL: z.string().url(),
   GATEWAY_TOKEN: z.string().min(1),
@@ -56,7 +57,6 @@ const gatewayDeps = { gatewayUrl: env.GATEWAY_URL, token: env.GATEWAY_TOKEN };
 
 const bot = buildBot({
   botToken: env.TELEGRAM_BOT_TOKEN,
-  allowedUserIds: env.TELEGRAM_ALLOWED_USER_IDS.split(',').map((s) => Number(s.trim())),
   store,
   defaultAgent: env.DEFAULT_AGENT,
   project: env.DEFAULT_PROJECT,
