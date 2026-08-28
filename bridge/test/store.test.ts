@@ -81,6 +81,7 @@ const TODAS_LAS_MIGRACIONES = [
   '003_multiproyecto.sql',
   '004_proyectos.sql',
   '005_agentes.sql',
+  '006_telegram.sql',
 ].map(migracion);
 
 describe.skipIf(!url)('PgStore contra postgres real', () => {
@@ -145,6 +146,50 @@ describe.skipIf(!url)('PgStore contra postgres real', () => {
     await pool.query(`DELETE FROM proyectos WHERE id = $1`, [proyectoId]);
     const { rows: quedan } = await pool.query(`SELECT 1 FROM agentes WHERE slot = 'c7'`);
     expect(quedan).toHaveLength(0);
+  });
+
+  it('un chat de telegram se vincula a un solo usuario', async () => {
+    const pool = store['pool'];
+    const usuario = '33333333-3333-4333-8333-333333333333';
+
+    await pool.query(
+      `INSERT INTO telegram_vinculos (chat_id, usuario_id) VALUES (777, $1)`,
+      [usuario],
+    );
+
+    // El chat es la clave: un segundo vinculo del mismo chat es un conflicto,
+    // no una segunda fila. Si no, un chat podria hablar por dos personas.
+    await expect(
+      pool.query(
+        `INSERT INTO telegram_vinculos (chat_id, usuario_id) VALUES (777, gen_random_uuid())`,
+      ),
+    ).rejects.toThrow(/duplicate key/);
+
+    await pool.query(`DELETE FROM telegram_vinculos WHERE chat_id = 777`);
+  });
+
+  it('un codigo de vinculacion se usa una sola vez', async () => {
+    const pool = store['pool'];
+    await pool.query(
+      `INSERT INTO telegram_codigos (codigo, chat_id, expira_en)
+       VALUES ('ABC12345', 777, now() + interval '10 minutes')`,
+    );
+
+    // Marcarlo usado es una transicion de NULL a no-NULL, y sólo la gana uno:
+    // es la misma idempotencia que ya usan las aprobaciones.
+    const primero = await pool.query(
+      `UPDATE telegram_codigos SET usado_en = now()
+       WHERE codigo = 'ABC12345' AND usado_en IS NULL RETURNING chat_id`,
+    );
+    expect(primero.rowCount).toBe(1);
+
+    const segundo = await pool.query(
+      `UPDATE telegram_codigos SET usado_en = now()
+       WHERE codigo = 'ABC12345' AND usado_en IS NULL RETURNING chat_id`,
+    );
+    expect(segundo.rowCount).toBe(0);
+
+    await pool.query(`DELETE FROM telegram_codigos WHERE codigo = 'ABC12345'`);
   });
 
   afterAll(async () => {
