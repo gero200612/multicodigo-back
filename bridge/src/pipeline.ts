@@ -1,6 +1,7 @@
 import { sanitizeForTelegram, type AgentId, type PromptRequest, type PromptResponse } from '@multicodigo/shared';
 import { parseCommand } from './router.js';
 import type { Store } from './store.js';
+import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
 export interface IncomingMessage {
   chatId: number;
@@ -13,6 +14,8 @@ export interface PipelineDeps {
   store: Store;
   defaultAgent: AgentId;
   project: string;
+  /** Cuantos codigos de vinculacion puede pedir cada chat. */
+  limite: LimitePorChat;
   ask: (req: PromptRequest) => Promise<PromptResponse>;
   transcribe: (bytes: Uint8Array, mimeType: string) => Promise<string>;
   /**
@@ -35,6 +38,9 @@ export type PipelineOutcome =
   | { kind: 'switched'; agent: AgentId }
   | { kind: 'status'; agent: AgentId }
   | { kind: 'project'; project: string }
+  /** El chat no esta atado a ninguna cuenta del panel. */
+  | { kind: 'sin_vincular'; yaEstaba: boolean }
+  | { kind: 'codigo'; codigo: string; minutos: number }
   | { kind: 'ignored' }
   | { kind: 'error'; text: string; jobId: string };
 
@@ -72,6 +78,19 @@ export async function handleIncoming(
   const command = parseCommand(raw);
 
   if (command.kind === 'empty') return { kind: 'ignored' };
+
+  // El vinculo se resuelve ANTES que cualquier otro comando: un chat que no es
+  // de nadie no puede cambiar de agente, ni de proyecto, ni pedir un turno.
+  const usuarioId = await deps.store.usuarioDeChat(input.chatId);
+
+  if (command.kind === 'vincular') {
+    if (usuarioId) return { kind: 'sin_vincular', yaEstaba: true };
+    if (!deps.limite.permite(input.chatId)) return { kind: 'sin_vincular', yaEstaba: false };
+    const codigo = await deps.store.crearCodigoVinculacion(input.chatId, MINUTOS_DE_CODIGO);
+    return { kind: 'codigo', codigo, minutos: MINUTOS_DE_CODIGO };
+  }
+
+  if (!usuarioId) return { kind: 'sin_vincular', yaEstaba: false };
 
   if (command.kind === 'switch') {
     await deps.store.setActiveAgent(input.chatId, command.agent);

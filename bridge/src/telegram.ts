@@ -27,6 +27,12 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return `⚠️ ${outcome.text}`;
     case 'ignored':
       return '';
+    // Texto provisorio: la Task 4 lo reemplaza por el mensaje final con el
+    // link al panel. Esto solo existe para que el pipeline compile.
+    case 'sin_vincular':
+      return outcome.yaEstaba ? 'Ya estas vinculado.' : 'Este chat todavia no esta vinculado.';
+    case 'codigo':
+      return `Tu codigo: ${outcome.codigo} (vale ${outcome.minutos} minutos).`;
   }
 }
 

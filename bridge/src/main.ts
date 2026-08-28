@@ -15,6 +15,7 @@ import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
 import { buildBot } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
+import { LimitePorChat } from './vinculacion.js';
 
 const Env = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
@@ -59,6 +60,7 @@ const bot = buildBot({
   store,
   defaultAgent: env.DEFAULT_AGENT,
   project: env.DEFAULT_PROJECT,
+  limite: new LimitePorChat(),
   ask: (req) => askAgent(req, gatewayDeps),
   transcribe: (bytes, mimeType) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),
