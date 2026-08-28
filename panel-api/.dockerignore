@@ -1,0 +1,4 @@
+# `obj/` guarda rutas absolutas del host en los archivos de assets: copiarlo
+# adentro hace que el restore falle o use rutas de Windows.
+bin
+obj

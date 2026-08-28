@@ -1,9 +1,13 @@
 # El panel, solo la API.
 #
 # Antes esta imagen buildeaba tambien el front de Angular y le copiaba el bundle
-# a wwwroot. Al separar los repos, el front pasa a tener su propia imagen: la de
-# nginx sirve los archivos y hace de proxy hacia esta, de modo que el navegador
-# sigue viendo un solo origen. Aca no queda nada de Angular.
+# a wwwroot. Al separar los repos, el front pasa a tener su propia URL: lo sirve
+# Vercel, que hace de proxy de /api y /config.json hacia aca para que el
+# navegador siga viendo un solo origen. Aca no queda nada de Angular.
+#
+# El contexto de build es ESTE directorio y no la raiz del repo, igual que el
+# bridge. Asi los dos servicios de Render se configuran igual: Root Directory
+# con el nombre del servicio, y nada mas.
 
 # --- 1. el build -----------------------------------------------------------
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
@@ -11,10 +15,10 @@ WORKDIR /src
 
 # El .csproj antes que el codigo: si no cambiaron los paquetes, docker reusa la
 # capa del restore.
-COPY panel-api/*.csproj ./
+COPY *.csproj ./
 RUN dotnet restore
 
-COPY panel-api/ ./
+COPY . ./
 RUN dotnet publish -c Release -o /app/publish --no-restore
 
 # --- 2. la imagen final ----------------------------------------------------
