@@ -37,6 +37,20 @@ describe('parseCommand', () => {
   it('ignora el sufijo @nombre_del_bot en los comandos', () => {
     expect(parseCommand('/c1@mi_bot hola')).toEqual({ kind: 'prompt', agent: 'c1', text: 'hola' });
   });
+
+  it('reconoce /vincular', () => {
+    expect(parseCommand('/vincular')).toEqual({ kind: 'vincular' });
+  });
+
+  it('reconoce /vincular con el sufijo del bot', () => {
+    expect(parseCommand('/vincular@MultiCodigo_bot')).toEqual({ kind: 'vincular' });
+  });
+
+  it('/vincular con texto atras sigue siendo vincular', () => {
+    // El codigo lo genera el bot, no lo trae el usuario: cualquier cosa que
+    // venga atras es ruido y no un argumento.
+    expect(parseCommand('/vincular ABC123')).toEqual({ kind: 'vincular' });
+  });
 });
 
 describe('parseCommand — proyecto', () => {

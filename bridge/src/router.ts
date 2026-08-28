@@ -6,6 +6,8 @@ export type ParsedCommand =
   /** Con `project` cambia el proyecto activo; sin el, pregunta cual es. */
   | { kind: 'project'; project: string | undefined }
   | { kind: 'status' }
+  /** Pide un codigo para atar este chat a una cuenta del panel. */
+  | { kind: 'vincular' }
   | { kind: 'empty' };
 
 /**
@@ -30,6 +32,10 @@ export function parseCommand(raw: string): ParsedCommand {
   const rest = (match[2] ?? '').trim();
 
   if (command === 'status') return { kind: 'status' };
+
+  // Sin argumentos: el codigo lo genera el bot, no lo trae el usuario. Lo que
+  // venga atras es ruido.
+  if (command === 'vincular') return { kind: 'vincular' };
 
   if (command === 'proyecto' || command === 'p') {
     if (rest === '') return { kind: 'project', project: undefined };
