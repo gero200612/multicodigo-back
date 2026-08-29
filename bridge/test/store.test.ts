@@ -174,6 +174,7 @@ const TODAS_LAS_MIGRACIONES = [
   '009_agentes_insert.sql',
   '010_realtime.sql',
   '011_proyectos_rpc.sql',
+  '012_aprobaciones.sql',
 ].map(migracion);
 
 describe.skipIf(!url)('PgStore contra postgres real', () => {
@@ -326,6 +327,37 @@ describe.skipIf(!url)('PgStore contra postgres real', () => {
     expect(await store.deleteSessions('c1')).toBe(1);
     expect(await store.getSession(999, 'c1', 'demo')).toBeUndefined();
     expect(await store.getSession(999, 'c2', 'demo')).toBe('s-c2-demo');
+  });
+
+  // Las columnas nuevas de la 012. El CHECK importa: `decidido_desde` decide
+  // que se le muestra al usuario ("lo decidiste desde el panel"), y un valor
+  // que nadie espera no se ve hasta que alguien mira la pantalla.
+  it('la aprobacion guarda quien decidio y desde donde', async () => {
+    const pool = store['pool'];
+    const id = '55555555-5555-4555-8555-555555555555';
+    await pool.query(
+      `INSERT INTO approvals (approval_id, job_id, chat_id, message_id, agent, tool, summary)
+       VALUES ($1, $1, 999, 1, 'c1', 'Write', 'escribo a.ts')`,
+      [id],
+    );
+
+    await pool.query(
+      `UPDATE approvals SET decision='allow', decidido_por=gen_random_uuid(),
+              decidido_desde='panel', decided_at=now() WHERE approval_id=$1`,
+      [id],
+    );
+
+    const { rows } = await pool.query<{ decidido_desde: string }>(
+      `SELECT decidido_desde FROM approvals WHERE approval_id=$1`,
+      [id],
+    );
+    expect(rows[0]!.decidido_desde).toBe('panel');
+
+    await expect(
+      pool.query(`UPDATE approvals SET decidido_desde='fax' WHERE approval_id=$1`, [id]),
+    ).rejects.toThrow(/approvals_desde_valido/);
+
+    await pool.query(`DELETE FROM approvals WHERE approval_id=$1`, [id]);
   });
 
   afterAll(async () => {
