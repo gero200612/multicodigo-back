@@ -424,9 +424,22 @@ export class PgStore implements Store {
 
   async createJob(job: NewJob) {
     const id = randomUUID();
+    // `proyecto_id` sale del NOMBRE, con un subselect y no con una consulta
+    // aparte: es una sola ida a la base y no hay ventana entre las dos.
+    //
+    // Sin esto la columna queda NULL, y con ella queda afuera todo lo que
+    // filtra por proyecto: la policy de RLS de jobs, el filtro de Realtime del
+    // panel en vivo y la aprobacion, que hereda el proyecto de su job. El panel
+    // no mostraria nada y no habria ningun error que lo explique.
+    //
+    // Queda NULL igual si el proyecto no esta en la tabla —los que vienen de
+    // config/projects.json y todavia no se crearon desde el panel—: el turno
+    // tiene que correr igual, que es lo que el sistema hacia antes de que
+    // existieran los proyectos.
     await this.pool.query(
-      `INSERT INTO jobs (id, chat_id, agent, project, prompt, status, message_id)
-       VALUES ($1, $2, $3, $4, $5, 'running', $6)`,
+      `INSERT INTO jobs (id, chat_id, agent, project, prompt, status, message_id, proyecto_id)
+       VALUES ($1, $2, $3, $4, $5, 'running', $6,
+               (SELECT id FROM proyectos WHERE nombre = $4))`,
       [id, job.chatId, job.agent, job.project, job.prompt, job.messageId],
     );
     return id;
@@ -494,9 +507,12 @@ export class PgStore implements Store {
   }
 
   async recordApproval(rec: ApprovalRecord) {
+    // El proyecto se hereda del job. Duplicarlo aca es a proposito: la policy
+    // de RLS lo consulta en cada fila, y llegar al proyecto por el join con
+    // jobs haria que cada lectura de aprobaciones arrastre esa tabla.
     const r = await this.pool.query(
-      `INSERT INTO approvals (approval_id, job_id, chat_id, message_id, agent, tool, summary)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO approvals (approval_id, job_id, chat_id, message_id, agent, tool, summary, proyecto_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT proyecto_id FROM jobs WHERE id = $2))
        ON CONFLICT (approval_id) DO NOTHING`,
       [rec.approvalId, rec.jobId, rec.chatId, rec.messageId, rec.agent, rec.tool, rec.summary],
     );

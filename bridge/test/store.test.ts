@@ -329,6 +329,73 @@ describe.skipIf(!url)('PgStore contra postgres real', () => {
     expect(await store.getSession(999, 'c2', 'demo')).toBe('s-c2-demo');
   });
 
+  // Sin proyecto_id lleno, todo lo que filtra por proyecto queda afuera: la
+  // policy de RLS, el filtro de Realtime del panel en vivo y la aprobacion, que
+  // lo hereda del job. Y no hay ningun error que lo explique.
+  it('el job y su aprobacion heredan el proyecto', async () => {
+    const pool = store['pool'];
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO proyectos (nombre) VALUES ('plan7-demo') RETURNING id`,
+    );
+    const proyectoId = rows[0]!.id;
+
+    const jobId = await store.createJob({
+      chatId: 999,
+      agent: 'c1',
+      project: 'plan7-demo',
+      prompt: 'hola',
+      messageId: 1,
+    });
+
+    const job = await pool.query<{ proyecto_id: string }>(
+      'SELECT proyecto_id FROM jobs WHERE id = $1',
+      [jobId],
+    );
+    expect(job.rows[0]!.proyecto_id).toBe(proyectoId);
+
+    const aprobacion = '66666666-6666-4666-8666-666666666666';
+    await store.recordApproval({
+      approvalId: aprobacion,
+      jobId,
+      chatId: 999,
+      messageId: 1,
+      agent: 'c1',
+      tool: 'Write',
+      summary: 'escribo a.ts',
+    });
+
+    const ap = await pool.query<{ proyecto_id: string }>(
+      'SELECT proyecto_id FROM approvals WHERE approval_id = $1',
+      [aprobacion],
+    );
+    expect(ap.rows[0]!.proyecto_id).toBe(proyectoId);
+
+    await pool.query('DELETE FROM approvals WHERE approval_id = $1', [aprobacion]);
+    await pool.query('DELETE FROM jobs WHERE id = $1', [jobId]);
+    await pool.query('DELETE FROM proyectos WHERE id = $1', [proyectoId]);
+  });
+
+  // Un proyecto que no esta en la tabla —los de config/projects.json, que
+  // todavia no se crearon desde el panel— no puede impedir que el turno corra.
+  it('un proyecto que no existe deja el job sin proyecto, pero lo crea', async () => {
+    const pool = store['pool'];
+    const jobId = await store.createJob({
+      chatId: 999,
+      agent: 'c1',
+      project: 'no-existe-este',
+      prompt: 'hola',
+      messageId: 1,
+    });
+
+    const { rows } = await pool.query<{ proyecto_id: string | null }>(
+      'SELECT proyecto_id FROM jobs WHERE id = $1',
+      [jobId],
+    );
+    expect(rows[0]!.proyecto_id).toBeNull();
+
+    await pool.query('DELETE FROM jobs WHERE id = $1', [jobId]);
+  });
+
   // Las columnas nuevas de la 012. El CHECK importa: `decidido_desde` decide
   // que se le muestra al usuario ("lo decidiste desde el panel"), y un valor
   // que nadie espera no se ve hasta que alguien mira la pantalla.
