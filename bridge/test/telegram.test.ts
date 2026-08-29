@@ -14,6 +14,31 @@ describe('renderOutcome', () => {
     expect(texto).not.toContain('/vincular');
   });
 
+  it('renderiza el menu de proyectos', () => {
+    const texto = renderOutcome({ kind: 'menu_proyectos', botones: [] });
+    expect(texto.toLowerCase()).toContain('proyecto');
+  });
+
+  it('el menu de agentes dice de que proyecto son, y que significa cada marca', () => {
+    const texto = renderOutcome({ kind: 'menu_agentes', proyecto: 'demo', botones: [] });
+    expect(texto).toContain('demo');
+    // La leyenda importa: tres simbolos sin referencia no se entienden.
+    expect(texto).toContain('●');
+    expect(texto).toContain('○');
+    expect(texto).toContain('⚠');
+  });
+
+  it('sin proyectos explica que hacer', () => {
+    const texto = renderOutcome({ kind: 'sin_proyectos' });
+    expect(texto.toLowerCase()).toContain('panel');
+  });
+
+  it('al elegir agente confirma con quien hablas', () => {
+    const texto = renderOutcome({ kind: 'elegido', agente: 'c3', nombre: 'Backend', proyecto: 'demo' });
+    expect(texto).toContain('Backend');
+    expect(texto).toContain('demo');
+  });
+
   it('muestra el codigo y cuanto dura', () => {
     const texto = renderOutcome({ kind: 'codigo', codigo: 'ABCD2345', minutos: 10 });
     expect(texto).toContain('ABCD2345');

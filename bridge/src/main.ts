@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
 import { PgStore } from './store.js';
-import { askAgent } from './agents-client.js';
+import { askAgent, listarAgentes } from './agents-client.js';
 import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
 import { buildBot } from './telegram.js';
@@ -63,6 +63,7 @@ const bot = buildBot({
   project: env.DEFAULT_PROJECT,
   limite: new LimitePorChat(),
   ask: (req) => askAgent(req, gatewayDeps),
+  listarAgentes: () => listarAgentes(gatewayDeps),
   transcribe: (bytes, mimeType) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),
   fetchPending: (agent) => fetchPending(agent, gatewayDeps),

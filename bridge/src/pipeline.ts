@@ -1,6 +1,8 @@
 import { sanitizeForTelegram, type AgentId, type PromptRequest, type PromptResponse } from '@multicodigo/shared';
 import { parseCommand } from './router.js';
-import type { Store } from './store.js';
+import { tecladoDeProyectos, tecladoDeAgentes } from './menu.js';
+import type { Boton } from './render.js';
+import type { Store, Proyecto } from './store.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
 export interface IncomingMessage {
@@ -18,6 +20,15 @@ export interface PipelineDeps {
   limite: LimitePorChat;
   ask: (req: PromptRequest) => Promise<PromptResponse>;
   transcribe: (bytes: Uint8Array, mimeType: string) => Promise<string>;
+  /**
+   * El estado de los agentes, del gateway.
+   *
+   * Se le pasa el proyecto porque el gateway lista todos los slots de la
+   * maquina, no solo los de un proyecto.
+   */
+  listarAgentes: (
+    proyecto: string,
+  ) => Promise<{ id: AgentId; arriba: boolean; cuenta: boolean }[]>;
   /**
    * Arranca el poller de aprobaciones de este job y devuelve como pararlo.
    *
@@ -41,6 +52,11 @@ export type PipelineOutcome =
   /** El chat no esta atado a ninguna cuenta del panel. */
   | { kind: 'sin_vincular'; yaEstaba: boolean }
   | { kind: 'codigo'; codigo: string; minutos: number }
+  | { kind: 'menu_proyectos'; botones: Boton[][] }
+  | { kind: 'menu_agentes'; proyecto: string; botones: Boton[][] }
+  /** Vinculado, pero sin pertenecer a ningun proyecto todavia. */
+  | { kind: 'sin_proyectos' }
+  | { kind: 'elegido'; agente: AgentId; nombre: string; proyecto: string }
   | { kind: 'ignored' }
   | { kind: 'error'; text: string; jobId: string };
 
@@ -91,6 +107,10 @@ export async function handleIncoming(
   }
 
   if (!usuarioId) return { kind: 'sin_vincular', yaEstaba: false };
+
+  if (command.kind === 'menu') {
+    return await armarMenu(usuarioId, input.chatId, deps);
+  }
 
   if (command.kind === 'switch') {
     await deps.store.setActiveAgent(input.chatId, command.agent);
@@ -153,4 +173,65 @@ export async function handleIncoming(
     // queda un setInterval vivo por cada mensaje que fallo.
     stopWatching();
   }
+}
+
+/**
+ * El primer paso del menu.
+ *
+ * Con un solo proyecto se saltea la eleccion: preguntar entre una opcion es un
+ * toque de mas que no decide nada.
+ */
+async function armarMenu(
+  usuarioId: string,
+  chatId: number,
+  deps: PipelineDeps,
+): Promise<PipelineOutcome> {
+  const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
+  if (proyectos.length === 0) return { kind: 'sin_proyectos' };
+
+  if (proyectos.length > 1) {
+    return { kind: 'menu_proyectos', botones: tecladoDeProyectos(proyectos) };
+  }
+
+  const unico = proyectos[0]!;
+  await deps.store.setActiveProject(chatId, unico.nombre);
+  return await armarMenuDeAgentes(unico, deps);
+}
+
+export async function armarMenuDeAgentes(
+  proyecto: Proyecto,
+  deps: Pick<PipelineDeps, 'store' | 'listarAgentes'>,
+): Promise<PipelineOutcome> {
+  const registrados = await deps.store.agentesDeProyecto(proyecto.id);
+
+  // Un gateway caido no puede dejarte sin ver que agentes tenes. Se muestran
+  // todos apagados, que es lo peor que puede ser cierto.
+  let estados: { id: AgentId; arriba: boolean; cuenta: boolean }[] = [];
+  try {
+    estados = await deps.listarAgentes(proyecto.nombre);
+  } catch {
+    estados = [];
+  }
+
+  const porSlot = new Map(estados.map((e) => [e.id, e]));
+  const conEstado = registrados.map((a) => {
+    const estado = porSlot.get(a.slot);
+    return {
+      ...a,
+      arriba: estado?.arriba ?? false,
+      // Quien sabe si el slot tiene cuenta es el gateway: el marcador lo
+      // escribe el servicio de login, en la VM. La columna `cuenta` de la tabla
+      // es el respaldo para cuando el gateway no contesta, y hoy nadie la
+      // llena, asi que sin gateway el menu muestra todo como "sin cuenta". Es
+      // el lado correcto para equivocarse: un boton que no anda es peor que uno
+      // que avisa.
+      tieneCuenta: estado?.cuenta ?? Boolean(a.cuenta),
+    };
+  });
+
+  return {
+    kind: 'menu_agentes',
+    proyecto: proyecto.nombre,
+    botones: tecladoDeAgentes(conEstado),
+  };
 }

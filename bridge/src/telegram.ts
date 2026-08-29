@@ -1,7 +1,9 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import type { AgentId, ApprovalDecision, ApprovalRequest } from '@multicodigo/shared';
 import type { PipelineDeps, PipelineOutcome } from './pipeline.js';
-import { handleIncoming } from './pipeline.js';
+import { handleIncoming, armarMenuDeAgentes } from './pipeline.js';
+import { parseMenuData } from './menu.js';
+import type { Boton } from './render.js';
 import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
 import type { Store } from './store.js';
@@ -31,7 +33,46 @@ export function renderOutcome(outcome: PipelineOutcome): string {
         `Tu codigo es:\n\n<code>${outcome.codigo}</code>\n\n` +
         `Pegalo en el panel, en Configuracion. Vence en ${outcome.minutos} minutos.`
       );
+    case 'menu_proyectos':
+      return 'Elegi un proyecto:';
+    case 'menu_agentes':
+      return `Agentes de <b>${outcome.proyecto}</b>:\n\n● listo · ○ apagado · ⚠ sin cuenta`;
+    case 'sin_proyectos':
+      return 'Todavia no pertenecés a ningun proyecto. Creá uno desde el panel y volvé.';
+    case 'elegido':
+      return (
+        `Listo, hablás con <b>${outcome.nombre}</b> en <i>${outcome.proyecto}</i>.\n\n` +
+        'Escribime lo que querés que haga.'
+      );
   }
+}
+
+/**
+ * Que outcomes van con parse_mode HTML.
+ *
+ * Lista explicita y no "todos": la respuesta de un agente es texto arbitrario y
+ * mandarla como HTML haria que un `<` suelto rompa el mensaje entero.
+ */
+function usaHtml(outcome: PipelineOutcome): boolean {
+  return (
+    outcome.kind === 'codigo' || outcome.kind === 'menu_agentes' || outcome.kind === 'elegido'
+  );
+}
+
+/** El teclado de un outcome de menu, si lo tiene. */
+function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
+  const botones: Boton[][] | undefined =
+    outcome.kind === 'menu_proyectos' || outcome.kind === 'menu_agentes'
+      ? outcome.botones
+      : undefined;
+  if (!botones || botones.length === 0) return undefined;
+
+  const teclado = new InlineKeyboard();
+  for (const fila of botones) {
+    for (const b of fila) teclado.text(b.label, b.data);
+    teclado.row();
+  }
+  return teclado;
 }
 
 export interface DecidirDeps {
@@ -102,7 +143,14 @@ export function buildBot(deps: BridgeDeps): Bot {
   bot.on('callback_query:data', async (ctx) => {
     const accion = parseApprovalData(ctx.callbackQuery.data);
     if (!accion) {
+      // No es una aprobacion: puede ser el menu. Un dato que tampoco es del
+      // menu —un boton viejo de antes de un deploy, o el inerte de un agente
+      // sin cuenta— se contesta y se ignora.
+      const menu = parseMenuData(ctx.callbackQuery.data);
+      // answerCallbackQuery primero: sin eso Telegram deja el boton
+      // "cargando" hasta que se conteste, y armar el menu siguiente tarda.
       await ctx.answerCallbackQuery();
+      if (menu) await manejarMenu(ctx, menu, deps);
       return;
     }
 
@@ -218,7 +266,12 @@ export function buildBot(deps: BridgeDeps): Bot {
 
       const text = renderOutcome(outcome);
       if (text === '') return;
-      await ctx.api.editMessageText(ctx.chat.id, placeholder.message_id, text);
+      const teclado = tecladoDe(outcome);
+      await ctx.api.editMessageText(ctx.chat.id, placeholder.message_id, text, {
+        // Solo donde hace falta: ver `usaHtml`.
+        ...(usaHtml(outcome) ? { parse_mode: 'HTML' as const } : {}),
+        ...(teclado ? { reply_markup: teclado } : {}),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await ctx.api.editMessageText(
@@ -230,4 +283,57 @@ export function buildBot(deps: BridgeDeps): Bot {
   });
 
   return bot;
+}
+
+/**
+ * Un toque del menu.
+ *
+ * La membresia se verifica aunque el boton haya salido de este mismo bot: el
+ * callback_data vuelve del cliente y no hay nada que garantice que sea el que
+ * mandamos.
+ */
+async function manejarMenu(
+  ctx: {
+    chat?: { id: number };
+    reply: (
+      texto: string,
+      opciones?: { parse_mode?: 'HTML'; reply_markup?: InlineKeyboard },
+    ) => Promise<unknown>;
+  },
+  menu: { kind: 'proyecto'; id: string } | { kind: 'agente'; slot: AgentId },
+  deps: BridgeDeps,
+): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (chatId === undefined) return;
+
+  const usuarioId = await deps.store.usuarioDeChat(chatId);
+  if (!usuarioId) return;
+
+  if (menu.kind === 'proyecto') {
+    const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
+    const elegido = proyectos.find((p) => p.id === menu.id);
+    if (!elegido) return;
+
+    await deps.store.setActiveProject(chatId, elegido.nombre);
+    const out = await armarMenuDeAgentes(elegido, deps);
+    await ctx.reply(renderOutcome(out), {
+      parse_mode: 'HTML',
+      reply_markup: tecladoDe(out),
+    });
+    return;
+  }
+
+  await deps.store.setActiveAgent(chatId, menu.slot);
+  const proyecto = (await deps.store.getActiveProject(chatId)) ?? deps.project;
+
+  // El nombre que le puso la persona, si tiene: el slot esta anotado con
+  // nombre en su proyecto y en ningun otro lado.
+  const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
+  const p = proyectos.find((x) => x.nombre === proyecto);
+  const registrados = p ? await deps.store.agentesDeProyecto(p.id) : [];
+  const nombre = registrados.find((a) => a.slot === menu.slot)?.nombre ?? menu.slot.toUpperCase();
+
+  await ctx.reply(renderOutcome({ kind: 'elegido', agente: menu.slot, nombre, proyecto }), {
+    parse_mode: 'HTML',
+  });
 }

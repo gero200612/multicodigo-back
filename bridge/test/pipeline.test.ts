@@ -18,6 +18,8 @@ function deps(overrides: Partial<PipelineDeps> = {}): MockPipelineDeps {
       turns: 2,
     })),
     transcribe: vi.fn(async () => 'que hace el stock'),
+    // Sin agentes por defecto: los tests del menu lo pisan con lo que necesitan.
+    listarAgentes: async () => [],
   };
   return { ...base, ...overrides } as MockPipelineDeps;
 }
@@ -382,5 +384,121 @@ describe('vinculacion en el pipeline', () => {
       deps({ store }),
     );
     expect(out.kind).toBe('answer');
+  });
+});
+
+describe('el menu', () => {
+  const USUARIO = USUARIO_DE_PRUEBA;
+
+  async function storeVinculado(chatId: number): Promise<InMemoryStore> {
+    const store = new InMemoryStore();
+    await vincular(store, chatId);
+    return store;
+  }
+
+  it('un usuario sin proyectos lo sabe', async () => {
+    const d = deps({ store: await storeVinculado(700) });
+    const out = await handleIncoming({ chatId: 700, messageId: 1, text: '/menu' }, d);
+    expect(out).toEqual({ kind: 'sin_proyectos' });
+  });
+
+  // Preguntar entre una opcion es un toque de mas que no decide nada.
+  it('con un solo proyecto saltea el paso y muestra los agentes', async () => {
+    const store = await storeVinculado(700);
+    const p = await store.crearProyecto('demo', USUARIO);
+    await store.registrarAgente(p, 'c1', 'Backend');
+
+    const out = await handleIncoming(
+      { chatId: 700, messageId: 1, text: '/menu' },
+      deps({ store, listarAgentes: async () => [{ id: 'c1' as const, arriba: true, cuenta: true }] }),
+    );
+
+    expect(out.kind).toBe('menu_agentes');
+    if (out.kind === 'menu_agentes') {
+      expect(out.proyecto).toBe('demo');
+      expect(out.botones[0]![0]!.label).toContain('Backend');
+    }
+    // Y queda elegido: el proximo mensaje va a ese proyecto sin repetir el paso.
+    expect(await store.getActiveProject(700)).toBe('demo');
+  });
+
+  it('con dos proyectos pregunta cual', async () => {
+    const store = await storeVinculado(700);
+    await store.crearProyecto('demo', USUARIO);
+    await store.crearProyecto('otro', USUARIO);
+
+    const out = await handleIncoming({ chatId: 700, messageId: 1, text: '/menu' }, deps({ store }));
+
+    expect(out.kind).toBe('menu_proyectos');
+    if (out.kind === 'menu_proyectos') expect(out.botones).toHaveLength(2);
+  });
+
+  it('el estado de cada agente sale del gateway', async () => {
+    const store = await storeVinculado(700);
+    const p = await store.crearProyecto('demo', USUARIO);
+    await store.registrarAgente(p, 'c1', 'Arriba');
+    await store.registrarAgente(p, 'c2', 'Abajo');
+
+    const out = await handleIncoming(
+      { chatId: 700, messageId: 1, text: '/menu' },
+      deps({
+        store,
+        listarAgentes: async () => [
+          { id: 'c1' as const, arriba: true, cuenta: true },
+          { id: 'c2' as const, arriba: false, cuenta: true },
+        ],
+      }),
+    );
+
+    if (out.kind === 'menu_agentes') {
+      expect(out.botones[0]![0]!.label).toBe('● Arriba');
+      expect(out.botones[1]![0]!.label).toBe('○ Abajo');
+    }
+  });
+
+  // Quien sabe si un slot tiene cuenta es el gateway, no la tabla.
+  it('el agente sin cuenta se marca y no se puede elegir', async () => {
+    const store = await storeVinculado(700);
+    const p = await store.crearProyecto('demo', USUARIO);
+    await store.registrarAgente(p, 'c1', 'Nuevo');
+
+    const out = await handleIncoming(
+      { chatId: 700, messageId: 1, text: '/menu' },
+      deps({
+        store,
+        listarAgentes: async () => [{ id: 'c1' as const, arriba: false, cuenta: false }],
+      }),
+    );
+
+    if (out.kind === 'menu_agentes') {
+      expect(out.botones[0]![0]!.label).toBe('⚠ Nuevo');
+      expect(out.botones[0]![0]!.data).toBe('x:');
+    }
+  });
+
+  it('si el gateway no contesta, el menu igual aparece', async () => {
+    // Un gateway caido no puede dejarte sin poder ver que agentes tenes: se
+    // muestran todos apagados, que es lo peor que puede ser cierto.
+    const store = await storeVinculado(700);
+    const p = await store.crearProyecto('demo', USUARIO);
+    await store.registrarAgente(p, 'c1', 'Backend');
+
+    const out = await handleIncoming(
+      { chatId: 700, messageId: 1, text: '/menu' },
+      deps({
+        store,
+        listarAgentes: async () => {
+          throw new Error('agent_unavailable');
+        },
+      }),
+    );
+
+    expect(out.kind).toBe('menu_agentes');
+    if (out.kind === 'menu_agentes') expect(out.botones[0]![0]!.label).toBe('⚠ Backend');
+  });
+
+  it('un chat sin vincular no ve ningun menu', async () => {
+    const out = await handleIncoming({ chatId: 701, messageId: 1, text: '/menu' }, deps());
+    expect(out.kind).toBe('sin_vincular');
   });
 });
