@@ -83,3 +83,7 @@ public sealed record CuerpoProyecto(
 public sealed record CuerpoInvitacion(
     [property: JsonPropertyName("email")] string? Email,
     [property: JsonPropertyName("rol")] string? Rol);
+
+public sealed record CuerpoDecision(
+    [property: JsonPropertyName("decision")] string? Decision,
+    [property: JsonPropertyName("feedback")] string? Feedback);

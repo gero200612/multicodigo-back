@@ -594,4 +594,64 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
         Assert.Contains("un-token", f.Proyectos.Aceptados);
     }
+
+    // --- aprobaciones ---
+
+    private const string AprobacionDePrueba = "44444444-4444-4444-8444-444444444444";
+
+    /// <summary>
+    /// Igual que en la vinculación: el usuario sale del token, no del cuerpo.
+    /// Confiar en lo que manda el navegador sería dejar que cualquiera firme la
+    /// decisión de otro.
+    /// </summary>
+    [Fact]
+    public async Task Decidir_manda_el_sub_del_jwt()
+    {
+        await Cliente().PostAsJsonAsync(
+            $"/api/aprobaciones/{AprobacionDePrueba}/decision",
+            new { decision = "allow", usuarioId = "00000000-0000-4000-8000-00000000dead" });
+
+        var ultima = f.Bridge.Decisiones[^1];
+        Assert.Equal(AuthDePrueba.Usuario, ultima.UsuarioId);
+        Assert.Equal("allow", ultima.Decision);
+        f.Bridge.Decisiones.Clear();
+    }
+
+    /// <summary>
+    /// 409 y no 500: alguien la decidió desde Telegram mientras la pantalla
+    /// estaba abierta. Es normal, y el panel lo muestra distinto.
+    /// </summary>
+    [Fact]
+    public async Task Decidir_algo_ya_decidido_devuelve_409()
+    {
+        f.Bridge.YaDecidida = true;
+        try
+        {
+            var r = await Cliente().PostAsJsonAsync(
+                $"/api/aprobaciones/{AprobacionDePrueba}/decision", new { decision = "allow" });
+            Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
+        }
+        finally
+        {
+            f.Bridge.YaDecidida = false;
+        }
+    }
+
+    [Fact]
+    public async Task Decidir_con_algo_que_no_es_allow_ni_deny_da_400()
+    {
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/aprobaciones/{AprobacionDePrueba}/decision", new { decision = "quizas" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.Empty(f.Bridge.Decisiones);
+    }
+
+    [Fact]
+    public async Task Decidir_sin_sesion_da_401()
+    {
+        var r = await Cliente(conSesion: false).PostAsJsonAsync(
+            $"/api/aprobaciones/{AprobacionDePrueba}/decision", new { decision = "allow" });
+        Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
 }

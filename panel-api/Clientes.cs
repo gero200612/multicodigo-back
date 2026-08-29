@@ -66,6 +66,13 @@ public interface IBridgeClient
     /// usado o desconocido).
     /// </summary>
     Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default);
+    /// <summary>
+    /// Decide una aprobacion. Tira UpstreamException("ya_decidida") si alguien
+    /// se adelanto.
+    /// </summary>
+    Task DecidirAsync(
+        string aprobacionId, string decision, string? feedback, string usuarioId,
+        CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -253,6 +260,30 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
             ? []
             : [.. r.Jobs.Select(j => new JobResumen(
                 j.Id, j.Agent, j.Project, j.Prompt, j.Status, j.CreatedAt, j.Error))];
+    }
+
+    /// <summary>
+    /// Le pide al bridge que decida una aprobacion.
+    ///
+    /// Va al bridge y NO al gateway: si el panel decidiera contra el gateway,
+    /// el bridge no se enteraria y el mensaje de Telegram quedaria con los
+    /// botones vivos sobre algo ya decidido.
+    /// </summary>
+    public async Task DecidirAsync(
+        string aprobacionId, string decision, string? feedback, string usuarioId,
+        CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync(
+            $"/aprobaciones/{aprobacionId}/decision",
+            new { decision = new { decision, feedback }, usuarioId },
+            Json.Opciones,
+            ct);
+
+        // 409 no es una falla: alguien la decidio desde Telegram mientras la
+        // pantalla estaba abierta. El panel lo muestra distinto.
+        if (res.StatusCode == HttpStatusCode.Conflict) throw new UpstreamException("ya_decidida");
+        if (res.StatusCode == HttpStatusCode.NotFound) throw new UpstreamException("desconocida");
+        if (!res.IsSuccessStatusCode) throw new UpstreamException("decision_fallo");
     }
 
     public async Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default)

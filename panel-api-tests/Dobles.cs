@@ -160,6 +160,20 @@ public sealed class BridgeFalso : IBridgeClient
     /// <summary>El codigo vencido, usado o desconocido: el bridge contesta 400.</summary>
     public bool CodigoNoSirve { get; set; }
 
+    public List<(string Id, string Decision, string? Feedback, string UsuarioId)> Decisiones { get; } = [];
+    /// <summary>Alguien la decidio desde Telegram mientras la pantalla estaba abierta.</summary>
+    public bool YaDecidida { get; set; }
+
+    public Task DecidirAsync(
+        string aprobacionId, string decision, string? feedback, string usuarioId,
+        CancellationToken ct = default)
+    {
+        if (YaDecidida) throw new UpstreamException("ya_decidida");
+        if (Falla) throw new HttpRequestException("bridge caído");
+        Decisiones.Add((aprobacionId, decision, feedback, usuarioId));
+        return Task.CompletedTask;
+    }
+
     public Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default)
     {
         if (Falla) throw new HttpRequestException("bridge caído");

@@ -496,6 +496,47 @@ api.MapPost("/proyectos/{proyectoId}/agentes", async (
     }
 });
 
+// --- aprobaciones ---------------------------------------------------------
+
+api.MapPost("/aprobaciones/{id}/decision", async (
+    string id,
+    CuerpoDecision cuerpo,
+    HttpContext ctx,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    if (cuerpo.Decision is not ("allow" or "deny"))
+    {
+        return Results.BadRequest(new { code = "decision_invalida", message = "allow o deny" });
+    }
+
+    // El usuarioId sale del JWT, igual que en la vinculacion: confiar en lo que
+    // el navegador manda seria dejar que cualquiera firme la decision de otro.
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+
+    try
+    {
+        await bridge.DecidirAsync(id, cuerpo.Decision, cuerpo.Feedback, usuarioId, ct);
+        return Results.Ok(new { estado = "ok" });
+    }
+    catch (UpstreamException ex) when (ex.Message == "ya_decidida")
+    {
+        return Results.Conflict(new { code = "ya_decidida", message = "alguien la decidió antes" });
+    }
+    catch (UpstreamException ex) when (ex.Message == "desconocida")
+    {
+        return Results.NotFound(new { code = "desconocida", message = "esa aprobación no existe" });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        app.Logger.LogError(ex, "no se pudo decidir la aprobacion {Id}", id);
+        return Results.Json(
+            new { code = "decision_fallo", message = "no se pudo registrar la decisión" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
 // --- vinculacion de telegram ----------------------------------------------
 
 api.MapPost("/telegram/vincular", async (
