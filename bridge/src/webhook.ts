@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Bot } from 'grammy';
-import { AgentId, isTokenValid } from '@multicodigo/shared';
+import { AgentId, ApprovalDecision, isTokenValid } from '@multicodigo/shared';
+import { decidir, type DecidirDeps } from './decisiones.js';
 import { z } from 'zod';
 import type { Store } from './store.js';
 
@@ -16,6 +17,14 @@ const JOBS_POR_DEFECTO = 20;
  */
 export interface ApiDeps {
   store: Pick<Store, 'recentJobs' | 'canjearCodigo' | 'usuarioDeChat' | 'deleteSessions'>;
+  /**
+   * Como decidir una aprobacion desde afuera de Telegram.
+   *
+   * Es el MISMO camino que usan los botones del chat: el panel no escribe la
+   * tabla por su cuenta, porque decidir tambien significa avisarle al gateway y
+   * editar el mensaje del chat.
+   */
+  decisiones?: DecidirDeps;
   /**
    * Credencial propia, distinta del secret del webhook.
    *
@@ -97,6 +106,46 @@ export function buildWebhookServer(
       } as const;
       return reply.code(400).send({ code: codigos[r], message: 'el codigo no sirve' });
     });
+
+    if (api.decisiones) {
+      const decisiones = api.decisiones;
+
+      const CuerpoDecision = z.object({
+        // Del contrato compartido: el conjunto de decisiones no lo define este
+        // archivo.
+        decision: ApprovalDecision,
+        usuarioId: z.string().uuid(),
+      });
+
+      app.post<{ Params: { id: string } }>('/aprobaciones/:id/decision', async (request, reply) => {
+        if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+          return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+        }
+
+        const cuerpo = CuerpoDecision.safeParse(request.body);
+        if (!cuerpo.success) {
+          return reply
+            .code(400)
+            .send({ code: 'cuerpo_invalido', message: 'decision o usuario invalidos' });
+        }
+
+        const r = await decidir(decisiones, {
+          approvalId: request.params.id,
+          decision: cuerpo.data.decision,
+          usuarioId: cuerpo.data.usuarioId,
+          desde: 'panel',
+        });
+
+        if (r === 'ok') return reply.send({ estado: 'ok' });
+        if (r === 'ya_decidida') {
+          // 409 y no 400: el pedido estaba bien, el estado del mundo cambio.
+          return reply
+            .code(409)
+            .send({ code: 'ya_decidida', message: 'esa aprobacion ya se decidio' });
+        }
+        return reply.code(404).send({ code: 'desconocida', message: 'no existe esa aprobacion' });
+      });
+    }
 
     /**
      * Invalida las sesiones de un slot.

@@ -79,5 +79,15 @@ await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start(
 export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   store,
   apiToken: env.BRIDGE_API_TOKEN,
+  // El MISMO camino que usan los botones del chat. El panel no escribe la
+  // tabla por su cuenta: decidir tambien es avisarle al gateway y editar el
+  // mensaje de Telegram, y el bot es el unico que puede hacer lo ultimo.
+  decisiones: {
+    store,
+    send: (agent, approvalId, decision) =>
+      sendDecision(agent, approvalId, decision, gatewayDeps),
+    editarMensaje: (chatId, messageId, texto) =>
+      bot.api.editMessageText(chatId, messageId, texto).then(() => undefined),
+  },
 });
 await app.listen({ port: env.PORT, host: '0.0.0.0' });

@@ -199,3 +199,106 @@ describe('el webhook sigue andando', () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+describe('POST /aprobaciones/:id/decision', () => {
+  const REC = {
+    approvalId: '11111111-1111-4111-8111-111111111111',
+    jobId: '22222222-2222-4222-8222-222222222222',
+    chatId: 5,
+    messageId: 9,
+    agent: 'c1' as const,
+    tool: 'Write',
+    summary: 'escribo a.ts',
+  };
+  const USUARIO = '99999999-9999-4999-8999-999999999999';
+
+  async function conAprobacion() {
+    const store = new InMemoryStore();
+    await store.recordApproval(REC);
+    const mandadas: unknown[] = [];
+    const app = buildWebhookServer(bot, SECRET, {
+      store,
+      apiToken: API_TOKEN,
+      decisiones: {
+        store,
+        send: async (_a, _id, d) => void mandadas.push(d),
+        editarMensaje: async () => {},
+      },
+    });
+    return { app, store, mandadas };
+  }
+
+  // El endpoint decide sobre el trabajo de un agente: sin bearer, cualquiera
+  // aprueba lo que el agente estaba esperando que le confirmen.
+  it('sin bearer da 401', async () => {
+    const { app, mandadas } = await conAprobacion();
+
+    const r = await app.inject({
+      method: 'POST',
+      url: `/aprobaciones/${REC.approvalId}/decision`,
+      payload: { decision: { decision: 'allow' }, usuarioId: USUARIO },
+    });
+
+    expect(r.statusCode).toBe(401);
+    expect(mandadas).toEqual([]);
+  });
+
+  it('decide y le avisa al gateway', async () => {
+    const { app, mandadas } = await conAprobacion();
+
+    const r = await app.inject({
+      method: 'POST',
+      url: `/aprobaciones/${REC.approvalId}/decision`,
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { decision: { decision: 'allow' }, usuarioId: USUARIO },
+    });
+
+    expect(r.statusCode).toBe(200);
+    expect(mandadas).toEqual([{ decision: 'allow' }]);
+  });
+
+  // 409 y no 400: el pedido estaba bien, lo que cambio es el estado del mundo.
+  // El panel lo muestra distinto por eso.
+  it('decidir dos veces devuelve 409 la segunda', async () => {
+    const { app, mandadas } = await conAprobacion();
+    const pedir = () =>
+      app.inject({
+        method: 'POST',
+        url: `/aprobaciones/${REC.approvalId}/decision`,
+        headers: { authorization: `Bearer ${API_TOKEN}` },
+        payload: { decision: { decision: 'allow' }, usuarioId: USUARIO },
+      });
+
+    expect((await pedir()).statusCode).toBe(200);
+    expect((await pedir()).statusCode).toBe(409);
+    // Y el agente recibio UNA sola decision, que es de lo que se trata.
+    expect(mandadas).toHaveLength(1);
+  });
+
+  it('una aprobacion que no existe da 404', async () => {
+    const { app } = await conAprobacion();
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/aprobaciones/33333333-3333-4333-8333-333333333333/decision',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { decision: { decision: 'allow' }, usuarioId: USUARIO },
+    });
+
+    expect(r.statusCode).toBe(404);
+  });
+
+  it('rechaza una decision que no existe en el contrato', async () => {
+    const { app, mandadas } = await conAprobacion();
+
+    const r = await app.inject({
+      method: 'POST',
+      url: `/aprobaciones/${REC.approvalId}/decision`,
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { decision: { decision: 'quizas' }, usuarioId: USUARIO },
+    });
+
+    expect(r.statusCode).toBe(400);
+    expect(mandadas).toEqual([]);
+  });
+});
