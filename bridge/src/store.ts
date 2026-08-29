@@ -43,9 +43,19 @@ export interface ApprovalRecord {
 }
 
 export interface NewJob {
+  /** 0 cuando el turno no vino de Telegram: el panel no tiene chat. */
   chatId: number;
   agent: AgentId;
+  /** El NOMBRE, que es lo que viaja al gateway (va en la ruta del worktree). */
   project: string;
+  /**
+   * El id del proyecto. Opcional: un proyecto que todavia solo vive en
+   * config/projects.json no tiene fila, y el turno tiene que correr igual.
+   */
+  proyectoId?: string;
+  /** Quien lo pidio. Ausente en un chat de Telegram sin vincular. */
+  usuarioId?: string;
+  origen?: 'telegram' | 'panel';
   prompt: string;
   messageId: number;
 }
@@ -111,8 +121,15 @@ export interface Store {
    */
   getActiveProject(chatId: number): Promise<string | undefined>;
   setActiveProject(chatId: number, project: string): Promise<void>;
-  getSession(chatId: number, agent: AgentId, project: string): Promise<string | undefined>;
-  setSession(chatId: number, agent: AgentId, project: string, sessionId: string): Promise<void>;
+  /**
+   * La sesion de Claude para un agente en un proyecto.
+   *
+   * Por proyecto y no por chat: es lo que hace que el panel y Telegram sigan la
+   * misma conversacion. El agente ve un solo hilo, se le escriba desde donde se
+   * le escriba.
+   */
+  getSession(proyectoId: string, agent: AgentId): Promise<string | undefined>;
+  setSession(proyectoId: string, agent: AgentId, sessionId: string): Promise<void>;
   /**
    * Borra todas las sesiones de un agente. Devuelve cuantas borro.
    *
@@ -131,7 +148,13 @@ export interface Store {
    * registro que se pueda desincronizar.
    */
   recentJobs(limite: number): Promise<JobResumen[]>;
-  finishJob(jobId: string, status: JobStatus, error?: string): Promise<void>;
+  /**
+   * Cierra el job. `respuesta` es lo que contesto el agente.
+   *
+   * Sin guardarla, la tabla tiene lo que pediste y no lo que te contestaron:
+   * no hay historial que mostrar ni en el panel ni en el chat compartido.
+   */
+  finishJob(jobId: string, status: JobStatus, error?: string, respuesta?: string): Promise<void>;
   /**
    * Mueve un job entre estados transitorios. No reabre uno ya cerrado: un
    * estado que llega tarde —el poller vio una aprobacion justo cuando el turno
@@ -140,6 +163,8 @@ export interface Store {
   setJobStatus(jobId: string, status: JobStatus): Promise<void>;
   getJobStatus(jobId: string): Promise<JobStatus | undefined>;
   getJobError(jobId: string): Promise<string | undefined>;
+  /** Lo que contesto el agente, si el turno termino. */
+  getJobRespuesta(jobId: string): Promise<string | undefined>;
   /** true si es la primera vez que se ve esta aprobacion (o sea: hay que anunciarla). */
   recordApproval(rec: ApprovalRecord): Promise<boolean>;
   getApproval(approvalId: string): Promise<ApprovalRecord | undefined>;
@@ -190,10 +215,13 @@ export class InMemoryStore implements Store {
   private active = new Map<number, AgentId>();
   private activeProject = new Map<number, string>();
   private sessions = new Map<string, string>();
-  private jobs = new Map<string, { status: JobStatus; error?: string; resumen?: JobResumen }>();
+  private jobs = new Map<
+    string,
+    { status: JobStatus; error?: string; respuesta?: string; resumen?: JobResumen }
+  >();
 
-  private key(chatId: number, agent: AgentId, project: string) {
-    return `${chatId}:${agent}:${project}`;
+  private key(proyectoId: string, agent: AgentId) {
+    return `${proyectoId}:${agent}`;
   }
 
   async getActiveAgent(chatId: number) {
@@ -208,19 +236,18 @@ export class InMemoryStore implements Store {
   async setActiveProject(chatId: number, project: string) {
     this.activeProject.set(chatId, project);
   }
-  async getSession(chatId: number, agent: AgentId, project: string) {
-    return this.sessions.get(this.key(chatId, agent, project));
+  async getSession(proyectoId: string, agent: AgentId) {
+    return this.sessions.get(this.key(proyectoId, agent));
   }
-  async setSession(chatId: number, agent: AgentId, project: string, sessionId: string) {
-    this.sessions.set(this.key(chatId, agent, project), sessionId);
+  async setSession(proyectoId: string, agent: AgentId, sessionId: string) {
+    this.sessions.set(this.key(proyectoId, agent), sessionId);
   }
   async deleteSessions(agent: AgentId) {
     let borradas = 0;
     for (const clave of [...this.sessions.keys()]) {
-      // La clave es chatId:agente:proyecto. Se parte por el separador y se
-      // compara el campo del medio: un `includes(agent)` daria falsos positivos
-      // con un proyecto que se llame como un slot.
-      if (clave.split(':')[1] !== agent) continue;
+      // La clave es proyectoId:agente. Se compara el ultimo campo y no un
+      // `includes(agent)`, que daria falsos positivos.
+      if (clave.slice(clave.lastIndexOf(':') + 1) !== agent) continue;
       this.sessions.delete(clave);
       borradas += 1;
     }
@@ -249,8 +276,9 @@ export class InMemoryStore implements Store {
       .reverse()
       .slice(0, limite);
   }
-  async finishJob(jobId: string, status: JobStatus, error?: string) {
-    this.jobs.set(jobId, { status, error });
+  async finishJob(jobId: string, status: JobStatus, error?: string, respuesta?: string) {
+    const previo = this.jobs.get(jobId);
+    this.jobs.set(jobId, { ...previo, status, error, respuesta });
   }
   async setJobStatus(jobId: string, status: JobStatus) {
     const job = this.jobs.get(jobId);
@@ -260,6 +288,9 @@ export class InMemoryStore implements Store {
   }
   async getJobStatus(jobId: string) {
     return this.jobs.get(jobId)?.status;
+  }
+  async getJobRespuesta(jobId: string) {
+    return this.jobs.get(jobId)?.respuesta;
   }
   async getJobError(jobId: string) {
     return this.jobs.get(jobId)?.error;
@@ -400,25 +431,25 @@ export class PgStore implements Store {
     );
   }
 
-  async getSession(chatId: number, agent: AgentId, project: string) {
+  async getSession(proyectoId: string, agent: AgentId) {
     const r = await this.pool.query<{ session_id: string }>(
-      'SELECT session_id FROM agent_session WHERE chat_id = $1 AND agent = $2 AND project = $3',
-      [chatId, agent, project],
+      'SELECT session_id FROM agent_session WHERE proyecto_id = $1 AND agente = $2',
+      [proyectoId, agent],
     );
     return r.rows[0]?.session_id;
   }
 
-  async setSession(chatId: number, agent: AgentId, project: string, sessionId: string) {
+  async setSession(proyectoId: string, agent: AgentId, sessionId: string) {
     await this.pool.query(
-      `INSERT INTO agent_session (chat_id, agent, project, session_id) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (chat_id, agent, project)
-       DO UPDATE SET session_id = $4, updated_at = now()`,
-      [chatId, agent, project, sessionId],
+      `INSERT INTO agent_session (proyecto_id, agente, session_id) VALUES ($1, $2, $3)
+       ON CONFLICT (proyecto_id, agente)
+       DO UPDATE SET session_id = $3, updated_at = now()`,
+      [proyectoId, agent, sessionId],
     );
   }
 
   async deleteSessions(agent: AgentId) {
-    const r = await this.pool.query('DELETE FROM agent_session WHERE agent = $1', [agent]);
+    const r = await this.pool.query('DELETE FROM agent_session WHERE agente = $1', [agent]);
     return r.rowCount ?? 0;
   }
 
@@ -437,19 +468,43 @@ export class PgStore implements Store {
     // tiene que correr igual, que es lo que el sistema hacia antes de que
     // existieran los proyectos.
     await this.pool.query(
-      `INSERT INTO jobs (id, chat_id, agent, project, prompt, status, message_id, proyecto_id)
+      `INSERT INTO jobs (id, chat_id, agent, project, prompt, status, message_id,
+                         proyecto_id, usuario_id, origen)
        VALUES ($1, $2, $3, $4, $5, 'running', $6,
-               (SELECT id FROM proyectos WHERE nombre = $4))`,
-      [id, job.chatId, job.agent, job.project, job.prompt, job.messageId],
+               COALESCE($7::uuid, (SELECT id FROM proyectos WHERE nombre = $4)),
+               $8, $9)`,
+      [
+        id,
+        job.chatId,
+        job.agent,
+        job.project,
+        job.prompt,
+        job.messageId,
+        job.proyectoId ?? null,
+        job.usuarioId ?? null,
+        job.origen ?? null,
+      ],
     );
     return id;
   }
 
-  async finishJob(jobId: string, status: JobStatus, error?: string) {
+  async finishJob(jobId: string, status: JobStatus, error?: string, respuesta?: string) {
+    // COALESCE en la respuesta: un finishJob de error no puede borrar lo que ya
+    // habia contestado el agente antes de que algo fallara despues.
     await this.pool.query(
-      'UPDATE jobs SET status = $2, error = $3, ended_at = now() WHERE id = $1',
-      [jobId, status, error ?? null],
+      `UPDATE jobs SET status = $2, error = $3, respuesta = COALESCE($4, respuesta),
+              ended_at = now()
+        WHERE id = $1`,
+      [jobId, status, error ?? null, respuesta ?? null],
     );
+  }
+
+  async getJobRespuesta(jobId: string) {
+    const r = await this.pool.query<{ respuesta: string | null }>(
+      'SELECT respuesta FROM jobs WHERE id = $1',
+      [jobId],
+    );
+    return r.rows[0]?.respuesta ?? undefined;
   }
 
   async recentJobs(limite: number): Promise<JobResumen[]> {

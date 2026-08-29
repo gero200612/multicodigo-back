@@ -27,12 +27,29 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
       expect(await store.getActiveAgent(chatId)).toBe('c2');
     });
 
-    it('las sesiones son por chat, agente y proyecto', async () => {
-      await store.setSession(chatId, 'c1', 'sincroresto', 'sess-a');
-      await store.setSession(chatId, 'c2', 'sincroresto', 'sess-b');
-      expect(await store.getSession(chatId, 'c1', 'sincroresto')).toBe('sess-a');
-      expect(await store.getSession(chatId, 'c2', 'sincroresto')).toBe('sess-b');
-      expect(await store.getSession(chatId, 'c1', 'otro')).toBeUndefined();
+    // El mismo hilo, se pregunte desde donde se pregunte: es lo que hace que el
+    // panel y Telegram compartan conversacion.
+    it('la sesion es por proyecto y agente, no por chat', async () => {
+      const proyecto = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      await store.setSession(proyecto, 'c1', 'sess-a');
+      expect(await store.getSession(proyecto, 'c1')).toBe('sess-a');
+    });
+
+    it('agentes distintos del mismo proyecto tienen sesiones distintas', async () => {
+      const proyecto = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      await store.setSession(proyecto, 'c1', 'sess-a');
+      await store.setSession(proyecto, 'c2', 'sess-b');
+      expect(await store.getSession(proyecto, 'c1')).toBe('sess-a');
+      expect(await store.getSession(proyecto, 'c2')).toBe('sess-b');
+    });
+
+    it('el mismo agente en otro proyecto es otra sesion', async () => {
+      const uno = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const otro = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      await store.setSession(uno, 'c1', 'sess-a');
+      await store.setSession(otro, 'c1', 'sess-b');
+      expect(await store.getSession(uno, 'c1')).toBe('sess-a');
+      expect(await store.getSession(otro, 'c1')).toBe('sess-b');
     });
 
     it('crea un job en running y lo cierra en done', async () => {
@@ -134,14 +151,16 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
 describe('InMemoryStore', () => {
   it('deleteSessions borra las sesiones de un agente y deja las de los otros', async () => {
     const store = new InMemoryStore();
-    await store.setSession(1, 'c1', 'demo', 's-c1-demo');
-    await store.setSession(1, 'c1', 'otro', 's-c1-otro');
-    await store.setSession(1, 'c2', 'demo', 's-c2-demo');
+    const uno = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const otro = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await store.setSession(uno, 'c1', 's-c1-uno');
+    await store.setSession(otro, 'c1', 's-c1-otro');
+    await store.setSession(uno, 'c2', 's-c2-uno');
 
     expect(await store.deleteSessions('c1')).toBe(2);
-    expect(await store.getSession(1, 'c1', 'demo')).toBeUndefined();
-    expect(await store.getSession(1, 'c1', 'otro')).toBeUndefined();
-    expect(await store.getSession(1, 'c2', 'demo')).toBe('s-c2-demo');
+    expect(await store.getSession(uno, 'c1')).toBeUndefined();
+    expect(await store.getSession(otro, 'c1')).toBeUndefined();
+    expect(await store.getSession(uno, 'c2')).toBe('s-c2-uno');
   });
 
   it('deleteSessions de un agente sin sesiones no es un error', async () => {
@@ -175,6 +194,7 @@ const TODAS_LAS_MIGRACIONES = [
   '010_realtime.sql',
   '011_proyectos_rpc.sql',
   '012_aprobaciones.sql',
+  '013_sesiones_por_proyecto.sql',
 ].map(migracion);
 
 describe.skipIf(!url)('PgStore contra postgres real', () => {
@@ -321,12 +341,39 @@ describe.skipIf(!url)('PgStore contra postgres real', () => {
   // este caso, un DELETE con la columna mal escrita o la condicion invertida no
   // lo detecta nadie hasta que se pierdan sesiones de verdad.
   it('deleteSessions borra las filas de ese agente en la tabla real', async () => {
-    await store.setSession(999, 'c1', 'demo', 's-c1-demo');
-    await store.setSession(999, 'c2', 'demo', 's-c2-demo');
+    const pool = store['pool'];
+    // La tabla tiene FK contra proyectos: la fila tiene que existir.
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO proyectos (nombre) VALUES ('plan8-demo') RETURNING id`,
+    );
+    const proyectoId = rows[0]!.id;
+
+    await store.setSession(proyectoId, 'c1', 's-c1');
+    await store.setSession(proyectoId, 'c2', 's-c2');
 
     expect(await store.deleteSessions('c1')).toBe(1);
-    expect(await store.getSession(999, 'c1', 'demo')).toBeUndefined();
-    expect(await store.getSession(999, 'c2', 'demo')).toBe('s-c2-demo');
+    expect(await store.getSession(proyectoId, 'c1')).toBeUndefined();
+    expect(await store.getSession(proyectoId, 'c2')).toBe('s-c2');
+
+    await pool.query('DELETE FROM proyectos WHERE id = $1', [proyectoId]);
+  });
+
+  // La clave nueva: el mismo hilo se pregunte desde donde se pregunte.
+  it('la sesion es del proyecto y el agente en la tabla real', async () => {
+    const pool = store['pool'];
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO proyectos (nombre) VALUES ('plan8-hilo') RETURNING id`,
+    );
+    const proyectoId = rows[0]!.id;
+
+    await store.setSession(proyectoId, 'c1', 'sess-a');
+    // Un segundo set del mismo par pisa, no duplica: el ON CONFLICT es sobre la
+    // clave nueva, y si no coincidiera con la PK esto tiraria.
+    await store.setSession(proyectoId, 'c1', 'sess-b');
+
+    expect(await store.getSession(proyectoId, 'c1')).toBe('sess-b');
+
+    await pool.query('DELETE FROM proyectos WHERE id = $1', [proyectoId]);
   });
 
   // Sin proyecto_id lleno, todo lo que filtra por proyecto queda afuera: la

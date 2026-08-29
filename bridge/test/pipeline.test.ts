@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
-import { handleIncoming, type PipelineDeps } from '../src/pipeline.js';
+import { handleIncoming, ejecutarTurno, type PipelineDeps } from '../src/pipeline.js';
 import { InMemoryStore, type Store } from '../src/store.js';
 import { LimitePorChat } from '../src/vinculacion.js';
 
@@ -86,12 +86,31 @@ describe('handleIncoming', () => {
     expect(d.ask.mock.calls[0]![0]!.agent).toBe('c1');
   });
 
-  it('reanuda la sesion guardada del par agente-proyecto', async () => {
+  it('reanuda la sesion guardada del proyecto y el agente', async () => {
     const d = deps();
     await vincular(d.store, 1);
+    // El proyecto tiene que EXISTIR: la sesion se guarda por su id, y sin fila
+    // no hay clave con que guardarla.
+    await d.store.crearProyecto('sincroresto', USUARIO_DE_PRUEBA);
+
     await handleIncoming({ chatId: 1, messageId: 5, text: 'uno' }, d);
     await handleIncoming({ chatId: 1, messageId: 6, text: 'dos' }, d);
+
     expect(d.ask.mock.calls[1]![0]!.sessionId).toBe('sess-1');
+  });
+
+  // Un proyecto que solo vive en config/projects.json no tiene fila, y por lo
+  // tanto no tiene con que guardar la sesion. El turno tiene que correr igual:
+  // es lo que el sistema hacia antes de que los proyectos existieran.
+  it('un proyecto que no esta en la tabla igual contesta, sin hilo', async () => {
+    const d = deps();
+    await vincular(d.store, 1);
+
+    const out = await handleIncoming({ chatId: 1, messageId: 5, text: 'uno' }, d);
+    await handleIncoming({ chatId: 1, messageId: 6, text: 'dos' }, d);
+
+    expect(out.kind).toBe('answer');
+    expect(d.ask.mock.calls[1]![0]!.sessionId).toBeUndefined();
   });
 
   it('/c2 solo cambia el agente activo sin preguntar nada', async () => {
@@ -314,6 +333,9 @@ describe('multi-proyecto', () => {
       },
     });
 
+    await store.crearProyecto('uno', USUARIO_DE_PRUEBA);
+    await store.crearProyecto('dos', USUARIO_DE_PRUEBA);
+
     await store.setActiveProject(1, 'uno');
     await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
     await store.setActiveProject(1, 'dos');
@@ -500,5 +522,132 @@ describe('el menu', () => {
   it('un chat sin vincular no ve ningun menu', async () => {
     const out = await handleIncoming({ chatId: 701, messageId: 1, text: '/menu' }, deps());
     expect(out.kind).toBe('sin_vincular');
+  });
+});
+
+describe('ejecutarTurno', () => {
+  const PROYECTO = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const USUARIO = USUARIO_DE_PRUEBA;
+
+  it('dos turnos seguidos reusan la sesion del proyecto', async () => {
+    const store = new InMemoryStore();
+    const sesiones: (string | undefined)[] = [];
+    const propias = deps({
+      store,
+      ask: async (req) => {
+        sesiones.push(req.sessionId);
+        return { jobId: req.jobId, sessionId: 'sess-1', text: 'ok', turns: 1 };
+      },
+    });
+
+    await ejecutarTurno(propias, {
+      proyectoId: PROYECTO,
+      proyecto: 'demo',
+      agente: 'c1',
+      usuarioId: USUARIO,
+      prompt: 'uno',
+      origen: 'panel',
+    });
+    await ejecutarTurno(propias, {
+      proyectoId: PROYECTO,
+      proyecto: 'demo',
+      agente: 'c1',
+      usuarioId: USUARIO,
+      prompt: 'dos',
+      origen: 'telegram',
+    });
+
+    // El segundo turno reusa la sesion que dejo el primero, aunque venga de
+    // otro frente: eso ES el hilo compartido.
+    expect(sesiones).toEqual([undefined, 'sess-1']);
+  });
+
+  it('el turno guarda la respuesta del agente', async () => {
+    const store = new InMemoryStore();
+    const { jobId } = await ejecutarTurno(
+      deps({
+        store,
+        ask: async (r) => ({ jobId: r.jobId, sessionId: 's', text: 'la respuesta', turns: 1 }),
+      }),
+      {
+        proyectoId: PROYECTO,
+        proyecto: 'demo',
+        agente: 'c1',
+        usuarioId: USUARIO,
+        prompt: 'hola',
+        origen: 'panel',
+      },
+    );
+
+    expect(await store.getJobRespuesta(jobId)).toBe('la respuesta');
+  });
+
+  // Sin el poller, un agente que pide permiso desde un turno del panel se
+  // cuelga hasta el timeout de 15 minutos, sin decir por que.
+  it('cuelga el poller de aprobaciones tambien en un turno del panel', async () => {
+    let colgados = 0;
+    let parados = 0;
+    await ejecutarTurno(
+      deps({
+        store: new InMemoryStore(),
+        watchApprovals: () => {
+          colgados += 1;
+          return () => {
+            parados += 1;
+          };
+        },
+      }),
+      {
+        proyectoId: PROYECTO,
+        proyecto: 'demo',
+        agente: 'c1',
+        usuarioId: USUARIO,
+        prompt: 'hola',
+        origen: 'panel',
+      },
+    );
+
+    expect(colgados).toBe(1);
+    expect(parados).toBe(1);
+  });
+
+  it('un turno que falla cierra el job y suelta el poller', async () => {
+    const store = new InMemoryStore();
+    let parados = 0;
+
+    await expect(
+      ejecutarTurno(
+        deps({
+          store,
+          ask: async () => {
+            throw new Error('agent_unavailable');
+          },
+          watchApprovals: () => () => {
+            parados += 1;
+          },
+        }),
+        {
+          proyectoId: PROYECTO,
+          proyecto: 'demo',
+          agente: 'c1',
+          usuarioId: USUARIO,
+          prompt: 'hola',
+          origen: 'panel',
+        },
+      ),
+    ).rejects.toThrow('agent_unavailable');
+
+    expect(parados).toBe(1);
+  });
+
+  // Sin proyecto no hay clave con que guardar la sesion, pero el turno corre.
+  it('sin proyectoId no guarda sesion y no rompe', async () => {
+    const store = new InMemoryStore();
+    const r = await ejecutarTurno(
+      deps({ store, ask: async (q) => ({ jobId: q.jobId, sessionId: 's', text: 'ok', turns: 1 }) }),
+      { proyecto: 'demo', agente: 'c1', usuarioId: USUARIO, prompt: 'hola', origen: 'panel' },
+    );
+
+    expect(r.texto).toBe('ok');
   });
 });

@@ -5,6 +5,8 @@ import { InMemoryStore } from '../src/store.js';
 const SECRET = 'secreto-de-webhook-largo';
 const API_TOKEN = 'token-de-api-del-bridge';
 const bot = { handleUpdate: vi.fn(async () => {}) };
+const PROYECTO = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const OTRO_PROYECTO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 async function servidor() {
   const store = new InMemoryStore();
@@ -77,9 +79,9 @@ describe('DELETE /agents/:id/sessions', () => {
   // venia hablando con otro slot no tiene por que perder su hilo.
   it('borra las sesiones de ese agente y deja las de los otros', async () => {
     const { app, store } = await servidor();
-    await store.setSession(1, 'c1' as const, 'demo', 's-c1-demo');
-    await store.setSession(1, 'c1' as const, 'otro', 's-c1-otro');
-    await store.setSession(1, 'c2' as const, 'demo', 's-c2-demo');
+    await store.setSession(PROYECTO, 'c1' as const, 's-c1-uno');
+    await store.setSession(OTRO_PROYECTO, 'c1' as const, 's-c1-otro');
+    await store.setSession(PROYECTO, 'c2' as const, 's-c2-uno');
 
     const res = await app.inject({
       method: 'DELETE',
@@ -89,20 +91,20 @@ describe('DELETE /agents/:id/sessions', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ borradas: 2 });
-    expect(await store.getSession(1, 'c1' as const, 'demo')).toBeUndefined();
-    expect(await store.getSession(1, 'c2' as const, 'demo')).toBe('s-c2-demo');
+    expect(await store.getSession(PROYECTO, 'c1' as const)).toBeUndefined();
+    expect(await store.getSession(PROYECTO, 'c2' as const)).toBe('s-c2-uno');
   });
 
   // Sin bearer esto seria un boton para que cualquiera te corte todos los hilos
   // de conversacion abiertos.
   it('sin bearer no borra nada', async () => {
     const { app, store } = await servidor();
-    await store.setSession(1, 'c1' as const, 'demo', 's-c1-demo');
+    await store.setSession(PROYECTO, 'c1' as const, 's-c1-uno');
 
     const res = await app.inject({ method: 'DELETE', url: '/agents/c1/sessions' });
 
     expect(res.statusCode).toBe(401);
-    expect(await store.getSession(1, 'c1' as const, 'demo')).toBe('s-c1-demo');
+    expect(await store.getSession(PROYECTO, 'c1' as const)).toBe('s-c1-uno');
   });
 
   it('rechaza un id que no tiene forma de slot', async () => {

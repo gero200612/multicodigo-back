@@ -133,45 +133,129 @@ export async function handleIncoming(
     command.agent ?? (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
   // El proyecto del turno: lo que eligio el chat, o el default del bridge.
   const project = (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
-  const sessionId = await deps.store.getSession(input.chatId, agent, project);
 
-  const jobId = await deps.store.createJob({
-    chatId: input.chatId,
-    agent,
-    project,
-    prompt: command.text,
-    messageId: input.messageId,
-  });
-
-  const stopWatching =
-    deps.watchApprovals?.({ agent, jobId, messageId: input.messageId, chatId: input.chatId }) ??
-    (() => {});
+  // El id del proyecto, para poder compartir el hilo con el panel. Puede no
+  // existir —un proyecto de config/projects.json que nunca se creo desde el
+  // panel— y en ese caso el turno corre igual, pero sin sesion compartida: no
+  // hay clave con que guardarla.
+  const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
+  const proyectoId = proyectos.find((p) => p.nombre === project)?.id;
 
   try {
-    const response = await deps.ask({
-      jobId,
-      agent,
-      project,
+    const r = await ejecutarTurno(deps, {
+      proyectoId,
+      proyecto: project,
+      agente: agent,
+      usuarioId,
       prompt: command.text,
-      sessionId,
+      origen: 'telegram',
+      chatId: input.chatId,
+      messageId: input.messageId,
     });
-    await deps.store.setSession(input.chatId, agent, project, response.sessionId);
-    await deps.store.finishJob(jobId, 'done');
     return {
       kind: 'answer',
-      text: sanitizeForTelegram(response.text),
+      text: sanitizeForTelegram(r.texto),
       agent,
-      jobId,
+      jobId: r.jobId,
       transcript,
     };
   } catch (err) {
     const code = err instanceof Error ? err.message : 'internal';
-    await deps.store.finishJob(jobId, 'failed', code);
+    const jobId = err instanceof ErrorDeTurno ? err.jobId : '';
     return { kind: 'error', text: ERROR_TEXT[code] ?? `Fallo el agente: ${code}`, jobId };
+  }
+}
+
+export interface Turno {
+  /**
+   * El proyecto al que pertenece el hilo. Sin el no hay sesion compartida: el
+   * turno corre, pero arranca de cero cada vez.
+   */
+  proyectoId?: string;
+  /** El nombre, que es lo que viaja al gateway (va en la ruta del worktree). */
+  proyecto: string;
+  agente: AgentId;
+  usuarioId: string;
+  prompt: string;
+  origen: 'telegram' | 'panel';
+  /** Solo cuando viene de Telegram: para poder colgar el poller del mensaje. */
+  chatId?: number;
+  messageId?: number;
+}
+
+/**
+ * El error de un turno, con el job al que corresponde.
+ *
+ * El jobId hace falta para poder mostrar el detalle despues, y una excepcion
+ * pelada lo perderia: quien la atrapa ya no tiene forma de saber que fila de la
+ * tabla se cerro con ese error.
+ */
+export class ErrorDeTurno extends Error {
+  constructor(
+    readonly jobId: string,
+    codigo: string,
+  ) {
+    super(codigo);
+    this.name = 'ErrorDeTurno';
+  }
+}
+
+/**
+ * Un turno, venga de donde venga.
+ *
+ * Salio de handleIncoming para que el panel pueda pedir turnos sin duplicar el
+ * ciclo de vida: crear el job, colgar el poller de aprobaciones, guardar la
+ * sesion, cerrar el job. Duplicarlo dejaria dos lugares donde acordarse del
+ * poller, y olvidarlo en uno cuelga al agente hasta el timeout.
+ */
+export async function ejecutarTurno(
+  deps: PipelineDeps,
+  t: Turno,
+): Promise<{ jobId: string; texto: string }> {
+  const sessionId = t.proyectoId
+    ? await deps.store.getSession(t.proyectoId, t.agente)
+    : undefined;
+
+  const jobId = await deps.store.createJob({
+    chatId: t.chatId ?? 0,
+    agent: t.agente,
+    project: t.proyecto,
+    proyectoId: t.proyectoId,
+    usuarioId: t.usuarioId,
+    origen: t.origen,
+    prompt: t.prompt,
+    messageId: t.messageId ?? 0,
+  });
+
+  // El poller va SIEMPRE, no solo para Telegram: un agente que pide permiso
+  // desde un turno del panel se cuelga igual si nadie va a buscar el pedido.
+  const parar =
+    deps.watchApprovals?.({
+      agent: t.agente,
+      jobId,
+      messageId: t.messageId ?? 0,
+      chatId: t.chatId ?? 0,
+    }) ?? (() => {});
+
+  try {
+    const r = await deps.ask({
+      jobId,
+      agent: t.agente,
+      project: t.proyecto,
+      prompt: t.prompt,
+      sessionId,
+    });
+    if (t.proyectoId) await deps.store.setSession(t.proyectoId, t.agente, r.sessionId);
+    await deps.store.finishJob(jobId, 'done', undefined, r.text);
+    return { jobId, texto: r.text };
+  } catch (err) {
+    const codigo = err instanceof Error ? err.message : 'internal';
+    await deps.store.finishJob(jobId, 'failed', codigo);
+    throw new ErrorDeTurno(jobId, codigo);
   } finally {
     // En `finally`: si el turno explota, el poller tiene que morir igual o
     // queda un setInterval vivo por cada mensaje que fallo.
-    stopWatching();
+    parar();
   }
 }
 
