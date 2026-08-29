@@ -90,4 +90,9 @@ describe('parseCommand — proyecto', () => {
     if (c.kind !== 'project') throw new Error('esperaba project');
     expect(c.project).toBe('MiRepo');
   });
+
+  it('reconoce /start y /menu como lo mismo', () => {
+    expect(parseCommand('/start')).toEqual({ kind: 'menu' });
+    expect(parseCommand('/menu')).toEqual({ kind: 'menu' });
+  });
 });

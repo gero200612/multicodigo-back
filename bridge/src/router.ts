@@ -8,6 +8,8 @@ export type ParsedCommand =
   | { kind: 'status' }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
   | { kind: 'vincular' }
+  /** Vuelve al principio: elegir proyecto y agente. */
+  | { kind: 'menu' }
   | { kind: 'empty' };
 
 /**
@@ -32,6 +34,10 @@ export function parseCommand(raw: string): ParsedCommand {
   const rest = (match[2] ?? '').trim();
 
   if (command === 'status') return { kind: 'status' };
+
+  // /start es lo primero que manda Telegram cuando alguien abre el bot, asi
+  // que tiene que llevar al mismo lugar que /menu.
+  if (command === 'start' || command === 'menu') return { kind: 'menu' };
 
   // Sin argumentos: el codigo lo genera el bot, no lo trae el usuario. Lo que
   // venga atras es ruido.
