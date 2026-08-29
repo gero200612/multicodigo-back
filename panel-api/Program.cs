@@ -104,6 +104,22 @@ builder.Services.AddHttpClient<INombresClient, NombresClient>(c =>
     .AddTypedClient<INombresClient>((http, sp) =>
         new NombresClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<NombresClient>>()));
 
+builder.Services.AddHttpClient<IProyectosClient, ProyectosClient>(c =>
+    {
+        c.BaseAddress = new Uri(supabaseUrl);
+        c.Timeout = TimeSpan.FromSeconds(10);
+    })
+    .AddTypedClient<IProyectosClient>((http, sp) =>
+        new ProyectosClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<ProyectosClient>>()));
+
+builder.Services.AddHttpClient<IAgentesClient, AgentesClient>(c =>
+    {
+        c.BaseAddress = new Uri(supabaseUrl);
+        c.Timeout = TimeSpan.FromSeconds(10);
+    })
+    .AddTypedClient<IAgentesClient>((http, sp) =>
+        new AgentesClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<AgentesClient>>()));
+
 builder.Services.AddScoped<PanoramaService>();
 
 // --- autenticacion --------------------------------------------------------
@@ -316,6 +332,55 @@ api.MapPut("/slots/{slot}/nombre", async (
         app.Logger.LogError(ex, "no se pudo guardar el nombre de {Slot}", slot);
         return Results.Json(
             new { code = "nombre_no_guardado", message = "no se pudo guardar el nombre" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+// --- agentes de un proyecto -----------------------------------------------
+
+/// <remarks>
+/// Crear un agente es crear un contenedor, y el panel no toca Docker: le pide
+/// el slot al gateway, que elige cual y se lo manda al dockerproxy. Recien
+/// despues se anota la fila, porque una fila sin contenedor no significa nada.
+/// </remarks>
+api.MapPost("/proyectos/{proyectoId}/agentes", async (
+    string proyectoId,
+    HttpContext ctx,
+    IProyectosClient proyectos,
+    IGatewayClient gateway,
+    IAgentesClient agentes,
+    CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+
+    // La membresia se valida ACA. El gateway no sabe que es un proyecto ni un
+    // usuario —es deliberado, ver el spec— asi que si el panel no chequea, no
+    // chequea nadie. En la practica la respuesta la da RLS: un proyecto ajeno
+    // devuelve cero filas.
+    var nombre = await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct);
+    if (nombre is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    try
+    {
+        // El gateway recibe el NOMBRE y no el id: es lo que termina en la
+        // etiqueta del contenedor y en la ruta del worktree, y es lo unico del
+        // proyecto que ese lado del sistema entiende.
+        var slot = await gateway.CrearSlotAsync(nombre, ct);
+        await agentes.RegistrarAsync(jwt, proyectoId, slot, ct);
+        return Results.Created($"/api/proyectos/{proyectoId}/agentes/{slot}", new { slot });
+    }
+    catch (UpstreamException ex) when (ex.Message == "sin_slots")
+    {
+        return Results.Conflict(new { code = "sin_slots", message = "no quedan slots libres" });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        app.Logger.LogError(ex, "no se pudo crear un agente en {Proyecto}", proyectoId);
+        return Results.Json(
+            new { code = "agente_no_creado", message = "no se pudo crear el agente" },
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 });

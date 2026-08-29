@@ -29,6 +29,44 @@ public sealed class GatewayFalso : IGatewayClient
         Probados.Add(slot);
         return Task.FromResult(Resultado);
     }
+
+    public List<string> SlotsCreados { get; } = [];
+    public string SlotQueDevuelve { get; set; } = "c1";
+    /// <summary>Fuerza el caso "no quedan slots", que el panel traduce a 409.</summary>
+    public bool SinSlots { get; set; }
+
+    public Task<string> CrearSlotAsync(string proyecto, CancellationToken ct = default)
+    {
+        if (SinSlots) throw new UpstreamException("sin_slots");
+        SlotsCreados.Add(proyecto);
+        return Task.FromResult(SlotQueDevuelve);
+    }
+}
+
+/// <summary>
+/// Los proyectos del usuario. `Mios` es lo que en produccion decide RLS: un id
+/// que no esta en el diccionario es un proyecto del que no sos miembro.
+/// </summary>
+public sealed class ProyectosFalso : IProyectosClient
+{
+    public Dictionary<string, string> Mios { get; } = [];
+
+    public Task<string?> NombreSiEsMiembroAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult(Mios.TryGetValue(proyectoId, out var n) ? n : null);
+}
+
+public sealed class AgentesFalso : IAgentesClient
+{
+    public List<(string Jwt, string ProyectoId, string Slot)> Registrados { get; } = [];
+    public bool Falla { get; set; }
+
+    public Task RegistrarAsync(string jwt, string proyectoId, string slot, CancellationToken ct = default)
+    {
+        if (Falla) throw new UpstreamException("no se pudo anotar el agente");
+        Registrados.Add((jwt, proyectoId, slot));
+        return Task.CompletedTask;
+    }
 }
 
 public sealed class LoginFalso : ILoginClient
@@ -78,6 +116,18 @@ public sealed class BridgeFalso : IBridgeClient
         => Falla
             ? throw new HttpRequestException("bridge caído")
             : Task.FromResult<IReadOnlyList<JobResumen>>(Jobs);
+
+    public List<(string Codigo, string UsuarioId)> Canjeados { get; } = [];
+    /// <summary>El codigo vencido, usado o desconocido: el bridge contesta 400.</summary>
+    public bool CodigoNoSirve { get; set; }
+
+    public Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        if (CodigoNoSirve) throw new UpstreamException("el codigo no sirve");
+        Canjeados.Add((codigo, usuarioId));
+        return Task.CompletedTask;
+    }
 }
 
 public sealed class HistorialFalso : IHistorialClient

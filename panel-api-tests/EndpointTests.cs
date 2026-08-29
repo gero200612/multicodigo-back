@@ -33,6 +33,7 @@ internal sealed class AuthDePrueba(
 {
     public const string Esquema = "Prueba";
     public const string TokenValido = "jwt-del-usuario";
+    public const string Usuario = "11111111-1111-4111-8111-111111111111";
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
@@ -48,7 +49,12 @@ internal sealed class AuthDePrueba(
             return Task.FromResult(AuthenticateResult.Fail("token inválido"));
         }
 
-        var id = new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "u1")], Esquema);
+        // `sub` ademas de NameIdentifier: en produccion el JWT de Supabase lo
+        // trae, `MapInboundClaims = false` lo deja con ese nombre, y los
+        // endpoints que necesitan saber QUIEN es lo leen de ahi.
+        var id = new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, "u1"), new Claim("sub", Usuario)],
+            Esquema);
         var ticket = new AuthenticationTicket(new ClaimsPrincipal(id), Esquema);
         // Igual que SaveToken=true en producción: es de donde sale el JWT que se
         // reenvía a Supabase.
@@ -64,6 +70,8 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
     public BridgeFalso Bridge { get; } = new();
     public HistorialFalso Historial { get; } = new();
     public NombresFalso Nombres { get; } = new();
+    public ProyectosFalso Proyectos { get; } = new();
+    public AgentesFalso Agentes { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -85,6 +93,8 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
             s.AddSingleton<IBridgeClient>(Bridge);
             s.AddSingleton<IHistorialClient>(Historial);
             s.AddSingleton<INombresClient>(Nombres);
+            s.AddSingleton<IProyectosClient>(Proyectos);
+            s.AddSingleton<IAgentesClient>(Agentes);
 
             s.AddAuthentication(AuthDePrueba.Esquema)
                 .AddScheme<AuthenticationSchemeOptions, AuthDePrueba>(AuthDePrueba.Esquema, _ => { });
@@ -388,6 +398,72 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         finally
         {
             f.Nombres.Falla = false;
+        }
+    }
+
+    // --- crear agentes ---
+
+    private const string ProyectoDePrueba = "22222222-2222-4222-8222-222222222222";
+    private const string ProyectoAjeno = "00000000-0000-4000-8000-0000000000ff";
+
+    private sealed record RespuestaSlot(string Slot);
+
+    [Fact]
+    public async Task Crear_agente_sin_sesion_da_401()
+    {
+        var r = await Cliente(conSesion: false)
+            .PostAsync($"/api/proyectos/{ProyectoDePrueba}/agentes", null);
+        Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
+
+    /// <summary>
+    /// La membresía se valida en el panel: el gateway no sabe qué es un
+    /// proyecto, así que si esto no chequea, no chequea nadie.
+    /// </summary>
+    [Fact]
+    public async Task Crear_agente_en_un_proyecto_ajeno_da_403()
+    {
+        var r = await Cliente().PostAsync($"/api/proyectos/{ProyectoAjeno}/agentes", null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+        // Y no llego a pedirle nada al gateway: un proyecto ajeno no gasta un slot.
+        Assert.DoesNotContain("ajeno", f.Gateway.SlotsCreados);
+    }
+
+    [Fact]
+    public async Task Crear_agente_devuelve_el_slot_asignado()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+        f.Gateway.SlotQueDevuelve = "c1";
+
+        var r = await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/agentes", null);
+
+        Assert.Equal(HttpStatusCode.Created, r.StatusCode);
+        var cuerpo = await r.Content.ReadFromJsonAsync<RespuestaSlot>();
+        Assert.Equal("c1", cuerpo!.Slot);
+        // Al gateway le va el NOMBRE del proyecto, no el id: es lo que termina
+        // en la etiqueta del contenedor y en la ruta del worktree.
+        Assert.Contains("demo", f.Gateway.SlotsCreados);
+        Assert.Contains(f.Agentes.Registrados, a => a.ProyectoId == ProyectoDePrueba && a.Slot == "c1");
+    }
+
+    /// <summary>
+    /// "No quedan slots" no es una caída: el usuario tiene que poder
+    /// distinguirlo de un gateway que no contesta.
+    /// </summary>
+    [Fact]
+    public async Task Crear_agente_sin_slots_libres_da_409()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+        f.Gateway.SinSlots = true;
+        try
+        {
+            var r = await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/agentes", null);
+            Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
+        }
+        finally
+        {
+            f.Gateway.SinSlots = false;
         }
     }
 }

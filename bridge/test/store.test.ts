@@ -171,6 +171,7 @@ const TODAS_LAS_MIGRACIONES = [
   '006_telegram.sql',
   '007_jobs.sql',
   '008_rls.sql',
+  '009_agentes_insert.sql',
 ].map(migracion);
 
 describe.skipIf(!url)('PgStore contra postgres real', () => {
