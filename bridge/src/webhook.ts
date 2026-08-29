@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { Bot } from 'grammy';
 import { AgentId, ApprovalDecision, isTokenValid } from '@multicodigo/shared';
 import { decidir, type DecidirDeps } from './decisiones.js';
+import { ejecutarTurno, type PipelineDeps } from './pipeline.js';
 import { z } from 'zod';
 import type { Store } from './store.js';
 
@@ -25,6 +26,14 @@ export interface ApiDeps {
    * editar el mensaje del chat.
    */
   decisiones?: DecidirDeps;
+  /**
+   * Con que ejecutar un turno pedido desde el panel.
+   *
+   * Es el MISMO camino que el de Telegram: mismo job, mismo poller de
+   * aprobaciones, misma sesion. Es lo que hace que los dos frentes compartan
+   * hilo en vez de tener cada uno el suyo.
+   */
+  pipeline?: PipelineDeps;
   /**
    * Credencial propia, distinta del secret del webhook.
    *
@@ -144,6 +153,50 @@ export function buildWebhookServer(
             .send({ code: 'ya_decidida', message: 'esa aprobacion ya se decidio' });
         }
         return reply.code(404).send({ code: 'desconocida', message: 'no existe esa aprobacion' });
+      });
+    }
+
+    if (api.pipeline) {
+      const pipeline = api.pipeline;
+
+      const CuerpoTurno = z.object({
+        proyectoId: z.string().uuid(),
+        proyecto: z.string().regex(/^[a-zA-Z0-9._-]+$/),
+        // Del contrato compartido: la forma del slot no la define este archivo.
+        agente: AgentId,
+        usuarioId: z.string().uuid(),
+        prompt: z.string().min(1).max(20_000),
+      });
+
+      /**
+       * Un turno pedido desde el panel.
+       *
+       * La membresia YA la valido el panel: este endpoint esta detras del
+       * bearer y no lo alcanza el navegador. Chequearla tambien aca obligaria
+       * al bridge a conocer proyectos y usuarios, que es justo lo que el spec
+       * decidio evitar.
+       */
+      app.post('/turnos', async (request, reply) => {
+        if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+          return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+        }
+
+        const cuerpo = CuerpoTurno.safeParse(request.body);
+        if (!cuerpo.success) {
+          return reply
+            .code(400)
+            .send({ code: 'cuerpo_invalido', message: 'faltan datos del turno' });
+        }
+
+        try {
+          const r = await ejecutarTurno(pipeline, { ...cuerpo.data, origen: 'panel' });
+          return reply.send({ jobId: r.jobId, texto: r.texto });
+        } catch (e) {
+          // 502 y no 500: lo que fallo es el agente del otro lado, y el `code`
+          // es el suyo. El panel lo traduce a algo que se pueda leer.
+          const code = e instanceof Error ? e.message : 'internal';
+          return reply.code(502).send({ code, message: 'el turno fallo' });
+        }
       });
     }
 

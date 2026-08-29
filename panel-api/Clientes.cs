@@ -73,6 +73,10 @@ public interface IBridgeClient
     Task DecidirAsync(
         string aprobacionId, string decision, string? feedback, string usuarioId,
         CancellationToken ct = default);
+    /// <summary>Le pide al bridge que corra un turno, y espera la respuesta.</summary>
+    Task<RespuestaTurno> TurnoAsync(
+        string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
+        CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -285,6 +289,42 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         if (res.StatusCode == HttpStatusCode.NotFound) throw new UpstreamException("desconocida");
         if (!res.IsSuccessStatusCode) throw new UpstreamException("decision_fallo");
     }
+
+    /// <summary>
+    /// Corre un turno.
+    ///
+    /// Va al bridge y no al gateway aunque el gateway sea quien tiene al agente:
+    /// el bridge es el que sabe crear el job, colgar el poller de aprobaciones y
+    /// guardar la sesion del hilo. Un turno del panel que salteara todo eso
+    /// seria una conversacion distinta de la de Telegram.
+    ///
+    /// El timeout es el del cliente entero (20 s) y NO alcanza para un turno de
+    /// verdad: por eso Program.cs le arma su propio HttpClient con uno largo.
+    /// </summary>
+    public async Task<RespuestaTurno> TurnoAsync(
+        string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
+        CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync(
+            "/turnos",
+            new { proyectoId, proyecto, agente = slot, usuarioId, prompt },
+            Json.Opciones,
+            ct);
+
+        if (!res.IsSuccessStatusCode)
+        {
+            // El `code` del bridge es el del agente (agent_unavailable,
+            // sin_credencial…). Se propaga tal cual: es lo que le dice al
+            // usuario que hacer.
+            var cuerpoError = await res.Content.ReadFromJsonAsync<ErrorUpstream>(Json.Opciones, ct);
+            throw new UpstreamException(cuerpoError?.Code ?? "turno_fallo");
+        }
+
+        return await res.Content.ReadFromJsonAsync<RespuestaTurno>(Json.Opciones, ct)
+               ?? throw new UpstreamException("turno_fallo");
+    }
+
+    private sealed record ErrorUpstream(string? Code);
 
     public async Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default)
     {

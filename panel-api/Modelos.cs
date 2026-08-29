@@ -87,3 +87,10 @@ public sealed record CuerpoInvitacion(
 public sealed record CuerpoDecision(
     [property: JsonPropertyName("decision")] string? Decision,
     [property: JsonPropertyName("feedback")] string? Feedback);
+
+public sealed record CuerpoTurno(
+    [property: JsonPropertyName("prompt")] string? Prompt);
+
+public sealed record RespuestaTurno(
+    [property: JsonPropertyName("jobId")] string JobId,
+    [property: JsonPropertyName("texto")] string Texto);

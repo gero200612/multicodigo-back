@@ -15,6 +15,7 @@ import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
 import { buildBot } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
+import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
 
 const Env = z.object({
@@ -60,16 +61,27 @@ const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 // salen todos por ahi.
 const gatewayDeps = { gatewayUrl: env.GATEWAY_URL, token: env.GATEWAY_TOKEN };
 
-const bot = buildBot({
-  botToken: env.TELEGRAM_BOT_TOKEN,
+/**
+ * Lo que un turno necesita, sin lo que es propio de Telegram.
+ *
+ * Se arma aparte porque lo usan los dos: `buildBot` para el camino del chat, y
+ * el endpoint `/turnos` del panel. Es la misma configuracion a proposito —el
+ * hilo es uno solo— y tenerla en una constante evita que se separen.
+ */
+const pipelineDeps = {
   store,
   defaultAgent: env.DEFAULT_AGENT,
   project: env.DEFAULT_PROJECT,
   limite: new LimitePorChat(),
-  ask: (req) => askAgent(req, gatewayDeps),
-  listarAgentes: () => listarAgentes(gatewayDeps),
-  transcribe: (bytes, mimeType) =>
+  ask: (req: Parameters<typeof askAgent>[0]) => askAgent(req, gatewayDeps),
+  transcribe: (bytes: Uint8Array, mimeType: string) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),
+  listarAgentes: () => listarAgentes(gatewayDeps),
+};
+
+const bot = buildBot({
+  ...pipelineDeps,
+  botToken: env.TELEGRAM_BOT_TOKEN,
   fetchPending: (agent) => fetchPending(agent, gatewayDeps),
   sendDecision: (agent, approvalId, decision) =>
     sendDecision(agent, approvalId, decision, gatewayDeps),
@@ -83,6 +95,38 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   // El MISMO camino que usan los botones del chat. El panel no escribe la
   // tabla por su cuenta: decidir tambien es avisarle al gateway y editar el
   // mensaje de Telegram, y el bot es el unico que puede hacer lo ultimo.
+  // Un turno del panel es el MISMO turno que el de Telegram: mismo job, mismo
+  // poller de aprobaciones, misma sesion. El `watchApprovals` sale de aca y no
+  // de `buildBot` porque ese lo arma por mensaje, con el chat al que contestar;
+  // este no tiene chat al que contestarle.
+  pipeline: {
+    ...pipelineDeps,
+    watchApprovals: ({ agent, jobId }) =>
+      startWatching(
+        {
+          fetchPending: () => fetchPending(agent, gatewayDeps),
+          announce: async (a) => {
+            // Se anota igual que las de Telegram —el panel las lee de la
+            // tabla— pero sin mensaje que editar: chat 0 y mensaje 0.
+            const nueva = await store.recordApproval({
+              approvalId: a.approvalId,
+              jobId,
+              chatId: 0,
+              messageId: 0,
+              agent,
+              tool: a.tool,
+              summary: a.summary,
+            });
+            if (!nueva) return;
+            const estado =
+              a.tool === 'mcp__multicodigo__run' ? 'awaiting_build' : 'awaiting_approval';
+            await store.setJobStatus(jobId, estado);
+          },
+          seen: new Set(),
+        },
+        2000,
+      ),
+  },
   decisiones: {
     store,
     send: (agent, approvalId, decision) =>

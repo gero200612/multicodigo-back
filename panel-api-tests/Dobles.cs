@@ -174,6 +174,20 @@ public sealed class BridgeFalso : IBridgeClient
         return Task.CompletedTask;
     }
 
+    public List<(string ProyectoId, string Proyecto, string Slot, string UsuarioId, string Prompt)> Turnos { get; } = [];
+    public string TextoQueDevuelve { get; set; } = "la respuesta";
+    /// <summary>El agente no contesta: el bridge devuelve 502 con su codigo.</summary>
+    public string? TurnoFalla { get; set; }
+
+    public Task<RespuestaTurno> TurnoAsync(
+        string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
+        CancellationToken ct = default)
+    {
+        if (TurnoFalla is not null) throw new UpstreamException(TurnoFalla);
+        Turnos.Add((proyectoId, proyecto, slot, usuarioId, prompt));
+        return Task.FromResult(new RespuestaTurno("11111111-1111-4111-8111-111111111111", TextoQueDevuelve));
+    }
+
     public Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default)
     {
         if (Falla) throw new HttpRequestException("bridge caído");

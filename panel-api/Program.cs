@@ -85,7 +85,15 @@ static void ConBearer(HttpClient c, string baseUrl, string token)
 builder.Services.AddHttpClient<IGatewayClient, GatewayClient>(c => ConBearer(c, gatewayUrl, gatewayToken))
     .AddTypedClient<IGatewayClient>((http, _) => new GatewayClient(http, proyecto));
 builder.Services.AddHttpClient<ILoginClient, LoginClient>(c => ConBearer(c, loginUrl, loginToken));
-builder.Services.AddHttpClient<IBridgeClient, BridgeClient>(c => ConBearer(c, bridgeUrl, bridgeToken));
+builder.Services.AddHttpClient<IBridgeClient, BridgeClient>(c =>
+{
+    ConBearer(c, bridgeUrl, bridgeToken);
+    // Los 20 segundos de ConBearer alcanzan para "ultimas peticiones" y para
+    // una decision, pero NO para un turno: un turno de Claude tarda minutos, y
+    // con el timeout corto el panel corta la espera de algo que va a terminar
+    // bien. Once minutos es lo mismo que espera el bridge del gateway.
+    c.Timeout = TimeSpan.FromMinutes(11);
+});
 builder.Services.AddHttpClient<IHistorialClient, HistorialClient>(c =>
     {
         // Sin Authorization por defecto: acá el bearer es el JWT del USUARIO y
@@ -493,6 +501,61 @@ api.MapPost("/proyectos/{proyectoId}/agentes", async (
         return Results.Json(
             new { code = "agente_no_creado", message = "no se pudo crear el agente" },
             statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+// --- el chat con los agentes ----------------------------------------------
+
+/// <remarks>
+/// El turno se lo pide al bridge y no al gateway, aunque el gateway sea quien
+/// tiene al agente: el bridge es el que sabe crear el job, colgar el poller de
+/// aprobaciones y guardar la sesion del hilo. Sin eso, el chat del panel seria
+/// una conversacion distinta de la de Telegram.
+/// </remarks>
+api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
+    string proyectoId,
+    string slot,
+    CuerpoTurno cuerpo,
+    HttpContext ctx,
+    IProyectosClient proyectos,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    if (SlotInvalido(slot) is { } malo) return malo;
+
+    var prompt = cuerpo.Prompt?.Trim() ?? "";
+    if (prompt.Length == 0)
+    {
+        return Results.BadRequest(new { code = "prompt_vacio", message = "escribí algo" });
+    }
+
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+
+    var jwt = await JwtDe(ctx);
+
+    // Aca y solo aca: el bridge confia en que el panel ya valido, porque su
+    // endpoint vive detras del bearer y no lo alcanza el navegador. Chequearlo
+    // tambien alla obligaria al bridge a conocer proyectos y usuarios, que es
+    // justo lo que el spec decidio evitar.
+    var nombre = await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct);
+    if (nombre is null) return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+    try
+    {
+        var r = await bridge.TurnoAsync(proyectoId, nombre, slot, usuarioId, prompt, ct);
+        return Results.Ok(r);
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        // El `code` que vuelve es el del agente (agent_unavailable,
+        // sin_credencial…): se propaga, porque es lo que le dice al usuario que
+        // hacer. 502 y no 500: lo que fallo esta del otro lado.
+        var code = ex is UpstreamException ? ex.Message : "turno_fallo";
+        app.Logger.LogError(ex, "fallo el turno de {Slot} en {Proyecto}", slot, proyectoId);
+        return Results.Json(
+            new { code, message = "el agente no pudo contestar" },
+            statusCode: StatusCodes.Status502BadGateway);
     }
 });
 

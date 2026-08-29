@@ -654,4 +654,93 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
             $"/api/aprobaciones/{AprobacionDePrueba}/decision", new { decision = "allow" });
         Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
     }
+
+    // --- el chat ---
+
+    /// <summary>
+    /// La membresía se valida acá: el endpoint del bridge vive detrás del bearer
+    /// y confía en que el panel ya chequeó.
+    /// </summary>
+    [Fact]
+    public async Task Turno_en_proyecto_ajeno_da_403()
+    {
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoAjeno}/agentes/c1/turnos", new { prompt = "hola" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+        Assert.Empty(f.Bridge.Turnos);
+    }
+
+    [Fact]
+    public async Task Turno_devuelve_la_respuesta_del_agente()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "hola" });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var cuerpo = await r.Content.ReadFromJsonAsync<RespuestaTurno>();
+        Assert.Equal("la respuesta", cuerpo!.Texto);
+
+        // Al bridge le va el NOMBRE del proyecto además del id: el nombre es lo
+        // que viaja al gateway, el id es con lo que se guarda el hilo.
+        var ultimo = f.Bridge.Turnos[^1];
+        Assert.Equal("demo", ultimo.Proyecto);
+        Assert.Equal(ProyectoDePrueba, ultimo.ProyectoId);
+        Assert.Equal(AuthDePrueba.Usuario, ultimo.UsuarioId);
+        f.Bridge.Turnos.Clear();
+    }
+
+    [Fact]
+    public async Task Turno_con_prompt_vacio_da_400()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "   " });
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.Empty(f.Bridge.Turnos);
+    }
+
+    [Fact]
+    public async Task Turno_a_un_slot_invalido_da_404()
+    {
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/agentes/c0/turnos", new { prompt = "hola" });
+
+        Assert.Equal(HttpStatusCode.NotFound, r.StatusCode);
+    }
+
+    /// <summary>
+    /// El `code` del agente se propaga: es lo que le dice al usuario qué hacer
+    /// ("ese slot no tiene cuenta cargada" no es lo mismo que "se cayó").
+    /// </summary>
+    [Fact]
+    public async Task Turno_con_el_agente_caido_da_502_con_su_codigo()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+        f.Bridge.TurnoFalla = "sin_credencial";
+        try
+        {
+            var r = await Cliente().PostAsJsonAsync(
+                $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "hola" });
+
+            Assert.Equal(HttpStatusCode.BadGateway, r.StatusCode);
+            Assert.Contains("sin_credencial", await r.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            f.Bridge.TurnoFalla = null;
+        }
+    }
+
+    [Fact]
+    public async Task Turno_sin_sesion_da_401()
+    {
+        var r = await Cliente(conSesion: false).PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "hola" });
+        Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
 }

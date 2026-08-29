@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildWebhookServer } from '../src/webhook.js';
 import { InMemoryStore } from '../src/store.js';
+import { LimitePorChat } from '../src/vinculacion.js';
 
 const SECRET = 'secreto-de-webhook-largo';
 const API_TOKEN = 'token-de-api-del-bridge';
@@ -302,5 +303,125 @@ describe('POST /aprobaciones/:id/decision', () => {
 
     expect(r.statusCode).toBe(400);
     expect(mandadas).toEqual([]);
+  });
+});
+
+describe('POST /turnos', () => {
+  const USUARIO = '99999999-9999-4999-8999-999999999999';
+
+  function conPipeline(overrides: Record<string, unknown> = {}) {
+    const store = new InMemoryStore();
+    const app = buildWebhookServer(bot, SECRET, {
+      store,
+      apiToken: API_TOKEN,
+      pipeline: {
+        store,
+        defaultAgent: 'c1' as const,
+        project: 'demo',
+        limite: new LimitePorChat(),
+        ask: async (req) => ({
+          jobId: req.jobId,
+          sessionId: 'sess-1',
+          text: 'la respuesta',
+          turns: 1,
+        }),
+        transcribe: async () => '',
+        listarAgentes: async () => [],
+        ...overrides,
+      } as never,
+    });
+    return { app, store };
+  }
+
+  const cuerpoOk = {
+    proyectoId: PROYECTO,
+    proyecto: 'demo',
+    agente: 'c1',
+    usuarioId: USUARIO,
+    prompt: 'hola',
+  };
+
+  // Este endpoint corre un turno de verdad contra un agente: sin bearer,
+  // cualquiera le habla a los agentes de cualquiera.
+  it('sin bearer da 401', async () => {
+    const { app } = conPipeline();
+    const r = await app.inject({ method: 'POST', url: '/turnos', payload: cuerpoOk });
+    expect(r.statusCode).toBe(401);
+  });
+
+  it('un turno del panel devuelve la respuesta del agente', async () => {
+    const { app } = conPipeline();
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/turnos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: cuerpoOk,
+    });
+
+    expect(r.statusCode).toBe(200);
+    expect(r.json().texto).toBe('la respuesta');
+    expect(r.json().jobId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  // El turno del panel deja la sesion donde la va a buscar el de Telegram: eso
+  // ES el hilo compartido.
+  it('guarda la sesion del proyecto', async () => {
+    const { app, store } = conPipeline();
+
+    await app.inject({
+      method: 'POST',
+      url: '/turnos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: cuerpoOk,
+    });
+
+    expect(await store.getSession(PROYECTO, 'c1')).toBe('sess-1');
+  });
+
+  it('rechaza un agente con forma invalida', async () => {
+    const { app } = conPipeline();
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/turnos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { ...cuerpoOk, agente: 'c0' },
+    });
+
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('rechaza un proyecto con forma rara', async () => {
+    const { app } = conPipeline();
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/turnos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { ...cuerpoOk, proyecto: '../otro' },
+    });
+
+    expect(r.statusCode).toBe(400);
+  });
+
+  // 502 y no 500: lo que fallo es el agente del otro lado, y el `code` es el
+  // suyo. El panel lo traduce a algo que se pueda leer.
+  it('un agente caido da 502 con su codigo', async () => {
+    const { app } = conPipeline({
+      ask: async () => {
+        throw new Error('agent_unavailable');
+      },
+    });
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/turnos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: cuerpoOk,
+    });
+
+    expect(r.statusCode).toBe(502);
+    expect(r.json().code).toBe('agent_unavailable');
   });
 });
