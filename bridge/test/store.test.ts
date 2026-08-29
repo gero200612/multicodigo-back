@@ -131,6 +131,25 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
   },
 );
 
+describe('InMemoryStore', () => {
+  it('deleteSessions borra las sesiones de un agente y deja las de los otros', async () => {
+    const store = new InMemoryStore();
+    await store.setSession(1, 'c1', 'demo', 's-c1-demo');
+    await store.setSession(1, 'c1', 'otro', 's-c1-otro');
+    await store.setSession(1, 'c2', 'demo', 's-c2-demo');
+
+    expect(await store.deleteSessions('c1')).toBe(2);
+    expect(await store.getSession(1, 'c1', 'demo')).toBeUndefined();
+    expect(await store.getSession(1, 'c1', 'otro')).toBeUndefined();
+    expect(await store.getSession(1, 'c2', 'demo')).toBe('s-c2-demo');
+  });
+
+  it('deleteSessions de un agente sin sesiones no es un error', async () => {
+    const store = new InMemoryStore();
+    expect(await store.deleteSessions('c1')).toBe(0);
+  });
+});
+
 const url = process.env.DATABASE_URL;
 
 /**
@@ -294,8 +313,23 @@ describe.skipIf(!url)('PgStore contra postgres real', () => {
     await pool.query(`DELETE FROM proyectos WHERE id = $1`, [proyectoId]);
   });
 
+  // PgStore es el que corre en produccion; InMemoryStore es solo para tests. Sin
+  // este caso, un DELETE con la columna mal escrita o la condicion invertida no
+  // lo detecta nadie hasta que se pierdan sesiones de verdad.
+  it('deleteSessions borra las filas de ese agente en la tabla real', async () => {
+    await store.setSession(999, 'c1', 'demo', 's-c1-demo');
+    await store.setSession(999, 'c2', 'demo', 's-c2-demo');
+
+    expect(await store.deleteSessions('c1')).toBe(1);
+    expect(await store.getSession(999, 'c1', 'demo')).toBeUndefined();
+    expect(await store.getSession(999, 'c2', 'demo')).toBe('s-c2-demo');
+  });
+
   afterAll(async () => {
-    if (store) await store['pool'].query('DELETE FROM chat_state WHERE chat_id = 999');
+    if (store) {
+      await store['pool'].query('DELETE FROM chat_state WHERE chat_id = 999');
+      await store['pool'].query('DELETE FROM agent_session WHERE chat_id = 999');
+    }
   });
 });
 

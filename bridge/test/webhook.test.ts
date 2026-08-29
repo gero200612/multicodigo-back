@@ -71,6 +71,51 @@ describe('GET /jobs', () => {
   });
 });
 
+describe('DELETE /agents/:id/sessions', () => {
+  // Lo llama el login de la VM al sacar o rotar la cuenta de un slot. Tiene que
+  // barrer las sesiones de ESE agente y no tocar las de los demas: un chat que
+  // venia hablando con otro slot no tiene por que perder su hilo.
+  it('borra las sesiones de ese agente y deja las de los otros', async () => {
+    const { app, store } = await servidor();
+    await store.setSession(1, 'c1' as const, 'demo', 's-c1-demo');
+    await store.setSession(1, 'c1' as const, 'otro', 's-c1-otro');
+    await store.setSession(1, 'c2' as const, 'demo', 's-c2-demo');
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/agents/c1/sessions',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ borradas: 2 });
+    expect(await store.getSession(1, 'c1' as const, 'demo')).toBeUndefined();
+    expect(await store.getSession(1, 'c2' as const, 'demo')).toBe('s-c2-demo');
+  });
+
+  // Sin bearer esto seria un boton para que cualquiera te corte todos los hilos
+  // de conversacion abiertos.
+  it('sin bearer no borra nada', async () => {
+    const { app, store } = await servidor();
+    await store.setSession(1, 'c1' as const, 'demo', 's-c1-demo');
+
+    const res = await app.inject({ method: 'DELETE', url: '/agents/c1/sessions' });
+
+    expect(res.statusCode).toBe(401);
+    expect(await store.getSession(1, 'c1' as const, 'demo')).toBe('s-c1-demo');
+  });
+
+  it('rechaza un id que no tiene forma de slot', async () => {
+    const { app } = await servidor();
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/agents/..%2Fetc/sessions',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe('POST /vinculos', () => {
   it('rechaza sin bearer', async () => {
     const { app } = await servidor();

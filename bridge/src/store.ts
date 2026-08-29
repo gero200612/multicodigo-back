@@ -113,6 +113,15 @@ export interface Store {
   setActiveProject(chatId: number, project: string): Promise<void>;
   getSession(chatId: number, agent: AgentId, project: string): Promise<string | undefined>;
   setSession(chatId: number, agent: AgentId, project: string, sessionId: string): Promise<void>;
+  /**
+   * Borra todas las sesiones de un agente. Devuelve cuantas borro.
+   *
+   * Se llama cuando se saca o se rota la cuenta de un slot: los session_id
+   * apuntan a transcripts que viven en el volumen de ESA cuenta, y con la
+   * cuenta nueva ya no existen. Sin esto, el proximo mensaje falla en el resume
+   * con un error que no le dice nada a nadie.
+   */
+  deleteSessions(agent: AgentId): Promise<number>;
   createJob(job: NewJob): Promise<string>;
   /**
    * Las ultimas peticiones, de la mas nueva a la mas vieja.
@@ -194,6 +203,18 @@ export class InMemoryStore implements Store {
   }
   async setSession(chatId: number, agent: AgentId, project: string, sessionId: string) {
     this.sessions.set(this.key(chatId, agent, project), sessionId);
+  }
+  async deleteSessions(agent: AgentId) {
+    let borradas = 0;
+    for (const clave of [...this.sessions.keys()]) {
+      // La clave es chatId:agente:proyecto. Se parte por el separador y se
+      // compara el campo del medio: un `includes(agent)` daria falsos positivos
+      // con un proyecto que se llame como un slot.
+      if (clave.split(':')[1] !== agent) continue;
+      this.sessions.delete(clave);
+      borradas += 1;
+    }
+    return borradas;
   }
   async createJob(job: NewJob) {
     const id = randomUUID();
@@ -380,6 +401,11 @@ export class PgStore implements Store {
        DO UPDATE SET session_id = $4, updated_at = now()`,
       [chatId, agent, project, sessionId],
     );
+  }
+
+  async deleteSessions(agent: AgentId) {
+    const r = await this.pool.query('DELETE FROM agent_session WHERE agent = $1', [agent]);
+    return r.rowCount ?? 0;
   }
 
   async createJob(job: NewJob) {

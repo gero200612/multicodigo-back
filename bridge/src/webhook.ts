@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Bot } from 'grammy';
-import { isTokenValid } from '@multicodigo/shared';
+import { AgentId, isTokenValid } from '@multicodigo/shared';
 import { z } from 'zod';
 import type { Store } from './store.js';
 
@@ -15,7 +15,7 @@ const JOBS_POR_DEFECTO = 20;
  * es como arranco. Los tests que no la ejercitan no la pasan.
  */
 export interface ApiDeps {
-  store: Pick<Store, 'recentJobs' | 'canjearCodigo' | 'usuarioDeChat'>;
+  store: Pick<Store, 'recentJobs' | 'canjearCodigo' | 'usuarioDeChat' | 'deleteSessions'>;
   /**
    * Credencial propia, distinta del secret del webhook.
    *
@@ -96,6 +96,28 @@ export function buildWebhookServer(
         desconocido: 'codigo_desconocido',
       } as const;
       return reply.code(400).send({ code: codigos[r], message: 'el codigo no sirve' });
+    });
+
+    /**
+     * Invalida las sesiones de un slot.
+     *
+     * Lo llama el servicio de login de la VM cuando saca o rota la cuenta de un
+     * slot: los `session_id` guardados apuntan a transcripts que viven en el
+     * HOME de ESA cuenta, y con la cuenta nueva ya no existen. Sin este barrido,
+     * el proximo mensaje de cada chat falla en el `--resume` con un error que no
+     * le dice nada a nadie.
+     */
+    app.delete<{ Params: { id: string } }>('/agents/:id/sessions', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      // El id entra en una consulta y sale en la respuesta: se valida contra la
+      // forma de slot del contrato antes de tocar nada.
+      const agent = AgentId.safeParse(request.params.id);
+      if (!agent.success) {
+        return reply.code(404).send({ code: 'unknown_agent', message: request.params.id });
+      }
+      return reply.code(200).send({ borradas: await api.store.deleteSessions(agent.data) });
     });
   }
 
