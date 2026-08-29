@@ -76,3 +76,10 @@ public sealed record NuevoNombre(
 
 public sealed record CuerpoVinculo(
     [property: JsonPropertyName("codigo")] string? Codigo);
+
+public sealed record CuerpoProyecto(
+    [property: JsonPropertyName("nombre")] string? Nombre);
+
+public sealed record CuerpoInvitacion(
+    [property: JsonPropertyName("email")] string? Email,
+    [property: JsonPropertyName("rol")] string? Rol);

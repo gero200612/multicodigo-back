@@ -30,6 +30,15 @@ public interface IProyectosClient
 {
     /// <summary>El nombre del proyecto, o null si el usuario no es miembro.</summary>
     Task<string?> NombreSiEsMiembroAsync(string jwt, string proyectoId, CancellationToken ct = default);
+    /// <summary>Crea el proyecto y deja al usuario como dueño. Devuelve su id.</summary>
+    Task<string> CrearAsync(string jwt, string nombre, CancellationToken ct = default);
+    /// <summary>El rol del usuario en el proyecto, o null si no es miembro.</summary>
+    Task<string?> RolDeAsync(string jwt, string proyectoId, CancellationToken ct = default);
+    /// <summary>Invita por mail y devuelve el token. Solo para dueños.</summary>
+    Task<string> InvitarAsync(
+        string jwt, string proyectoId, string email, string rol, CancellationToken ct = default);
+    /// <summary>Acepta una invitacion y devuelve el proyecto al que entro.</summary>
+    Task<string> AceptarAsync(string jwt, string token, CancellationToken ct = default);
 }
 
 public interface IAgentesClient
@@ -456,6 +465,79 @@ public sealed class ProyectosClient(HttpClient http, string anonKey, ILogger<Pro
             log.LogError(ex, "no se pudo leer el proyecto {Proyecto}", proyectoId);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Llama a una funcion de la base reenviando el JWT del usuario.
+    ///
+    /// Las escrituras que dependen de un rol —crear, invitar, aceptar— viven
+    /// como funciones SECURITY DEFINER: hacen su propio chequeo contra
+    /// `auth.uid()` y escriben solo lo suyo. Asi el panel no necesita una
+    /// service_role, que podria todo sobre todas las tablas.
+    /// </summary>
+    private async Task<HttpResponseMessage> RpcAsync(
+        string jwt, string funcion, object cuerpo, CancellationToken ct)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, $"/rest/v1/rpc/{funcion}");
+        req.Headers.TryAddWithoutValidation("apikey", anonKey);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+        req.Content = JsonContent.Create(cuerpo, options: Json.Opciones);
+        return await http.SendAsync(req, ct);
+    }
+
+    public async Task<string> CrearAsync(string jwt, string nombre, CancellationToken ct = default)
+    {
+        var res = await RpcAsync(jwt, "crear_proyecto", new { p_nombre = nombre }, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            var detalle = await res.Content.ReadAsStringAsync(ct);
+            log.LogError("no se pudo crear el proyecto {Nombre}: {Status} {Detalle}",
+                nombre, (int)res.StatusCode, detalle);
+            // Un nombre repetido choca con el UNIQUE de la tabla. Es lo unico
+            // que el usuario puede arreglar solo, asi que se distingue.
+            throw new UpstreamException(detalle.Contains("proyectos_nombre_key", StringComparison.Ordinal)
+                ? "nombre_repetido"
+                : "proyecto_no_creado");
+        }
+        // Una funcion que devuelve un escalar vuelve como JSON pelado: "uuid".
+        return (await res.Content.ReadFromJsonAsync<string>(Json.Opciones, ct))
+               ?? throw new UpstreamException("proyecto_no_creado");
+    }
+
+    public async Task<string?> RolDeAsync(string jwt, string proyectoId, CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(proyectoId, out _)) return null;
+        var res = await RpcAsync(jwt, "mi_rol", new { p_proyecto = proyectoId }, ct);
+        if (!res.IsSuccessStatusCode) return null;
+        return await res.Content.ReadFromJsonAsync<string>(Json.Opciones, ct);
+    }
+
+    public async Task<string> InvitarAsync(
+        string jwt, string proyectoId, string email, string rol, CancellationToken ct = default)
+    {
+        var res = await RpcAsync(
+            jwt, "invitar", new { p_proyecto = proyectoId, p_email = email, p_rol = rol }, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            // 403 del RPC = no sos dueño. La funcion es la que decide, no el
+            // panel: es el chequeo que no se puede saltear llamando al RPC.
+            if (res.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+            {
+                throw new UpstreamException("no_sos_dueño");
+            }
+            log.LogError("no se pudo invitar a {Proyecto}: {Status}", proyectoId, (int)res.StatusCode);
+            throw new UpstreamException("invitacion_fallo");
+        }
+        return (await res.Content.ReadFromJsonAsync<string>(Json.Opciones, ct))
+               ?? throw new UpstreamException("invitacion_fallo");
+    }
+
+    public async Task<string> AceptarAsync(string jwt, string token, CancellationToken ct = default)
+    {
+        var res = await RpcAsync(jwt, "aceptar_invitacion", new { p_token = token }, ct);
+        if (!res.IsSuccessStatusCode) throw new UpstreamException("invitacion_no_sirve");
+        return (await res.Content.ReadFromJsonAsync<string>(Json.Opciones, ct))
+               ?? throw new UpstreamException("invitacion_no_sirve");
     }
 }
 

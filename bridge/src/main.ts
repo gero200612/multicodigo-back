@@ -50,6 +50,7 @@ const MIGRACIONES = [
   '008_rls.sql',
   '009_agentes_insert.sql',
   '010_realtime.sql',
+  '011_proyectos_rpc.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 

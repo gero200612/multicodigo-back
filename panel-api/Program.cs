@@ -336,6 +336,117 @@ api.MapPut("/slots/{slot}/nombre", async (
     }
 });
 
+// --- proyectos, miembros e invitaciones ------------------------------------
+
+api.MapPost("/proyectos", async (
+    CuerpoProyecto cuerpo,
+    HttpContext ctx,
+    IProyectosClient proyectos,
+    CancellationToken ct) =>
+{
+    var nombre = cuerpo.Nombre?.Trim() ?? "";
+    // El nombre termina en /srv/work/<agente>/<proyecto>: una barra lo sacaria
+    // del directorio. Se valida aca ademas de en el CHECK de la tabla porque un
+    // 400 explicado es mejor que un 500 con un error de Postgres adentro.
+    if (!NombreDeProyecto().IsMatch(nombre) || nombre is "." or "..")
+    {
+        return Results.BadRequest(new
+        {
+            code = "nombre_invalido",
+            message = "letras, números, punto, guión y guión bajo",
+        });
+    }
+
+    try
+    {
+        // Crear el proyecto y quedar como dueño son UNA operacion, en la base:
+        // un proyecto sin dueño no lo puede ver nadie, ni siquiera quien lo
+        // creo, y no habria forma de arreglarlo desde la aplicacion.
+        var id = await proyectos.CrearAsync(await JwtDe(ctx), nombre, ct);
+        return Results.Created($"/api/proyectos/{id}", new { id, nombre });
+    }
+    catch (UpstreamException ex) when (ex.Message == "nombre_repetido")
+    {
+        return Results.Conflict(new { code = "nombre_repetido", message = "ya existe un proyecto con ese nombre" });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        app.Logger.LogError(ex, "no se pudo crear el proyecto {Nombre}", nombre);
+        return Results.Json(
+            new { code = "proyecto_no_creado", message = "no se pudo crear el proyecto" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+api.MapPost("/proyectos/{proyectoId}/invitaciones", async (
+    string proyectoId,
+    CuerpoInvitacion cuerpo,
+    HttpContext ctx,
+    IProyectosClient proyectos,
+    CancellationToken ct) =>
+{
+    var email = cuerpo.Email?.Trim() ?? "";
+    if (email.Length == 0 || !email.Contains('@', StringComparison.Ordinal))
+    {
+        return Results.BadRequest(new { code = "email_invalido", message = "hace falta un mail" });
+    }
+    if (cuerpo.Rol is not ("dueño" or "miembro"))
+    {
+        return Results.BadRequest(new { code = "rol_invalido", message = "el rol es dueño o miembro" });
+    }
+
+    var jwt = await JwtDe(ctx);
+
+    // Invitar es de dueños. Sin esto, un miembro suma gente al proyecto ajeno.
+    // La funcion de la base lo vuelve a chequear —ese es el que no se puede
+    // saltear— pero aca se puede contestar un 403 limpio en vez de un 503.
+    var rol = await proyectos.RolDeAsync(jwt, proyectoId, ct);
+    if (rol != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+    try
+    {
+        var token = await proyectos.InvitarAsync(jwt, proyectoId, email, cuerpo.Rol, ct);
+        // El token se devuelve y se comparte a mano: mandar el mail pide un
+        // proveedor y un dominio verificado, y es lo unico que falta para que
+        // esto sea una invitacion de verdad.
+        return Results.Ok(new { token });
+    }
+    catch (UpstreamException ex) when (ex.Message == "no_sos_dueño")
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        app.Logger.LogError(ex, "no se pudo invitar a {Proyecto}", proyectoId);
+        return Results.Json(
+            new { code = "invitacion_fallo", message = "no se pudo crear la invitación" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+api.MapPost("/invitaciones/{token}/aceptar", async (
+    string token,
+    HttpContext ctx,
+    IProyectosClient proyectos,
+    CancellationToken ct) =>
+{
+    try
+    {
+        var proyectoId = await proyectos.AceptarAsync(await JwtDe(ctx), token, ct);
+        return Results.Ok(new { proyectoId });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        // Vencida, usada o inexistente se contestan igual: distinguirlas le
+        // diria a alguien con un token al azar si existe o no.
+        return Results.BadRequest(new
+        {
+            code = "invitacion_no_sirve",
+            message = "esa invitación no sirve: puede estar vencida o ya usada",
+        });
+    }
+});
+
 // --- agentes de un proyecto -----------------------------------------------
 
 /// <remarks>
@@ -439,4 +550,15 @@ app.MapFallbackToFile("index.html");
 app.Run();
 
 /// <summary>Existe para que WebApplicationFactory pueda tipar el host en los tests.</summary>
-public partial class Program;
+public partial class Program
+{
+    /// <summary>
+    /// La forma de un nombre de proyecto.
+    ///
+    /// Espeja el CHECK `proyectos_nombre_forma` de la tabla: los dos tienen que
+    /// moverse juntos. Existe del lado del panel solo para poder contestar un
+    /// 400 explicado en vez de un 500 con un error de Postgres adentro.
+    /// </summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"\A[a-zA-Z0-9._-]+\z")]
+    private static partial System.Text.RegularExpressions.Regex NombreDeProyecto();
+}

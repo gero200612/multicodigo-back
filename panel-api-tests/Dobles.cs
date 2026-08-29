@@ -54,6 +54,45 @@ public sealed class ProyectosFalso : IProyectosClient
     public Task<string?> NombreSiEsMiembroAsync(
         string jwt, string proyectoId, CancellationToken ct = default)
         => Task.FromResult(Mios.TryGetValue(proyectoId, out var n) ? n : null);
+
+    public List<(string Nombre, string Jwt)> Creados { get; } = [];
+    public string IdQueDevuelve { get; set; } = "33333333-3333-4333-8333-333333333333";
+    /// <summary>Un nombre que ya existe: el UNIQUE de la tabla lo rechaza.</summary>
+    public bool NombreRepetido { get; set; }
+
+    public Task<string> CrearAsync(string jwt, string nombre, CancellationToken ct = default)
+    {
+        if (NombreRepetido) throw new UpstreamException("nombre_repetido");
+        Creados.Add((nombre, jwt));
+        return Task.FromResult(IdQueDevuelve);
+    }
+
+    /// <summary>El rol del usuario por proyecto. Ausente = no es miembro.</summary>
+    public Dictionary<string, string> Roles { get; } = [];
+
+    public Task<string?> RolDeAsync(string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult(Roles.TryGetValue(proyectoId, out var r) ? r : null);
+
+    public List<(string ProyectoId, string Email, string Rol)> Invitados { get; } = [];
+    public string TokenQueDevuelve { get; set; } = "un-token-de-invitacion";
+
+    public Task<string> InvitarAsync(
+        string jwt, string proyectoId, string email, string rol, CancellationToken ct = default)
+    {
+        Invitados.Add((proyectoId, email, rol));
+        return Task.FromResult(TokenQueDevuelve);
+    }
+
+    public List<string> Aceptados { get; } = [];
+    /// <summary>La invitacion vencida, usada o inexistente.</summary>
+    public bool InvitacionNoSirve { get; set; }
+
+    public Task<string> AceptarAsync(string jwt, string token, CancellationToken ct = default)
+    {
+        if (InvitacionNoSirve) throw new UpstreamException("invitacion_no_sirve");
+        Aceptados.Add(token);
+        return Task.FromResult(IdQueDevuelve);
+    }
 }
 
 public sealed class AgentesFalso : IAgentesClient

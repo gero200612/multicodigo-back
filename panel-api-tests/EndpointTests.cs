@@ -466,4 +466,132 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
             f.Gateway.SinSlots = false;
         }
     }
+
+    // --- proyectos e invitaciones ---
+
+    private sealed record RespuestaProyecto(string Id, string Nombre);
+    private sealed record RespuestaToken(string Token);
+
+    [Fact]
+    public async Task Crear_proyecto_devuelve_el_id()
+    {
+        var r = await Cliente().PostAsJsonAsync("/api/proyectos", new { nombre = "nuevo" });
+
+        Assert.Equal(HttpStatusCode.Created, r.StatusCode);
+        var cuerpo = await r.Content.ReadFromJsonAsync<RespuestaProyecto>();
+        Assert.Equal("nuevo", cuerpo!.Nombre);
+        // Y se creo a nombre del usuario de la sesion: el JWT que llega a la
+        // base es el suyo, y la funcion lo usa para dejarlo como dueño.
+        Assert.Contains(f.Proyectos.Creados, c => c.Nombre == "nuevo" && c.Jwt == AuthDePrueba.TokenValido);
+    }
+
+    /// <summary>
+    /// El nombre termina en /srv/work/&lt;agente&gt;/&lt;proyecto&gt;: una barra lo
+    /// sacaría del directorio.
+    /// </summary>
+    [Fact]
+    public async Task Crear_proyecto_rechaza_un_nombre_con_barra()
+    {
+        var r = await Cliente().PostAsJsonAsync("/api/proyectos", new { nombre = "con/barra" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.DoesNotContain(f.Proyectos.Creados, c => c.Nombre.Contains('/'));
+    }
+
+    [Fact]
+    public async Task Crear_proyecto_sin_sesion_da_401()
+    {
+        var r = await Cliente(conSesion: false).PostAsJsonAsync("/api/proyectos", new { nombre = "nuevo" });
+        Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
+
+    /// <summary>
+    /// Con rol 'miembro', invitar da 403: si no, cualquiera suma gente al
+    /// proyecto de otro.
+    /// </summary>
+    [Fact]
+    public async Task Invitar_requiere_ser_dueño()
+    {
+        f.Proyectos.Roles[ProyectoDePrueba] = "miembro";
+        try
+        {
+            var r = await Cliente().PostAsJsonAsync(
+                $"/api/proyectos/{ProyectoDePrueba}/invitaciones",
+                new { email = "alguien@ejemplo.test", rol = "miembro" });
+
+            Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+            Assert.Empty(f.Proyectos.Invitados);
+        }
+        finally
+        {
+            f.Proyectos.Roles.Remove(ProyectoDePrueba);
+        }
+    }
+
+    [Fact]
+    public async Task Invitar_como_dueño_devuelve_el_token()
+    {
+        f.Proyectos.Roles[ProyectoDePrueba] = "dueño";
+        try
+        {
+            var r = await Cliente().PostAsJsonAsync(
+                $"/api/proyectos/{ProyectoDePrueba}/invitaciones",
+                new { email = "alguien@ejemplo.test", rol = "miembro" });
+
+            Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+            var cuerpo = await r.Content.ReadFromJsonAsync<RespuestaToken>();
+            Assert.False(string.IsNullOrEmpty(cuerpo!.Token));
+        }
+        finally
+        {
+            f.Proyectos.Roles.Remove(ProyectoDePrueba);
+            f.Proyectos.Invitados.Clear();
+        }
+    }
+
+    [Fact]
+    public async Task Invitar_con_un_rol_que_no_existe_da_400()
+    {
+        f.Proyectos.Roles[ProyectoDePrueba] = "dueño";
+        try
+        {
+            var r = await Cliente().PostAsJsonAsync(
+                $"/api/proyectos/{ProyectoDePrueba}/invitaciones",
+                new { email = "alguien@ejemplo.test", rol = "administrador" });
+
+            Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        }
+        finally
+        {
+            f.Proyectos.Roles.Remove(ProyectoDePrueba);
+        }
+    }
+
+    /// <summary>
+    /// Vencida, usada o inexistente se contestan igual: distinguirlas le diría
+    /// a alguien con un token al azar si existe o no.
+    /// </summary>
+    [Fact]
+    public async Task Aceptar_una_invitacion_que_no_sirve_da_400()
+    {
+        f.Proyectos.InvitacionNoSirve = true;
+        try
+        {
+            var r = await Cliente().PostAsync("/api/invitaciones/lo-que-sea/aceptar", null);
+            Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        }
+        finally
+        {
+            f.Proyectos.InvitacionNoSirve = false;
+        }
+    }
+
+    [Fact]
+    public async Task Aceptar_una_invitacion_valida_devuelve_el_proyecto()
+    {
+        var r = await Cliente().PostAsync("/api/invitaciones/un-token/aceptar", null);
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Contains("un-token", f.Proyectos.Aceptados);
+    }
 }
