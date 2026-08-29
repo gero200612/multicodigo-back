@@ -1,4 +1,6 @@
 import { AgentId } from '@multicodigo/shared';
+import type { Boton } from './render.js';
+import type { Proyecto, AgenteResumen } from './store.js';
 
 /**
  * El tope que impone Telegram al callback_data de un boton.
@@ -55,4 +57,33 @@ export function parseMenuData(data: string): MenuData | null {
   }
 
   return null;
+}
+
+export interface AgenteConEstado extends AgenteResumen {
+  arriba: boolean;
+  tieneCuenta: boolean;
+}
+
+/** Un dato que no matchea ningun prefijo: el boton existe y no hace nada. */
+const INERTE = 'x:';
+
+export function tecladoDeProyectos(proyectos: Proyecto[]): Boton[][] {
+  // Uno por fila: los nombres de proyecto son largos y dos por fila se cortan
+  // en la pantalla de un celular.
+  return proyectos.map((p) => [{ label: p.nombre, data: datosDeProyecto(p.id) }]);
+}
+
+export function tecladoDeAgentes(agentes: AgenteConEstado[]): Boton[][] {
+  return agentes.map((a) => {
+    const marca = !a.tieneCuenta ? '⚠' : a.arriba ? '●' : '○';
+    const nombre = a.nombre ?? a.slot.toUpperCase();
+    return [
+      {
+        label: `${marca} ${nombre}`,
+        // Un slot sin cuenta lleva a un turno que falla con sin_credencial.
+        // Mejor que el boton no haga nada y el texto lo explique.
+        data: a.tieneCuenta ? datosDeAgente(a.slot) : INERTE,
+      },
+    ];
+  });
 }

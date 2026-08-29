@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { datosDeProyecto, datosDeAgente, parseMenuData, TOPE_CALLBACK_DATA } from '../src/menu.js';
+import {
+  datosDeProyecto,
+  datosDeAgente,
+  parseMenuData,
+  tecladoDeProyectos,
+  tecladoDeAgentes,
+  TOPE_CALLBACK_DATA,
+} from '../src/menu.js';
 
 const UUID = '11111111-1111-4111-8111-111111111111';
 
@@ -40,5 +47,48 @@ describe('callback_data del menu', () => {
     expect(parseMenuData('')).toBeNull();
     expect(parseMenuData('p')).toBeNull();
     expect(parseMenuData('x:algo')).toBeNull();
+  });
+});
+
+describe('teclados', () => {
+  it('un boton por proyecto, uno por fila', () => {
+    const t = tecladoDeProyectos([
+      { id: UUID, nombre: 'demo' },
+      { id: '22222222-2222-4222-8222-222222222222', nombre: 'otro' },
+    ]);
+    expect(t).toHaveLength(2);
+    expect(t[0]![0]!.label).toBe('demo');
+    expect(t[0]![0]!.data).toBe(`p:${UUID}`);
+  });
+
+  it('el agente muestra su nombre y su estado', () => {
+    const t = tecladoDeAgentes([
+      { slot: 'c1', nombre: 'Backend', arriba: true, tieneCuenta: true },
+      { slot: 'c2', nombre: undefined, arriba: false, tieneCuenta: true },
+      { slot: 'c3', nombre: 'Nuevo', arriba: false, tieneCuenta: false },
+    ]);
+
+    expect(t[0]![0]!.label).toBe('● Backend');
+    // Sin nombre cae al slot en mayusculas, que es como se lo nombra en el chat.
+    expect(t[1]![0]!.label).toBe('○ C2');
+    expect(t[2]![0]!.label).toBe('⚠ Nuevo');
+  });
+
+  it('el agente sin cuenta no se puede elegir', () => {
+    // Elegirlo llevaria a un turno que falla con sin_credencial. Es mejor que
+    // el boton no haga nada y el texto explique.
+    const t = tecladoDeAgentes([
+      { slot: 'c3', nombre: 'Nuevo', arriba: false, tieneCuenta: false },
+    ]);
+    expect(t[0]![0]!.data).toBe('x:');
+  });
+
+  // Un boton que cambia de lugar entre dos llamados es un toque equivocado.
+  it('respeta el orden en el que le llegan', () => {
+    const t = tecladoDeAgentes([
+      { slot: 'c2', nombre: undefined, arriba: true, tieneCuenta: true },
+      { slot: 'c1', nombre: undefined, arriba: true, tieneCuenta: true },
+    ]);
+    expect(t.map((f) => f[0]!.data)).toEqual(['a:c2', 'a:c1']);
   });
 });
