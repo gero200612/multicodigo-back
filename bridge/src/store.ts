@@ -143,8 +143,18 @@ export interface Store {
   /** true si es la primera vez que se ve esta aprobacion (o sea: hay que anunciarla). */
   recordApproval(rec: ApprovalRecord): Promise<boolean>;
   getApproval(approvalId: string): Promise<ApprovalRecord | undefined>;
-  /** Toma la decision de forma atomica. Solo el primer llamado gana. */
-  claimApproval(approvalId: string, decision: ApprovalDecision): Promise<ClaimResult>;
+  /**
+   * Toma la decision de forma atomica. Solo el primer llamado gana.
+   *
+   * `quien` es opcional porque la decision desde Telegram no tiene un usuario
+   * del panel detras hasta que el chat este vinculado, y no vale la pena
+   * bloquear una aprobacion por no saber a quien anotar.
+   */
+  claimApproval(
+    approvalId: string,
+    decision: ApprovalDecision,
+    quien?: { usuarioId?: string; desde: 'telegram' | 'panel' },
+  ): Promise<ClaimResult>;
   setAwaitingFeedback(chatId: number, approvalId: string | null): Promise<void>;
   getAwaitingFeedback(chatId: number): Promise<string | undefined>;
   /**
@@ -268,7 +278,11 @@ export class InMemoryStore implements Store {
     return this.approvals.get(approvalId)?.rec;
   }
 
-  async claimApproval(approvalId: string, _decision: ApprovalDecision): Promise<ClaimResult> {
+  async claimApproval(
+    approvalId: string,
+    _decision: ApprovalDecision,
+    _quien?: { usuarioId?: string; desde: 'telegram' | 'panel' },
+  ): Promise<ClaimResult> {
     const entry = this.approvals.get(approvalId);
     if (!entry) return 'unknown';
     if (entry.decided) return 'already_decided';
@@ -518,16 +532,28 @@ export class PgStore implements Store {
     };
   }
 
-  async claimApproval(approvalId: string, decision: ApprovalDecision): Promise<ClaimResult> {
+  async claimApproval(
+    approvalId: string,
+    decision: ApprovalDecision,
+    quien?: { usuarioId?: string; desde: 'telegram' | 'panel' },
+  ): Promise<ClaimResult> {
     // UN solo UPDATE condicional, no un SELECT y despues un UPDATE: dos toques
     // del boton que lleguen a la vez son dos requests concurrentes de Render, y
     // con SELECT-despues-UPDATE los dos leerian "pendiente" y los dos
     // avanzarian. `WHERE decision IS NULL` lo resuelve en la base.
     const r = await this.pool.query(
-      `UPDATE approvals SET decision = $2, feedback = $3, decided_at = now()
-       WHERE approval_id = $1 AND decision IS NULL
+      `UPDATE approvals
+          SET decision = $2, feedback = $3, decided_at = now(),
+              decidido_por = $4, decidido_desde = $5
+        WHERE approval_id = $1 AND decision IS NULL
        RETURNING approval_id`,
-      [approvalId, decision.decision, decision.feedback ?? null],
+      [
+        approvalId,
+        decision.decision,
+        decision.feedback ?? null,
+        quien?.usuarioId ?? null,
+        quien?.desde ?? null,
+      ],
     );
     if ((r.rowCount ?? 0) > 0) return 'claimed';
     const existe = await this.pool.query('SELECT 1 FROM approvals WHERE approval_id = $1', [

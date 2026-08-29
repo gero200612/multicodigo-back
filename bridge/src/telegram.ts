@@ -6,6 +6,7 @@ import { parseMenuData } from './menu.js';
 import type { Boton } from './render.js';
 import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
+import { decidir } from './decisiones.js';
 import type { Store } from './store.js';
 
 export function renderOutcome(outcome: PipelineOutcome): string {
@@ -78,6 +79,8 @@ function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
 export interface DecidirDeps {
   store: Store;
   send: (agent: AgentId, approvalId: string, decision: ApprovalDecision) => Promise<void>;
+  /** Refleja la decision en el mensaje del chat. Puede fallar sin consecuencias. */
+  editarMensaje: (chatId: number, messageId: number, texto: string) => Promise<void>;
 }
 
 /**
@@ -90,6 +93,7 @@ export interface DecidirDeps {
 export async function decidirAprobacion(
   accion: { kind: BotonKind; approvalId: string },
   deps: DecidirDeps,
+  usuarioId?: string,
 ): Promise<{ text: string }> {
   const rec = await deps.store.getApproval(accion.approvalId);
   if (!rec) return { text: 'Esa aprobacion no existe o ya no esta en juego.' };
@@ -104,17 +108,15 @@ export async function decidirAprobacion(
   const decision: ApprovalDecision =
     accion.kind === 'ok' ? { decision: 'allow' } : { decision: 'deny' };
 
-  const claim = await deps.store.claimApproval(accion.approvalId, decision);
-  if (claim === 'already_decided') return { text: 'Eso ya lo habias contestado.' };
-  if (claim === 'unknown') return { text: 'Esa aprobacion no existe.' };
+  // Por `decidir` y no a mano: es el unico camino, y ahora la misma aprobacion
+  // se puede tocar tambien desde el panel. Dos caminos serian dos reglas.
+  const r = await decidir(
+    { store: deps.store, send: deps.send, editarMensaje: deps.editarMensaje },
+    { approvalId: accion.approvalId, decision, desde: 'telegram', usuarioId },
+  );
 
-  // El turno vuelve a correr: tanto aprobar como rechazar lo desbloquean —con
-  // deny el agente sigue vivo hasta que decida cerrar—. `setJobStatus` no
-  // reabre un job ya cerrado, asi que una decision que llega tarde no lo
-  // revive.
-  await deps.store.setJobStatus(rec.jobId, 'running');
-
-  await deps.send(rec.agent, accion.approvalId, decision);
+  if (r === 'ya_decidida') return { text: 'Eso ya estaba contestado.' };
+  if (r === 'desconocida') return { text: 'Esa aprobacion no existe.' };
   return { text: accion.kind === 'ok' ? '✅ Aprobado.' : '❌ Rechazado.' };
 }
 
@@ -154,10 +156,22 @@ export function buildBot(deps: BridgeDeps): Bot {
       return;
     }
 
-    const { text } = await decidirAprobacion(accion, {
-      store: deps.store,
-      send: deps.sendDecision,
-    });
+    // Quien decidio, para poder mostrarlo despues en el panel. Puede no haber:
+    // un chat sin vincular igual puede tocar el boton de una aprobacion vieja.
+    const usuarioId = ctx.chat ? await deps.store.usuarioDeChat(ctx.chat.id) : undefined;
+
+    const { text } = await decidirAprobacion(
+      {
+        ...accion,
+      },
+      {
+        store: deps.store,
+        send: deps.sendDecision,
+        editarMensaje: (chatId, messageId, texto) =>
+          ctx.api.editMessageText(chatId, messageId, texto).then(() => undefined),
+      },
+      usuarioId,
+    );
 
     // answerCallbackQuery saca el relojito del boton; sin esto el cliente lo
     // deja "cargando" hasta que se rinde.
@@ -196,8 +210,20 @@ export function buildBot(deps: BridgeDeps): Bot {
       await deps.store.setAwaitingFeedback(ctx.chat.id, null);
       if (rec && motivo) {
         const decision: ApprovalDecision = { decision: 'deny', feedback: motivo };
-        const claim = await deps.store.claimApproval(esperando, decision);
-        if (claim === 'claimed') await deps.sendDecision(rec.agent, esperando, decision);
+        await decidir(
+          {
+            store: deps.store,
+            send: deps.sendDecision,
+            editarMensaje: (chatId, messageId, texto) =>
+              ctx.api.editMessageText(chatId, messageId, texto).then(() => undefined),
+          },
+          {
+            approvalId: esperando,
+            decision,
+            desde: 'telegram',
+            usuarioId: await deps.store.usuarioDeChat(ctx.chat.id),
+          },
+        );
         await ctx.reply('Listo, se lo paso y sigue con eso en cuenta.');
       }
       return;
