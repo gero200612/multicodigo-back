@@ -149,7 +149,7 @@ describe('decidirAprobacion', () => {
     const mandadas: unknown[] = [];
     const r = await decidirAprobacion(
       { kind: 'ok', approvalId: ID },
-      { store, send: async (_a, _id, d) => void mandadas.push(d) },
+      { store, send: async (_a, _id, d) => void mandadas.push(d), editarMensaje: async () => {} },
     );
     expect(mandadas).toEqual([{ decision: 'allow' }]);
     expect(r.text).toContain('Aprobado');
@@ -159,7 +159,7 @@ describe('decidirAprobacion', () => {
   it('el segundo toque no vuelve a mandar la decision', async () => {
     const store = await conAprobacion();
     let veces = 0;
-    const deps = { store, send: async () => void (veces += 1) };
+    const deps = { store, send: async () => void (veces += 1), editarMensaje: async () => {} };
     await decidirAprobacion({ kind: 'ok', approvalId: ID }, deps);
     const r = await decidirAprobacion({ kind: 'ok', approvalId: ID }, deps);
     expect(veces).toBe(1);
@@ -171,7 +171,7 @@ describe('decidirAprobacion', () => {
     const mandadas: unknown[] = [];
     await decidirAprobacion(
       { kind: 'no', approvalId: ID },
-      { store, send: async (_a, _id, d) => void mandadas.push(d) },
+      { store, send: async (_a, _id, d) => void mandadas.push(d), editarMensaje: async () => {} },
     );
     expect(mandadas).toEqual([{ decision: 'deny' }]);
   });
@@ -182,7 +182,7 @@ describe('decidirAprobacion', () => {
     let veces = 0;
     const r = await decidirAprobacion(
       { kind: 'ex', approvalId: ID },
-      { store, send: async () => void (veces += 1) },
+      { store, send: async () => void (veces += 1), editarMensaje: async () => {} },
     );
     expect(veces).toBe(0);
     expect(await store.getAwaitingFeedback(5)).toBe(ID);
@@ -192,7 +192,7 @@ describe('decidirAprobacion', () => {
   it('una aprobacion desconocida no rompe', async () => {
     const r = await decidirAprobacion(
       { kind: 'ok', approvalId: '99999999-9999-4999-8999-999999999999' },
-      { store: new InMemoryStore(), send: async () => {} },
+      { store: new InMemoryStore(), send: async () => {}, editarMensaje: async () => {} },
     );
     expect(r.text).toContain('no');
   });
@@ -230,7 +230,7 @@ describe('el job cambia de estado con la aprobacion', () => {
 
     await decidirAprobacion(
       { kind: 'ok', approvalId: 'otra' },
-      { store, send: async () => {} },
+      { store, send: async () => {}, editarMensaje: async () => {} },
     );
     expect(await store.getJobStatus(jobId)).toBe('running');
   });
@@ -243,7 +243,7 @@ describe('el job cambia de estado con la aprobacion', () => {
     await store.recordApproval({ ...REC, jobId });
     await store.setJobStatus(jobId, 'awaiting_approval');
 
-    await decidirAprobacion({ kind: 'no', approvalId: ID }, { store, send: async () => {} });
+    await decidirAprobacion({ kind: 'no', approvalId: ID }, { store, send: async () => {}, editarMensaje: async () => {} });
     expect(await store.getJobStatus(jobId)).toBe('running');
   });
 
@@ -253,10 +253,10 @@ describe('el job cambia de estado con la aprobacion', () => {
       chatId: 5, agent: 'c1', project: 'demo', prompt: 'x', messageId: 9,
     });
     await store.recordApproval({ ...REC, jobId });
-    await decidirAprobacion({ kind: 'ok', approvalId: ID }, { store, send: async () => {} });
+    await decidirAprobacion({ kind: 'ok', approvalId: ID }, { store, send: async () => {}, editarMensaje: async () => {} });
     await store.finishJob(jobId, 'done');
     // El segundo toque llega tarde; no puede reabrir el job.
-    await decidirAprobacion({ kind: 'ok', approvalId: ID }, { store, send: async () => {} });
+    await decidirAprobacion({ kind: 'ok', approvalId: ID }, { store, send: async () => {}, editarMensaje: async () => {} });
     expect(await store.getJobStatus(jobId)).toBe('done');
   });
 });
