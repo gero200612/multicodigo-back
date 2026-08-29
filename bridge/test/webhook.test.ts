@@ -319,7 +319,7 @@ describe('POST /turnos', () => {
         defaultAgent: 'c1' as const,
         project: 'demo',
         limite: new LimitePorChat(),
-        ask: async (req) => ({
+        ask: async (req: { jobId: string }) => ({
           jobId: req.jobId,
           sessionId: 'sess-1',
           text: 'la respuesta',
