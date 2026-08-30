@@ -195,6 +195,7 @@ const TODAS_LAS_MIGRACIONES = [
   '011_proyectos_rpc.sql',
   '012_aprobaciones.sql',
   '013_sesiones_por_proyecto.sql',
+  '014_vinculos_visibles.sql',
 ].map(migracion);
 
 describe.skipIf(!url)('PgStore contra postgres real', () => {

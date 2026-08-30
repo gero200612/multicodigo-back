@@ -430,18 +430,64 @@ public sealed class HistorialClient(HttpClient http, string anonKey, ILogger<His
         }
     }
 
+    private sealed record FilaAgente(string ProyectoId);
+
+    /// <summary>
+    /// De que proyecto es el slot.
+    ///
+    /// Hace falta para GUARDAR: la policy de INSERT de `test_runs` exige
+    /// `proyecto_id IS NOT NULL AND es_miembro(proyecto_id)`, asi que una fila
+    /// sin proyecto la rechaza RLS. Para LEER no se pasa: ahi filtra la policy
+    /// sola, que es el punto de tenerla.
+    ///
+    /// Devuelve null si el slot no esta anotado —un contenedor que existe en
+    /// Docker pero que nadie registro en un proyecto—: ahi el test corre igual,
+    /// solo que no queda en el historial.
+    /// </summary>
+    private async Task<string?> ProyectoDelSlotAsync(string jwt, string slot, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"/rest/v1/agentes?slot=eq.{slot}&select=proyecto_id&limit=1";
+            var res = await http.SendAsync(Pedido(HttpMethod.Get, url, jwt), ct);
+            if (!res.IsSuccessStatusCode) return null;
+            var filas = await res.Content.ReadFromJsonAsync<List<FilaAgente>>(Json.Opciones, ct);
+            return filas?.FirstOrDefault()?.ProyectoId;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            log.LogError(ex, "no se pudo resolver el proyecto de {Slot}", slot);
+            return null;
+        }
+    }
+
     public async Task GuardarAsync(string jwt, string slot, ResultadoTest r, CancellationToken ct = default)
     {
         if (!Slot.EsValido(slot)) return;
+
+        var proyectoId = await ProyectoDelSlotAsync(jwt, slot, ct);
+        if (proyectoId is null)
+        {
+            // Sin proyecto no se puede guardar, y no es un error del test: el
+            // agente contesto igual. Se avisa, porque el sintoma que ve el
+            // usuario es una tarjeta que dice "Sin probar" despues de probar.
+            log.LogWarning(
+                "el test de {Slot} no se guarda: el slot no esta anotado en ningun proyecto", slot);
+            return;
+        }
+
         try
         {
             var req = Pedido(HttpMethod.Post, "/rest/v1/test_runs", jwt);
             req.Content = JsonContent.Create(
-                new { slot, ok = r.Ok, cuando = r.Cuando, detalle = r.Detalle }, options: Json.Opciones);
+                new { slot, ok = r.Ok, cuando = r.Cuando, detalle = r.Detalle, proyecto_id = proyectoId },
+                options: Json.Opciones);
             var res = await http.SendAsync(req, ct);
             if (!res.IsSuccessStatusCode)
             {
-                log.LogError("no se pudo guardar el test de {Slot}: {Status}", slot, (int)res.StatusCode);
+                var detalle = await res.Content.ReadAsStringAsync(ct);
+                log.LogError("no se pudo guardar el test de {Slot}: {Status} {Detalle}",
+                    slot, (int)res.StatusCode, detalle);
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
