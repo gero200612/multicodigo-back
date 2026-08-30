@@ -112,6 +112,27 @@ public interface INombresClient
 /// <summary>Lo que el llamador puede leer: nunca la excepción cruda.</summary>
 public sealed class UpstreamException(string mensaje) : Exception(mensaje);
 
+/// <summary>
+/// Un tope de tiempo para UN request, sin tocar el del cliente.
+///
+/// Hace falta porque `HttpClient.Timeout` es de todo el cliente y un mismo
+/// servicio tiene operaciones de escalas distintas: al gateway se le piden
+/// listados que refrescan una pagina (segundos) y turnos de Claude (minutos).
+/// Con un solo numero, o se corta el turno o se cuelga la pagina.
+///
+/// El token del llamador se encadena: si el navegador corta la conexion, el
+/// pedido al servicio de abajo se cancela igual.
+/// </summary>
+internal static class Topes
+{
+    public static CancellationTokenSource De(CancellationToken ct, int segundos)
+    {
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(segundos));
+        return cts;
+    }
+}
+
 internal static class Json
 {
     public static readonly JsonSerializerOptions Opciones = new(JsonSerializerDefaults.Web);
@@ -127,7 +148,10 @@ public sealed class GatewayClient(HttpClient http, string proyecto) : IGatewayCl
 
     public async Task<IReadOnlyList<Agente>> AgentesAsync(CancellationToken ct = default)
     {
-        var r = await http.GetFromJsonAsync<RespuestaAgentes>("/agents", Json.Opciones, ct)
+        // Corto: lo pide una pagina que se refresca sola, y un gateway colgado
+        // no puede hacerla esperar.
+        using var cts = Topes.De(ct, 20);
+        var r = await http.GetFromJsonAsync<RespuestaAgentes>("/agents", Json.Opciones, cts.Token)
                 ?? throw new UpstreamException("el gateway devolvió una respuesta vacía");
         return [.. r.Agents.Select(a => new Agente(a.Id, a.Arriba))];
     }
@@ -140,7 +164,9 @@ public sealed class GatewayClient(HttpClient http, string proyecto) : IGatewayCl
     /// </summary>
     public async Task<string> CrearSlotAsync(string proyecto, CancellationToken ct = default)
     {
-        var res = await http.PostAsJsonAsync("/slots", new { proyecto }, Json.Opciones, ct);
+        // Crear un contenedor es rapido, pero no instantaneo como un listado.
+        using var cts = Topes.De(ct, 60);
+        var res = await http.PostAsJsonAsync("/slots", new { proyecto }, Json.Opciones, cts.Token);
         // Un 409 no es "el gateway se rompió": es "no quedan slots", que el
         // usuario tiene que poder distinguir de una caída.
         if (res.StatusCode == HttpStatusCode.Conflict) throw new UpstreamException("sin_slots");
@@ -153,7 +179,10 @@ public sealed class GatewayClient(HttpClient http, string proyecto) : IGatewayCl
     private sealed record RespuestaSlot(string Slot);
 
     public async Task<Cola> ColaAsync(CancellationToken ct = default)
-        => await http.GetFromJsonAsync<Cola>("/queue", Json.Opciones, ct) ?? Cola.Vacia;
+    {
+        using var cts = Topes.De(ct, 20);
+        return await http.GetFromJsonAsync<Cola>("/queue", Json.Opciones, cts.Token) ?? Cola.Vacia;
+    }
 
     /// <summary>
     /// Un turno trivial contra el agente.
@@ -207,7 +236,9 @@ public sealed class LoginClient(HttpClient http) : ILoginClient
 
     public async Task<EstadoCredencial> EstadoAsync(string slot, CancellationToken ct = default)
     {
-        var r = await http.GetFromJsonAsync<RespuestaEstado>($"/login/{slot}/status", Json.Opciones, ct);
+        // Corto: es parte del refresco de la pagina.
+        using var cts = Topes.De(ct, 20);
+        var r = await http.GetFromJsonAsync<RespuestaEstado>($"/login/{slot}/status", Json.Opciones, cts.Token);
         return r is null
             ? new EstadoCredencial(false)
             : new EstadoCredencial(r.Tiene, r.Account, r.LoadedAt, r.LoginAbierto);
@@ -230,7 +261,10 @@ public sealed class LoginClient(HttpClient http) : ILoginClient
             await http.PostAsJsonAsync($"/login/{slot}/token", new { token, account }, Json.Opciones, ct), ct);
 
     public async Task BorrarAsync(string slot, CancellationToken ct = default)
-        => await LanzarSiFallo(await http.DeleteAsync($"/login/{slot}", ct), ct);
+    {
+        using var cts = Topes.De(ct, 30);
+        await LanzarSiFallo(await http.DeleteAsync($"/login/{slot}", cts.Token), cts.Token);
+    }
 
     /// <summary>
     /// El servicio de login manda un mensaje pensado para leer. Se propaga ese

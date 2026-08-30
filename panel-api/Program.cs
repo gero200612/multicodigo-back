@@ -73,27 +73,32 @@ builder.Services.Configure<JsonOptions>(o =>
         System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull;
 });
 
-static void ConBearer(HttpClient c, string baseUrl, string token)
+/// <summary>
+/// El tope del CLIENTE es el de su operacion mas larga, y las cortas ponen el
+/// suyo por request (ver `Topes` en Clientes.cs).
+///
+/// Al reves no se puede: `HttpClient.Timeout` vale para todo el cliente, y un
+/// mismo servicio tiene operaciones de escalas muy distintas. Con 20 segundos
+/// para todo, el boton "probar" —que corre un turno de Claude, de minutos—
+/// moria siempre con "The request was canceled due to the configured
+/// HttpClient.Timeout of 20 seconds elapsing".
+/// </summary>
+static void ConBearer(HttpClient c, string baseUrl, string token, int minutos = 11)
 {
     c.BaseAddress = new Uri(baseUrl);
     c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-    // Corto: esto lo pide una pagina que se refresca sola. Un servicio colgado
-    // no puede hacer esperar a la pagina entera.
-    c.Timeout = TimeSpan.FromSeconds(20);
+    c.Timeout = TimeSpan.FromMinutes(minutos);
 }
 
 builder.Services.AddHttpClient<IGatewayClient, GatewayClient>(c => ConBearer(c, gatewayUrl, gatewayToken))
     .AddTypedClient<IGatewayClient>((http, _) => new GatewayClient(http, proyecto));
-builder.Services.AddHttpClient<ILoginClient, LoginClient>(c => ConBearer(c, loginUrl, loginToken));
-builder.Services.AddHttpClient<IBridgeClient, BridgeClient>(c =>
-{
-    ConBearer(c, bridgeUrl, bridgeToken);
-    // Los 20 segundos de ConBearer alcanzan para "ultimas peticiones" y para
-    // una decision, pero NO para un turno: un turno de Claude tarda minutos, y
-    // con el timeout corto el panel corta la espera de algo que va a terminar
-    // bien. Once minutos es lo mismo que espera el bridge del gateway.
-    c.Timeout = TimeSpan.FromMinutes(11);
-});
+// El login tambien tarda: `start` levanta el CLI y espera a que imprima la URL,
+// y `code` espera el intercambio completo con Anthropic. Con 20 segundos, el
+// paso 2 del login fallaba justo cuando estaba por salir bien.
+builder.Services.AddHttpClient<ILoginClient, LoginClient>(c => ConBearer(c, loginUrl, loginToken, 5));
+// Once minutos, que es lo mismo que espera el bridge del gateway: por aca pasan
+// los turnos del chat del panel.
+builder.Services.AddHttpClient<IBridgeClient, BridgeClient>(c => ConBearer(c, bridgeUrl, bridgeToken));
 builder.Services.AddHttpClient<IHistorialClient, HistorialClient>(c =>
     {
         // Sin Authorization por defecto: acá el bearer es el JWT del USUARIO y
