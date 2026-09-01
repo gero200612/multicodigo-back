@@ -85,6 +85,17 @@ const ERROR_TEXT: Record<string, string> = {
   agent_timeout: 'El agente tardo demasiado y corte la espera.',
   unknown_agent: 'Ese agente no existe.',
   unknown_project: 'Ese proyecto no esta configurado en el agente.',
+  // Este mensaje dice QUE hacer y no solo que fallo. Sin el, el sintoma que
+  // llegaba era "spawn node ENOENT" convertido en "algo fallo del lado del
+  // servidor": el agente arranca con un cwd que no existe porque sin repos no
+  // hay worktree, y eso manda a mirar el servidor cuando lo que falta es
+  // vincular un repo.
+  sin_repos:
+    'Ese proyecto no tiene ningun repo vinculado, asi que el agente no tiene sobre que trabajar. ' +
+    'Vincula uno desde el panel, en Configuracion.',
+  usage_limit:
+    'Ese agente se quedo sin tokens y no habia otro libre para seguir. ' +
+    'Proba mas tarde o carga otra cuenta.',
   approval_timeout: 'Me quede esperando tu OK 15 minutos y lo cancele.',
   forbidden_branch: 'Esa branch no se puede tocar.',
   git_failed: 'Git fallo. Fijate el detalle en el ultimo mensaje del agente.',
