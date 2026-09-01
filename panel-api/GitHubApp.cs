@@ -126,6 +126,36 @@ public sealed class GitHubApp
         return token;
     }
 
+    /// <summary>
+    /// De quién es una instalación, según GitHub.
+    ///
+    /// Se le pregunta a GitHub en vez de creerle al cliente: este valor se
+    /// muestra como "instalada en X", y un dato que llega del navegador puede
+    /// decir cualquier cosa. Además sirve de verificación — sólo la App puede
+    /// consultar sus propias instalaciones.
+    /// </summary>
+    public async Task<string> CuentaDeInstalacionAsync(
+        long installationId, HttpClient http, CancellationToken ct = default)
+    {
+        using var pedido = new HttpRequestMessage(
+            HttpMethod.Get, $"https://api.github.com/app/installations/{installationId}");
+        pedido.Headers.Authorization = new AuthenticationHeaderValue("Bearer", JwtDeLaApp());
+        pedido.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        pedido.Headers.UserAgent.Add(new ProductInfoHeaderValue("multicodigo-panel", "1.0"));
+
+        using var res = await http.SendAsync(pedido, ct);
+        if (!res.IsSuccessStatusCode) throw new UpstreamException($"github_{(int)res.StatusCode}");
+
+        var cuerpo = await res.Content.ReadFromJsonAsync<JsonElement>(ct);
+        return cuerpo.TryGetProperty("account", out var cuenta)
+               && cuenta.TryGetProperty("login", out var login)
+               && login.GetString() is { } nombre
+            ? nombre
+            // Sin romper: el nombre es para mostrar, y una instalación válida sin
+            // login legible es raro pero no es motivo para rechazarla.
+            : "(desconocida)";
+    }
+
     /// <summary>Olvida el token de una instalación. Para cuando GitHub contesta 401.</summary>
     public void Olvidar(long installationId) => _cache.TryRemove(installationId, out _);
 

@@ -712,8 +712,11 @@ api.MapPost("/proyectos/{proyectoId}/github", async (
     string cuenta;
     try
     {
-        await gh.App.TokenDeInstalacionAsync(cuerpo.InstallationId, clientes.CreateClient("github"), ct);
-        cuenta = cuerpo.Cuenta?.Trim() ?? "";
+        // La cuenta sale de GitHub y NO del cuerpo del pedido: se muestra como
+        // "instalada en X", y un dato que llega del navegador puede decir
+        // cualquier cosa. La llamada es la verificacion y el dato a la vez.
+        cuenta = await gh.App.CuentaDeInstalacionAsync(
+            cuerpo.InstallationId, clientes.CreateClient("github"), ct);
     }
     catch (UpstreamException ex)
     {

@@ -111,9 +111,12 @@ public sealed record CuerpoRepo(
 public sealed record CuerpoTokenInterno(
     [property: JsonPropertyName("installation_id")] long InstallationId);
 
+/// <summary>
+/// Lo que el front manda al volver de GitHub. Solo el id: la cuenta se le
+/// pregunta a GitHub, no se le cree al navegador.
+/// </summary>
 public sealed record CuerpoInstalacion(
-    [property: JsonPropertyName("installation_id")] long InstallationId,
-    [property: JsonPropertyName("cuenta")] string? Cuenta);
+    [property: JsonPropertyName("installation_id")] long InstallationId);
 
 public sealed record CuerpoTurno(
     [property: JsonPropertyName("prompt")] string? Prompt);
