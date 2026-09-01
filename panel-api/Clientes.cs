@@ -155,6 +155,31 @@ internal static class Topes
 internal static class Json
 {
     public static readonly JsonSerializerOptions Opciones = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Para leer lo que devuelve PostgREST, que usa los nombres de las COLUMNAS.
+    ///
+    /// `Opciones` es camelCase, asi que una columna con underscore no matchea
+    /// nunca: buscando `installationId` contra un `installation_id` que llega,
+    /// System.Text.Json no encuentra nada, **no avisa**, y deja la propiedad en
+    /// su valor por defecto. Un `long` queda en 0 y un `string` en null.
+    ///
+    /// Asi se perdio el installation_id de la GitHub App: llegaba en 0, el panel
+    /// pedia un token para la instalacion 0, GitHub contestaba 404 y la pantalla
+    /// mostraba "ningun repo" — tres capas mas abajo de la causa.
+    ///
+    /// Peor todavia: las columnas de UNA palabra si funcionan (`cuenta`,
+    /// `nombre`, `slot`), asi que el bug aparece solo en algunas y parece otra
+    /// cosa.
+    ///
+    /// Del lado de la ESCRITURA no hace falta —los objetos anonimos ya nombran
+    /// las columnas a mano— pero usarlas igual no molesta: `proyecto_id` ya esta
+    /// en snake_case y la politica lo deja como esta.
+    /// </summary>
+    public static readonly JsonSerializerOptions Supabase = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+    };
 }
 
 // --- gateway --------------------------------------------------------------
@@ -500,7 +525,7 @@ public sealed class InstalacionesClient(
             log.LogWarning("no se pudo leer la instalacion de {Proyecto}", proyectoId);
             return null;
         }
-        var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct);
+        var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Supabase, ct);
         var f = (filas ?? []).FirstOrDefault();
         return f is null ? null : new Instalacion(f.InstallationId, f.Cuenta);
     }
@@ -561,7 +586,7 @@ public sealed class ReposClient(HttpClient http, string anonKey, ILogger<ReposCl
             log.LogWarning("no se pudieron leer los repos de {Proyecto}", proyectoId);
             return [];
         }
-        var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct);
+        var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Supabase, ct);
         return [.. (filas ?? []).Select(f => new Repo(f.Nombre, f.GithubRepo))];
     }
 
@@ -627,7 +652,7 @@ public sealed class HistorialClient(HttpClient http, string anonKey, ILogger<His
         {
             var res = await http.SendAsync(Pedido(HttpMethod.Get, url, jwt), ct);
             if (!res.IsSuccessStatusCode) return null;
-            var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct);
+            var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Supabase, ct);
             var f = filas?.FirstOrDefault();
             return f is null ? null : new ResultadoTest(f.Ok, f.Cuando, f.Detalle);
         }
@@ -659,7 +684,7 @@ public sealed class HistorialClient(HttpClient http, string anonKey, ILogger<His
             var url = $"/rest/v1/agentes?slot=eq.{slot}&select=proyecto_id&limit=1";
             var res = await http.SendAsync(Pedido(HttpMethod.Get, url, jwt), ct);
             if (!res.IsSuccessStatusCode) return null;
-            var filas = await res.Content.ReadFromJsonAsync<List<FilaAgente>>(Json.Opciones, ct);
+            var filas = await res.Content.ReadFromJsonAsync<List<FilaAgente>>(Json.Supabase, ct);
             return filas?.FirstOrDefault()?.ProyectoId;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
@@ -740,7 +765,7 @@ public sealed class NombresClient(HttpClient http, string anonKey, ILogger<Nombr
                 return new Dictionary<string, string>();
             }
 
-            var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct) ?? [];
+            var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Supabase, ct) ?? [];
             // Se filtra por forma de slot ACÁ y no sólo al escribir: la tabla es
             // de otro proceso y una fila con un slot raro no puede meterse en el
             // mapa que el front usa para indexar.
@@ -816,7 +841,7 @@ public sealed class ProyectosClient(HttpClient http, string anonKey, ILogger<Pro
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
             var res = await http.SendAsync(req, ct);
             if (!res.IsSuccessStatusCode) return null;
-            var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct);
+            var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Supabase, ct);
             return filas?.FirstOrDefault()?.Nombre;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
@@ -922,7 +947,7 @@ public sealed class AgentesClient(HttpClient http, string anonKey, ILogger<Agent
             var res = await http.SendAsync(req, ct);
             if (!res.IsSuccessStatusCode) return new Dictionary<string, string>();
 
-            var filas = await res.Content.ReadFromJsonAsync<List<FilaSlot>>(Json.Opciones, ct);
+            var filas = await res.Content.ReadFromJsonAsync<List<FilaSlot>>(Json.Supabase, ct);
             // RLS ya filtra por membresía, así que lo que vuelve son los slots de
             // los proyectos del usuario y nada más.
             return (filas ?? []).ToDictionary(f => f.Slot, f => f.ProyectoId);

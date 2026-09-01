@@ -7,9 +7,16 @@
     <!-- Un warning de compilacion en este servicio es un error: es el unico
          expuesto a internet y el que administra credenciales. -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- Los tests necesitan ver los tipos internos sin volverlos publicos. -->
-    <InternalsVisibleTo>MultiCodigo.Panel.Tests</InternalsVisibleTo>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Los tests necesitan ver los tipos internos sin volverlos publicos.
+         Va como ITEM y no como propiedad: dentro de PropertyGroup, MSBuild lo
+         acepta sin protestar y no genera nada, asi que la intencion estaba
+         escrita pero no se cumplia. Se descubrio al escribir el test de
+         deserializacion de PostgREST, que necesita ver `Json`. -->
+    <InternalsVisibleTo Include="MultiCodigo.Panel.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Microsoft.AspNetCore.OpenApi salio a proposito: arrastraba

@@ -139,8 +139,37 @@ async function bajarAudio(
   return { bytes: new Uint8Array(await res.arrayBuffer()), mimeType };
 }
 
+/**
+ * Los comandos que Telegram muestra en el boton de menu del chat.
+ *
+ * Sin registrarlos, los comandos existen pero son invisibles: el boton de menu
+ * aparece vacio y hay que adivinar que `/menu` cambia de agente. `getMyCommands`
+ * devolvia `[]`.
+ *
+ * `/start` NO va en la lista aunque el bot lo entienda: Telegram ya lo ofrece
+ * solo al abrir un chat nuevo, y repetirlo en el menu ocupa un renglon para algo
+ * que ya paso.
+ *
+ * Tampoco van `/c1`..`/c6`: son seis renglones para elegir agente, que es
+ * exactamente lo que `/menu` hace con botones y sabiendo cuales tienen cuenta.
+ * Siguen funcionando escritos a mano.
+ */
+const COMANDOS = [
+  { command: 'menu', description: 'Elegir con qué agente hablar' },
+  { command: 'proyecto', description: 'Ver o cambiar el proyecto activo' },
+  { command: 'status', description: 'Qué está haciendo cada agente' },
+  { command: 'vincular', description: 'Conectar este chat con tu cuenta del panel' },
+];
+
 export function buildBot(deps: BridgeDeps): Bot {
   const bot = new Bot(deps.botToken);
+
+  // Al arrancar y sin esperarlo: es una llamada a la API de Telegram que puede
+  // tardar o fallar, y un bot que no levanta porque no pudo publicar su menu
+  // seria peor que un menu vacio. Si falla se loguea y el bot anda igual.
+  void bot.api.setMyCommands(COMANDOS).catch((err: unknown) => {
+    console.error('[bridge] no se pudieron publicar los comandos:', err);
+  });
 
   bot.on('callback_query:data', async (ctx) => {
     const accion = parseApprovalData(ctx.callbackQuery.data);
