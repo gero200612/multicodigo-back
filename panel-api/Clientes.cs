@@ -149,7 +149,7 @@ internal static class Json
 public sealed class GatewayClient(HttpClient http) : IGatewayClient
 {
     private sealed record RespuestaAgentes(List<AgenteDto> Agents);
-    private sealed record AgenteDto(string Id, bool Arriba);
+    private sealed record AgenteDto(string Id, bool Arriba, string? Proyecto);
     private sealed record RespuestaPrompt(string Text);
 
     public async Task<IReadOnlyList<Agente>> AgentesAsync(CancellationToken ct = default)
@@ -159,7 +159,7 @@ public sealed class GatewayClient(HttpClient http) : IGatewayClient
         using var cts = Topes.De(ct, 20);
         var r = await http.GetFromJsonAsync<RespuestaAgentes>("/agents", Json.Opciones, cts.Token)
                 ?? throw new UpstreamException("el gateway devolvió una respuesta vacía");
-        return [.. r.Agents.Select(a => new Agente(a.Id, a.Arriba))];
+        return [.. r.Agents.Select(a => new Agente(a.Id, a.Arriba, a.Proyecto))];
     }
 
     /// <summary>

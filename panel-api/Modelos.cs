@@ -5,7 +5,13 @@ namespace MultiCodigo.Panel;
 /// <summary>
 /// Un slot de agente tal como lo ve el gateway: existe y responde, o no.
 /// </summary>
-public sealed record Agente(string Id, bool Arriba);
+/// <summary>
+/// Un slot segun el gateway.
+///
+/// `Proyecto` es el NOMBRE, no el id: es lo que el gateway maneja, porque es lo
+/// que va en la ruta del worktree. El gateway no sabe que existe Supabase.
+/// </summary>
+public sealed record Agente(string Id, bool Arriba, string? Proyecto = null);
 
 /// <summary>
 /// Metadata de la credencial de un slot. NUNCA incluye el token: el panel no
@@ -53,7 +59,16 @@ public sealed record SlotVista(
     bool Funcionando,
     string? Account = null,
     string? LoadedAt = null,
-    ResultadoTest? UltimoTest = null);
+    ResultadoTest? UltimoTest = null,
+    /// <summary>
+    /// El nombre del proyecto al que esta asignado el slot, o null si no lo esta.
+    ///
+    /// El gateway ya lo devolvia en /agents y el panel lo tiraba. Hace falta
+    /// porque probar un slot ahora corre un turno en el worktree de UN proyecto,
+    /// y el dashboard —que es una vista global de slots— no tenia con que
+    /// decir cual. El front lo cruza con la lista de proyectos para sacar el id.
+    /// </summary>
+    string? Proyecto = null);
 
 /// <summary>Todo lo que la página muestra, en una sola respuesta.</summary>
 public sealed record Panorama(
