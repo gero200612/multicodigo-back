@@ -107,6 +107,14 @@ public sealed record CuerpoRepo(
     [property: JsonPropertyName("nombre")] string? Nombre,
     [property: JsonPropertyName("github_repo")] string? GithubRepo);
 
+/// <summary>Lo que el bridge le manda al panel para que le firme un token.</summary>
+public sealed record CuerpoTokenInterno(
+    [property: JsonPropertyName("installation_id")] long InstallationId);
+
+public sealed record CuerpoInstalacion(
+    [property: JsonPropertyName("installation_id")] long InstallationId,
+    [property: JsonPropertyName("cuenta")] string? Cuenta);
+
 public sealed record CuerpoTurno(
     [property: JsonPropertyName("prompt")] string? Prompt);
 

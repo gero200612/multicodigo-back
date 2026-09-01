@@ -93,6 +93,26 @@ public sealed class ReposFalso : IReposClient
     }
 }
 
+public sealed class InstalacionesFalso : IInstalacionesClient
+{
+    public Instalacion? Fila { get; set; }
+    public List<(string ProyectoId, Instalacion Inst)> Guardadas { get; } = [];
+    /// <summary>Fuerza el caso "sos miembro pero no dueño", que es RLS rechazando.</summary>
+    public bool NoSosDueno { get; set; }
+
+    public Task<Instalacion?> DeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult(Fila);
+
+    public Task GuardarAsync(
+        string jwt, string proyectoId, Instalacion inst, CancellationToken ct = default)
+    {
+        if (NoSosDueno) throw new UpstreamException("no_sos_dueño");
+        Guardadas.Add((proyectoId, inst));
+        return Task.CompletedTask;
+    }
+}
+
 public sealed class ProyectosFalso : IProyectosClient
 {
     public Dictionary<string, string> Mios { get; } = [];
@@ -234,13 +254,17 @@ public sealed class BridgeFalso : IBridgeClient
     /// </summary>
     public List<IReadOnlyList<Repo>> ReposDeCadaTurno { get; } = [];
 
+    /// <summary>El token de github que viajo con cada turno. Null cuando fue por SSH.</summary>
+    public List<string?> TokensDeCadaTurno { get; } = [];
+
     public Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        IReadOnlyList<Repo> repos, CancellationToken ct = default)
+        IReadOnlyList<Repo> repos, string? githubToken, CancellationToken ct = default)
     {
         if (TurnoFalla is not null) throw new UpstreamException(TurnoFalla);
         Turnos.Add((proyectoId, proyecto, slot, usuarioId, prompt));
         ReposDeCadaTurno.Add(repos);
+        TokensDeCadaTurno.Add(githubToken);
         return Task.FromResult(new RespuestaTurno("11111111-1111-4111-8111-111111111111", TextoQueDevuelve));
     }
 

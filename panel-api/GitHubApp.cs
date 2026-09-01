@@ -135,3 +135,21 @@ public sealed class GitHubApp
     private static string Base64Url(byte[] bytes) =>
         Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
+
+/// <summary>
+/// La App configurada, o la ausencia de App.
+///
+/// Envuelve a <see cref="GitHubApp"/> porque el contenedor de dependencias no
+/// acepta un servicio nulo, y porque "no hay App configurada" es un estado
+/// NORMAL de este sistema y no un error: sin ella los turnos van por SSH con la
+/// deploy key, que es el camino de `demo` y del smoke test.
+///
+/// El <paramref name="Slug"/> es el nombre de la App en su URL
+/// (github.com/apps/&lt;slug&gt;), lo unico que hace falta para mandar al usuario a
+/// instalarla.
+/// </summary>
+public sealed record AppDeGitHub(GitHubApp? App, string? Slug)
+{
+    public bool EstaConfigurada => App is not null && !string.IsNullOrWhiteSpace(Slug);
+}
+

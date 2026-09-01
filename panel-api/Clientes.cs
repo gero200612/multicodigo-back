@@ -82,7 +82,7 @@ public interface IBridgeClient
     /// </summary>
     Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        IReadOnlyList<Repo> repos, CancellationToken ct = default);
+        IReadOnlyList<Repo> repos, string? githubToken, CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -344,7 +344,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     /// </summary>
     public async Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        IReadOnlyList<Repo> repos, CancellationToken ct = default)
+        IReadOnlyList<Repo> repos, string? githubToken, CancellationToken ct = default)
     {
         var res = await http.PostAsJsonAsync(
             "/turnos",
@@ -360,6 +360,10 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
                 // convencion camelCase de Json.Opciones no coincidiria y el
                 // bridge contestaria cuerpo_invalido.
                 repos = repos.Select(r => new { nombre = r.Nombre, github_repo = r.GithubRepo }),
+                // El token de instalacion del turno. El bridge lo reenvia al
+                // gateway sin mirarlo, y el gateway NO se lo pasa al agente.
+                // Null cuando el proyecto no instalo la App: ahi se va por SSH.
+                githubToken,
             },
             Json.Opciones,
             ct);
@@ -427,6 +431,85 @@ public interface IReposClient
     Task<IReadOnlyList<Repo>> DeProyectoAsync(string jwt, string proyectoId, CancellationToken ct = default);
     Task VincularAsync(string jwt, string proyectoId, Repo repo, CancellationToken ct = default);
     Task DesvincularAsync(string jwt, string proyectoId, string nombre, CancellationToken ct = default);
+}
+
+/// <summary>La instalacion de la GitHub App de un proyecto.</summary>
+public sealed record Instalacion(long InstallationId, string Cuenta);
+
+/// <summary>
+/// La instalación de la GitHub App de cada proyecto, en Supabase.
+///
+/// Mismo patrón que los repos: se reenvía el JWT del usuario y decide RLS. Con
+/// una diferencia que vive en las policies y no acá — leer es de cualquier
+/// miembro, ESCRIBIR es sólo del dueño. Ver `docs/supabase-github-instalaciones.sql`:
+/// esta fila decide con qué credencial pushean todos los agentes del proyecto.
+/// </summary>
+public interface IInstalacionesClient
+{
+    /// <summary>La instalación del proyecto, o null si todavía no instaló la App.</summary>
+    Task<Instalacion?> DeProyectoAsync(string jwt, string proyectoId, CancellationToken ct = default);
+    Task GuardarAsync(string jwt, string proyectoId, Instalacion inst, CancellationToken ct = default);
+}
+
+public sealed class InstalacionesClient(
+    HttpClient http, string anonKey, ILogger<InstalacionesClient> log) : IInstalacionesClient
+{
+    private sealed record Fila(long InstallationId, string Cuenta);
+
+    private HttpRequestMessage Pedido(HttpMethod metodo, string url, string jwt)
+    {
+        var req = new HttpRequestMessage(metodo, url);
+        req.Headers.TryAddWithoutValidation("apikey", anonKey);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+        return req;
+    }
+
+    public async Task<Instalacion?> DeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+    {
+        var url = $"/rest/v1/github_instalaciones?proyecto_id=eq.{proyectoId}"
+                + "&select=installation_id,cuenta";
+        var res = await http.SendAsync(Pedido(HttpMethod.Get, url, jwt), ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            // Sin instalación el turno igual corre: cae al camino SSH, que es el
+            // de `demo`. Una caída de Supabase no puede voltear todos los turnos.
+            log.LogWarning("no se pudo leer la instalacion de {Proyecto}", proyectoId);
+            return null;
+        }
+        var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct);
+        var f = (filas ?? []).FirstOrDefault();
+        return f is null ? null : new Instalacion(f.InstallationId, f.Cuenta);
+    }
+
+    public async Task GuardarAsync(
+        string jwt, string proyectoId, Instalacion inst, CancellationToken ct = default)
+    {
+        var req = Pedido(HttpMethod.Post, "/rest/v1/github_instalaciones", jwt);
+        // UPSERT: reinstalar la App en GitHub emite un installation_id nuevo, y
+        // el proyecto tiene que quedarse con el último. Sin `resolution=merge`
+        // el segundo intento choca contra la PK y el usuario ve un error después
+        // de haber hecho todo bien.
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal,resolution=merge-duplicates");
+        req.Content = JsonContent.Create(
+            new
+            {
+                proyecto_id = proyectoId,
+                installation_id = inst.InstallationId,
+                cuenta = inst.Cuenta,
+            },
+            options: Json.Opciones);
+
+        var res = await http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            var detalle = await res.Content.ReadAsStringAsync(ct);
+            log.LogError("no se pudo guardar la instalacion de {Proyecto}: {Detalle}", proyectoId, detalle);
+            // 403 es RLS: no sos dueño. Es un caso del usuario y no una caída.
+            throw new UpstreamException(
+                res.StatusCode == HttpStatusCode.Forbidden ? "no_sos_dueño" : "instalacion_no_guardada");
+        }
+    }
 }
 
 public sealed class ReposClient(HttpClient http, string anonKey, ILogger<ReposClient> log)

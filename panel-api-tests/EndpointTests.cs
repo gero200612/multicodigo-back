@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
@@ -73,6 +74,7 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
     public ProyectosFalso Proyectos { get; } = new();
     public AgentesFalso Agentes { get; } = new();
     public ReposFalso Repos { get; } = new();
+    public InstalacionesFalso Instalaciones { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -97,6 +99,7 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
             s.AddSingleton<IProyectosClient>(Proyectos);
             s.AddSingleton<IAgentesClient>(Agentes);
             s.AddSingleton<IReposClient>(Repos);
+            s.AddSingleton<IInstalacionesClient>(Instalaciones);
 
             s.AddAuthentication(AuthDePrueba.Esquema)
                 .AddScheme<AuthenticationSchemeOptions, AuthDePrueba>(AuthDePrueba.Esquema, _ => { });
@@ -243,6 +246,123 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
     /// gateway no le habla. Si se quedan aca, el agente trabaja sobre el
     /// catalogo local de la VM, que solo conoce `demo` y `sincroresto`.
     /// </summary>
+    // --- la GitHub App ---
+
+    /// <summary>
+    /// El endpoint interno le da un TOKEN a quien pregunte, asi que el bearer es
+    /// lo unico que lo separa de ser una fabrica de credenciales de GitHub.
+    /// </summary>
+    [Fact]
+    public async Task ElEndpointInternoSinBearerDa401()
+    {
+        var r = await f.CreateClient().PostAsJsonAsync(
+            "/interno/github/token", new { installation_id = 42 });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task ElEndpointInternoConUnBearerAjenoDa401()
+    {
+        var c = f.CreateClient();
+        c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "otro-token-largo");
+
+        var r = await c.PostAsJsonAsync("/interno/github/token", new { installation_id = 42 });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
+
+    /// <summary>
+    /// Sin App configurada devuelve null y NO un error: los tests corren sin
+    /// GITHUB_APP_ID, que es el mismo estado que un despliegue que todavia no la
+    /// registro. Ahi los turnos van por SSH.
+    /// </summary>
+    [Fact]
+    public async Task ElEndpointInternoConElBearerDelBridgeContesta()
+    {
+        var c = f.CreateClient();
+        c.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "token-de-prueba-largo-3");
+
+        var r = await c.PostAsJsonAsync("/interno/github/token", new { installation_id = 42 });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+    }
+
+    /// <summary>
+    /// El callback lo abre el navegador siguiendo un redirect de GitHub, sin
+    /// header de autorizacion: si exigiera sesion, instalar la App terminaria
+    /// siempre en un 401.
+    /// </summary>
+    [Fact]
+    public async Task ElCallbackDeGithubNoExigeSesion()
+    {
+        var sinRedirect = f.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+
+        var r = await sinRedirect.GetAsync(
+            $"/api/github/callback?installation_id=42&state={ProyectoDePrueba}");
+
+        Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
+        Assert.Contains("instalacion=42", r.Headers.Location!.ToString());
+    }
+
+    // Los dos valores terminan en un header Location, y llegan de afuera.
+    [Theory]
+    [InlineData("no-es-un-numero", "22222222-2222-4222-8222-222222222222")]
+    [InlineData("42", "no-es-un-uuid")]
+    [InlineData("-1", "22222222-2222-4222-8222-222222222222")]
+    public async Task ElCallbackRechazaLoQueNoTieneForma(string instalacion, string state)
+    {
+        var r = await f.CreateClient().GetAsync(
+            $"/api/github/callback?installation_id={instalacion}&state={state}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task ElEstadoDeGithubDiceSiLaAppEstaConfigurada()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().GetAsync($"/api/proyectos/{ProyectoDePrueba}/github");
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var cuerpo = await r.Content.ReadFromJsonAsync<JsonElement>();
+        // Sin GITHUB_APP_ID en los tests: la pantalla tiene que poder decirlo en
+        // vez de mostrar un boton que no lleva a ningun lado.
+        Assert.False(cuerpo.GetProperty("configurada").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ElEstadoDeGithubDeUnProyectoAjenoDa403()
+    {
+        var r = await Cliente().GetAsync(
+            "/api/proyectos/44444444-4444-4444-8444-444444444444/github");
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+    }
+
+    /// <summary>
+    /// Sin App configurada el turno tiene que correr igual, sin token: es el
+    /// camino SSH, el mismo que usan `demo` y el smoke test. Un problema con
+    /// GitHub degrada el push, no impide que el agente trabaje.
+    /// </summary>
+    [Fact]
+    public async Task SinAppElTurnoCorreIgualYSinToken()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "mi-proyecto";
+        f.Instalaciones.Fila = new Instalacion(42, "gero");
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "hola" });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Null(f.Bridge.TokensDeCadaTurno[^1]);
+    }
+
     [Fact]
     public async Task LosReposVinculadosViajanConElTurno()
     {

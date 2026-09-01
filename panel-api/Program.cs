@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -25,6 +26,15 @@ var loginUrl = Requerido("LOGIN_URL");
 var loginToken = Requerido("LOGIN_TOKEN");
 var bridgeUrl = Requerido("BRIDGE_URL");
 var bridgeToken = Requerido("BRIDGE_API_TOKEN");
+// La GitHub App. OPCIONALES a proposito, a diferencia del resto: sin ellas el
+// panel arranca igual y los turnos van por el camino SSH con la deploy key, que
+// es el de `demo` y el del smoke test. Hacerlas obligatorias volteria el panel
+// de cualquiera que todavia no registro la App.
+var githubAppId = cfg["GITHUB_APP_ID"];
+var githubAppKey = cfg["GITHUB_APP_PRIVATE_KEY"];
+// El slug es para armar la URL de instalacion: github.com/apps/<slug>/installations/new
+var githubAppSlug = cfg["GITHUB_APP_SLUG"];
+
 var supabaseUrl = Requerido("SUPABASE_URL").TrimEnd('/');
 var supabaseAnonKey = Requerido("SUPABASE_ANON_KEY");
 // Aca vivia `var proyecto = cfg["PANEL_PROJECT"] ?? "demo";`.
@@ -123,6 +133,32 @@ builder.Services.AddHttpClient<IReposClient, ReposClient>(c =>
     .AddTypedClient<IReposClient>((http, sp) =>
         new ReposClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<ReposClient>>()));
 
+builder.Services.AddHttpClient<IInstalacionesClient, InstalacionesClient>(c =>
+    {
+        c.BaseAddress = new Uri(supabaseUrl);
+        c.Timeout = TimeSpan.FromSeconds(10);
+    })
+    .AddTypedClient<IInstalacionesClient>((http, sp) =>
+        new InstalacionesClient(
+            http, supabaseAnonKey, sp.GetRequiredService<ILogger<InstalacionesClient>>()));
+
+// La App como singleton: adentro tiene el cache de tokens por instalacion, y uno
+// por pedido lo tiraria en cada turno — que es justo lo que el cache evita.
+//
+// Null cuando no hay App configurada. Los endpoints que la necesitan contestan
+// que no esta configurada; los turnos siguen andando por SSH.
+GitHubApp? githubApp = null;
+if (!string.IsNullOrWhiteSpace(githubAppId) && !string.IsNullOrWhiteSpace(githubAppKey))
+{
+    // Se construye ACA y no perezosamente: si la clave esta mal, el panel tiene
+    // que no arrancar. Descubrirlo en el primer push del usuario es peor.
+    githubApp = new GitHubApp(githubAppId, githubAppKey, () => DateTimeOffset.UtcNow);
+}
+builder.Services.AddSingleton(new AppDeGitHub(githubApp, githubAppSlug));
+// El HttpClient con el que se le habla a la API de GitHub. Aparte del de
+// Supabase: otro host, otro timeout, y que se caiga uno no puede afectar al otro.
+builder.Services.AddHttpClient("github", c => c.Timeout = TimeSpan.FromSeconds(15));
+
 builder.Services.AddHttpClient<INombresClient, NombresClient>(c =>
     {
         c.BaseAddress = new Uri(supabaseUrl);
@@ -199,10 +235,106 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 // pueden salir por aca.
 app.MapGet("/config.json", () => Results.Ok(new ConfigFront(supabaseUrl, supabaseAnonKey)));
 
+/// <remarks>
+/// El token de GitHub de un proyecto, para el BRIDGE.
+///
+/// Existe por un pliegue del diseño: los turnos de Telegram entran por el
+/// bridge, que no pasa por el panel, y firmar un token necesita la clave privada
+/// de la App. La alternativa era duplicar la firma en TypeScript, y eso pone la
+/// clave privada en dos servicios y deja dos implementaciones de la misma
+/// criptografia que mantener sincronizadas. Asi la clave vive en UN solo lado.
+///
+/// Fuera de /api a proposito: /api exige el JWT de un USUARIO y aca no hay
+/// usuario — es un servicio hablandole a otro. Se autentica con el
+/// BRIDGE_API_TOKEN que los dos ya comparten.
+///
+/// El bridge le habla por la red interna de Docker (http://panel:8091), asi que
+/// esto no se publica en ningun hostname. Aun asi lleva bearer: la contencion
+/// por topologia y el bearer son capas distintas, y este endpoint devuelve una
+/// credencial.
+/// </remarks>
+app.MapPost("/interno/github/token", async (
+    CuerpoTokenInterno cuerpo, HttpContext ctx, AppDeGitHub gh,
+    IHttpClientFactory clientes, CancellationToken ct) =>
+{
+    var header = ctx.Request.Headers.Authorization.ToString();
+    var recibido = header.StartsWith("Bearer ", StringComparison.Ordinal)
+        ? header["Bearer ".Length..]
+        : "";
+    // Comparacion en tiempo fijo: un `==` sobre strings corta en el primer byte
+    // distinto, y eso deja adivinar el token de a un caracter midiendo el tiempo.
+    if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(recibido), Encoding.UTF8.GetBytes(bridgeToken)))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (gh.App is null || cuerpo.InstallationId <= 0)
+    {
+        // Sin token, y no es un error: el bridge sigue y el turno va por SSH.
+        return Results.Ok(new { token = (string?)null });
+    }
+
+    try
+    {
+        // El panel FIRMA, no busca. Quien busca la instalacion es el bridge, en
+        // su propio Postgres, donde conecta como `postgres` y no pasa por RLS.
+        //
+        // Es a proposito y no una division arbitraria: para leer la fila desde
+        // aca sin un usuario, el panel necesitaria la service_role key — que
+        // ademas de dar acceso total a la base administra auth, y el panel es el
+        // unico servicio expuesto a internet. Esa credencial se le nego en el
+        // diseño original (ver el comentario de HistorialClient) y no hay razon
+        // para dársela ahora.
+        var token = await gh.App.TokenDeInstalacionAsync(
+            cuerpo.InstallationId, clientes.CreateClient("github"), ct);
+        return Results.Ok(new { token });
+    }
+    catch (UpstreamException)
+    {
+        return Results.Ok(new { token = (string?)null });
+    }
+}).AllowAnonymous();
+
 var api = app.MapGroup("/api").RequireAuthorization();
 
 /// El JWT crudo del usuario, ya verificado por el middleware. Se lo reenvia a
 /// Supabase para que RLS decida: el panel no tiene credencial de escritura.
+/// <summary>
+/// El token de instalacion del proyecto, o null.
+///
+/// Null en los tres casos normales, y ninguno es un error: no hay App
+/// configurada en este despliegue, el proyecto no la instalo, o GitHub no
+/// contesto. En los tres el turno sigue y el gateway usa SSH.
+/// </summary>
+static async Task<string?> TokenDeGitHub(
+    AppDeGitHub gh,
+    IInstalacionesClient instalaciones,
+    IHttpClientFactory clientes,
+    ILoggerFactory logs,
+    string jwt,
+    string proyectoId,
+    CancellationToken ct)
+{
+    if (gh.App is null) return null;
+
+    var inst = await instalaciones.DeProyectoAsync(jwt, proyectoId, ct);
+    if (inst is null) return null;
+
+    try
+    {
+        return await gh.App.TokenDeInstalacionAsync(inst.InstallationId, clientes.CreateClient("github"), ct);
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        // Se loguea y se sigue. El caso tipico es que el usuario desinstalo la
+        // App desde GitHub: la fila queda y el 404 llega aca.
+        logs.CreateLogger("github").LogWarning(
+            ex, "no se pudo firmar el token de {Proyecto}; el turno va por SSH", proyectoId);
+        return null;
+    }
+}
+
 static async Task<string> JwtDe(HttpContext ctx)
     => await ctx.GetTokenAsync("access_token") ?? "";
 
@@ -502,6 +634,106 @@ api.MapPost("/invitaciones/{token}/aceptar", async (
 /// el slot al gateway, que elige cual y se lo manda al dockerproxy. Recien
 /// despues se anota la fila, porque una fila sin contenedor no significa nada.
 /// </remarks>
+// --- la GitHub App --------------------------------------------------------
+
+/// <remarks>
+/// Tres endpoints para un solo flujo: el panel te manda a GitHub, elegis los
+/// repos con checkboxes, y GitHub vuelve al callback con el installation_id.
+/// </remarks>
+api.MapGet("/proyectos/{proyectoId}/github", async (
+    string proyectoId, HttpContext ctx, AppDeGitHub gh,
+    IProyectosClient proyectos, IInstalacionesClient instalaciones, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var inst = await instalaciones.DeProyectoAsync(jwt, proyectoId, ct);
+    return Results.Ok(new
+    {
+        // Si este despliegue no registro la App, la pantalla tiene que poder
+        // decirlo en vez de mostrar un boton que no lleva a ningun lado.
+        configurada = gh.EstaConfigurada,
+        instalada = inst is not null,
+        cuenta = inst?.Cuenta,
+        // El `state` es el proyecto: es lo que hace que el callback sepa a cual
+        // atribuir la instalacion. GitHub lo devuelve tal cual.
+        url = gh.EstaConfigurada
+            ? $"https://github.com/apps/{gh.Slug}/installations/new?state={proyectoId}"
+            : null,
+    });
+});
+
+/// <remarks>
+/// A donde vuelve GitHub despues de instalar.
+///
+/// Es el unico endpoint de /api que NO exige sesion —lo abre el navegador
+/// siguiendo un redirect de GitHub, sin el header de autorizacion— y por eso
+/// tampoco puede escribir nada: guardar la instalacion pide saber quien sos, y
+/// aca no se sabe. Lo unico que hace es rebotar al front con los datos en la
+/// URL, y el front llama a POST /github con su sesion.
+///
+/// Sin esto habria que confiar en un `state` para autorizar una escritura, que
+/// es exactamente el agujero de CSRF que este rodeo evita.
+/// </remarks>
+app.MapGet("/api/github/callback", (string? installation_id, string? state) =>
+{
+    if (string.IsNullOrWhiteSpace(installation_id) || string.IsNullOrWhiteSpace(state))
+    {
+        return Results.BadRequest(new { code = "callback_incompleto" });
+    }
+    // Los dos valores van a la URL, asi que se validan: llegan de afuera y
+    // terminan en un header Location.
+    if (!long.TryParse(installation_id, out var id) || id <= 0 || !Guid.TryParse(state, out _))
+    {
+        return Results.BadRequest(new { code = "callback_invalido" });
+    }
+    return Results.Redirect($"/proyectos?instalacion={id}&proyecto={state}");
+}).AllowAnonymous();
+
+api.MapPost("/proyectos/{proyectoId}/github", async (
+    string proyectoId, CuerpoInstalacion cuerpo, HttpContext ctx, AppDeGitHub gh,
+    IInstalacionesClient instalaciones, IHttpClientFactory clientes, CancellationToken ct) =>
+{
+    if (gh.App is null) return Results.BadRequest(new { code = "app_no_configurada" });
+    if (cuerpo.InstallationId <= 0) return Results.BadRequest(new { code = "instalacion_invalida" });
+
+    var jwt = await JwtDe(ctx);
+
+    // Se le pregunta a GITHUB de quien es la instalacion, y no se confia en lo
+    // que llego. Sin esto, cualquiera puede postear el installation_id de otro y
+    // apuntar su proyecto a la instalacion ajena — el `state` del callback viaja
+    // por la URL del navegador y no prueba nada.
+    //
+    // Que el token se pueda firmar ES la prueba: solo la App puede hacerlo, y
+    // solo para instalaciones que existen.
+    string cuenta;
+    try
+    {
+        await gh.App.TokenDeInstalacionAsync(cuerpo.InstallationId, clientes.CreateClient("github"), ct);
+        cuenta = cuerpo.Cuenta?.Trim() ?? "";
+    }
+    catch (UpstreamException ex)
+    {
+        return Results.BadRequest(new { code = ex.Message, message = "esa instalación no es válida" });
+    }
+
+    try
+    {
+        // RLS deja escribir solo al dueño: ver docs/supabase-github-instalaciones.sql.
+        await instalaciones.GuardarAsync(jwt, proyectoId, new Instalacion(cuerpo.InstallationId, cuenta), ct);
+        return Results.Ok(new { estado = "ok" });
+    }
+    catch (UpstreamException ex)
+    {
+        return ex.Message == "no_sos_dueño"
+            ? Results.StatusCode(StatusCodes.Status403Forbidden)
+            : Results.BadRequest(new { code = ex.Message });
+    }
+});
+
 // --- repos vinculados -----------------------------------------------------
 
 api.MapGet("/proyectos/{proyectoId}/repos", async (
@@ -631,7 +863,11 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
     HttpContext ctx,
     IProyectosClient proyectos,
     IReposClient repos,
+    IInstalacionesClient instalaciones,
+    AppDeGitHub gh,
+    IHttpClientFactory clientes,
     IBridgeClient bridge,
+    ILoggerFactory logs,
     CancellationToken ct) =>
 {
     if (SlotInvalido(slot) is { } malo) return malo;
@@ -660,9 +896,18 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
     // `demo` y `sincroresto`.
     var vinculados = await repos.DeProyectoAsync(jwt, proyectoId, ct);
 
+    // El token de instalacion de la GitHub App, si el proyecto la instalo.
+    //
+    // Que falle NO corta el turno: sin token el gateway va por SSH con la deploy
+    // key, que es como funcionaba antes de la App. Un problema con GitHub tiene
+    // que degradar el push, no impedir que el agente trabaje.
+    var githubToken = await TokenDeGitHub(
+        gh, instalaciones, clientes, logs, jwt, proyectoId, ct);
+
     try
     {
-        var r = await bridge.TurnoAsync(proyectoId, nombre, slot, usuarioId, prompt, vinculados, ct);
+        var r = await bridge.TurnoAsync(
+            proyectoId, nombre, slot, usuarioId, prompt, vinculados, githubToken, ct);
         return Results.Ok(r);
     }
     catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
