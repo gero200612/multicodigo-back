@@ -175,6 +175,22 @@ export function buildWebhookServer(
         // en un header del lado del gateway— pero no se mira el contenido: el
         // bridge es un caño para esto.
         githubToken: z.string().regex(/^[A-Za-z0-9._~+/=-]+$/).max(512).optional(),
+        // Los documentos del proyecto, con URLs firmadas. El bridge no los mira:
+        // los reenvia al gateway, que los baja al worktree.
+        //
+        // La `url` se valida como URL a secas y no contra un host: es una URL
+        // firmada de Supabase Storage y el bridge no tiene por que conocer ese
+        // dominio. Quien la usa es el gateway.
+        documentos: z
+          .array(
+            z.object({
+              nombre: z.string().regex(/^[A-Za-z0-9._-]+$/).max(200),
+              url: z.string().url(),
+              url_texto: z.string().url().nullable().optional(),
+            }),
+          )
+          .max(50)
+          .optional(),
       });
 
       /**

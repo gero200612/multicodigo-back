@@ -216,7 +216,10 @@ export async function handleIncoming(
  * gateway lo saca del cuerpo antes de reenviarlo, asi que el agente nunca ve
  * este campo. Meterlo en PromptRequest diria lo contrario.
  */
-export type PromptConToken = PromptRequest & { githubToken?: string };
+export type PromptConToken = PromptRequest & {
+  githubToken?: string;
+  documentos?: Array<{ nombre: string; url: string; url_texto?: string | null }>;
+};
 
 export interface Turno {
   /**
@@ -252,6 +255,13 @@ export interface Turno {
    * va por SSH con la deploy key, que es el camino de `demo`.
    */
   githubToken?: string;
+  /**
+   * Los documentos del proyecto, con URLs firmadas por el panel.
+   *
+   * El bridge no los mira ni los guarda: los reenvia al gateway, igual que el
+   * token. Las URLs vencen en una hora, asi que no sirven guardadas.
+   */
+  documentos?: Array<{ nombre: string; url: string; url_texto?: string | null }>;
 }
 
 /**
@@ -419,6 +429,7 @@ export async function ejecutarTurno(
       sessionId,
       repos: t.repos,
       githubToken: t.githubToken,
+      documentos: t.documentos,
     });
     if (t.proyectoId) await deps.store.setSession(t.proyectoId, t.agente, r.sessionId);
     await deps.store.finishJob(jobId, 'done', undefined, r.text);
