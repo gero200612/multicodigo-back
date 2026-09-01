@@ -14,7 +14,7 @@ public interface IGatewayClient
 {
     Task<IReadOnlyList<Agente>> AgentesAsync(CancellationToken ct = default);
     Task<Cola> ColaAsync(CancellationToken ct = default);
-    Task<ResultadoTest> ProbarAsync(string slot, CancellationToken ct = default);
+    Task<ResultadoTest> ProbarAsync(string proyecto, string slot, CancellationToken ct = default);
     Task<string> CrearSlotAsync(string proyecto, CancellationToken ct = default);
 }
 
@@ -73,10 +73,16 @@ public interface IBridgeClient
     Task DecidirAsync(
         string aprobacionId, string decision, string? feedback, string usuarioId,
         CancellationToken ct = default);
-    /// <summary>Le pide al bridge que corra un turno, y espera la respuesta.</summary>
+    /// <summary>
+    /// Le pide al bridge que corra un turno, y espera la respuesta.
+    ///
+    /// Los repos van en el pedido porque el gateway —que es quien prepara los
+    /// worktrees— no le habla a Supabase, donde estan vinculados. Es el panel el
+    /// unico que puede leerlos con el JWT del usuario y pasarlos.
+    /// </summary>
     Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        CancellationToken ct = default);
+        IReadOnlyList<Repo> repos, CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -140,7 +146,7 @@ internal static class Json
 
 // --- gateway --------------------------------------------------------------
 
-public sealed class GatewayClient(HttpClient http, string proyecto) : IGatewayClient
+public sealed class GatewayClient(HttpClient http) : IGatewayClient
 {
     private sealed record RespuestaAgentes(List<AgenteDto> Agents);
     private sealed record AgenteDto(string Id, bool Arriba);
@@ -191,7 +197,8 @@ public sealed class GatewayClient(HttpClient http, string proyecto) : IGatewayCl
     /// que pasa a ser un cron llamando a este endpoint en vez de un script
     /// suelto. Un solo camino, testeado una vez.
     /// </summary>
-    public async Task<ResultadoTest> ProbarAsync(string slot, CancellationToken ct = default)
+    public async Task<ResultadoTest> ProbarAsync(
+        string proyecto, string slot, CancellationToken ct = default)
     {
         var cuando = DateTimeOffset.UtcNow.ToString("O");
         try
@@ -337,11 +344,23 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     /// </summary>
     public async Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        CancellationToken ct = default)
+        IReadOnlyList<Repo> repos, CancellationToken ct = default)
     {
         var res = await http.PostAsJsonAsync(
             "/turnos",
-            new { proyectoId, proyecto, agente = slot, usuarioId, prompt },
+            new
+            {
+                proyectoId,
+                proyecto,
+                agente = slot,
+                usuarioId,
+                prompt,
+                // `github_repo` y no `githubRepo`: el schema del bridge sale del
+                // contrato compartido, que usa el nombre de la columna. Con la
+                // convencion camelCase de Json.Opciones no coincidiria y el
+                // bridge contestaria cuerpo_invalido.
+                repos = repos.Select(r => new { nombre = r.Nombre, github_repo = r.GithubRepo }),
+            },
             Json.Opciones,
             ct);
 

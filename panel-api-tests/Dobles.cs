@@ -15,6 +15,15 @@ public sealed class GatewayFalso : IGatewayClient
     public bool AgentesFalla { get; set; }
     public bool ColaFalla { get; set; }
     public List<string> Probados { get; } = [];
+    /// <summary>
+    /// Los proyectos con los que se llamo a ProbarAsync.
+    ///
+    /// Existe para poder afirmar que llega el nombre REAL del proyecto y no una
+    /// constante del entorno: mientras el panel leia PANEL_PROJECT, todos los
+    /// proyectos probaban contra el mismo, y el test no podia notar la
+    /// diferencia.
+    /// </summary>
+    public List<string> ProyectosPedidos { get; } = [];
 
     public Task<IReadOnlyList<Agente>> AgentesAsync(CancellationToken ct = default)
         => AgentesFalla
@@ -24,9 +33,11 @@ public sealed class GatewayFalso : IGatewayClient
     public Task<Cola> ColaAsync(CancellationToken ct = default)
         => ColaFalla ? throw new HttpRequestException("gateway caído") : Task.FromResult(Cola);
 
-    public Task<ResultadoTest> ProbarAsync(string slot, CancellationToken ct = default)
+    public Task<ResultadoTest> ProbarAsync(
+        string proyecto, string slot, CancellationToken ct = default)
     {
         Probados.Add(slot);
+        ProyectosPedidos.Add(proyecto);
         return Task.FromResult(Resultado);
     }
 
@@ -214,12 +225,22 @@ public sealed class BridgeFalso : IBridgeClient
     /// <summary>El agente no contesta: el bridge devuelve 502 con su codigo.</summary>
     public string? TurnoFalla { get; set; }
 
+    /// <summary>
+    /// Los repos que viajaron con cada turno.
+    ///
+    /// El gateway no le habla a Supabase, asi que si el panel no los manda el
+    /// agente trabaja sobre el catalogo local — que no conoce los proyectos que
+    /// se crean desde el panel.
+    /// </summary>
+    public List<IReadOnlyList<Repo>> ReposDeCadaTurno { get; } = [];
+
     public Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        CancellationToken ct = default)
+        IReadOnlyList<Repo> repos, CancellationToken ct = default)
     {
         if (TurnoFalla is not null) throw new UpstreamException(TurnoFalla);
         Turnos.Add((proyectoId, proyecto, slot, usuarioId, prompt));
+        ReposDeCadaTurno.Add(repos);
         return Task.FromResult(new RespuestaTurno("11111111-1111-4111-8111-111111111111", TextoQueDevuelve));
     }
 

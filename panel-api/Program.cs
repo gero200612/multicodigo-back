@@ -27,7 +27,13 @@ var bridgeUrl = Requerido("BRIDGE_URL");
 var bridgeToken = Requerido("BRIDGE_API_TOKEN");
 var supabaseUrl = Requerido("SUPABASE_URL").TrimEnd('/');
 var supabaseAnonKey = Requerido("SUPABASE_ANON_KEY");
-var proyecto = cfg["PANEL_PROJECT"] ?? "demo";
+// Aca vivia `var proyecto = cfg["PANEL_PROJECT"] ?? "demo";`.
+//
+// Era la ultima constante que decidia sobre que proyecto trabajaba el panel, y
+// con varios proyectos por cuenta empezo a mentir: el test de un slot corria en
+// el worktree de cualquier proyecto que estuviera en esa variable, no en el que
+// el usuario estaba mirando. El endpoint de turnos ya resolvia el nombre real
+// con `NombreSiEsMiembroAsync`; el del test era el unico que faltaba.
 var audiencia = cfg["SUPABASE_JWT_AUD"] ?? "authenticated";
 
 // El JWKS de Supabase viaja por la red y con el se verifican TODAS las
@@ -91,7 +97,7 @@ static void ConBearer(HttpClient c, string baseUrl, string token, int minutos = 
 }
 
 builder.Services.AddHttpClient<IGatewayClient, GatewayClient>(c => ConBearer(c, gatewayUrl, gatewayToken))
-    .AddTypedClient<IGatewayClient>((http, _) => new GatewayClient(http, proyecto));
+    .AddTypedClient<IGatewayClient>((http, _) => new GatewayClient(http));
 // El login tambien tarda: `start` levanta el CLI y espera a que imprima la URL,
 // y `code` espera el intercambio completo con Anthropic. Con 20 segundos, el
 // paso 2 del login fallaba justo cuando estaba por salir bien.
@@ -232,15 +238,28 @@ static IResult? SlotInvalido(string slot)
         ? null
         : Results.NotFound(new { code = "unknown_agent", message = slot });
 
-api.MapPost("/slots/{slot}/test", async (
-    string slot, HttpContext ctx, IGatewayClient gateway, IHistorialClient historial, CancellationToken ct) =>
+// Cuelga del proyecto, y no es cosmetico: el turno de prueba crea y actualiza
+// el worktree de ESE proyecto en la VM. Con la ruta vieja —/slots/{slot}/test—
+// el panel no tenia como decir cual, y el gateway recibia el valor de
+// PANEL_PROJECT.
+api.MapPost("/proyectos/{proyectoId}/slots/{slot}/test", async (
+    string proyectoId, string slot, HttpContext ctx, IGatewayClient gateway,
+    IProyectosClient proyectos, IHistorialClient historial, CancellationToken ct) =>
 {
     if (SlotInvalido(slot) is { } malo) return malo;
 
-    var r = await gateway.ProbarAsync(slot, ct);
+    // Misma razon que en el endpoint de turnos: el gateway no sabe que es un
+    // proyecto ni un usuario, asi que la membresia se valida ACA. Sin esto se
+    // puede pedir un turno —aunque sea trivial— sobre el worktree de un
+    // proyecto ajeno.
+    var jwt = await JwtDe(ctx);
+    var nombre = await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct);
+    if (nombre is null) return Results.Forbid();
+
+    var r = await gateway.ProbarAsync(nombre, slot, ct);
     // El fallo TAMBIEN se guarda, y es el registro que mas importa: es el que
     // te deja ver que c2 viene fallando desde el martes.
-    await historial.GuardarAsync(await JwtDe(ctx), slot, r, ct);
+    await historial.GuardarAsync(jwt, slot, r, ct);
     // 200 aunque el test falle: el endpoint funciono y la respuesta es "este
     // slot no anda".
     return Results.Ok(r);
@@ -611,6 +630,7 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
     CuerpoTurno cuerpo,
     HttpContext ctx,
     IProyectosClient proyectos,
+    IReposClient repos,
     IBridgeClient bridge,
     CancellationToken ct) =>
 {
@@ -634,9 +654,15 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
     var nombre = await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct);
     if (nombre is null) return Results.StatusCode(StatusCodes.Status403Forbidden);
 
+    // Los repos vinculados, con el JWT del usuario: RLS decide, asi que un repo
+    // de un proyecto ajeno no aparece. Viajan con el turno porque el gateway no
+    // le habla a Supabase — sin esto cae a su catalogo local, que solo conoce
+    // `demo` y `sincroresto`.
+    var vinculados = await repos.DeProyectoAsync(jwt, proyectoId, ct);
+
     try
     {
-        var r = await bridge.TurnoAsync(proyectoId, nombre, slot, usuarioId, prompt, ct);
+        var r = await bridge.TurnoAsync(proyectoId, nombre, slot, usuarioId, prompt, vinculados, ct);
         return Results.Ok(r);
     }
     catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)

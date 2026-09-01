@@ -1,4 +1,10 @@
-import { sanitizeForTelegram, type AgentId, type PromptRequest, type PromptResponse } from '@multicodigo/shared';
+import {
+  sanitizeForTelegram,
+  type AgentId,
+  type PromptRequest,
+  type PromptResponse,
+  type RepoDelPedido,
+} from '@multicodigo/shared';
 import { parseCommand } from './router.js';
 import { tecladoDeProyectos, tecladoDeAgentes } from './menu.js';
 import type { Boton } from './render.js';
@@ -181,6 +187,14 @@ export interface Turno {
   /** Solo cuando viene de Telegram: para poder colgar el poller del mensaje. */
   chatId?: number;
   messageId?: number;
+  /**
+   * Los repos del proyecto, para que el gateway sepa cuales preparar.
+   *
+   * Opcional, y quien lo deja vacio importa: los pone el PANEL, que los lee de
+   * Supabase. El gateway no le habla a Supabase, asi que sin esto cae a su
+   * catalogo local — que solo conoce `demo` y `sincroresto`.
+   */
+  repos?: RepoDelPedido[];
 }
 
 /**
@@ -244,6 +258,7 @@ export async function ejecutarTurno(
       project: t.proyecto,
       prompt: t.prompt,
       sessionId,
+      repos: t.repos,
     });
     if (t.proyectoId) await deps.store.setSession(t.proyectoId, t.agente, r.sessionId);
     await deps.store.finishJob(jobId, 'done', undefined, r.text);

@@ -349,6 +349,45 @@ describe('POST /turnos', () => {
     expect(r.statusCode).toBe(401);
   });
 
+  // Los repos los elige el usuario en el panel y viven en Supabase; el gateway
+  // no le habla a Supabase, asi que la unica forma de que los sepa es que
+  // viajen con el turno. Si se quedan en el borde, el gateway cae a su catalogo
+  // local y trabaja sobre los repos de otro proyecto — o sobre ninguno.
+  it('los repos del pedido llegan al agente', async () => {
+    const pedidos: unknown[] = [];
+    const { app } = conPipeline({
+      ask: async (req: { jobId: string; repos?: unknown }) => {
+        pedidos.push(req.repos);
+        return { jobId: req.jobId, sessionId: 'sess-1', text: 'ok', turns: 1 };
+      },
+    });
+
+    const repos = [{ nombre: 'multicodigo-front', github_repo: 'gero/multicodigo-front' }];
+    const r = await app.inject({
+      method: 'POST',
+      url: '/turnos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { ...cuerpoOk, repos },
+    });
+
+    expect(r.statusCode).toBe(200);
+    expect(pedidos).toEqual([repos]);
+  });
+
+  // Un `github_repo` entero admite `ssh://...@host/-oProxyCommand=...`, que git
+  // ejecuta. El gateway ya lo valida, pero el bridge no tiene por que
+  // reenviarle algo que sabe que esta mal.
+  it('rechaza un repo con forma invalida', async () => {
+    const { app } = conPipeline();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/turnos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { ...cuerpoOk, repos: [{ nombre: '../../etc', github_repo: 'a/b' }] },
+    });
+    expect(r.statusCode).toBe(400);
+  });
+
   it('un turno del panel devuelve la respuesta del agente', async () => {
     const { app } = conPipeline();
 

@@ -200,11 +200,70 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
 
     // --- probar ---
 
+    /// <summary>
+    /// El proyecto sale del PEDIDO, no de una constante del entorno.
+    ///
+    /// Mientras el panel leia PANEL_PROJECT, todos los proyectos probaban contra
+    /// el mismo y el gateway recibia siempre "demo". Con varios proyectos por
+    /// cuenta eso deja de ser un detalle: el test de un slot corria en el
+    /// worktree de otro proyecto.
+    /// </summary>
+    [Fact]
+    public async Task ElProyectoDelPedidoLlegaAlGatewayYNoUnaConstante()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "mi-proyecto";
+        var antes = f.Gateway.ProyectosPedidos.Count;
+
+        var r = await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/c1/test", null);
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Equal("mi-proyecto", f.Gateway.ProyectosPedidos[^1]);
+        Assert.True(f.Gateway.ProyectosPedidos.Count > antes);
+    }
+
+    /// <summary>
+    /// No ser miembro no es "el proyecto no existe": es 403.
+    ///
+    /// Y es lo que impide probar un slot en el worktree de un proyecto ajeno,
+    /// que es lo que la ruta vieja —sin proyecto— no podia ni preguntar.
+    /// </summary>
+    [Fact]
+    public async Task ProbarEnUnProyectoAjenoDa403()
+    {
+        var r = await Cliente().PostAsync(
+            "/api/proyectos/44444444-4444-4444-8444-444444444444/slots/c1/test", null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+    }
+
+    /// <summary>
+    /// Los repos vinculados viajan CON el turno.
+    ///
+    /// Es la unica forma de que el gateway los sepa: viven en Supabase y el
+    /// gateway no le habla. Si se quedan aca, el agente trabaja sobre el
+    /// catalogo local de la VM, que solo conoce `demo` y `sincroresto`.
+    /// </summary>
+    [Fact]
+    public async Task LosReposVinculadosViajanConElTurno()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "mi-proyecto";
+        f.Repos.Filas.Clear();
+        f.Repos.Filas.Add(new Repo("multicodigo-front", "gero/multicodigo-front"));
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "hola" });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var mandados = f.Bridge.ReposDeCadaTurno[^1];
+        Assert.Equal("multicodigo-front", Assert.Single(mandados).Nombre);
+    }
+
     [Fact]
     public async Task ProbarDevuelve200YGuardaEnElHistorial()
     {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
         var antes = f.Historial.Guardados.Count;
-        var r = await Cliente().PostAsync("/api/slots/c1/test", null);
+        var r = await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/c1/test", null);
 
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
         Assert.Contains("c1", f.Gateway.Probados);
@@ -225,7 +284,9 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         f.Gateway.Resultado = new ResultadoTest(false, "hoy", "auth_expired");
         try
         {
-            var r = await Cliente().PostAsync("/api/slots/c2/test", null);
+            f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+            var r = await Cliente().PostAsync(
+                $"/api/proyectos/{ProyectoDePrueba}/slots/c2/test", null);
             Assert.Equal(HttpStatusCode.OK, r.StatusCode);
             var cuerpo = await r.Content.ReadFromJsonAsync<ResultadoTest>(
                 new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
@@ -312,7 +373,10 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
     public async Task RechazaSlotsInvalidosEnTodasLasRutas(string slot)
     {
         var c = Cliente();
-        Assert.Equal(HttpStatusCode.NotFound, (await c.PostAsync($"/api/slots/{slot}/test", null)).StatusCode);
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await c.PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/{slot}/test", null)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/api/slots/{slot}/login/start")).StatusCode);
         Assert.Equal(
             HttpStatusCode.NotFound,
