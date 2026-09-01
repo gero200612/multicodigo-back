@@ -700,6 +700,57 @@ app.MapGet("/api/github/callback", (string? installation_id, string? state) =>
     return Results.Redirect($"/configuracion?instalacion={id}&proyecto={state}");
 }).AllowAnonymous();
 
+/// <remarks>
+/// Los repos que la instalacion puede ver, con los ya vinculados marcados.
+///
+/// Es la pantalla que hace que la App valga la pena: sin esto el usuario tiene
+/// que tipear `owner/nombre` a mano, que es el paso que la App venia a eliminar.
+/// </remarks>
+api.MapGet("/proyectos/{proyectoId}/github/repos", async (
+    string proyectoId, HttpContext ctx, AppDeGitHub gh, IProyectosClient proyectos,
+    IInstalacionesClient instalaciones, IReposClient repos, IHttpClientFactory clientes,
+    CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    if (gh.App is null) return Results.Ok(Array.Empty<object>());
+
+    var inst = await instalaciones.DeProyectoAsync(jwt, proyectoId, ct);
+    if (inst is null) return Results.Ok(Array.Empty<object>());
+
+    try
+    {
+        var deGitHub = await gh.App.ReposDeInstalacionAsync(
+            inst.InstallationId, clientes.CreateClient("github"), ct);
+        // Los ya vinculados, para marcarlos. Se compara por `github_repo` y no
+        // por nombre: dos repos de owners distintos pueden llamarse igual, y el
+        // que decide de donde se clona es el owner/nombre.
+        var vinculados = (await repos.DeProyectoAsync(jwt, proyectoId, ct))
+            .Select(r => r.GithubRepo)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return Results.Ok(deGitHub.Select(r => new
+        {
+            github_repo = r.FullName,
+            nombre = r.Nombre,
+            privado = r.Privado,
+            vinculado = vinculados.Contains(r.FullName),
+        }));
+    }
+    catch (UpstreamException ex)
+    {
+        // 404 de GitHub = la instalacion ya no existe (el usuario desinstalo la
+        // App). Lista vacia y no un error: la pantalla muestra el boton de
+        // conectar, que es lo que hay que hacer.
+        return ex.Message == "github_404"
+            ? Results.Ok(Array.Empty<object>())
+            : Results.BadRequest(new { code = ex.Message, message = "no pudimos leer los repos de GitHub" });
+    }
+});
+
 api.MapPost("/proyectos/{proyectoId}/github", async (
     string proyectoId, CuerpoInstalacion cuerpo, HttpContext ctx, AppDeGitHub gh,
     IInstalacionesClient instalaciones, IHttpClientFactory clientes, CancellationToken ct) =>

@@ -156,6 +156,53 @@ public sealed class GitHubApp
             : "(desconocida)";
     }
 
+    /// <summary>
+    /// Los repos a los que la instalación tiene acceso.
+    ///
+    /// Es lo que el usuario marcó al instalar la App, y lo que el panel le ofrece
+    /// para vincular. Sin esto el único camino es tipear `owner/nombre` a mano —
+    /// que es exactamente el paso que la App venía a eliminar.
+    ///
+    /// Devuelve el `full_name` (owner/nombre) y el nombre corto, que es el que
+    /// termina siendo la carpeta del worktree.
+    /// </summary>
+    public async Task<IReadOnlyList<RepoDeGitHub>> ReposDeInstalacionAsync(
+        long installationId, HttpClient http, CancellationToken ct = default)
+    {
+        var token = await TokenDeInstalacionAsync(installationId, http, ct);
+
+        // 100 por página: una instalación con más repos que eso es posible, pero
+        // una lista de 100 checkboxes ya no se puede usar. Paginar sería resolver
+        // un problema de usabilidad con más scroll.
+        using var pedido = new HttpRequestMessage(
+            HttpMethod.Get, "https://api.github.com/installation/repositories?per_page=100");
+        pedido.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        pedido.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        pedido.Headers.UserAgent.Add(new ProductInfoHeaderValue("multicodigo-panel", "1.0"));
+
+        using var res = await http.SendAsync(pedido, ct);
+        if (!res.IsSuccessStatusCode) throw new UpstreamException($"github_{(int)res.StatusCode}");
+
+        var cuerpo = await res.Content.ReadFromJsonAsync<JsonElement>(ct);
+        if (!cuerpo.TryGetProperty("repositories", out var lista)) return [];
+
+        var salida = new List<RepoDeGitHub>();
+        foreach (var r in lista.EnumerateArray())
+        {
+            var full = r.TryGetProperty("full_name", out var f) ? f.GetString() : null;
+            var nombre = r.TryGetProperty("name", out var n) ? n.GetString() : null;
+            if (full is null || nombre is null) continue;
+            salida.Add(new RepoDeGitHub(
+                full,
+                nombre,
+                r.TryGetProperty("private", out var pv) && pv.GetBoolean()));
+        }
+        // Ordenados: GitHub los devuelve por fecha de push y la lista se
+        // reordena sola entre recargas, que es desconcertante en una pantalla
+        // donde vas tildando cosas.
+        return [.. salida.OrderBy(x => x.FullName, StringComparer.OrdinalIgnoreCase)];
+    }
+
     /// <summary>Olvida el token de una instalación. Para cuando GitHub contesta 401.</summary>
     public void Olvidar(long installationId) => _cache.TryRemove(installationId, out _);
 
@@ -165,6 +212,14 @@ public sealed class GitHubApp
     private static string Base64Url(byte[] bytes) =>
         Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
+
+/// <summary>
+/// Un repo al que la instalación tiene acceso.
+///
+/// `Nombre` es el corto, que es el que termina siendo la carpeta del worktree;
+/// `FullName` es `owner/nombre`, que es de donde el gateway arma la URL.
+/// </summary>
+public sealed record RepoDeGitHub(string FullName, string Nombre, bool Privado);
 
 /// <summary>
 /// La App configurada, o la ausencia de App.
