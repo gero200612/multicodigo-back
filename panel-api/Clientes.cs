@@ -108,7 +108,8 @@ public interface IBridgeClient
     /// </summary>
     Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        IReadOnlyList<Repo> repos, string? githubToken, CancellationToken ct = default);
+        IReadOnlyList<Repo> repos, string? githubToken,
+        IReadOnlyList<DocumentoDelTurno> documentos, CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -411,7 +412,8 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     /// </summary>
     public async Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        IReadOnlyList<Repo> repos, string? githubToken, CancellationToken ct = default)
+        IReadOnlyList<Repo> repos, string? githubToken,
+        IReadOnlyList<DocumentoDelTurno> documentos, CancellationToken ct = default)
     {
         var res = await http.PostAsJsonAsync(
             "/turnos",
@@ -431,6 +433,15 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
                 // gateway sin mirarlo, y el gateway NO se lo pasa al agente.
                 // Null cuando el proyecto no instalo la App: ahi se va por SSH.
                 githubToken,
+                // Los documentos, con URLs firmadas que vencen en una hora. El
+                // gateway los baja a `_docs` del worktree y el agente los lee
+                // como un archivo mas.
+                documentos = documentos.Select(d => new
+                {
+                    nombre = d.Nombre,
+                    url = d.Url,
+                    url_texto = d.UrlTexto,
+                }),
             },
             Json.Opciones,
             ct);

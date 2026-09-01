@@ -122,6 +122,52 @@ public sealed class InstalacionesFalso : IInstalacionesClient
     }
 }
 
+public sealed class DocumentosFalso : IDocumentosClient
+{
+    public List<Documento> Filas { get; } = [];
+    public List<DocumentoDelTurno> ParaTurno { get; } = [];
+    public List<string> Borrados { get; } = [];
+    public List<(string Nombre, string? Texto, string? Error)> Subidos { get; } = [];
+
+    public Task<IReadOnlyList<Documento>> DeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<Documento>>(Filas);
+
+    public Task<Documento> SubirAsync(
+        string jwt, string proyectoId, string nombre, string nombreOriginal, string tipo,
+        byte[] datos, string? texto, string? error, CancellationToken ct = default)
+    {
+        Subidos.Add((nombre, texto, error));
+        var doc = new Documento("id", nombre, nombreOriginal, tipo, datos.LongLength, error);
+        Filas.Add(doc);
+        return Task.FromResult(doc);
+    }
+
+    public Task BorrarAsync(string jwt, string proyectoId, string nombre, CancellationToken ct = default)
+    {
+        Borrados.Add(nombre);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<DocumentoDelTurno>> ParaElTurnoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<DocumentoDelTurno>>(ParaTurno);
+
+    public Task<string?> UrlDeDescargaAsync(
+        string jwt, string proyectoId, string nombre, CancellationToken ct = default)
+        => Task.FromResult<string?>($"https://firmada.test/{nombre}");
+}
+
+/// <summary>El conversor que siempre puede. Los tests que necesitan un fallo lo pisan.</summary>
+public sealed class ConversorFalso : IConversorClient
+{
+    public string? Texto { get; set; } = "# convertido";
+    public string? Error { get; set; }
+
+    public Task<Conversion> ConvertirAsync(byte[] datos, string tipo, CancellationToken ct = default)
+        => Task.FromResult(new Conversion(Texto, Error));
+}
+
 public sealed class ProyectosFalso : IProyectosClient
 {
     public Dictionary<string, string> Mios { get; } = [];
@@ -288,10 +334,15 @@ public sealed class BridgeFalso : IBridgeClient
     /// <summary>El token de github que viajo con cada turno. Null cuando fue por SSH.</summary>
     public List<string?> TokensDeCadaTurno { get; } = [];
 
+    /// <summary>Los documentos que viajaron con cada turno.</summary>
+    public List<IReadOnlyList<DocumentoDelTurno>> DocsDeCadaTurno { get; } = [];
+
     public Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        IReadOnlyList<Repo> repos, string? githubToken, CancellationToken ct = default)
+        IReadOnlyList<Repo> repos, string? githubToken,
+        IReadOnlyList<DocumentoDelTurno> documentos, CancellationToken ct = default)
     {
+        DocsDeCadaTurno.Add(documentos);
         if (TurnoFalla is not null) throw new UpstreamException(TurnoFalla);
         Turnos.Add((proyectoId, proyecto, slot, usuarioId, prompt));
         ReposDeCadaTurno.Add(repos);

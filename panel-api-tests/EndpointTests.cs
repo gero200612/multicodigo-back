@@ -75,6 +75,8 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
     public AgentesFalso Agentes { get; } = new();
     public ReposFalso Repos { get; } = new();
     public InstalacionesFalso Instalaciones { get; } = new();
+    public DocumentosFalso Documentos { get; } = new();
+    public ConversorFalso Conversor { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -100,6 +102,8 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
             s.AddSingleton<IAgentesClient>(Agentes);
             s.AddSingleton<IReposClient>(Repos);
             s.AddSingleton<IInstalacionesClient>(Instalaciones);
+            s.AddSingleton<IDocumentosClient>(Documentos);
+            s.AddSingleton<IConversorClient>(Conversor);
 
             s.AddAuthentication(AuthDePrueba.Esquema)
                 .AddScheme<AuthenticationSchemeOptions, AuthDePrueba>(AuthDePrueba.Esquema, _ => { });
@@ -363,6 +367,152 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
 
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
         Assert.Null(f.Bridge.TokensDeCadaTurno[^1]);
+    }
+
+    // --- documentos ---
+
+    /// <summary>
+    /// Subir un documento lo convierte y guarda las dos versiones.
+    ///
+    /// La conversión va acá, una vez, y no en el gateway antes de cada turno: el
+    /// error aparece con el archivo en la mano —"este PDF es un escaneo"— y no
+    /// como un turno raro tres capas más abajo.
+    /// </summary>
+    [Fact]
+    public async Task SubirUnDocumentoLoConvierteYLoGuarda()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        f.Conversor.Texto = "| producto | precio |";
+        f.Conversor.Error = null;
+
+        var r = await Cliente().PostAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/documentos", ArchivoDePrueba("precios.csv", "a,b"));
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var subido = f.Documentos.Subidos[^1];
+        Assert.Equal("precios.csv", subido.Nombre);
+        Assert.Equal("| producto | precio |", subido.Texto);
+        Assert.Null(subido.Error);
+    }
+
+    /// <summary>
+    /// Si la conversión falla, el documento se guarda IGUAL y con 200.
+    ///
+    /// Un 400 haría perder el original que la persona ya subió. El `error` viaja
+    /// adentro para que la pantalla lo muestre al lado del archivo, y la
+    /// conversión se puede reintentar.
+    /// </summary>
+    [Fact]
+    public async Task UnDocumentoQueNoSePudoConvertirSeGuardaIgual()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        f.Conversor.Texto = null;
+        f.Conversor.Error = "este PDF es un escaneo: convertilo con OCR";
+        try
+        {
+            var r = await Cliente().PostAsync(
+                $"/api/proyectos/{ProyectoDePrueba}/documentos", ArchivoDePrueba("pliego.pdf", "%PDF-1.4"));
+
+            Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+            var subido = f.Documentos.Subidos[^1];
+            Assert.Null(subido.Texto);
+            // El mensaje del conversor llega tal cual: es lo que le dice al
+            // usuario qué hacer.
+            Assert.Contains("OCR", subido.Error);
+        }
+        finally
+        {
+            f.Conversor.Texto = "# convertido";
+            f.Conversor.Error = null;
+        }
+    }
+
+    /// <summary>
+    /// El nombre para el disco se DERIVA del original.
+    ///
+    /// Es lo único que impide que un `../../etc/passwd` escriba fuera de
+    /// /srv/work. El original se conserva aparte para mostrarlo.
+    /// </summary>
+    [Fact]
+    public async Task ElNombreDelArchivoSeSaneaAntesDeGuardarlo()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+
+        await Cliente().PostAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/documentos",
+            ArchivoDePrueba("../../etc/Precios 2026.csv", "a,b"));
+
+        var nombre = f.Documentos.Subidos[^1].Nombre;
+        Assert.DoesNotContain("..", nombre);
+        Assert.DoesNotContain("/", nombre);
+        Assert.Equal("Precios-2026.csv", nombre);
+    }
+
+    [Fact]
+    public async Task UnTipoQueNoSeSabeLeerSeRechazaConLaLista()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+
+        var r = await Cliente().PostAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/documentos", ArchivoDePrueba("cosas.zip", "PK"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        var cuerpo = await r.Content.ReadAsStringAsync();
+        // La lista de lo que SÍ se puede, porque "tipo no soportado" no dice qué
+        // hacer.
+        Assert.Contains("pdf", cuerpo);
+    }
+
+    [Fact]
+    public async Task SubirEnUnProyectoAjenoDa403()
+    {
+        var r = await Cliente().PostAsync(
+            "/api/proyectos/44444444-4444-4444-8444-444444444444/documentos",
+            ArchivoDePrueba("x.csv", "a,b"));
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task LosDocumentosViajanConElTurno()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        f.Documentos.ParaTurno.Clear();
+        f.Documentos.ParaTurno.Add(
+            new DocumentoDelTurno("pliego.pdf", "https://firmada.test/pliego.pdf", "https://firmada.test/pliego.md"));
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "leé el pliego" });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var mandados = f.Bridge.DocsDeCadaTurno[^1];
+        Assert.Equal("pliego.pdf", Assert.Single(mandados).Nombre);
+    }
+
+    [Fact]
+    public async Task BorrarUnDocumentoConNombreInvalidoNoLlegaAlCliente()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        var antes = f.Documentos.Borrados.Count;
+
+        var r = await Cliente().DeleteAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/documentos/{Uri.EscapeDataString("../x.pdf")}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.Equal(antes, f.Documentos.Borrados.Count);
+    }
+
+    /// <summary>Un archivo multipart, como lo manda el navegador.</summary>
+    private static MultipartFormDataContent ArchivoDePrueba(string nombre, string contenido)
+    {
+        var bytes = new ByteArrayContent(System.Text.Encoding.UTF8.GetBytes(contenido));
+        bytes.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        var form = new MultipartFormDataContent();
+        // El nombre del archivo es lo que el endpoint sanea para el disco, asi
+        // que va con la ruta y los espacios que tenga el caso de prueba.
+        form.Add(bytes, "archivo", nombre);
+        return form;
     }
 
     [Fact]

@@ -35,6 +35,12 @@ var githubAppKey = cfg["GITHUB_APP_PRIVATE_KEY"];
 // El slug es para armar la URL de instalacion: github.com/apps/<slug>/installations/new
 var githubAppSlug = cfg["GITHUB_APP_SLUG"];
 
+// El conversor de documentos. OPCIONAL, como las de la GitHub App: sin el, subir
+// un documento sigue funcionando y se guarda sin convertir, con un mensaje que
+// lo dice. Hacerlo obligatorio voltearia el panel de un despliegue que no lo
+// tiene levantado.
+var conversorUrl = cfg["CONVERSOR_URL"];
+
 var supabaseUrl = Requerido("SUPABASE_URL").TrimEnd('/');
 var supabaseAnonKey = Requerido("SUPABASE_ANON_KEY");
 // Aca vivia `var proyecto = cfg["PANEL_PROJECT"] ?? "demo";`.
@@ -132,6 +138,33 @@ builder.Services.AddHttpClient<IReposClient, ReposClient>(c =>
     })
     .AddTypedClient<IReposClient>((http, sp) =>
         new ReposClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<ReposClient>>()));
+
+builder.Services.AddHttpClient<IDocumentosClient, DocumentosClient>(c =>
+    {
+        c.BaseAddress = new Uri(supabaseUrl);
+        // Mas que los 10 del resto: aca viajan archivos de hasta 20 MB, y con el
+        // tope corto una subida grande fallaba por lenta y no por rota.
+        c.Timeout = TimeSpan.FromSeconds(60);
+    })
+    .AddTypedClient<IDocumentosClient>((http, sp) =>
+        new DocumentosClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<DocumentosClient>>()));
+
+if (!string.IsNullOrWhiteSpace(conversorUrl))
+{
+    builder.Services.AddHttpClient<IConversorClient, ConversorClient>(c =>
+    {
+        c.BaseAddress = new Uri(conversorUrl);
+        // Convertir un PDF grande tarda. El conversor corta a los 60s por su
+        // cuenta; este tope es un poco mayor para que el error que llegue sea el
+        // suyo —que explica que paso— y no un timeout de aca, que no explica
+        // nada. Mismo criterio que el nginx del front con el panel.
+        c.Timeout = TimeSpan.FromSeconds(75);
+    });
+}
+else
+{
+    builder.Services.AddSingleton<IConversorClient, SinConversor>();
+}
 
 builder.Services.AddHttpClient<IInstalacionesClient, InstalacionesClient>(c =>
     {
@@ -832,6 +865,149 @@ api.MapGet("/proyectos/{proyectoId}/repos", async (
     return Results.Ok(await repos.DeProyectoAsync(jwt, proyectoId, ct));
 });
 
+// --- documentos -----------------------------------------------------------
+
+/// <remarks>
+/// Los documentos de un proyecto: un pliego en PDF, una lista de precios en
+/// Excel. El agente los lee en su worktree como un archivo mas — ya tiene Read,
+/// Grep y Glob, asi que no hace falta ninguna herramienta nueva.
+///
+/// Ver el diseño en el repo de la VM:
+/// docs/superpowers/specs/2026-09-01-documentos-vinculados-design.md
+/// </remarks>
+api.MapGet("/proyectos/{proyectoId}/documentos", async (
+    string proyectoId, HttpContext ctx, IProyectosClient proyectos,
+    IDocumentosClient documentos, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    // Se chequea igual aunque RLS filtre: sin esto un proyecto ajeno devuelve
+    // 200 con lista vacia, que le dice al usuario "no tenes documentos" en vez
+    // de "esto no es tuyo".
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    return Results.Ok(await documentos.DeProyectoAsync(jwt, proyectoId, ct));
+});
+
+api.MapPost("/proyectos/{proyectoId}/documentos", async (
+    string proyectoId, HttpContext ctx, IProyectosClient proyectos,
+    IDocumentosClient documentos, IConversorClient conversor, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    if (!ctx.Request.HasFormContentType)
+    {
+        return Results.BadRequest(new { code = "sin_archivo", message = "falta el archivo" });
+    }
+
+    var form = await ctx.Request.ReadFormAsync(ct);
+    var archivo = form.Files.FirstOrDefault();
+    if (archivo is null || archivo.Length == 0)
+    {
+        return Results.BadRequest(new { code = "sin_archivo", message = "falta el archivo" });
+    }
+    if (archivo.Length > Documentos.MaximoBytes)
+    {
+        return Results.BadRequest(new
+        {
+            code = "muy_grande",
+            message = $"el archivo pasa los {Documentos.MaximoBytes / (1024 * 1024)} MB",
+        });
+    }
+
+    var tipo = Documentos.TipoDe(archivo.FileName);
+    if (tipo is null)
+    {
+        return Results.BadRequest(new
+        {
+            code = "tipo_desconocido",
+            message = $"no se leer archivos de ese tipo. Se puede: {string.Join(", ", Documentos.Tipos)}",
+        });
+    }
+
+    // El nombre para el disco se DERIVA del original y no llega del cliente: es
+    // lo que arma la ruta del worktree, y un `../` ahi escribe fuera de /srv.
+    var nombre = Documentos.NombreDeArchivo(archivo.FileName, tipo);
+
+    using var ms = new MemoryStream();
+    await archivo.CopyToAsync(ms, ct);
+    var datos = ms.ToArray();
+
+    // Se convierte ACA, una vez, y no en el gateway antes de cada turno: el
+    // error aparece con el archivo en la mano —"este PDF es un escaneo"— y no
+    // como un turno raro tres capas mas abajo. Y el costo se paga una vez.
+    var conversion = await conversor.ConvertirAsync(datos, tipo, ct);
+
+    try
+    {
+        var doc = await documentos.SubirAsync(
+            jwt, proyectoId, nombre, archivo.FileName, tipo, datos,
+            conversion.Texto, conversion.Error, ct);
+        // 200 aunque la conversion falle: el documento se guardo y el `error`
+        // viaja adentro para que la pantalla lo muestre al lado del archivo. Un
+        // 400 aca haria perder el original que la persona ya subio.
+        return Results.Ok(doc);
+    }
+    catch (UpstreamException ex)
+    {
+        return ex.Message == "no_sos_miembro"
+            ? Results.StatusCode(StatusCodes.Status403Forbidden)
+            : Results.BadRequest(new { code = ex.Message, message = "no se pudo guardar el documento" });
+    }
+}).DisableAntiforgery();
+
+api.MapGet("/proyectos/{proyectoId}/documentos/{nombre}/descarga", async (
+    string proyectoId, string nombre, HttpContext ctx, IProyectosClient proyectos,
+    IDocumentosClient documentos, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    if (!Documentos.NombreValido(nombre))
+    {
+        return Results.BadRequest(new { code = "nombre_invalido", message = "ese nombre no es valido" });
+    }
+
+    // Una URL firmada y no el archivo por aca: el panel no tiene que hacer de
+    // proxy de 20 MB, y la URL vence en una hora.
+    var url = await documentos.UrlDeDescargaAsync(jwt, proyectoId, nombre, ct);
+    return url is null
+        ? Results.NotFound(new { code = "no_esta", message = "ese documento no existe" })
+        : Results.Ok(new { url });
+});
+
+api.MapDelete("/proyectos/{proyectoId}/documentos/{nombre}", async (
+    string proyectoId, string nombre, HttpContext ctx, IProyectosClient proyectos,
+    IDocumentosClient documentos, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    if (!Documentos.NombreValido(nombre))
+    {
+        return Results.BadRequest(new { code = "nombre_invalido", message = "ese nombre no es valido" });
+    }
+
+    try
+    {
+        await documentos.BorrarAsync(jwt, proyectoId, nombre, ct);
+        return Results.Ok(new { estado = "ok" });
+    }
+    catch (UpstreamException ex)
+    {
+        return Results.BadRequest(new { code = ex.Message, message = "no se pudo borrar el documento" });
+    }
+});
+
 api.MapPost("/proyectos/{proyectoId}/repos", async (
     string proyectoId, CuerpoRepo cuerpo, HttpContext ctx,
     IProyectosClient proyectos, IReposClient repos, CancellationToken ct) =>
@@ -944,6 +1120,7 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
     HttpContext ctx,
     IProyectosClient proyectos,
     IReposClient repos,
+    IDocumentosClient documentos,
     IInstalacionesClient instalaciones,
     AppDeGitHub gh,
     IHttpClientFactory clientes,
@@ -987,8 +1164,13 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
 
     try
     {
+        // Los documentos del proyecto, con URLs firmadas. Aparte de los repos
+        // porque son otra cosa: los repos se clonan y versionan, los documentos
+        // se bajan y se leen.
+        var docs = await documentos.ParaElTurnoAsync(jwt, proyectoId, ct);
+
         var r = await bridge.TurnoAsync(
-            proyectoId, nombre, slot, usuarioId, prompt, vinculados, githubToken, ct);
+            proyectoId, nombre, slot, usuarioId, prompt, vinculados, githubToken, docs, ct);
         return Results.Ok(r);
     }
     catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
