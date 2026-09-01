@@ -15,6 +15,15 @@ public sealed class GatewayFalso : IGatewayClient
     public bool AgentesFalla { get; set; }
     public bool ColaFalla { get; set; }
     public List<string> Probados { get; } = [];
+    /// <summary>
+    /// Los proyectos con los que se llamo a ProbarAsync.
+    ///
+    /// Existe para poder afirmar que llega el nombre REAL del proyecto y no una
+    /// constante del entorno: mientras el panel leia PANEL_PROJECT, todos los
+    /// proyectos probaban contra el mismo, y el test no podia notar la
+    /// diferencia.
+    /// </summary>
+    public List<string> ProyectosPedidos { get; } = [];
 
     public Task<IReadOnlyList<Agente>> AgentesAsync(CancellationToken ct = default)
         => AgentesFalla
@@ -24,9 +33,11 @@ public sealed class GatewayFalso : IGatewayClient
     public Task<Cola> ColaAsync(CancellationToken ct = default)
         => ColaFalla ? throw new HttpRequestException("gateway caído") : Task.FromResult(Cola);
 
-    public Task<ResultadoTest> ProbarAsync(string slot, CancellationToken ct = default)
+    public Task<ResultadoTest> ProbarAsync(
+        string proyecto, string slot, CancellationToken ct = default)
     {
         Probados.Add(slot);
+        ProyectosPedidos.Add(proyecto);
         return Task.FromResult(Resultado);
     }
 
@@ -47,6 +58,61 @@ public sealed class GatewayFalso : IGatewayClient
 /// Los proyectos del usuario. `Mios` es lo que en produccion decide RLS: un id
 /// que no esta en el diccionario es un proyecto del que no sos miembro.
 /// </summary>
+/// <summary>
+/// Los repos vinculados, en memoria.
+///
+/// No modela RLS: la membresía la chequea el endpoint antes de llamar acá, que
+/// es justo lo que estos tests verifican.
+/// </summary>
+public sealed class ReposFalso : IReposClient
+{
+    public List<Repo> Filas { get; } = [];
+    public List<string> Vinculados { get; } = [];
+    public List<string> Desvinculados { get; } = [];
+    /// <summary>Fuerza el caso "ese repo ya estaba", que es el UNIQUE de la tabla.</summary>
+    public bool Duplicado { get; set; }
+
+    public Task<IReadOnlyList<Repo>> DeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<Repo>>(Filas);
+
+    public Task VincularAsync(string jwt, string proyectoId, Repo repo, CancellationToken ct = default)
+    {
+        if (Duplicado) throw new UpstreamException("repo_duplicado");
+        Vinculados.Add(repo.Nombre);
+        Filas.Add(repo);
+        return Task.CompletedTask;
+    }
+
+    public Task DesvincularAsync(
+        string jwt, string proyectoId, string nombre, CancellationToken ct = default)
+    {
+        Desvinculados.Add(nombre);
+        Filas.RemoveAll(f => f.Nombre == nombre);
+        return Task.CompletedTask;
+    }
+}
+
+public sealed class InstalacionesFalso : IInstalacionesClient
+{
+    public Instalacion? Fila { get; set; }
+    public List<(string ProyectoId, Instalacion Inst)> Guardadas { get; } = [];
+    /// <summary>Fuerza el caso "sos miembro pero no dueño", que es RLS rechazando.</summary>
+    public bool NoSosDueno { get; set; }
+
+    public Task<Instalacion?> DeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult(Fila);
+
+    public Task GuardarAsync(
+        string jwt, string proyectoId, Instalacion inst, CancellationToken ct = default)
+    {
+        if (NoSosDueno) throw new UpstreamException("no_sos_dueño");
+        Guardadas.Add((proyectoId, inst));
+        return Task.CompletedTask;
+    }
+}
+
 public sealed class ProyectosFalso : IProyectosClient
 {
     public Dictionary<string, string> Mios { get; } = [];
@@ -179,12 +245,26 @@ public sealed class BridgeFalso : IBridgeClient
     /// <summary>El agente no contesta: el bridge devuelve 502 con su codigo.</summary>
     public string? TurnoFalla { get; set; }
 
+    /// <summary>
+    /// Los repos que viajaron con cada turno.
+    ///
+    /// El gateway no le habla a Supabase, asi que si el panel no los manda el
+    /// agente trabaja sobre el catalogo local — que no conoce los proyectos que
+    /// se crean desde el panel.
+    /// </summary>
+    public List<IReadOnlyList<Repo>> ReposDeCadaTurno { get; } = [];
+
+    /// <summary>El token de github que viajo con cada turno. Null cuando fue por SSH.</summary>
+    public List<string?> TokensDeCadaTurno { get; } = [];
+
     public Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        CancellationToken ct = default)
+        IReadOnlyList<Repo> repos, string? githubToken, CancellationToken ct = default)
     {
         if (TurnoFalla is not null) throw new UpstreamException(TurnoFalla);
         Turnos.Add((proyectoId, proyecto, slot, usuarioId, prompt));
+        ReposDeCadaTurno.Add(repos);
+        TokensDeCadaTurno.Add(githubToken);
         return Task.FromResult(new RespuestaTurno("11111111-1111-4111-8111-111111111111", TextoQueDevuelve));
     }
 

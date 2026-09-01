@@ -55,7 +55,8 @@ public sealed class PanoramaService(
             Funcionando: test?.Ok == true,
             Account: cred.Account,
             LoadedAt: cred.LoadedAt,
-            UltimoTest: test);
+            UltimoTest: test,
+            Proyecto: a.Proyecto);
     }
 
     /// <summary>

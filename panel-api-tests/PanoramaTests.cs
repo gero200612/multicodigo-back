@@ -14,6 +14,27 @@ public class PanoramaTests
         return (new PanoramaService(g, l, b, h, NullLogger<PanoramaService>.Instance), g, l, b, h);
     }
 
+    /// <summary>
+    /// El proyecto de cada slot llega al front.
+    ///
+    /// El gateway ya lo devolvia en /agents y el panel lo descartaba en su DTO.
+    /// Sin esto el dashboard no puede probar un slot: probar corre un turno en el
+    /// worktree de UN proyecto, y esa pantalla es una vista global de slots.
+    /// </summary>
+    [Fact]
+    public async Task ElProyectoDeCadaSlotLlegaAlPanorama()
+    {
+        var (svc, g, _, _, _) = Armar();
+        g.Agentes = [new("c1", true, "mi-proyecto"), new("c2", false, null)];
+
+        var p = await svc.VerAsync("jwt");
+
+        Assert.Equal("mi-proyecto", p.Slots.Single(s => s.Slot == "c1").Proyecto);
+        // Un slot sin proyecto asignado se muestra igual, sin proyecto: el front
+        // deshabilita el boton, que es honesto — no hay worktree que probar.
+        Assert.Null(p.Slots.Single(s => s.Slot == "c2").Proyecto);
+    }
+
     [Fact]
     public async Task JuntaLosTresEstados()
     {

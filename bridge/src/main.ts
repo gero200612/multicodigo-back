@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
 import { PgStore } from './store.js';
 import { askAgent, listarAgentes } from './agents-client.js';
+import { firmarToken } from './panel-client.js';
 import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
 import { buildBot } from './telegram.js';
@@ -32,6 +33,11 @@ const Env = z.object({
   // Credencial de la API de lectura que consume el panel. Distinta del secret
   // del webhook a proposito: son dos cosas con dueños distintos.
   BRIDGE_API_TOKEN: z.string().min(16),
+  // Por la red interna de Docker: http://panel:8091. OPCIONAL — sin esto los
+  // turnos de Telegram van por SSH con la deploy key, que es como funcionaban
+  // antes de la GitHub App. No se hace obligatorio para no voltear el bridge de
+  // un despliegue que todavia no registro la App.
+  PANEL_URL: z.string().url().optional(),
   PORT: z.coerce.number().int().positive().default(3000),
 });
 
@@ -75,6 +81,12 @@ const pipelineDeps = {
   project: env.DEFAULT_PROJECT,
   limite: new LimitePorChat(),
   ask: (req: Parameters<typeof askAgent>[0]) => askAgent(req, gatewayDeps),
+  // Sin PANEL_URL no se pasa la funcion: `tokenDelProyecto` la trata como
+  // ausente y devuelve undefined, que es el camino SSH.
+  firmarToken: env.PANEL_URL
+    ? (id: number) =>
+        firmarToken(id, { panelUrl: env.PANEL_URL!, token: env.BRIDGE_API_TOKEN })
+    : undefined,
   transcribe: (bytes: Uint8Array, mimeType: string) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),
   listarAgentes: () => listarAgentes(gatewayDeps),

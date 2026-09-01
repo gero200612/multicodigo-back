@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Bot } from 'grammy';
-import { AgentId, ApprovalDecision, isTokenValid } from '@multicodigo/shared';
+import { AgentId, ApprovalDecision, RepoDelPedido, isTokenValid } from '@multicodigo/shared';
 import { decidir, type DecidirDeps } from './decisiones.js';
 import { ejecutarTurno, type PipelineDeps } from './pipeline.js';
 import { z } from 'zod';
@@ -166,6 +166,15 @@ export function buildWebhookServer(
         agente: AgentId,
         usuarioId: z.string().uuid(),
         prompt: z.string().min(1).max(20_000),
+        // Del contrato compartido, igual que AgentId: el `nombre` termina siendo
+        // un directorio en el disco de la VM y el `github_repo`, parte de una
+        // URL de git. El gateway lo valida igual —es el que toca el disco— pero
+        // el bridge no tiene por que reenviarle algo que ya sabe que esta mal.
+        repos: z.array(RepoDelPedido).max(20).optional(),
+        // El token de instalacion que firmo el panel. Se valida la forma —entra
+        // en un header del lado del gateway— pero no se mira el contenido: el
+        // bridge es un caño para esto.
+        githubToken: z.string().regex(/^[A-Za-z0-9._~+/=-]+$/).max(512).optional(),
       });
 
       /**

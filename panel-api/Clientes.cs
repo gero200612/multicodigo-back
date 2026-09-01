@@ -14,7 +14,7 @@ public interface IGatewayClient
 {
     Task<IReadOnlyList<Agente>> AgentesAsync(CancellationToken ct = default);
     Task<Cola> ColaAsync(CancellationToken ct = default);
-    Task<ResultadoTest> ProbarAsync(string slot, CancellationToken ct = default);
+    Task<ResultadoTest> ProbarAsync(string proyecto, string slot, CancellationToken ct = default);
     Task<string> CrearSlotAsync(string proyecto, CancellationToken ct = default);
 }
 
@@ -73,10 +73,16 @@ public interface IBridgeClient
     Task DecidirAsync(
         string aprobacionId, string decision, string? feedback, string usuarioId,
         CancellationToken ct = default);
-    /// <summary>Le pide al bridge que corra un turno, y espera la respuesta.</summary>
+    /// <summary>
+    /// Le pide al bridge que corra un turno, y espera la respuesta.
+    ///
+    /// Los repos van en el pedido porque el gateway —que es quien prepara los
+    /// worktrees— no le habla a Supabase, donde estan vinculados. Es el panel el
+    /// unico que puede leerlos con el JWT del usuario y pasarlos.
+    /// </summary>
     Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        CancellationToken ct = default);
+        IReadOnlyList<Repo> repos, string? githubToken, CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -140,10 +146,10 @@ internal static class Json
 
 // --- gateway --------------------------------------------------------------
 
-public sealed class GatewayClient(HttpClient http, string proyecto) : IGatewayClient
+public sealed class GatewayClient(HttpClient http) : IGatewayClient
 {
     private sealed record RespuestaAgentes(List<AgenteDto> Agents);
-    private sealed record AgenteDto(string Id, bool Arriba);
+    private sealed record AgenteDto(string Id, bool Arriba, string? Proyecto);
     private sealed record RespuestaPrompt(string Text);
 
     public async Task<IReadOnlyList<Agente>> AgentesAsync(CancellationToken ct = default)
@@ -153,7 +159,7 @@ public sealed class GatewayClient(HttpClient http, string proyecto) : IGatewayCl
         using var cts = Topes.De(ct, 20);
         var r = await http.GetFromJsonAsync<RespuestaAgentes>("/agents", Json.Opciones, cts.Token)
                 ?? throw new UpstreamException("el gateway devolvió una respuesta vacía");
-        return [.. r.Agents.Select(a => new Agente(a.Id, a.Arriba))];
+        return [.. r.Agents.Select(a => new Agente(a.Id, a.Arriba, a.Proyecto))];
     }
 
     /// <summary>
@@ -191,7 +197,8 @@ public sealed class GatewayClient(HttpClient http, string proyecto) : IGatewayCl
     /// que pasa a ser un cron llamando a este endpoint en vez de un script
     /// suelto. Un solo camino, testeado una vez.
     /// </summary>
-    public async Task<ResultadoTest> ProbarAsync(string slot, CancellationToken ct = default)
+    public async Task<ResultadoTest> ProbarAsync(
+        string proyecto, string slot, CancellationToken ct = default)
     {
         var cuando = DateTimeOffset.UtcNow.ToString("O");
         try
@@ -337,11 +344,27 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     /// </summary>
     public async Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
-        CancellationToken ct = default)
+        IReadOnlyList<Repo> repos, string? githubToken, CancellationToken ct = default)
     {
         var res = await http.PostAsJsonAsync(
             "/turnos",
-            new { proyectoId, proyecto, agente = slot, usuarioId, prompt },
+            new
+            {
+                proyectoId,
+                proyecto,
+                agente = slot,
+                usuarioId,
+                prompt,
+                // `github_repo` y no `githubRepo`: el schema del bridge sale del
+                // contrato compartido, que usa el nombre de la columna. Con la
+                // convencion camelCase de Json.Opciones no coincidiria y el
+                // bridge contestaria cuerpo_invalido.
+                repos = repos.Select(r => new { nombre = r.Nombre, github_repo = r.GithubRepo }),
+                // El token de instalacion del turno. El bridge lo reenvia al
+                // gateway sin mirarlo, y el gateway NO se lo pasa al agente.
+                // Null cuando el proyecto no instalo la App: ahi se va por SSH.
+                githubToken,
+            },
             Json.Opciones,
             ct);
 
@@ -393,6 +416,168 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
 /// el panel puede hacer en la base es exactamente lo que puede hacer el usuario
 /// logueado.
 /// </summary>
+/// <summary>Un repo vinculado a un proyecto.</summary>
+public sealed record Repo(string Nombre, string GithubRepo);
+
+/// <summary>
+/// Los repos de cada proyecto, en Supabase.
+///
+/// Se reenvía el JWT del usuario y decide RLS, igual que el historial y los
+/// nombres: un repo de un proyecto del que no sos miembro no aparece, y eso
+/// convierte "¿puede ver esto?" en una pregunta que no hay que programar.
+/// </summary>
+public interface IReposClient
+{
+    Task<IReadOnlyList<Repo>> DeProyectoAsync(string jwt, string proyectoId, CancellationToken ct = default);
+    Task VincularAsync(string jwt, string proyectoId, Repo repo, CancellationToken ct = default);
+    Task DesvincularAsync(string jwt, string proyectoId, string nombre, CancellationToken ct = default);
+}
+
+/// <summary>La instalacion de la GitHub App de un proyecto.</summary>
+public sealed record Instalacion(long InstallationId, string Cuenta);
+
+/// <summary>
+/// La instalación de la GitHub App de cada proyecto, en Supabase.
+///
+/// Mismo patrón que los repos: se reenvía el JWT del usuario y decide RLS. Con
+/// una diferencia que vive en las policies y no acá — leer es de cualquier
+/// miembro, ESCRIBIR es sólo del dueño. Ver `docs/supabase-github-instalaciones.sql`:
+/// esta fila decide con qué credencial pushean todos los agentes del proyecto.
+/// </summary>
+public interface IInstalacionesClient
+{
+    /// <summary>La instalación del proyecto, o null si todavía no instaló la App.</summary>
+    Task<Instalacion?> DeProyectoAsync(string jwt, string proyectoId, CancellationToken ct = default);
+    Task GuardarAsync(string jwt, string proyectoId, Instalacion inst, CancellationToken ct = default);
+}
+
+public sealed class InstalacionesClient(
+    HttpClient http, string anonKey, ILogger<InstalacionesClient> log) : IInstalacionesClient
+{
+    private sealed record Fila(long InstallationId, string Cuenta);
+
+    private HttpRequestMessage Pedido(HttpMethod metodo, string url, string jwt)
+    {
+        var req = new HttpRequestMessage(metodo, url);
+        req.Headers.TryAddWithoutValidation("apikey", anonKey);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+        return req;
+    }
+
+    public async Task<Instalacion?> DeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+    {
+        var url = $"/rest/v1/github_instalaciones?proyecto_id=eq.{proyectoId}"
+                + "&select=installation_id,cuenta";
+        var res = await http.SendAsync(Pedido(HttpMethod.Get, url, jwt), ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            // Sin instalación el turno igual corre: cae al camino SSH, que es el
+            // de `demo`. Una caída de Supabase no puede voltear todos los turnos.
+            log.LogWarning("no se pudo leer la instalacion de {Proyecto}", proyectoId);
+            return null;
+        }
+        var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct);
+        var f = (filas ?? []).FirstOrDefault();
+        return f is null ? null : new Instalacion(f.InstallationId, f.Cuenta);
+    }
+
+    public async Task GuardarAsync(
+        string jwt, string proyectoId, Instalacion inst, CancellationToken ct = default)
+    {
+        var req = Pedido(HttpMethod.Post, "/rest/v1/github_instalaciones", jwt);
+        // UPSERT: reinstalar la App en GitHub emite un installation_id nuevo, y
+        // el proyecto tiene que quedarse con el último. Sin `resolution=merge`
+        // el segundo intento choca contra la PK y el usuario ve un error después
+        // de haber hecho todo bien.
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal,resolution=merge-duplicates");
+        req.Content = JsonContent.Create(
+            new
+            {
+                proyecto_id = proyectoId,
+                installation_id = inst.InstallationId,
+                cuenta = inst.Cuenta,
+            },
+            options: Json.Opciones);
+
+        var res = await http.SendAsync(req, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            var detalle = await res.Content.ReadAsStringAsync(ct);
+            log.LogError("no se pudo guardar la instalacion de {Proyecto}: {Detalle}", proyectoId, detalle);
+            // 403 es RLS: no sos dueño. Es un caso del usuario y no una caída.
+            throw new UpstreamException(
+                res.StatusCode == HttpStatusCode.Forbidden ? "no_sos_dueño" : "instalacion_no_guardada");
+        }
+    }
+}
+
+public sealed class ReposClient(HttpClient http, string anonKey, ILogger<ReposClient> log)
+    : IReposClient
+{
+    private sealed record Fila(string Nombre, string GithubRepo);
+
+    private HttpRequestMessage Pedido(HttpMethod metodo, string url, string jwt)
+    {
+        var req = new HttpRequestMessage(metodo, url);
+        req.Headers.TryAddWithoutValidation("apikey", anonKey);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+        return req;
+    }
+
+    public async Task<IReadOnlyList<Repo>> DeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+    {
+        // Orden explícito: sin esto PostgREST devuelve las filas en el orden que
+        // le convenga y la lista de la pantalla salta de lugar entre recargas.
+        var url = $"/rest/v1/repos?proyecto_id=eq.{proyectoId}"
+                + "&select=nombre,github_repo&order=nombre";
+        var res = await http.SendAsync(Pedido(HttpMethod.Get, url, jwt), ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            log.LogWarning("no se pudieron leer los repos de {Proyecto}", proyectoId);
+            return [];
+        }
+        var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct);
+        return [.. (filas ?? []).Select(f => new Repo(f.Nombre, f.GithubRepo))];
+    }
+
+    public async Task VincularAsync(
+        string jwt, string proyectoId, Repo repo, CancellationToken ct = default)
+    {
+        var req = Pedido(HttpMethod.Post, "/rest/v1/repos", jwt);
+        // `return=minimal` porque no se usa la fila que vuelve, y así PostgREST
+        // no necesita permiso de SELECT sobre lo recién insertado.
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
+        req.Content = JsonContent.Create(
+            new { proyecto_id = proyectoId, nombre = repo.Nombre, github_repo = repo.GithubRepo },
+            options: Json.Opciones);
+
+        var res = await http.SendAsync(req, ct);
+        // 409 es el UNIQUE (proyecto_id, nombre): ese repo ya estaba vinculado.
+        // Es un caso del usuario, no una caída, y la pantalla lo dice distinto.
+        if (res.StatusCode == HttpStatusCode.Conflict) throw new UpstreamException("repo_duplicado");
+        if (!res.IsSuccessStatusCode)
+        {
+            var detalle = await res.Content.ReadAsStringAsync(ct);
+            log.LogError("no se pudo vincular {Repo}: {Detalle}", repo.Nombre, detalle);
+            throw new UpstreamException("repo_no_vinculado");
+        }
+    }
+
+    public async Task DesvincularAsync(
+        string jwt, string proyectoId, string nombre, CancellationToken ct = default)
+    {
+        // Los DOS filtros y no sólo el nombre: sin el proyecto, un nombre
+        // repetido en otro proyecto del que TAMBIÉN sos miembro se borraría de
+        // los dos lados. RLS no lo impide, porque en los dos sos miembro.
+        var url = $"/rest/v1/repos?proyecto_id=eq.{proyectoId}"
+                + $"&nombre=eq.{Uri.EscapeDataString(nombre)}";
+        var res = await http.SendAsync(Pedido(HttpMethod.Delete, url, jwt), ct);
+        if (!res.IsSuccessStatusCode) throw new UpstreamException("repo_no_desvinculado");
+    }
+}
+
 public sealed class HistorialClient(HttpClient http, string anonKey, ILogger<HistorialClient> log)
     : IHistorialClient
 {

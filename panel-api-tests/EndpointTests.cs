@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
@@ -72,6 +73,8 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
     public NombresFalso Nombres { get; } = new();
     public ProyectosFalso Proyectos { get; } = new();
     public AgentesFalso Agentes { get; } = new();
+    public ReposFalso Repos { get; } = new();
+    public InstalacionesFalso Instalaciones { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -95,6 +98,8 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
             s.AddSingleton<INombresClient>(Nombres);
             s.AddSingleton<IProyectosClient>(Proyectos);
             s.AddSingleton<IAgentesClient>(Agentes);
+            s.AddSingleton<IReposClient>(Repos);
+            s.AddSingleton<IInstalacionesClient>(Instalaciones);
 
             s.AddAuthentication(AuthDePrueba.Esquema)
                 .AddScheme<AuthenticationSchemeOptions, AuthDePrueba>(AuthDePrueba.Esquema, _ => { });
@@ -198,11 +203,187 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
 
     // --- probar ---
 
+    /// <summary>
+    /// El proyecto sale del PEDIDO, no de una constante del entorno.
+    ///
+    /// Mientras el panel leia PANEL_PROJECT, todos los proyectos probaban contra
+    /// el mismo y el gateway recibia siempre "demo". Con varios proyectos por
+    /// cuenta eso deja de ser un detalle: el test de un slot corria en el
+    /// worktree de otro proyecto.
+    /// </summary>
+    [Fact]
+    public async Task ElProyectoDelPedidoLlegaAlGatewayYNoUnaConstante()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "mi-proyecto";
+        var antes = f.Gateway.ProyectosPedidos.Count;
+
+        var r = await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/c1/test", null);
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Equal("mi-proyecto", f.Gateway.ProyectosPedidos[^1]);
+        Assert.True(f.Gateway.ProyectosPedidos.Count > antes);
+    }
+
+    /// <summary>
+    /// No ser miembro no es "el proyecto no existe": es 403.
+    ///
+    /// Y es lo que impide probar un slot en el worktree de un proyecto ajeno,
+    /// que es lo que la ruta vieja —sin proyecto— no podia ni preguntar.
+    /// </summary>
+    [Fact]
+    public async Task ProbarEnUnProyectoAjenoDa403()
+    {
+        var r = await Cliente().PostAsync(
+            "/api/proyectos/44444444-4444-4444-8444-444444444444/slots/c1/test", null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+    }
+
+    /// <summary>
+    /// Los repos vinculados viajan CON el turno.
+    ///
+    /// Es la unica forma de que el gateway los sepa: viven en Supabase y el
+    /// gateway no le habla. Si se quedan aca, el agente trabaja sobre el
+    /// catalogo local de la VM, que solo conoce `demo` y `sincroresto`.
+    /// </summary>
+    // --- la GitHub App ---
+
+    /// <summary>
+    /// El endpoint interno le da un TOKEN a quien pregunte, asi que el bearer es
+    /// lo unico que lo separa de ser una fabrica de credenciales de GitHub.
+    /// </summary>
+    [Fact]
+    public async Task ElEndpointInternoSinBearerDa401()
+    {
+        var r = await f.CreateClient().PostAsJsonAsync(
+            "/interno/github/token", new { installation_id = 42 });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task ElEndpointInternoConUnBearerAjenoDa401()
+    {
+        var c = f.CreateClient();
+        c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "otro-token-largo");
+
+        var r = await c.PostAsJsonAsync("/interno/github/token", new { installation_id = 42 });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
+
+    /// <summary>
+    /// Sin App configurada devuelve null y NO un error: los tests corren sin
+    /// GITHUB_APP_ID, que es el mismo estado que un despliegue que todavia no la
+    /// registro. Ahi los turnos van por SSH.
+    /// </summary>
+    [Fact]
+    public async Task ElEndpointInternoConElBearerDelBridgeContesta()
+    {
+        var c = f.CreateClient();
+        c.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "token-de-prueba-largo-3");
+
+        var r = await c.PostAsJsonAsync("/interno/github/token", new { installation_id = 42 });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+    }
+
+    /// <summary>
+    /// El callback lo abre el navegador siguiendo un redirect de GitHub, sin
+    /// header de autorizacion: si exigiera sesion, instalar la App terminaria
+    /// siempre en un 401.
+    /// </summary>
+    [Fact]
+    public async Task ElCallbackDeGithubNoExigeSesion()
+    {
+        var sinRedirect = f.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+
+        var r = await sinRedirect.GetAsync(
+            $"/api/github/callback?installation_id=42&state={ProyectoDePrueba}");
+
+        Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
+        Assert.Contains("instalacion=42", r.Headers.Location!.ToString());
+    }
+
+    // Los dos valores terminan en un header Location, y llegan de afuera.
+    [Theory]
+    [InlineData("no-es-un-numero", "22222222-2222-4222-8222-222222222222")]
+    [InlineData("42", "no-es-un-uuid")]
+    [InlineData("-1", "22222222-2222-4222-8222-222222222222")]
+    public async Task ElCallbackRechazaLoQueNoTieneForma(string instalacion, string state)
+    {
+        var r = await f.CreateClient().GetAsync(
+            $"/api/github/callback?installation_id={instalacion}&state={state}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task ElEstadoDeGithubDiceSiLaAppEstaConfigurada()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().GetAsync($"/api/proyectos/{ProyectoDePrueba}/github");
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var cuerpo = await r.Content.ReadFromJsonAsync<JsonElement>();
+        // Sin GITHUB_APP_ID en los tests: la pantalla tiene que poder decirlo en
+        // vez de mostrar un boton que no lleva a ningun lado.
+        Assert.False(cuerpo.GetProperty("configurada").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ElEstadoDeGithubDeUnProyectoAjenoDa403()
+    {
+        var r = await Cliente().GetAsync(
+            "/api/proyectos/44444444-4444-4444-8444-444444444444/github");
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+    }
+
+    /// <summary>
+    /// Sin App configurada el turno tiene que correr igual, sin token: es el
+    /// camino SSH, el mismo que usan `demo` y el smoke test. Un problema con
+    /// GitHub degrada el push, no impide que el agente trabaje.
+    /// </summary>
+    [Fact]
+    public async Task SinAppElTurnoCorreIgualYSinToken()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "mi-proyecto";
+        f.Instalaciones.Fila = new Instalacion(42, "gero");
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "hola" });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Null(f.Bridge.TokensDeCadaTurno[^1]);
+    }
+
+    [Fact]
+    public async Task LosReposVinculadosViajanConElTurno()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "mi-proyecto";
+        f.Repos.Filas.Clear();
+        f.Repos.Filas.Add(new Repo("multicodigo-front", "gero/multicodigo-front"));
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "hola" });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var mandados = f.Bridge.ReposDeCadaTurno[^1];
+        Assert.Equal("multicodigo-front", Assert.Single(mandados).Nombre);
+    }
+
     [Fact]
     public async Task ProbarDevuelve200YGuardaEnElHistorial()
     {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
         var antes = f.Historial.Guardados.Count;
-        var r = await Cliente().PostAsync("/api/slots/c1/test", null);
+        var r = await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/c1/test", null);
 
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
         Assert.Contains("c1", f.Gateway.Probados);
@@ -223,7 +404,9 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         f.Gateway.Resultado = new ResultadoTest(false, "hoy", "auth_expired");
         try
         {
-            var r = await Cliente().PostAsync("/api/slots/c2/test", null);
+            f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+            var r = await Cliente().PostAsync(
+                $"/api/proyectos/{ProyectoDePrueba}/slots/c2/test", null);
             Assert.Equal(HttpStatusCode.OK, r.StatusCode);
             var cuerpo = await r.Content.ReadFromJsonAsync<ResultadoTest>(
                 new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
@@ -310,7 +493,10 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
     public async Task RechazaSlotsInvalidosEnTodasLasRutas(string slot)
     {
         var c = Cliente();
-        Assert.Equal(HttpStatusCode.NotFound, (await c.PostAsync($"/api/slots/{slot}/test", null)).StatusCode);
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await c.PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/{slot}/test", null)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/api/slots/{slot}/login/start")).StatusCode);
         Assert.Equal(
             HttpStatusCode.NotFound,
@@ -742,5 +928,101 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         var r = await Cliente(conSesion: false).PostAsJsonAsync(
             $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "hola" });
         Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
+
+    // --- repos vinculados -------------------------------------------------
+
+    [Fact]
+    public async Task Lista_los_repos_del_proyecto()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+        f.Repos.Filas.Add(new Repo("multicodigo-front", "gero200612/multicodigo-front"));
+
+        var r = await Cliente().GetAsync($"/api/proyectos/{ProyectoDePrueba}/repos");
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Contains("multicodigo-front", await r.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>
+    /// 403 y no 200 con lista vacía: RLS ya filtra, pero una lista vacía le
+    /// diría al usuario "no tenés repos" en vez de "esto no es tuyo".
+    /// </summary>
+    [Fact]
+    public async Task No_lista_los_repos_de_un_proyecto_ajeno()
+    {
+        var r = await Cliente().GetAsync("/api/proyectos/ajeno/repos");
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task Vincula_un_repo()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/repos",
+            new { nombre = "multicodigo-vm", github_repo = "gero200612/multicodigo-vm" });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Contains("multicodigo-vm", f.Repos.Vinculados);
+    }
+
+    [Fact]
+    public async Task No_vincula_a_un_proyecto_ajeno()
+    {
+        var r = await Cliente().PostAsJsonAsync(
+            "/api/proyectos/ajeno/repos",
+            new { nombre = "repo-ajeno", github_repo = "otro/repo-ajeno" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+        // El fixture se comparte entre tests: se mira ESTE repo, no que la
+        // lista este vacia.
+        Assert.DoesNotContain("repo-ajeno", f.Repos.Vinculados);
+    }
+
+    /// <summary>
+    /// El nombre arma una ruta en disco del lado del gateway. Se rechaza acá y
+    /// además lo rechaza el CHECK de la tabla: dos redes para lo mismo.
+    /// </summary>
+    [Theory]
+    [InlineData("../fuga")]
+    [InlineData("con/barra")]
+    [InlineData("..")]
+    public async Task Rechaza_un_nombre_que_se_escaparia_del_directorio(string nombre)
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/repos",
+            new { nombre, github_repo = "gero200612/x" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.DoesNotContain(nombre, f.Repos.Vinculados);
+    }
+
+    [Fact]
+    public async Task Rechaza_un_github_repo_que_no_es_owner_barra_nombre()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/repos",
+            new { nombre = "x", github_repo = "https://github.com/a/b" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task Desvincula_un_repo()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+        f.Repos.Filas.Add(new Repo("viejo", "gero200612/viejo"));
+
+        var r = await Cliente().DeleteAsync($"/api/proyectos/{ProyectoDePrueba}/repos/viejo");
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Contains("viejo", f.Repos.Desvinculados);
     }
 }
