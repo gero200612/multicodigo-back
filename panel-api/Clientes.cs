@@ -15,7 +15,8 @@ public interface IGatewayClient
     Task<IReadOnlyList<Agente>> AgentesAsync(CancellationToken ct = default);
     Task<Cola> ColaAsync(CancellationToken ct = default);
     Task<ResultadoTest> ProbarAsync(
-        string proyecto, string slot, IReadOnlyList<Repo> repos, CancellationToken ct = default);
+        string proyecto, string slot, IReadOnlyList<Repo> repos, string? githubToken,
+        CancellationToken ct = default);
     Task<string> CrearSlotAsync(string proyecto, CancellationToken ct = default);
 }
 
@@ -236,7 +237,8 @@ public sealed class GatewayClient(HttpClient http) : IGatewayClient
     /// suelto. Un solo camino, testeado una vez.
     /// </summary>
     public async Task<ResultadoTest> ProbarAsync(
-        string proyecto, string slot, IReadOnlyList<Repo> repos, CancellationToken ct = default)
+        string proyecto, string slot, IReadOnlyList<Repo> repos, string? githubToken,
+        CancellationToken ct = default)
     {
         var cuando = DateTimeOffset.UtcNow.ToString("O");
         try
@@ -259,6 +261,11 @@ public sealed class GatewayClient(HttpClient http) : IGatewayClient
                     // el test corre sobre otros repos que un turno real, un
                     // problema de clonado no aparece hasta el primer turno.
                     repos = repos.Select(r => new { nombre = r.Nombre, github_repo = r.GithubRepo }),
+                    // El token, igual que en un turno de verdad. Sin el, el
+                    // gateway clona el espejo por SSH con la deploy key: si el
+                    // repo solo es accesible con la App, git falla con "Host key
+                    // verification failed" y el worktree nunca se crea.
+                    githubToken,
                 },
                 Json.Opciones,
                 ct);

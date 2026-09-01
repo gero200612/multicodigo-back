@@ -36,12 +36,17 @@ public sealed class GatewayFalso : IGatewayClient
     /// <summary>Los repos que viajaron con cada test.</summary>
     public List<IReadOnlyList<Repo>> ReposDeCadaTest { get; } = [];
 
+    /// <summary>El token que viajo con cada test. Null cuando fue por SSH.</summary>
+    public List<string?> TokensDeCadaTest { get; } = [];
+
     public Task<ResultadoTest> ProbarAsync(
-        string proyecto, string slot, IReadOnlyList<Repo> repos, CancellationToken ct = default)
+        string proyecto, string slot, IReadOnlyList<Repo> repos, string? githubToken,
+        CancellationToken ct = default)
     {
         Probados.Add(slot);
         ProyectosPedidos.Add(proyecto);
         ReposDeCadaTest.Add(repos);
+        TokensDeCadaTest.Add(githubToken);
         return Task.FromResult(Resultado);
     }
 

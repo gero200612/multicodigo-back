@@ -93,6 +93,11 @@ const ERROR_TEXT: Record<string, string> = {
   sin_repos:
     'Ese proyecto no tiene ningun repo vinculado, asi que el agente no tiene sobre que trabajar. ' +
     'Vincula uno desde el panel, en Configuracion.',
+  // El mensaje de git viaja en el `message`, no en el codigo, asi que este texto
+  // dice donde mirar y el detalle llega aparte.
+  worktree_failed:
+    'No pude preparar el repositorio del proyecto. Fijate que la App de GitHub ' +
+    'tenga acceso a ese repo, o que la clave del servidor este cargada.',
   usage_limit:
     'Ese agente se quedo sin tokens y no habia otro libre para seguir. ' +
     'Proba mas tarde o carga otra cuenta.',

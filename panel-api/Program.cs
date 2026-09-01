@@ -377,7 +377,8 @@ static IResult? SlotInvalido(string slot)
 api.MapPost("/proyectos/{proyectoId}/slots/{slot}/test", async (
     string proyectoId, string slot, HttpContext ctx, IGatewayClient gateway,
     IProyectosClient proyectos, IReposClient repos, IHistorialClient historial,
-    CancellationToken ct) =>
+    IInstalacionesClient instalaciones, AppDeGitHub gh, IHttpClientFactory clientes,
+    ILoggerFactory logs, CancellationToken ct) =>
 {
     if (SlotInvalido(slot) is { } malo) return malo;
 
@@ -392,7 +393,11 @@ api.MapPost("/proyectos/{proyectoId}/slots/{slot}/test", async (
     // Los mismos repos que en un turno de verdad: el test tiene que correr en el
     // mismo worktree, o deja de probar lo que importa.
     var vinculados = await repos.DeProyectoAsync(jwt, proyectoId, ct);
-    var r = await gateway.ProbarAsync(nombre, slot, vinculados, ct);
+    // Y el mismo token: un test que clona distinto que un turno no prueba lo que
+    // hace falta, y sin token el clon va por SSH y falla en repos que solo
+    // conoce la App.
+    var githubToken = await TokenDeGitHub(gh, instalaciones, clientes, logs, jwt, proyectoId, ct);
+    var r = await gateway.ProbarAsync(nombre, slot, vinculados, githubToken, ct);
     // El fallo TAMBIEN se guarda, y es el registro que mas importa: es el que
     // te deja ver que c2 viene fallando desde el martes.
     await historial.GuardarAsync(jwt, slot, r, ct);

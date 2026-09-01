@@ -406,6 +406,35 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         Assert.Equal("multicodigo-front", Assert.Single(mandados).Nombre);
     }
 
+    /// <summary>
+    /// El test lleva el token de GitHub, igual que un turno de verdad.
+    ///
+    /// Sin él, `asegurarBare` clona el espejo por SSH con la deploy key. Si el
+    /// repo sólo es accesible con la App —que es el caso normal desde el plan 3—
+    /// git falla con "Host key verification failed", el worktree no se crea, y el
+    /// agente arranca con un cwd que no existe: "spawn node ENOENT".
+    ///
+    /// Es el mismo olvido que ya se cometió con los repos: este endpoint quedó
+    /// afuera cuando el turno ganó un campo nuevo.
+    /// </summary>
+    [Fact]
+    public async Task ElTestLlevaElTokenDeGithub()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        f.Instalaciones.Fila = new Instalacion(158312806, "gero");
+        // El doble es de la fixture y lo comparten todos los tests de la clase,
+        // así que se cuenta desde acá y no desde cero.
+        var antes = f.Gateway.TokensDeCadaTest.Count;
+
+        var r = await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/c1/test", null);
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        // Sin App configurada en los tests el token es null, pero el PARÁMETRO
+        // tiene que existir: es lo que hace que el endpoint pueda mandarlo cuando
+        // sí la haya. Antes ni siquiera se le pasaba, y el test clonaba por SSH.
+        Assert.Equal(antes + 1, f.Gateway.TokensDeCadaTest.Count);
+    }
+
     [Fact]
     public async Task ProbarDevuelve200YGuardaEnElHistorial()
     {
