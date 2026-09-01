@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { Bot } from 'grammy';
 import { AgentId, ApprovalDecision, RepoDelPedido, isTokenValid } from '@multicodigo/shared';
 import { decidir, type DecidirDeps } from './decisiones.js';
-import { ejecutarTurno, type PipelineDeps } from './pipeline.js';
+import { ejecutarTurnoConRelevo, type PipelineDeps } from './pipeline.js';
 import { z } from 'zod';
 import type { Store } from './store.js';
 
@@ -198,7 +198,7 @@ export function buildWebhookServer(
         }
 
         try {
-          const r = await ejecutarTurno(pipeline, { ...cuerpo.data, origen: 'panel' });
+          const r = await ejecutarTurnoConRelevo(pipeline, { ...cuerpo.data, origen: 'panel' });
           return reply.send({ jobId: r.jobId, texto: r.texto });
         } catch (e) {
           // 502 y no 500: lo que fallo es el agente del otro lado, y el `code`

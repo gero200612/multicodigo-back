@@ -128,6 +128,23 @@ export interface Store {
    */
   reposDeProyecto(proyectoId: string): Promise<Array<{ nombre: string; github_repo: string }>>;
 
+  /**
+   * Los ultimos turnos de un agente en un proyecto, del mas viejo al mas nuevo.
+   *
+   * Para el relevo: cuando un slot se queda sin tokens, el que sigue arranca una
+   * sesion NUEVA —el transcript vive en el HOME del slot viejo y no se puede
+   * resumir desde otro— asi que el contexto hay que reinyectarlo como texto. Esto
+   * es de donde sale.
+   *
+   * Solo los que terminaron bien: un turno fallido no aporta contexto y ademas
+   * su `respuesta` es un codigo de error.
+   */
+  turnosRecientes(
+    proyectoId: string,
+    agente: string,
+    limite: number,
+  ): Promise<Array<{ prompt: string; respuesta: string }>>;
+
   getActiveAgent(chatId: number): Promise<AgentId | undefined>;
   setActiveAgent(chatId: number, agent: AgentId): Promise<void>;
   /**
@@ -367,6 +384,10 @@ export class InMemoryStore implements Store {
 
   /** Ni repos: los tests que los necesitan los inyectan por otro lado. */
   async reposDeProyecto(): Promise<Array<{ nombre: string; github_repo: string }>> {
+    return [];
+  }
+
+  async turnosRecientes(): Promise<Array<{ prompt: string; respuesta: string }>> {
     return [];
   }
 
@@ -692,6 +713,24 @@ export class PgStore implements Store {
       [usuarioId],
     );
     return r.rows;
+  }
+
+  async turnosRecientes(
+    proyectoId: string,
+    agente: string,
+    limite: number,
+  ): Promise<Array<{ prompt: string; respuesta: string }>> {
+    // DESC en la consulta y reverse despues: el LIMIT tiene que quedarse con los
+    // mas NUEVOS, y el prompt los necesita en orden cronologico.
+    const r = await this.pool.query<{ prompt: string; respuesta: string }>(
+      `SELECT prompt, respuesta
+         FROM jobs
+        WHERE proyecto_id = $1 AND agent = $2 AND status = 'done' AND respuesta IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT $3`,
+      [proyectoId, agente, limite],
+    );
+    return r.rows.reverse();
   }
 
   async reposDeProyecto(

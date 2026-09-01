@@ -1,3 +1,4 @@
+import { promptDeRelevo, proximoSlot } from './relevo.js';
 import {
   sanitizeForTelegram,
   type AgentId,
@@ -165,7 +166,7 @@ export async function handleIncoming(
   const githubToken = await tokenDelProyecto(proyectoId, deps);
 
   try {
-    const r = await ejecutarTurno(deps, {
+    const r = await ejecutarTurnoConRelevo(deps, {
       proyectoId,
       proyecto: project,
       agente: agent,
@@ -247,7 +248,14 @@ export interface Turno {
 export class ErrorDeTurno extends Error {
   constructor(
     readonly jobId: string,
-    codigo: string,
+    /**
+     * El codigo del agente (`usage_limit`, `auth_expired`, ...).
+     *
+     * `readonly` y no solo el `message` de Error: quien decide si relevar tiene
+     * que poder preguntar por el codigo, y comparar contra `message` obliga a
+     * confiar en que nadie le agregue un prefijo.
+     */
+    readonly codigo: string,
   ) {
     super(codigo);
     this.name = 'ErrorDeTurno';
@@ -277,6 +285,84 @@ async function tokenDelProyecto(
   const instalacion = await deps.store.instalacionDeProyecto(proyectoId);
   if (instalacion === undefined) return undefined;
   return deps.firmarToken(instalacion);
+}
+
+/** Cuantos slots se prueban antes de darse por vencido. */
+const TOPE_DE_RELEVOS = 3;
+
+/**
+ * Corre el turno, y si el slot se queda sin tokens lo sigue otro.
+ *
+ * Envuelve a `ejecutarTurno` en vez de meterle la logica adentro: ese hace UNA
+ * cosa —el ciclo de vida de un turno: crear el job, colgar el poller, guardar la
+ * sesion, cerrar— y el relevo es correr ese ciclo mas de una vez.
+ *
+ * Cada intento es su propio job, y es a proposito: en la actividad del panel
+ * queda "c1 se quedo sin tokens" y despues "c2 lo continuo", que es lo que hace
+ * falta para entender una respuesta que llego de otro agente.
+ *
+ * El contexto se reinyecta como texto porque no se puede resumir la sesion desde
+ * otro slot. Ver relevo.ts.
+ */
+export async function ejecutarTurnoConRelevo(
+  deps: PipelineDeps,
+  t: Turno,
+): Promise<{ jobId: string; texto: string; relevos: string[] }> {
+  const probados: string[] = [];
+  const relevos: string[] = [];
+  let turno = t;
+
+  for (let intento = 0; intento < TOPE_DE_RELEVOS; intento++) {
+    probados.push(turno.agente);
+    try {
+      const r = await ejecutarTurno(deps, turno);
+      return { ...r, relevos };
+    } catch (err) {
+      const codigo = err instanceof ErrorDeTurno ? err.codigo : '';
+      // Solo por tokens. Cualquier otro fallo se propaga: relevar un
+      // `worktree_dirty` o un `git_failed` lo unico que hace es repetir el mismo
+      // error en otro slot y esconder la causa.
+      if (codigo !== 'usage_limit') throw err;
+
+      const siguiente = await elegirRelevo(deps, turno.proyecto, probados);
+      if (!siguiente) throw err;
+
+      // El hilo del slot que se agoto, no del que releva: es donde esta lo que
+      // venia pasando.
+      const historia = turno.proyectoId
+        ? await deps.store
+            .turnosRecientes(turno.proyectoId, turno.agente, 12)
+            .catch(() => [])
+        : [];
+
+      relevos.push(`${turno.agente} -> ${siguiente}`);
+      turno = {
+        ...turno,
+        agente: siguiente as Turno['agente'],
+        prompt: promptDeRelevo(t.prompt, historia, turno.agente),
+      };
+    }
+  }
+
+  // Se agoto el tope. Se corre el ultimo intento sin atrapar nada para que el
+  // error que llegue al usuario sea el de verdad y no un "no quedan slots".
+  return { ...(await ejecutarTurno(deps, turno)), relevos };
+}
+
+/** Los candidatos que conoce el gateway, o ninguno si no se le puede preguntar. */
+async function elegirRelevo(
+  deps: PipelineDeps,
+  proyecto: string,
+  probados: readonly string[],
+): Promise<string | undefined> {
+  if (!deps.listarAgentes) return undefined;
+  try {
+    return proximoSlot(await deps.listarAgentes(proyecto), probados);
+  } catch {
+    // Si el gateway no contesta, no hay relevo: el error original sube y dice
+    // que paso. Inventar un slot seria peor.
+    return undefined;
+  }
 }
 
 export async function ejecutarTurno(

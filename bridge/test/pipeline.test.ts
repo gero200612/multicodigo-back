@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
-import { handleIncoming, ejecutarTurno, type PipelineDeps } from '../src/pipeline.js';
+import {
+  handleIncoming,
+  ejecutarTurno,
+  ejecutarTurnoConRelevo,
+  type PipelineDeps,
+} from '../src/pipeline.js';
 import { InMemoryStore, type Store } from '../src/store.js';
 import { LimitePorChat } from '../src/vinculacion.js';
 
@@ -522,6 +527,132 @@ describe('el menu', () => {
   it('un chat sin vincular no ve ningun menu', async () => {
     const out = await handleIncoming({ chatId: 701, messageId: 1, text: '/menu' }, deps());
     expect(out.kind).toBe('sin_vincular');
+  });
+});
+
+describe('el relevo cuando un slot se queda sin tokens', () => {
+  const PROYECTO = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const USUARIO = USUARIO_DE_PRUEBA;
+  const TURNO = {
+    proyectoId: PROYECTO,
+    proyecto: 'demo',
+    agente: 'c1' as const,
+    usuarioId: USUARIO,
+    prompt: 'segui con el endpoint',
+    origen: 'panel' as const,
+  };
+  const CON_CUENTA = [
+    { id: 'c1' as const, arriba: false, cuenta: true },
+    { id: 'c2' as const, arriba: false, cuenta: true },
+  ];
+
+  /** Falla con usage_limit en los slots nombrados y contesta bien en el resto. */
+  function agotados(...sinTokens: string[]) {
+    const pedidos: { agent: string; prompt: string }[] = [];
+    const ask = vi.fn(async (req: { jobId: string; agent: string; prompt: string }) => {
+      pedidos.push({ agent: req.agent, prompt: req.prompt });
+      if (sinTokens.includes(req.agent)) throw new Error('usage_limit');
+      return { jobId: req.jobId, sessionId: 'sess-1', text: 'listo', turns: 1 };
+    });
+    return { ask, pedidos };
+  }
+
+  it('pasa al slot siguiente y devuelve su respuesta', async () => {
+    const { ask, pedidos } = agotados('c1');
+    const r = await ejecutarTurnoConRelevo(
+      deps({ ask, listarAgentes: async () => CON_CUENTA }),
+      TURNO,
+    );
+
+    expect(r.texto).toBe('listo');
+    expect(pedidos.map((p) => p.agent)).toEqual(['c1', 'c2']);
+    expect(r.relevos).toEqual(['c1 -> c2']);
+  });
+
+  /*
+   * El punto de todo esto: el slot que releva tiene que saber que hay trabajo
+   * hecho en el worktree.
+   *
+   * No puede hacer `resume` de la sesion de c1 —el transcript vive en el HOME de
+   * c1— asi que arranca de cero. Sin este aviso, empieza el trabajo otra vez y
+   * pisa lo que estaba: el worktree es compartido por proyecto, no por slot.
+   */
+  it('el que releva recibe el contexto y el aviso del worktree', async () => {
+    const store = new InMemoryStore();
+    // Un turno anterior de c1, que es de donde sale el contexto.
+    store.turnosRecientes = async () => [
+      { prompt: 'crea el endpoint', respuesta: 'lo cree en server.ts' },
+    ];
+    const { ask, pedidos } = agotados('c1');
+
+    await ejecutarTurnoConRelevo(
+      deps({ store, ask, listarAgentes: async () => CON_CUENTA }),
+      TURNO,
+    );
+
+    const aC2 = pedidos[1]!.prompt;
+    expect(aC2).toContain('lo cree en server.ts');
+    expect(aC2.toLowerCase()).toContain('worktree');
+    expect(aC2).toContain('segui con el endpoint');
+    // Y el de c1 va limpio: el aviso de relevo solo tiene sentido para el que releva.
+    expect(pedidos[0]!.prompt).toBe('segui con el endpoint');
+  });
+
+  it('sin ningun slot con cuenta, el error sube tal cual', async () => {
+    const { ask } = agotados('c1');
+    await expect(
+      ejecutarTurnoConRelevo(
+        deps({ ask, listarAgentes: async () => [{ id: 'c1' as const, arriba: false, cuenta: true }] }),
+        TURNO,
+      ),
+    ).rejects.toThrow('usage_limit');
+  });
+
+  // Relevar cualquier fallo repetiria el mismo error en otro slot y esconderia
+  // la causa: un worktree sucio lo sigue estando desde el slot que sea.
+  it('no releva por un error que no es de tokens', async () => {
+    const pedidos: string[] = [];
+    const ask = vi.fn(async (req: { agent: string }) => {
+      pedidos.push(req.agent);
+      throw new Error('worktree_dirty');
+    });
+
+    await expect(
+      ejecutarTurnoConRelevo(deps({ ask, listarAgentes: async () => CON_CUENTA }), TURNO),
+    ).rejects.toThrow('worktree_dirty');
+    expect(pedidos).toEqual(['c1']);
+  });
+
+  // Sin tope, con seis slots agotados el turno gira seis veces y el usuario
+  // espera el timeout de todos.
+  it('se rinde despues de unos pocos intentos', async () => {
+    const { ask, pedidos } = agotados('c1', 'c2', 'c3', 'c4', 'c5');
+    const todos = ['c1', 'c2', 'c3', 'c4', 'c5'].map((id) => ({
+      id: id as 'c1',
+      arriba: false,
+      cuenta: true,
+    }));
+
+    await expect(
+      ejecutarTurnoConRelevo(deps({ ask, listarAgentes: async () => todos }), TURNO),
+    ).rejects.toThrow('usage_limit');
+    // No los seis: el tope corta antes.
+    expect(pedidos.length).toBeLessThanOrEqual(4);
+  });
+
+  it('si el gateway no contesta no hay relevo, y el error original sube', async () => {
+    const { ask } = agotados('c1');
+    await expect(
+      ejecutarTurnoConRelevo(
+        deps({
+          ask,
+          listarAgentes: async () => {
+            throw new Error('agent_unavailable');
+          },
+        }),
+        TURNO,
+      ),
+    ).rejects.toThrow('usage_limit');
   });
 });
 
