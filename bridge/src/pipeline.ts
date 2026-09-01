@@ -24,7 +24,15 @@ export interface PipelineDeps {
   project: string;
   /** Cuantos codigos de vinculacion puede pedir cada chat. */
   limite: LimitePorChat;
-  ask: (req: PromptRequest) => Promise<PromptResponse>;
+  ask: (req: PromptConToken) => Promise<PromptResponse>;
+  /**
+   * Le pide al panel que firme el token de una instalacion.
+   *
+   * Opcional: sin esto —o si el panel no contesta— los turnos de Telegram van
+   * por SSH, que es como funcionaban antes de la GitHub App. Ver panel-client.ts
+   * para por que la firma la hace el panel y no este servicio.
+   */
+  firmarToken?: (installationId: number) => Promise<string | undefined>;
   transcribe: (bytes: Uint8Array, mimeType: string) => Promise<string>;
   /**
    * El estado de los agentes, del gateway.
@@ -147,6 +155,15 @@ export async function handleIncoming(
   const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
   const proyectoId = proyectos.find((p) => p.nombre === project)?.id;
 
+  // Los repos y el token del proyecto, que en el camino del PANEL los pone el
+  // panel. Aca los tiene que juntar el bridge: un turno de Telegram no pasa por
+  // ahi, y sin ellos el gateway cae a su catalogo local —que solo conoce `demo`
+  // y `sincroresto`— y clona por SSH.
+  //
+  // Los dos son opcionales y ninguna falla corta el turno.
+  const repos = proyectoId ? await deps.store.reposDeProyecto(proyectoId) : undefined;
+  const githubToken = await tokenDelProyecto(proyectoId, deps);
+
   try {
     const r = await ejecutarTurno(deps, {
       proyectoId,
@@ -154,6 +171,8 @@ export async function handleIncoming(
       agente: agent,
       usuarioId,
       prompt: command.text,
+      repos,
+      githubToken,
       origen: 'telegram',
       chatId: input.chatId,
       messageId: input.messageId,
@@ -171,6 +190,16 @@ export async function handleIncoming(
     return { kind: 'error', text: ERROR_TEXT[code] ?? `Fallo el agente: ${code}`, jobId };
   }
 }
+
+/**
+ * El pedido al agente, con el token del turno.
+ *
+ * Se extiende aca y no en `@multicodigo/shared` porque el token es cosa del
+ * TRANSPORTE panel -> bridge -> gateway y no del contrato con el agente: el
+ * gateway lo saca del cuerpo antes de reenviarlo, asi que el agente nunca ve
+ * este campo. Meterlo en PromptRequest diria lo contrario.
+ */
+export type PromptConToken = PromptRequest & { githubToken?: string };
 
 export interface Turno {
   /**
@@ -195,6 +224,17 @@ export interface Turno {
    * catalogo local — que solo conoce `demo` y `sincroresto`.
    */
   repos?: RepoDelPedido[];
+  /**
+   * El installation token de la GitHub App, firmado por el panel.
+   *
+   * El bridge no lo mira ni lo guarda: lo reenvia al gateway, que lo usa para el
+   * clone, el fetch y el push del turno y lo olvida. Nunca llega al agente — de
+   * eso se ocupa el gateway.
+   *
+   * Opcional porque un proyecto puede no haber instalado la App: ahi el gateway
+   * va por SSH con la deploy key, que es el camino de `demo`.
+   */
+  githubToken?: string;
 }
 
 /**
@@ -222,6 +262,23 @@ export class ErrorDeTurno extends Error {
  * sesion, cerrar el job. Duplicarlo dejaria dos lugares donde acordarse del
  * poller, y olvidarlo en uno cuelga al agente hasta el timeout.
  */
+/**
+ * El token de la GitHub App del proyecto, o undefined.
+ *
+ * Dos pasos que viven en servicios distintos a proposito: el bridge SABE que
+ * instalacion es —la lee de su propio Postgres, sin RLS— y el panel es el unico
+ * que puede FIRMAR, porque tiene la clave privada de la App.
+ */
+async function tokenDelProyecto(
+  proyectoId: string | undefined,
+  deps: PipelineDeps,
+): Promise<string | undefined> {
+  if (!proyectoId || !deps.firmarToken) return undefined;
+  const instalacion = await deps.store.instalacionDeProyecto(proyectoId);
+  if (instalacion === undefined) return undefined;
+  return deps.firmarToken(instalacion);
+}
+
 export async function ejecutarTurno(
   deps: PipelineDeps,
   t: Turno,
@@ -259,6 +316,7 @@ export async function ejecutarTurno(
       prompt: t.prompt,
       sessionId,
       repos: t.repos,
+      githubToken: t.githubToken,
     });
     if (t.proyectoId) await deps.store.setSession(t.proyectoId, t.agente, r.sessionId);
     await deps.store.finishJob(jobId, 'done', undefined, r.text);

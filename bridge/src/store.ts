@@ -109,6 +109,25 @@ function codigoLegible(): string {
 }
 
 export interface Store {
+  /**
+   * El installation_id de la GitHub App del proyecto, o undefined.
+   *
+   * Lo lee el bridge para los turnos de Telegram, que no pasan por el panel. El
+   * bridge NO firma el token —eso necesita la clave privada de la App, que vive
+   * solo en el panel— sino que le pide al panel que lo firme con este id.
+   */
+  instalacionDeProyecto(proyectoId: string): Promise<number | undefined>;
+
+  /**
+   * Los repos vinculados al proyecto.
+   *
+   * Para los turnos de Telegram, que no pasan por el panel. Sin esto el gateway
+   * cae a su catalogo local (`config/projects.json`), que solo conoce `demo` y
+   * `sincroresto`: cualquier proyecto creado desde el panel se quedaba sin
+   * repos por el camino del chat.
+   */
+  reposDeProyecto(proyectoId: string): Promise<Array<{ nombre: string; github_repo: string }>>;
+
   getActiveAgent(chatId: number): Promise<AgentId | undefined>;
   setActiveAgent(chatId: number, agent: AgentId): Promise<void>;
   /**
@@ -339,6 +358,16 @@ export class InMemoryStore implements Store {
       .filter((m) => m.usuarioId === usuarioId)
       .map((m) => ({ id: m.proyectoId, nombre: this.proyectos.get(m.proyectoId)!.nombre }))
       .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  }
+
+  /** El doble no tiene instalaciones: los turnos de sus tests van por SSH. */
+  async instalacionDeProyecto(): Promise<number | undefined> {
+    return undefined;
+  }
+
+  /** Ni repos: los tests que los necesitan los inyectan por otro lado. */
+  async reposDeProyecto(): Promise<Array<{ nombre: string; github_repo: string }>> {
+    return [];
   }
 
   async crearProyecto(nombre: string, dueñoId: string): Promise<string> {
@@ -663,6 +692,40 @@ export class PgStore implements Store {
       [usuarioId],
     );
     return r.rows;
+  }
+
+  async reposDeProyecto(
+    proyectoId: string,
+  ): Promise<Array<{ nombre: string; github_repo: string }>> {
+    // La tabla es del plan 2 y se crea a mano en Supabase; si no esta, el turno
+    // sigue y el gateway usa su catalogo local. Por eso el catch.
+    try {
+      const r = await this.pool.query<{ nombre: string; github_repo: string }>(
+        'SELECT nombre, github_repo FROM repos WHERE proyecto_id = $1 ORDER BY nombre',
+        [proyectoId],
+      );
+      return r.rows;
+    } catch {
+      return [];
+    }
+  }
+
+  async instalacionDeProyecto(proyectoId: string): Promise<number | undefined> {
+    // La tabla puede no existir todavia: es del plan 3 y se crea a mano en
+    // Supabase (docs/supabase-github-instalaciones.sql). Si no esta, el turno
+    // tiene que seguir por SSH y no volverse un error — por eso el catch.
+    try {
+      const r = await this.pool.query<{ installation_id: string }>(
+        'SELECT installation_id FROM github_instalaciones WHERE proyecto_id = $1',
+        [proyectoId],
+      );
+      // bigint viene como string en node-postgres: un id de instalacion entra
+      // holgado en un number, pero el parseo tiene que ser explicito.
+      const id = r.rows[0]?.installation_id;
+      return id === undefined ? undefined : Number(id);
+    } catch {
+      return undefined;
+    }
   }
 
   async crearProyecto(nombre: string, dueñoId: string): Promise<string> {

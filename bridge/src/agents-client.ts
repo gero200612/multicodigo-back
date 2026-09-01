@@ -1,4 +1,5 @@
-import { PromptResponse, type PromptRequest } from '@multicodigo/shared';
+import { PromptResponse } from '@multicodigo/shared';
+import type { PromptConToken } from './pipeline.js';
 
 export interface AgentsClientDeps {
   gatewayUrl: string;
@@ -7,7 +8,7 @@ export interface AgentsClientDeps {
 }
 
 export async function askAgent(
-  req: PromptRequest,
+  req: PromptConToken,
   deps: AgentsClientDeps,
 ): Promise<PromptResponse> {
   const doFetch = deps.fetchImpl ?? fetch;

@@ -171,6 +171,10 @@ export function buildWebhookServer(
         // URL de git. El gateway lo valida igual —es el que toca el disco— pero
         // el bridge no tiene por que reenviarle algo que ya sabe que esta mal.
         repos: z.array(RepoDelPedido).max(20).optional(),
+        // El token de instalacion que firmo el panel. Se valida la forma —entra
+        // en un header del lado del gateway— pero no se mira el contenido: el
+        // bridge es un caño para esto.
+        githubToken: z.string().regex(/^[A-Za-z0-9._~+/=-]+$/).max(512).optional(),
       });
 
       /**
