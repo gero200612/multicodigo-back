@@ -377,8 +377,8 @@ static IResult? SlotInvalido(string slot)
 api.MapPost("/proyectos/{proyectoId}/slots/{slot}/test", async (
     string proyectoId, string slot, HttpContext ctx, IGatewayClient gateway,
     IProyectosClient proyectos, IReposClient repos, IHistorialClient historial,
-    IInstalacionesClient instalaciones, AppDeGitHub gh, IHttpClientFactory clientes,
-    ILoggerFactory logs, CancellationToken ct) =>
+    IInstalacionesClient instalaciones, IAgentesClient agentesDb, AppDeGitHub gh,
+    IHttpClientFactory clientes, ILoggerFactory logs, CancellationToken ct) =>
 {
     if (SlotInvalido(slot) is { } malo) return malo;
 
@@ -398,6 +398,21 @@ api.MapPost("/proyectos/{proyectoId}/slots/{slot}/test", async (
     // conoce la App.
     var githubToken = await TokenDeGitHub(gh, instalaciones, clientes, logs, jwt, proyectoId, ct);
     var r = await gateway.ProbarAsync(nombre, slot, vinculados, githubToken, ct);
+
+    // Quedarse sin cuota es un estado del SLOT, no un fallo del test: sigue
+    // siendo cierto hasta la hora de reset aunque nadie vuelva a probar. Se
+    // anota para que el panel pueda decir "vuelve a las 19:50" en vez de un
+    // "el ultimo test fallo" que no dice que hacer.
+    //
+    // Y un test que SALE BIEN la limpia: es la prueba de que volvio la cuota.
+    if (Cuota.EsSinCuota(r.Detalle))
+    {
+        await agentesDb.MarcarCuotaAsync(jwt, slot, Cuota.HoraDeReset(r.Detalle) ?? "pronto", ct);
+    }
+    else if (r.Ok)
+    {
+        await agentesDb.MarcarCuotaAsync(jwt, slot, null, ct);
+    }
     // El fallo TAMBIEN se guarda, y es el registro que mas importa: es el que
     // te deja ver que c2 viene fallando desde el martes.
     await historial.GuardarAsync(jwt, slot, r, ct);

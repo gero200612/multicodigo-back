@@ -58,6 +58,18 @@ public interface IAgentesClient
     /// </summary>
     Task<IReadOnlyDictionary<string, string>> ProyectosPorSlotAsync(
         string jwt, CancellationToken ct = default);
+
+    /// <summary>
+    /// Anota que este slot se quedó sin cuota, o que volvió a tenerla.
+    ///
+    /// `hasta` es el texto de Anthropic ("10:50pm"), no una fecha: ver Cuota.cs.
+    /// Null lo limpia, que es lo que hace un test exitoso.
+    /// </summary>
+    Task MarcarCuotaAsync(string jwt, string slot, string? hasta, CancellationToken ct = default);
+
+    /// <summary>Hasta cuándo está sin cuota cada slot. Sin entrada = tiene cuota.</summary>
+    Task<IReadOnlyDictionary<string, string>> SinCuotaAsync(
+        string jwt, CancellationToken ct = default);
 }
 
 public interface ILoginClient
@@ -942,6 +954,56 @@ public sealed class AgentesClient(HttpClient http, string anonKey, ILogger<Agent
     : IAgentesClient
 {
     private sealed record FilaSlot(string Slot, string ProyectoId);
+    private sealed record FilaCuota(string Slot, string? SinCuotaHasta);
+
+    public async Task MarcarCuotaAsync(
+        string jwt, string slot, string? hasta, CancellationToken ct = default)
+    {
+        if (!Slot.EsValido(slot)) return;
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Patch, $"/rest/v1/agentes?slot=eq.{slot}");
+            req.Headers.TryAddWithoutValidation("apikey", anonKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+            req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
+            req.Content = JsonContent.Create(new { sin_cuota_hasta = hasta }, options: Json.Opciones);
+            var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                // No se propaga: el test ya corrió y su resultado es lo que
+                // importa. Perder la anotación degrada el cartel, no el turno.
+                log.LogWarning("no se pudo anotar la cuota de {Slot}: {Status}", slot, (int)res.StatusCode);
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            log.LogWarning(ex, "no se pudo anotar la cuota de {Slot}", slot);
+        }
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> SinCuotaAsync(
+        string jwt, CancellationToken ct = default)
+    {
+        try
+        {
+            var req = new HttpRequestMessage(
+                HttpMethod.Get, "/rest/v1/agentes?select=slot,sin_cuota_hasta&sin_cuota_hasta=not.is.null");
+            req.Headers.TryAddWithoutValidation("apikey", anonKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+            var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode) return new Dictionary<string, string>();
+
+            var filas = await res.Content.ReadFromJsonAsync<List<FilaCuota>>(Json.Supabase, ct);
+            return (filas ?? [])
+                .Where(f => !string.IsNullOrWhiteSpace(f.SinCuotaHasta))
+                .ToDictionary(f => f.Slot, f => f.SinCuotaHasta!);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            log.LogWarning(ex, "no se pudo leer que slots estan sin cuota");
+            return new Dictionary<string, string>();
+        }
+    }
 
     public async Task<IReadOnlyDictionary<string, string>> ProyectosPorSlotAsync(
         string jwt, CancellationToken ct = default)

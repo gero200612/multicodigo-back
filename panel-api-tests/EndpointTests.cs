@@ -435,6 +435,67 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         Assert.Equal(antes + 1, f.Gateway.TokensDeCadaTest.Count);
     }
 
+    /// <summary>
+    /// Un test que falla por cuota deja anotado hasta cuándo.
+    ///
+    /// Sin esto el estado dura lo que dura la pantalla: recargás y volvés a ver
+    /// "el último test falló", que no dice ni que es por cuota ni hasta cuándo.
+    /// </summary>
+    [Fact]
+    public async Task UnTestSinCuotaLoAnota()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        f.Gateway.Resultado = new ResultadoTest(
+            false, "hoy", "usage_limit: You've hit your limit · resets 10:50pm (UTC)");
+        var antes = f.Agentes.Cuotas.Count;
+        try
+        {
+            await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/c1/test", null);
+
+            var anotado = f.Agentes.Cuotas[^1];
+            Assert.Equal(antes + 1, f.Agentes.Cuotas.Count);
+            Assert.Equal("c1", anotado.Slot);
+            // La hora tal como la escribió Anthropic, no una fecha convertida.
+            Assert.Equal("10:50pm", anotado.Hasta);
+        }
+        finally
+        {
+            f.Gateway.Resultado = new ResultadoTest(true, "hoy", "ok");
+        }
+    }
+
+    // Y la vuelta: un test que sale bien es la prueba de que volvió la cuota.
+    [Fact]
+    public async Task UnTestExitosoLimpiaLaMarcaDeCuota()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        var antes = f.Agentes.Cuotas.Count;
+
+        await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/c1/test", null);
+
+        Assert.Equal(antes + 1, f.Agentes.Cuotas.Count);
+        Assert.Null(f.Agentes.Cuotas[^1].Hasta);
+    }
+
+    // Un fallo que NO es de cuota no toca la marca: si el slot estaba sin cuota,
+    // sigue estándolo, y un git_failed no prueba lo contrario.
+    [Fact]
+    public async Task UnFalloQueNoEsDeCuotaNoTocaLaMarca()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        f.Gateway.Resultado = new ResultadoTest(false, "hoy", "auth_expired: la credencial vencio");
+        var antes = f.Agentes.Cuotas.Count;
+        try
+        {
+            await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/c1/test", null);
+            Assert.Equal(antes, f.Agentes.Cuotas.Count);
+        }
+        finally
+        {
+            f.Gateway.Resultado = new ResultadoTest(true, "hoy", "ok");
+        }
+    }
+
     [Fact]
     public async Task ProbarDevuelve200YGuardaEnElHistorial()
     {

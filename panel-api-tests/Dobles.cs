@@ -172,6 +172,21 @@ public sealed class ProyectosFalso : IProyectosClient
 
 public sealed class AgentesFalso : IAgentesClient
 {
+    /// <summary>Lo anotado por MarcarCuotaAsync: slot -> hasta (null = se limpio).</summary>
+    public List<(string Slot, string? Hasta)> Cuotas { get; } = [];
+    public Dictionary<string, string> SinCuota { get; } = [];
+
+    public Task MarcarCuotaAsync(
+        string jwt, string slot, string? hasta, CancellationToken ct = default)
+    {
+        Cuotas.Add((slot, hasta));
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyDictionary<string, string>> SinCuotaAsync(
+        string jwt, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyDictionary<string, string>>(SinCuota);
+
     /// <summary>La asignacion slot -> proyecto que devuelve la tabla.</summary>
     public Dictionary<string, string> PorSlot { get; } = [];
 

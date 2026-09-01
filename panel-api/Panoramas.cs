@@ -36,15 +36,26 @@ public sealed class PanoramaService(
             (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(),
             "los proyectos de los slots");
 
+        // Qué slots están sin cuota. Una consulta para todos, igual que arriba.
+        var sinCuota = await Degradar(
+            () => agentesDb.SinCuotaAsync(jwt, ct),
+            (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(),
+            "los slots sin cuota");
+
         // En paralelo y no en fila: con seis slots y una consulta lenta, la
         // página tardaría seis veces más de lo necesario.
-        var slots = await Task.WhenAll(agentes.Select(a => VerSlotAsync(jwt, a, porSlot, ct)));
+        var slots = await Task.WhenAll(
+            agentes.Select(a => VerSlotAsync(jwt, a, porSlot, sinCuota, ct)));
 
         return new Panorama(slots, cola, jobs);
     }
 
     private async Task<SlotVista> VerSlotAsync(
-        string jwt, Agente a, IReadOnlyDictionary<string, string> porSlot, CancellationToken ct)
+        string jwt,
+        Agente a,
+        IReadOnlyDictionary<string, string> porSlot,
+        IReadOnlyDictionary<string, string> sinCuota,
+        CancellationToken ct)
     {
         var credTask = Degradar(
             () => login.EstadoAsync(a.Id, ct), new EstadoCredencial(false), $"la credencial de {a.Id}");
@@ -66,7 +77,8 @@ public sealed class PanoramaService(
             LoadedAt: cred.LoadedAt,
             UltimoTest: test,
             Proyecto: a.Proyecto,
-            ProyectoId: porSlot.TryGetValue(a.Id, out var pid) ? pid : null);
+            ProyectoId: porSlot.TryGetValue(a.Id, out var pid) ? pid : null,
+            SinCuotaHasta: sinCuota.TryGetValue(a.Id, out var hasta) ? hasta : null);
     }
 
     /// <summary>

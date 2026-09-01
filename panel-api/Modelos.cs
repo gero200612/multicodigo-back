@@ -81,7 +81,16 @@ public sealed record SlotVista(
     /// id. Eso se rompia en silencio cuando el nombre del contenedor era viejo:
     /// el boton quedaba deshabilitado sin decir por que.
     /// </summary>
-    string? ProyectoId = null);
+    string? ProyectoId = null,
+    /// <summary>
+    /// Hasta cuándo este slot no tiene cuota, como lo escribió Anthropic
+    /// ("10:50pm"), o null si tiene.
+    ///
+    /// Es un estado propio y no un test fallido más: sobrevive a que nadie
+    /// vuelva a probar —sigue siendo cierto hasta esa hora— y dice qué hacer,
+    /// que es esperar o cargar otra cuenta. Ver Cuota.cs.
+    /// </summary>
+    string? SinCuotaHasta = null);
 
 /// <summary>Todo lo que la página muestra, en una sola respuesta.</summary>
 public sealed record Panorama(
