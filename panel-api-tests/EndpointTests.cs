@@ -72,6 +72,7 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
     public NombresFalso Nombres { get; } = new();
     public ProyectosFalso Proyectos { get; } = new();
     public AgentesFalso Agentes { get; } = new();
+    public ReposFalso Repos { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -95,6 +96,7 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
             s.AddSingleton<INombresClient>(Nombres);
             s.AddSingleton<IProyectosClient>(Proyectos);
             s.AddSingleton<IAgentesClient>(Agentes);
+            s.AddSingleton<IReposClient>(Repos);
 
             s.AddAuthentication(AuthDePrueba.Esquema)
                 .AddScheme<AuthenticationSchemeOptions, AuthDePrueba>(AuthDePrueba.Esquema, _ => { });
@@ -742,5 +744,101 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         var r = await Cliente(conSesion: false).PostAsJsonAsync(
             $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos", new { prompt = "hola" });
         Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+    }
+
+    // --- repos vinculados -------------------------------------------------
+
+    [Fact]
+    public async Task Lista_los_repos_del_proyecto()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+        f.Repos.Filas.Add(new Repo("multicodigo-front", "gero200612/multicodigo-front"));
+
+        var r = await Cliente().GetAsync($"/api/proyectos/{ProyectoDePrueba}/repos");
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Contains("multicodigo-front", await r.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>
+    /// 403 y no 200 con lista vacía: RLS ya filtra, pero una lista vacía le
+    /// diría al usuario "no tenés repos" en vez de "esto no es tuyo".
+    /// </summary>
+    [Fact]
+    public async Task No_lista_los_repos_de_un_proyecto_ajeno()
+    {
+        var r = await Cliente().GetAsync("/api/proyectos/ajeno/repos");
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task Vincula_un_repo()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/repos",
+            new { nombre = "multicodigo-vm", github_repo = "gero200612/multicodigo-vm" });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Contains("multicodigo-vm", f.Repos.Vinculados);
+    }
+
+    [Fact]
+    public async Task No_vincula_a_un_proyecto_ajeno()
+    {
+        var r = await Cliente().PostAsJsonAsync(
+            "/api/proyectos/ajeno/repos",
+            new { nombre = "repo-ajeno", github_repo = "otro/repo-ajeno" });
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+        // El fixture se comparte entre tests: se mira ESTE repo, no que la
+        // lista este vacia.
+        Assert.DoesNotContain("repo-ajeno", f.Repos.Vinculados);
+    }
+
+    /// <summary>
+    /// El nombre arma una ruta en disco del lado del gateway. Se rechaza acá y
+    /// además lo rechaza el CHECK de la tabla: dos redes para lo mismo.
+    /// </summary>
+    [Theory]
+    [InlineData("../fuga")]
+    [InlineData("con/barra")]
+    [InlineData("..")]
+    public async Task Rechaza_un_nombre_que_se_escaparia_del_directorio(string nombre)
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/repos",
+            new { nombre, github_repo = "gero200612/x" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.DoesNotContain(nombre, f.Repos.Vinculados);
+    }
+
+    [Fact]
+    public async Task Rechaza_un_github_repo_que_no_es_owner_barra_nombre()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+
+        var r = await Cliente().PostAsJsonAsync(
+            $"/api/proyectos/{ProyectoDePrueba}/repos",
+            new { nombre = "x", github_repo = "https://github.com/a/b" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+    }
+
+    [Fact]
+    public async Task Desvincula_un_repo()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "demo";
+        f.Repos.Filas.Add(new Repo("viejo", "gero200612/viejo"));
+
+        var r = await Cliente().DeleteAsync($"/api/proyectos/{ProyectoDePrueba}/repos/viejo");
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Contains("viejo", f.Repos.Desvinculados);
     }
 }

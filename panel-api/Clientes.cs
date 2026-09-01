@@ -393,6 +393,89 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
 /// el panel puede hacer en la base es exactamente lo que puede hacer el usuario
 /// logueado.
 /// </summary>
+/// <summary>Un repo vinculado a un proyecto.</summary>
+public sealed record Repo(string Nombre, string GithubRepo);
+
+/// <summary>
+/// Los repos de cada proyecto, en Supabase.
+///
+/// Se reenvía el JWT del usuario y decide RLS, igual que el historial y los
+/// nombres: un repo de un proyecto del que no sos miembro no aparece, y eso
+/// convierte "¿puede ver esto?" en una pregunta que no hay que programar.
+/// </summary>
+public interface IReposClient
+{
+    Task<IReadOnlyList<Repo>> DeProyectoAsync(string jwt, string proyectoId, CancellationToken ct = default);
+    Task VincularAsync(string jwt, string proyectoId, Repo repo, CancellationToken ct = default);
+    Task DesvincularAsync(string jwt, string proyectoId, string nombre, CancellationToken ct = default);
+}
+
+public sealed class ReposClient(HttpClient http, string anonKey, ILogger<ReposClient> log)
+    : IReposClient
+{
+    private sealed record Fila(string Nombre, string GithubRepo);
+
+    private HttpRequestMessage Pedido(HttpMethod metodo, string url, string jwt)
+    {
+        var req = new HttpRequestMessage(metodo, url);
+        req.Headers.TryAddWithoutValidation("apikey", anonKey);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+        return req;
+    }
+
+    public async Task<IReadOnlyList<Repo>> DeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+    {
+        // Orden explícito: sin esto PostgREST devuelve las filas en el orden que
+        // le convenga y la lista de la pantalla salta de lugar entre recargas.
+        var url = $"/rest/v1/repos?proyecto_id=eq.{proyectoId}"
+                + "&select=nombre,github_repo&order=nombre";
+        var res = await http.SendAsync(Pedido(HttpMethod.Get, url, jwt), ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            log.LogWarning("no se pudieron leer los repos de {Proyecto}", proyectoId);
+            return [];
+        }
+        var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Opciones, ct);
+        return [.. (filas ?? []).Select(f => new Repo(f.Nombre, f.GithubRepo))];
+    }
+
+    public async Task VincularAsync(
+        string jwt, string proyectoId, Repo repo, CancellationToken ct = default)
+    {
+        var req = Pedido(HttpMethod.Post, "/rest/v1/repos", jwt);
+        // `return=minimal` porque no se usa la fila que vuelve, y así PostgREST
+        // no necesita permiso de SELECT sobre lo recién insertado.
+        req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
+        req.Content = JsonContent.Create(
+            new { proyecto_id = proyectoId, nombre = repo.Nombre, github_repo = repo.GithubRepo },
+            options: Json.Opciones);
+
+        var res = await http.SendAsync(req, ct);
+        // 409 es el UNIQUE (proyecto_id, nombre): ese repo ya estaba vinculado.
+        // Es un caso del usuario, no una caída, y la pantalla lo dice distinto.
+        if (res.StatusCode == HttpStatusCode.Conflict) throw new UpstreamException("repo_duplicado");
+        if (!res.IsSuccessStatusCode)
+        {
+            var detalle = await res.Content.ReadAsStringAsync(ct);
+            log.LogError("no se pudo vincular {Repo}: {Detalle}", repo.Nombre, detalle);
+            throw new UpstreamException("repo_no_vinculado");
+        }
+    }
+
+    public async Task DesvincularAsync(
+        string jwt, string proyectoId, string nombre, CancellationToken ct = default)
+    {
+        // Los DOS filtros y no sólo el nombre: sin el proyecto, un nombre
+        // repetido en otro proyecto del que TAMBIÉN sos miembro se borraría de
+        // los dos lados. RLS no lo impide, porque en los dos sos miembro.
+        var url = $"/rest/v1/repos?proyecto_id=eq.{proyectoId}"
+                + $"&nombre=eq.{Uri.EscapeDataString(nombre)}";
+        var res = await http.SendAsync(Pedido(HttpMethod.Delete, url, jwt), ct);
+        if (!res.IsSuccessStatusCode) throw new UpstreamException("repo_no_desvinculado");
+    }
+}
+
 public sealed class HistorialClient(HttpClient http, string anonKey, ILogger<HistorialClient> log)
     : IHistorialClient
 {

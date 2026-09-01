@@ -47,6 +47,41 @@ public sealed class GatewayFalso : IGatewayClient
 /// Los proyectos del usuario. `Mios` es lo que en produccion decide RLS: un id
 /// que no esta en el diccionario es un proyecto del que no sos miembro.
 /// </summary>
+/// <summary>
+/// Los repos vinculados, en memoria.
+///
+/// No modela RLS: la membresía la chequea el endpoint antes de llamar acá, que
+/// es justo lo que estos tests verifican.
+/// </summary>
+public sealed class ReposFalso : IReposClient
+{
+    public List<Repo> Filas { get; } = [];
+    public List<string> Vinculados { get; } = [];
+    public List<string> Desvinculados { get; } = [];
+    /// <summary>Fuerza el caso "ese repo ya estaba", que es el UNIQUE de la tabla.</summary>
+    public bool Duplicado { get; set; }
+
+    public Task<IReadOnlyList<Repo>> DeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<Repo>>(Filas);
+
+    public Task VincularAsync(string jwt, string proyectoId, Repo repo, CancellationToken ct = default)
+    {
+        if (Duplicado) throw new UpstreamException("repo_duplicado");
+        Vinculados.Add(repo.Nombre);
+        Filas.Add(repo);
+        return Task.CompletedTask;
+    }
+
+    public Task DesvincularAsync(
+        string jwt, string proyectoId, string nombre, CancellationToken ct = default)
+    {
+        Desvinculados.Add(nombre);
+        Filas.RemoveAll(f => f.Nombre == nombre);
+        return Task.CompletedTask;
+    }
+}
+
 public sealed class ProyectosFalso : IProyectosClient
 {
     public Dictionary<string, string> Mios { get; } = [];

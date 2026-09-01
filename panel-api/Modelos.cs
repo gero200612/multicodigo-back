@@ -88,6 +88,10 @@ public sealed record CuerpoDecision(
     [property: JsonPropertyName("decision")] string? Decision,
     [property: JsonPropertyName("feedback")] string? Feedback);
 
+public sealed record CuerpoRepo(
+    [property: JsonPropertyName("nombre")] string? Nombre,
+    [property: JsonPropertyName("github_repo")] string? GithubRepo);
+
 public sealed record CuerpoTurno(
     [property: JsonPropertyName("prompt")] string? Prompt);
 

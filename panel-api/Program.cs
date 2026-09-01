@@ -109,6 +109,14 @@ builder.Services.AddHttpClient<IHistorialClient, HistorialClient>(c =>
     .AddTypedClient<IHistorialClient>((http, sp) =>
         new HistorialClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<HistorialClient>>()));
 
+builder.Services.AddHttpClient<IReposClient, ReposClient>(c =>
+    {
+        c.BaseAddress = new Uri(supabaseUrl);
+        c.Timeout = TimeSpan.FromSeconds(10);
+    })
+    .AddTypedClient<IReposClient>((http, sp) =>
+        new ReposClient(http, supabaseAnonKey, sp.GetRequiredService<ILogger<ReposClient>>()));
+
 builder.Services.AddHttpClient<INombresClient, NombresClient>(c =>
     {
         c.BaseAddress = new Uri(supabaseUrl);
@@ -208,6 +216,14 @@ api.MapGet("/panorama", async (HttpContext ctx, PanoramaService svc, Cancellatio
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 });
+
+// La forma de un nombre de repo, en un solo lugar. Es la misma que valida el
+// CHECK de la tabla y la misma que `NombreDeRepo` en el gateway: este valor
+// termina siendo un directorio en el disco de la VM.
+static bool NombreDeRepoValido(string nombre)
+    => nombre.Length is > 0 and <= 100
+       && nombre is not ("." or "..")
+       && System.Text.RegularExpressions.Regex.IsMatch(nombre, "^[A-Za-z0-9._-]+$");
 
 // Un solo lugar donde se valida la forma del slot, para que ninguna ruta nueva
 // se olvide de la mitad.
@@ -467,6 +483,78 @@ api.MapPost("/invitaciones/{token}/aceptar", async (
 /// el slot al gateway, que elige cual y se lo manda al dockerproxy. Recien
 /// despues se anota la fila, porque una fila sin contenedor no significa nada.
 /// </remarks>
+// --- repos vinculados -----------------------------------------------------
+
+api.MapGet("/proyectos/{proyectoId}/repos", async (
+    string proyectoId, HttpContext ctx, IProyectosClient proyectos, IReposClient repos,
+    CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    // La membresia se chequea igual aunque RLS ya filtre: sin esto, un proyecto
+    // ajeno devuelve 200 con lista vacia, que le dice al usuario "no tenes
+    // repos" en vez de "esto no es tuyo".
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    return Results.Ok(await repos.DeProyectoAsync(jwt, proyectoId, ct));
+});
+
+api.MapPost("/proyectos/{proyectoId}/repos", async (
+    string proyectoId, CuerpoRepo cuerpo, HttpContext ctx,
+    IProyectosClient proyectos, IReposClient repos, CancellationToken ct) =>
+{
+    var nombre = cuerpo.Nombre?.Trim() ?? "";
+    var github = cuerpo.GithubRepo?.Trim() ?? "";
+
+    // La misma forma que valida el CHECK de la tabla. Duplicado a proposito:
+    // aca da un mensaje legible, y el constraint impide que una fila mal formada
+    // entre por otro camino (el SQL editor, un script). El nombre arma una ruta
+    // en disco del lado del gateway.
+    if (!NombreDeRepoValido(nombre))
+    {
+        return Results.BadRequest(
+            new { code = "nombre_invalido", message = "el nombre no puede tener barras ni puntos suspensivos" });
+    }
+    if (!System.Text.RegularExpressions.Regex.IsMatch(github, "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"))
+    {
+        return Results.BadRequest(
+            new { code = "github_invalido", message = "escribilo como owner/nombre" });
+    }
+
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    try
+    {
+        await repos.VincularAsync(jwt, proyectoId, new Repo(nombre, github), ct);
+        return Results.Ok(new { estado = "ok" });
+    }
+    catch (UpstreamException ex)
+    {
+        return Results.BadRequest(new { code = ex.Message, message = "no se pudo vincular el repo" });
+    }
+});
+
+api.MapDelete("/proyectos/{proyectoId}/repos/{nombre}", async (
+    string proyectoId, string nombre, HttpContext ctx,
+    IProyectosClient proyectos, IReposClient repos, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    // Desvincular NO borra el espejo de /srv/repos ni nada de GitHub: saca la
+    // fila y listo. Borrar el disco desde una pantalla web es una asimetria
+    // peligrosa entre lo que el boton dice y lo que hace.
+    await repos.DesvincularAsync(jwt, proyectoId, nombre, ct);
+    return Results.Ok(new { estado = "ok" });
+});
+
 api.MapPost("/proyectos/{proyectoId}/agentes", async (
     string proyectoId,
     HttpContext ctx,
