@@ -306,6 +306,8 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
             $"/api/github/callback?installation_id=42&state={ProyectoDePrueba}");
 
         Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
+        // A /configuracion, que es donde vive la seccion de GitHub en el front.
+        Assert.Contains("/configuracion", r.Headers.Location!.ToString());
         Assert.Contains("instalacion=42", r.Headers.Location!.ToString());
     }
 

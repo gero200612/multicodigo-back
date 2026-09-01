@@ -690,7 +690,10 @@ app.MapGet("/api/github/callback", (string? installation_id, string? state) =>
     {
         return Results.BadRequest(new { code = "callback_invalido" });
     }
-    return Results.Redirect($"/proyectos?instalacion={id}&proyecto={state}");
+    // A /configuracion y no a /proyectos: la seccion de GitHub vive ahi, que es
+    // donde esta todo lo que se configura una vez. El front lee estos dos
+    // parametros, guarda con el JWT del usuario y los limpia de la URL.
+    return Results.Redirect($"/configuracion?instalacion={id}&proyecto={state}");
 }).AllowAnonymous();
 
 api.MapPost("/proyectos/{proyectoId}/github", async (
