@@ -33,11 +33,15 @@ public sealed class GatewayFalso : IGatewayClient
     public Task<Cola> ColaAsync(CancellationToken ct = default)
         => ColaFalla ? throw new HttpRequestException("gateway caído") : Task.FromResult(Cola);
 
+    /// <summary>Los repos que viajaron con cada test.</summary>
+    public List<IReadOnlyList<Repo>> ReposDeCadaTest { get; } = [];
+
     public Task<ResultadoTest> ProbarAsync(
-        string proyecto, string slot, CancellationToken ct = default)
+        string proyecto, string slot, IReadOnlyList<Repo> repos, CancellationToken ct = default)
     {
         Probados.Add(slot);
         ProyectosPedidos.Add(proyecto);
+        ReposDeCadaTest.Add(repos);
         return Task.FromResult(Resultado);
     }
 
@@ -163,6 +167,13 @@ public sealed class ProyectosFalso : IProyectosClient
 
 public sealed class AgentesFalso : IAgentesClient
 {
+    /// <summary>La asignacion slot -> proyecto que devuelve la tabla.</summary>
+    public Dictionary<string, string> PorSlot { get; } = [];
+
+    public Task<IReadOnlyDictionary<string, string>> ProyectosPorSlotAsync(
+        string jwt, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyDictionary<string, string>>(PorSlot);
+
     public List<(string Jwt, string ProyectoId, string Slot)> Registrados { get; } = [];
     public bool Falla { get; set; }
 

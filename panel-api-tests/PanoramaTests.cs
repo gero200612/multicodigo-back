@@ -5,13 +5,51 @@ namespace MultiCodigo.Panel.Tests;
 
 public class PanoramaTests
 {
-    private static (PanoramaService Svc, GatewayFalso G, LoginFalso L, BridgeFalso B, HistorialFalso H) Armar()
+    private static (PanoramaService Svc, GatewayFalso G, LoginFalso L, BridgeFalso B,
+                    HistorialFalso H, AgentesFalso A) Armar()
     {
         var g = new GatewayFalso();
         var l = new LoginFalso();
         var b = new BridgeFalso();
         var h = new HistorialFalso();
-        return (new PanoramaService(g, l, b, h, NullLogger<PanoramaService>.Instance), g, l, b, h);
+        var a = new AgentesFalso();
+        return (new PanoramaService(g, l, b, h, a, NullLogger<PanoramaService>.Instance), g, l, b, h, a);
+    }
+
+    /// <summary>
+    /// El id del proyecto sale de la TABLA y no del contenedor.
+    ///
+    /// Los dos pueden divergir: el contenedor lleva el proyecto con el que se
+    /// creo. Cuando el nombre del contenedor quedaba viejo, el front no podia
+    /// cruzarlo con la lista de proyectos del usuario y el boton de probar
+    /// quedaba deshabilitado sin decir por que.
+    /// </summary>
+    [Fact]
+    public async Task ElIdDelProyectoSaleDeLaTablaYNoDelContenedor()
+    {
+        var (svc, g, _, _, _, a) = Armar();
+        g.Agentes = [new("c1", true, "nombre-viejo-del-contenedor")];
+        a.PorSlot["c1"] = "22222222-2222-4222-8222-222222222222";
+
+        var p = await svc.VerAsync("jwt");
+        var slot = p.Slots.Single();
+
+        Assert.Equal("22222222-2222-4222-8222-222222222222", slot.ProyectoId);
+        // El nombre del contenedor se sigue devolviendo, pero solo para mostrar.
+        Assert.Equal("nombre-viejo-del-contenedor", slot.Proyecto);
+    }
+
+    [Fact]
+    public async Task UnSlotSinAnotarNoTraeProyectoId()
+    {
+        var (svc, g, _, _, _, _) = Armar();
+        g.Agentes = [new("c1", true, "demo")];
+
+        var p = await svc.VerAsync("jwt");
+
+        // Null y no vacio: el front deshabilita el boton, que es honesto — sin
+        // proyecto no hay worktree que probar.
+        Assert.Null(p.Slots.Single().ProyectoId);
     }
 
     /// <summary>
@@ -24,7 +62,7 @@ public class PanoramaTests
     [Fact]
     public async Task ElProyectoDeCadaSlotLlegaAlPanorama()
     {
-        var (svc, g, _, _, _) = Armar();
+        var (svc, g, _, _, _, _) = Armar();
         g.Agentes = [new("c1", true, "mi-proyecto"), new("c2", false, null)];
 
         var p = await svc.VerAsync("jwt");
@@ -38,7 +76,7 @@ public class PanoramaTests
     [Fact]
     public async Task JuntaLosTresEstados()
     {
-        var (svc, _, l, _, h) = Armar();
+        var (svc, _, l, _, h, _) = Armar();
         l.Estados["c1"] = new EstadoCredencial(true, "yo@ejemplo.com", "ayer", false);
         h.Ultimos["c1"] = new ResultadoTest(true, "hoy", "ok");
 
@@ -65,7 +103,7 @@ public class PanoramaTests
     [Fact]
     public async Task ArribaYConCredencialPuedeNoEstarFuncionando()
     {
-        var (svc, g, l, _, h) = Armar();
+        var (svc, g, l, _, h, _) = Armar();
         g.Agentes = [new("c1", true)];
         l.Estados["c1"] = new EstadoCredencial(true, "a");
         h.Ultimos["c1"] = new ResultadoTest(false, "hoy", "auth_expired");
@@ -80,7 +118,7 @@ public class PanoramaTests
     [Fact]
     public async Task SinTestCorridoNoEstaFuncionando()
     {
-        var (svc, g, l, _, _) = Armar();
+        var (svc, g, l, _, _, _) = Armar();
         g.Agentes = [new("c1", true)];
         l.Estados["c1"] = new EstadoCredencial(true, "a");
 
@@ -90,7 +128,7 @@ public class PanoramaTests
     [Fact]
     public async Task SiElLoginSeCaeIgualMuestraLosSlots()
     {
-        var (svc, _, l, _, _) = Armar();
+        var (svc, _, l, _, _, _) = Armar();
         l.Falla = true;
 
         var p = await svc.VerAsync("jwt");
@@ -102,7 +140,7 @@ public class PanoramaTests
     [Fact]
     public async Task SiSupabaseSeCaeIgualMuestraLosSlots()
     {
-        var (svc, _, _, _, h) = Armar();
+        var (svc, _, _, _, h, _) = Armar();
         h.Falla = true;
 
         var p = await svc.VerAsync("jwt");
@@ -114,7 +152,7 @@ public class PanoramaTests
     [Fact]
     public async Task SiElBridgeSeCaeIgualMuestraElResto()
     {
-        var (svc, _, _, b, _) = Armar();
+        var (svc, _, _, b, _, _) = Armar();
         b.Falla = true;
 
         var p = await svc.VerAsync("jwt");
@@ -126,7 +164,7 @@ public class PanoramaTests
     [Fact]
     public async Task SiLaColaSeCaeIgualMuestraElResto()
     {
-        var (svc, g, _, _, _) = Armar();
+        var (svc, g, _, _, _, _) = Armar();
         g.ColaFalla = true;
 
         var p = await svc.VerAsync("jwt");
@@ -142,7 +180,7 @@ public class PanoramaTests
     [Fact]
     public async Task SiElGatewayNoRespondeElErrorSube()
     {
-        var (svc, g, _, _, _) = Armar();
+        var (svc, g, _, _, _, _) = Armar();
         g.AgentesFalla = true;
 
         await Assert.ThrowsAsync<HttpRequestException>(() => svc.VerAsync("jwt"));
@@ -157,7 +195,7 @@ public class PanoramaTests
     [Fact]
     public async Task LeReenviaElJwtDelUsuarioAlHistorial()
     {
-        var (svc, g, _, _, h) = Armar();
+        var (svc, g, _, _, h, _) = Armar();
         g.Agentes = [new("c1", true), new("c2", true)];
 
         await svc.VerAsync("jwt-del-usuario");

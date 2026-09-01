@@ -61,14 +61,27 @@ public sealed record SlotVista(
     string? LoadedAt = null,
     ResultadoTest? UltimoTest = null,
     /// <summary>
-    /// El nombre del proyecto al que esta asignado el slot, o null si no lo esta.
+    /// El nombre del proyecto del slot SEGUN EL CONTENEDOR, o null.
     ///
-    /// El gateway ya lo devolvia en /agents y el panel lo tiraba. Hace falta
-    /// porque probar un slot ahora corre un turno en el worktree de UN proyecto,
-    /// y el dashboard —que es una vista global de slots— no tenia con que
-    /// decir cual. El front lo cruza con la lista de proyectos para sacar el id.
+    /// Solo para mostrar. Puede estar desactualizado: el contenedor lleva el
+    /// proyecto con el que se creo, y el usuario puede haber cambiado la
+    /// asignacion despues.
     /// </summary>
-    string? Proyecto = null);
+    string? Proyecto = null,
+    /// <summary>
+    /// El id del proyecto del slot segun la tabla `agentes`, o null si el slot no
+    /// esta anotado en ninguno.
+    ///
+    /// Este es el que sirve para ACTUAR: probar un slot corre un turno en el
+    /// worktree de un proyecto, y la ruta pide el id. Sale de la tabla y no del
+    /// contenedor porque los dos pueden divergir —el contenedor lleva una foto
+    /// del momento en que se creo— y la tabla es la que el usuario controla.
+    ///
+    /// Antes el front cruzaba el NOMBRE con su lista de proyectos para sacar el
+    /// id. Eso se rompia en silencio cuando el nombre del contenedor era viejo:
+    /// el boton quedaba deshabilitado sin decir por que.
+    /// </summary>
+    string? ProyectoId = null);
 
 /// <summary>Todo lo que la página muestra, en una sola respuesta.</summary>
 public sealed record Panorama(

@@ -13,6 +13,7 @@ public sealed class PanoramaService(
     ILoginClient login,
     IBridgeClient bridge,
     IHistorialClient historial,
+    IAgentesClient agentesDb,
     ILogger<PanoramaService> log)
 {
     private const int JobsAMostrar = 20;
@@ -28,14 +29,22 @@ public sealed class PanoramaService(
         var jobs = await Degradar(
             () => bridge.JobsAsync(JobsAMostrar, ct), [], "las últimas peticiones");
 
+        // La asignación slot -> proyecto, de la tabla y no del contenedor. Una
+        // sola consulta para todos los slots: pedirla por slot serían seis.
+        var porSlot = await Degradar(
+            () => agentesDb.ProyectosPorSlotAsync(jwt, ct),
+            (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(),
+            "los proyectos de los slots");
+
         // En paralelo y no en fila: con seis slots y una consulta lenta, la
         // página tardaría seis veces más de lo necesario.
-        var slots = await Task.WhenAll(agentes.Select(a => VerSlotAsync(jwt, a, ct)));
+        var slots = await Task.WhenAll(agentes.Select(a => VerSlotAsync(jwt, a, porSlot, ct)));
 
         return new Panorama(slots, cola, jobs);
     }
 
-    private async Task<SlotVista> VerSlotAsync(string jwt, Agente a, CancellationToken ct)
+    private async Task<SlotVista> VerSlotAsync(
+        string jwt, Agente a, IReadOnlyDictionary<string, string> porSlot, CancellationToken ct)
     {
         var credTask = Degradar(
             () => login.EstadoAsync(a.Id, ct), new EstadoCredencial(false), $"la credencial de {a.Id}");
@@ -56,7 +65,8 @@ public sealed class PanoramaService(
             Account: cred.Account,
             LoadedAt: cred.LoadedAt,
             UltimoTest: test,
-            Proyecto: a.Proyecto);
+            Proyecto: a.Proyecto,
+            ProyectoId: porSlot.TryGetValue(a.Id, out var pid) ? pid : null);
     }
 
     /// <summary>

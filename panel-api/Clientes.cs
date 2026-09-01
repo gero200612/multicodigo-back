@@ -14,7 +14,8 @@ public interface IGatewayClient
 {
     Task<IReadOnlyList<Agente>> AgentesAsync(CancellationToken ct = default);
     Task<Cola> ColaAsync(CancellationToken ct = default);
-    Task<ResultadoTest> ProbarAsync(string proyecto, string slot, CancellationToken ct = default);
+    Task<ResultadoTest> ProbarAsync(
+        string proyecto, string slot, IReadOnlyList<Repo> repos, CancellationToken ct = default);
     Task<string> CrearSlotAsync(string proyecto, CancellationToken ct = default);
 }
 
@@ -44,6 +45,18 @@ public interface IProyectosClient
 public interface IAgentesClient
 {
     Task RegistrarAsync(string jwt, string proyectoId, string slot, CancellationToken ct = default);
+
+    /// <summary>
+    /// A qué proyecto pertenece cada slot, según la tabla `agentes`.
+    ///
+    /// Y no según el contenedor, que es lo que devuelve el gateway en /agents.
+    /// Los dos pueden divergir: el contenedor lleva el proyecto con el que se
+    /// creó, y esta tabla es la que el usuario cambia desde el panel. Cuando
+    /// difieren, la que vale es ésta — es la que decide dónde se guarda el
+    /// resultado de un test y la que el usuario puede corregir.
+    /// </summary>
+    Task<IReadOnlyDictionary<string, string>> ProyectosPorSlotAsync(
+        string jwt, CancellationToken ct = default);
 }
 
 public interface ILoginClient
@@ -198,7 +211,7 @@ public sealed class GatewayClient(HttpClient http) : IGatewayClient
     /// suelto. Un solo camino, testeado una vez.
     /// </summary>
     public async Task<ResultadoTest> ProbarAsync(
-        string proyecto, string slot, CancellationToken ct = default)
+        string proyecto, string slot, IReadOnlyList<Repo> repos, CancellationToken ct = default)
     {
         var cuando = DateTimeOffset.UtcNow.ToString("O");
         try
@@ -211,6 +224,16 @@ public sealed class GatewayClient(HttpClient http) : IGatewayClient
                     agent = slot,
                     project = proyecto,
                     prompt = "Contesta unicamente la palabra ok.",
+                    // Los repos, igual que en un turno de verdad. Sin esto el
+                    // gateway cae a su catalogo local (`config/projects.json`),
+                    // que solo conoce `demo`, y todo proyecto creado desde el
+                    // panel se comia un 404 unknown_project — que la pantalla
+                    // mostraba como "no responde", culpando al agente.
+                    //
+                    // Y ademas seria una prueba que no prueba lo que importa: si
+                    // el test corre sobre otros repos que un turno real, un
+                    // problema de clonado no aparece hasta el primer turno.
+                    repos = repos.Select(r => new { nombre = r.Nombre, github_repo = r.GithubRepo }),
                 },
                 Json.Opciones,
                 ct);
@@ -886,6 +909,33 @@ public sealed class ProyectosClient(HttpClient http, string anonKey, ILogger<Pro
 public sealed class AgentesClient(HttpClient http, string anonKey, ILogger<AgentesClient> log)
     : IAgentesClient
 {
+    private sealed record FilaSlot(string Slot, string ProyectoId);
+
+    public async Task<IReadOnlyDictionary<string, string>> ProyectosPorSlotAsync(
+        string jwt, CancellationToken ct = default)
+    {
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Get, "/rest/v1/agentes?select=slot,proyecto_id");
+            req.Headers.TryAddWithoutValidation("apikey", anonKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+            var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode) return new Dictionary<string, string>();
+
+            var filas = await res.Content.ReadFromJsonAsync<List<FilaSlot>>(Json.Opciones, ct);
+            // RLS ya filtra por membresía, así que lo que vuelve son los slots de
+            // los proyectos del usuario y nada más.
+            return (filas ?? []).ToDictionary(f => f.Slot, f => f.ProyectoId);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            // Sin esto el botón de probar queda deshabilitado, y eso es mejor que
+            // habilitarlo apuntando a un proyecto equivocado.
+            log.LogWarning(ex, "no se pudieron leer los proyectos de los slots");
+            return new Dictionary<string, string>();
+        }
+    }
+
     public async Task RegistrarAsync(
         string jwt, string proyectoId, string slot, CancellationToken ct = default)
     {

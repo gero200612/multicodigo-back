@@ -380,6 +380,32 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         Assert.Equal("multicodigo-front", Assert.Single(mandados).Nombre);
     }
 
+    /// <summary>
+    /// El test corre con los MISMOS repos que un turno de verdad.
+    ///
+    /// Sin esto el gateway cae a su catálogo local (`config/projects.json`), que
+    /// sólo conoce `demo`: todo proyecto creado desde el panel se comía un 404
+    /// unknown_project, y la pantalla lo mostraba como "no responde" — culpando
+    /// al agente por un problema del borde.
+    ///
+    /// Y aun cuando no fallara, un test que corre sobre otros repos que un turno
+    /// real no prueba lo que hace falta: un problema de clonado no aparecería
+    /// hasta el primer turno de verdad.
+    /// </summary>
+    [Fact]
+    public async Task ElTestCorreConLosReposDelProyecto()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        f.Repos.Filas.Clear();
+        f.Repos.Filas.Add(new Repo("multicodigo-front", "gero/multicodigo-front"));
+
+        var r = await Cliente().PostAsync($"/api/proyectos/{ProyectoDePrueba}/slots/c1/test", null);
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var mandados = f.Gateway.ReposDeCadaTest[^1];
+        Assert.Equal("multicodigo-front", Assert.Single(mandados).Nombre);
+    }
+
     [Fact]
     public async Task ProbarDevuelve200YGuardaEnElHistorial()
     {

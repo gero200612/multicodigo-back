@@ -376,7 +376,8 @@ static IResult? SlotInvalido(string slot)
 // PANEL_PROJECT.
 api.MapPost("/proyectos/{proyectoId}/slots/{slot}/test", async (
     string proyectoId, string slot, HttpContext ctx, IGatewayClient gateway,
-    IProyectosClient proyectos, IHistorialClient historial, CancellationToken ct) =>
+    IProyectosClient proyectos, IReposClient repos, IHistorialClient historial,
+    CancellationToken ct) =>
 {
     if (SlotInvalido(slot) is { } malo) return malo;
 
@@ -388,7 +389,10 @@ api.MapPost("/proyectos/{proyectoId}/slots/{slot}/test", async (
     var nombre = await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct);
     if (nombre is null) return Results.Forbid();
 
-    var r = await gateway.ProbarAsync(nombre, slot, ct);
+    // Los mismos repos que en un turno de verdad: el test tiene que correr en el
+    // mismo worktree, o deja de probar lo que importa.
+    var vinculados = await repos.DeProyectoAsync(jwt, proyectoId, ct);
+    var r = await gateway.ProbarAsync(nombre, slot, vinculados, ct);
     // El fallo TAMBIEN se guarda, y es el registro que mas importa: es el que
     // te deja ver que c2 viene fallando desde el martes.
     await historial.GuardarAsync(jwt, slot, r, ct);
