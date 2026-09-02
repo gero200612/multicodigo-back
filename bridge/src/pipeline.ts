@@ -64,7 +64,7 @@ export interface PipelineDeps {
    */
   listarAgentes: (
     proyecto: string,
-  ) => Promise<{ id: AgentId; arriba: boolean; cuenta: boolean }[]>;
+  ) => Promise<{ id: AgentId; arriba: boolean; cuenta: boolean; ocupado?: boolean }[]>;
   /**
    * Arranca el poller de aprobaciones de este job y devuelve como pararlo.
    *
@@ -343,7 +343,7 @@ async function botonesDeRelevo(
 ): Promise<Boton[][]> {
   const menu: Boton[][] = [[{ label: '🔀 Elegir otro agente', data: datosDeMenu() }]];
 
-  let candidatos: { id: AgentId; arriba: boolean; cuenta: boolean }[] = [];
+  let candidatos: { id: AgentId; arriba: boolean; cuenta: boolean; ocupado?: boolean }[] = [];
   try {
     candidatos = await deps.listarAgentes(proyecto);
   } catch {
@@ -353,8 +353,11 @@ async function botonesDeRelevo(
   }
 
   const sinTokens = await deps.store.slotsAgotados().catch(() => new Map<string, unknown>());
+  // `!c.ocupado`: ofrecer "seguir con C2" cuando C2 lo esta usando otra persona
+  // manda a chocar contra un segundo 409. Es el mismo aviso dos veces y ningun
+  // camino de salida.
   const libres = candidatos
-    .filter((c) => c.cuenta && c.id !== agotado && !sinTokens.has(c.id))
+    .filter((c) => c.cuenta && !c.ocupado && c.id !== agotado && !sinTokens.has(c.id))
     .sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }));
 
   return [
@@ -683,7 +686,7 @@ export async function armarMenuDeAgentes(
 
   // Un gateway caido no puede dejarte sin ver que agentes tenes. Se muestran
   // todos apagados, que es lo peor que puede ser cierto.
-  let estados: { id: AgentId; arriba: boolean; cuenta: boolean }[] = [];
+  let estados: { id: AgentId; arriba: boolean; cuenta: boolean; ocupado?: boolean }[] = [];
   try {
     estados = await deps.listarAgentes(proyecto.nombre);
   } catch {
@@ -714,6 +717,10 @@ export async function armarMenuDeAgentes(
       // el lado correcto para equivocarse: un boton que no anda es peor que uno
       // que avisa.
       tieneCuenta: estado?.cuenta ?? Boolean(a.cuenta),
+      // Ocupado por otro. Sin gateway se asume que no: mostrar todo como
+      // ocupado dejaria el menu sin ningun boton que tocar, que es peor que
+      // ofrecer uno que puede chocar contra un 409 y avisar.
+      ocupado: estado?.ocupado ?? false,
     };
   });
 

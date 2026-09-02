@@ -102,7 +102,7 @@ export class ErrorDelAgente extends Error {
  */
 export async function listarAgentes(
   deps: AgentsClientDeps,
-): Promise<{ id: string; arriba: boolean; cuenta: boolean }[]> {
+): Promise<{ id: string; arriba: boolean; cuenta: boolean; ocupado: boolean }[]> {
   const doFetch = deps.fetchImpl ?? fetch;
   const res = await doFetch(`${deps.gatewayUrl.replace(/\/$/, '')}/agents`, {
     headers: { authorization: `Bearer ${deps.token}` },
@@ -113,9 +113,21 @@ export async function listarAgentes(
   if (!res.ok) throw new Error('agent_unavailable');
 
   const cuerpo = (await res.json()) as {
-    agents?: { id: string; arriba: boolean; cuenta?: boolean }[];
+    agents?: {
+      id: string;
+      arriba: boolean;
+      cuenta?: boolean;
+      ocupado?: { usuarioId?: string; desde?: number };
+    }[];
   };
   // `cuenta` puede faltar si el gateway todavia es una version anterior. Se
   // asume que no la tiene: un boton que no anda es peor que uno que avisa.
-  return (cuerpo.agents ?? []).map((a) => ({ ...a, cuenta: a.cuenta === true }));
+  // `ocupado` llega como el dueño o nada. Aca se aplana a un booleano: quien
+  // pinta el menu solo necesita saber si se puede elegir, y el nombre del dueño
+  // se resuelve recien cuando hace falta mostrarlo.
+  return (cuerpo.agents ?? []).map((a) => ({
+    ...a,
+    cuenta: a.cuenta === true,
+    ocupado: a.ocupado !== undefined && a.ocupado !== null,
+  }));
 }

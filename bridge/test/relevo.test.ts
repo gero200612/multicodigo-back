@@ -114,3 +114,28 @@ describe('el prompt del relevo', () => {
     expect(p).not.toContain('pedido-0');
   });
 });
+
+describe('proximoSlot y los slots ocupados', () => {
+  // Relevar sobre un slot que esta usando otra persona gasta uno de los tres
+  // intentos contra un 409 seguro, y le muestra el aviso de ocupado a alguien
+  // que pregunto por otra cosa.
+  it('no releva sobre un slot que tiene otra persona', () => {
+    const candidatos = [
+      { id: 'c2', cuenta: true, arriba: true, ocupado: true },
+      { id: 'c3', cuenta: true, arriba: true, ocupado: false },
+    ];
+    expect(proximoSlot(candidatos, ['c1'])).toBe('c3');
+  });
+
+  it('sin ningun libre no releva a ninguno', () => {
+    const candidatos = [{ id: 'c2', cuenta: true, arriba: true, ocupado: true }];
+    expect(proximoSlot(candidatos, ['c1'])).toBeUndefined();
+  });
+
+  // `ocupado` es opcional en el contrato: un gateway viejo no lo manda, y eso
+  // no puede significar "todos ocupados".
+  it('sin el dato de ocupado, el slot sigue siendo candidato', () => {
+    const candidatos = [{ id: 'c2', cuenta: true, arriba: true }];
+    expect(proximoSlot(candidatos, ['c1'])).toBe('c2');
+  });
+});

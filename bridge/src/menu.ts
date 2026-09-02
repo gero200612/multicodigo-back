@@ -90,6 +90,8 @@ export interface AgenteConEstado extends AgenteResumen {
    * queda, asi que esto es lo unico que se sabe.
    */
   agotado?: { resets?: string };
+  /** Lo esta usando otra persona ahora mismo. */
+  ocupado?: boolean;
 }
 
 /** Un dato que no matchea ningun prefijo: el boton existe y no hace nada. */
@@ -106,13 +108,29 @@ export function tecladoDeAgentes(agentes: AgenteConEstado[]): Boton[][] {
     // El orden importa: primero "no tiene cuenta", despues "no tiene tokens".
     // Un slot sin cuenta cargada tampoco puede estar agotado, y si las dos
     // marcas compitieran, la de tokens taparia la que dice que hacer.
-    const marca = !a.tieneCuenta ? '⚠' : a.agotado ? '⛔' : a.arriba ? '●' : '○';
+    // "Ocupado" va despues de "sin tokens" y antes de arriba/apagado: es un
+    // impedimento, asi que tapa al estado del contenedor, pero es el unico que
+    // se resuelve solo —hay que esperar, no hay que ir a arreglar nada—, asi
+    // que no puede tapar a los que si mandan a hacer algo.
+    const marca = !a.tieneCuenta
+      ? '⚠'
+      : a.agotado
+        ? '⛔'
+        : a.ocupado
+          ? '🔒'
+          : a.arriba
+            ? '●'
+            : '○';
     const nombre = a.nombre ?? a.slot.toUpperCase();
 
     // La hora del reset en el boton y no solo en la leyenda: es lo que decide
     // si conviene esperar o cambiar de agente, y en la leyenda seria una nota
     // al pie que no dice de cual de los seis habla.
-    const cola = a.agotado ? ` — sin tokens${a.agotado.resets ? `, vuelve ${a.agotado.resets}` : ''}` : '';
+    const cola = a.agotado
+      ? ` — sin tokens${a.agotado.resets ? `, vuelve ${a.agotado.resets}` : ''}`
+      : a.ocupado
+        ? ' — lo esta usando otro'
+        : '';
 
     return [
       {
@@ -121,7 +139,10 @@ export function tecladoDeAgentes(agentes: AgenteConEstado[]): Boton[][] {
         // uno agotado a un turno que falla con usage_limit. En los dos casos el
         // boton no hace nada y la etiqueta explica por que: hacer perder un
         // turno para llegar a un error que ya sabemos es lo que esto arregla.
-        data: a.tieneCuenta && !a.agotado ? datosDeAgente(a.slot) : INERTE,
+        // Un slot ocupado tampoco lleva a ningun lado: el turno chocaria con
+        // un 409 y la etiqueta ya explica por que. Es el mismo criterio que
+        // con el slot sin cuenta y el agotado.
+        data: a.tieneCuenta && !a.agotado && !a.ocupado ? datosDeAgente(a.slot) : INERTE,
       },
     ];
   });

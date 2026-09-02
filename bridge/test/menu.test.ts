@@ -92,3 +92,33 @@ describe('teclados', () => {
     expect(t.map((f) => f[0]!.data)).toEqual(['a:c2', 'a:c1']);
   });
 });
+
+describe('el menu marca los slots ocupados', () => {
+  const base = { slot: 'c1' as const, arriba: true, tieneCuenta: true };
+
+  it('un slot ocupado se marca y dice por que', () => {
+    const [fila] = tecladoDeAgentes([{ ...base, ocupado: true }]);
+    expect(fila![0]!.label).toContain('🔒');
+    expect(fila![0]!.label).toContain('lo esta usando otro');
+  });
+
+  // Un boton que lleva a un 409 hace perder un turno para llegar a un error que
+  // ya sabiamos. Mismo criterio que el slot sin cuenta y el agotado.
+  it('un slot ocupado no se puede elegir', () => {
+    const [fila] = tecladoDeAgentes([{ ...base, ocupado: true }]);
+    expect(parseMenuData(fila![0]!.data)).toBeNull();
+  });
+
+  it('un slot libre se sigue pudiendo elegir', () => {
+    const [fila] = tecladoDeAgentes([{ ...base, ocupado: false }]);
+    expect(parseMenuData(fila![0]!.data)).toEqual({ kind: 'agente', slot: 'c1' });
+  });
+
+  // El orden de las marcas dice que hacer: "sin tokens" manda a esperar o
+  // cambiar de cuenta, "ocupado" manda a esperar y nada mas.
+  it('sin tokens tapa a ocupado, no al reves', () => {
+    const [fila] = tecladoDeAgentes([{ ...base, ocupado: true, agotado: {} }]);
+    expect(fila![0]!.label).toContain('⛔');
+    expect(fila![0]!.label).not.toContain('🔒');
+  });
+});

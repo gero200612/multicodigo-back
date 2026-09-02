@@ -36,6 +36,8 @@ export interface Candidato {
   id: string;
   cuenta: boolean;
   arriba: boolean;
+  /** true si lo esta usando alguien ahora mismo. */
+  ocupado?: boolean;
 }
 
 /**
@@ -48,13 +50,18 @@ export interface Candidato {
  * `arriba` NO se mira: los slots estan apagados por defecto y el turno los
  * prende. Exigir que ya este corriendo dejaria el relevo sin candidatos justo
  * en el caso normal.
+ *
+ * `ocupado` SI se mira, y es lo contrario: un slot que esta usando otra persona
+ * no es un candidato. Relevar ahi manda el turno contra un 409 y se pierde un
+ * intento de los tres que hay, ademas de mostrarle el aviso de ocupado a quien
+ * pregunto por otra cosa.
  */
 export function proximoSlot(
   candidatos: Candidato[],
   yaProbados: readonly string[],
 ): string | undefined {
   return candidatos
-    .filter((c) => c.cuenta && !yaProbados.includes(c.id))
+    .filter((c) => c.cuenta && !c.ocupado && !yaProbados.includes(c.id))
     // Por id y no por el orden que devuelve el gateway: con un orden estable, el
     // relevo de un turno es reproducible y "c1 se agoto, sigue c2" es una frase
     // que se puede verificar.
