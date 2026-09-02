@@ -40,7 +40,24 @@ create table if not exists public.documentos (
   -- que un turno que falla.
   error        text,
 
-  subido_por   uuid not null references auth.users(id),
+  -- Quien lo subio.
+  --
+  -- El default NO es cosmetico: el panel escribe esta tabla por PostgREST con
+  -- el JWT del usuario y NO manda esta columna, asi que sin el default cada
+  -- subida moria con
+  --
+  --     23502 null value in column "subido_por" ... violates not-null constraint
+  --
+  -- y el panel contestaba "No pudimos subir el documento". La tabla estuvo en
+  -- cero filas hasta que se encontro.
+  --
+  -- `auth.uid()` sale de los claims del JWT que PostgREST setea en cada
+  -- request, asi que es exactamente el mismo usuario que evalua RLS: no pueden
+  -- discrepar. Quien escribe con la service_role —el bridge, para los archivos
+  -- que llegan por Telegram— no tiene JWT y ahi `auth.uid()` es null, por eso
+  -- ese camino la manda explicita. Si algun dia se la olvidara, este not null
+  -- lo dice fuerte en vez de anotar un documento sin dueño.
+  subido_por   uuid not null references auth.users(id) default auth.uid(),
   creado_en    timestamptz not null default now(),
 
   constraint documentos_nombre_forma check (nombre ~ '^[A-Za-z0-9._-]+$'),
@@ -50,6 +67,11 @@ create table if not exists public.documentos (
 );
 
 create index if not exists documentos_proyecto_idx on public.documentos (proyecto_id);
+
+-- Para las bases que ya tenian la tabla sin el default. Idempotente, como todo
+-- este archivo: en una base nueva el create de arriba ya lo trae.
+alter table public.documentos
+  alter column subido_por set default auth.uid();
 
 alter table public.documentos enable row level security;
 
