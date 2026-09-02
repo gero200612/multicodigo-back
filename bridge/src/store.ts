@@ -292,6 +292,20 @@ export interface Store {
   setPendiente(chatId: number, prompt: string | null): Promise<void>;
   /** Lo saca y lo borra de una: un pendiente se manda una sola vez. */
   tomarPendiente(chatId: number): Promise<string | undefined>;
+  /**
+   * Los agentes de MAS con los que trabaja el chat, sin el primario.
+   *
+   * El primario es `getActiveAgent`: a el le habla el texto suelto. A estos se
+   * les habla con `/c2 …`, y estan anotados para poder mostrarlos.
+   */
+  agentesDeCowork(chatId: number): Promise<AgentId[]>;
+  /**
+   * Suma el agente a la lista, o lo saca si ya estaba. Devuelve como quedo.
+   *
+   * Es un toggle y no un par de metodos: sumar y sacar son la misma decision
+   * vista dos veces, y quien llama ya recibe el estado nuevo.
+   */
+  alternarCowork(chatId: number, slot: AgentId): Promise<AgentId[]>;
   /** Un codigo de un solo uso para vincular este chat. */
   crearCodigoVinculacion(chatId: number, minutos: number): Promise<string>;
   /**
@@ -517,6 +531,22 @@ export class InMemoryStore implements Store {
     const p = this.pendientes.get(chatId);
     this.pendientes.delete(chatId);
     return p;
+  }
+
+  private cowork = new Map<number, Set<AgentId>>();
+
+  async agentesDeCowork(chatId: number): Promise<AgentId[]> {
+    return [...(this.cowork.get(chatId) ?? [])].sort((a, b) =>
+      a.localeCompare(b, 'en', { numeric: true }),
+    );
+  }
+
+  async alternarCowork(chatId: number, slot: AgentId): Promise<AgentId[]> {
+    const actual = this.cowork.get(chatId) ?? new Set<AgentId>();
+    if (actual.has(slot)) actual.delete(slot);
+    else actual.add(slot);
+    this.cowork.set(chatId, actual);
+    return this.agentesDeCowork(chatId);
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {
@@ -996,6 +1026,38 @@ export class PgStore implements Store {
       [chatId],
     );
     return r.rows[0]?.prompt;
+  }
+
+  async agentesDeCowork(chatId: number): Promise<AgentId[]> {
+    const r = await this.pool.query<{ slot: AgentId }>(
+      // Numerico y no alfabetico: sin esto c10 sale antes que c2.
+      `SELECT slot FROM telegram_cowork WHERE chat_id = $1
+       ORDER BY length(slot), slot`,
+      [chatId],
+    );
+    return r.rows.map((f) => f.slot);
+  }
+
+  /**
+   * El toggle en UNA sentencia, y no en un SELECT seguido de un INSERT.
+   *
+   * Con dos, tocar dos veces seguido —o dos mensajes que llegan juntos— puede
+   * leer los dos el mismo estado y dejar la lista al reves de lo que se pidio.
+   * El DELETE ... RETURNING dice si habia algo, y solo si no habia se inserta.
+   */
+  async alternarCowork(chatId: number, slot: AgentId): Promise<AgentId[]> {
+    const borrado = await this.pool.query(
+      'DELETE FROM telegram_cowork WHERE chat_id = $1 AND slot = $2 RETURNING slot',
+      [chatId, slot],
+    );
+    if (borrado.rowCount === 0) {
+      await this.pool.query(
+        `INSERT INTO telegram_cowork (chat_id, slot) VALUES ($1, $2)
+         ON CONFLICT (chat_id, slot) DO NOTHING`,
+        [chatId, slot],
+      );
+    }
+    return this.agentesDeCowork(chatId);
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {

@@ -6,6 +6,14 @@ export type ParsedCommand =
   /** Con `project` cambia el proyecto activo; sin el, pregunta cual es. */
   | { kind: 'project'; project: string | undefined }
   | { kind: 'status' }
+  /**
+   * Trabajar con mas de un agente en el mismo chat.
+   *
+   * Con `agent` lo suma o lo saca de la lista; sin el, la muestra. Es un toggle
+   * y no un par de comandos: sumar y sacar son la misma decision vista dos
+   * veces, y el estado ya se ve en la respuesta.
+   */
+  | { kind: 'cowork'; agent: AgentId | undefined }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
   | { kind: 'vincular' }
   /** Vuelve al principio: elegir proyecto y agente. */
@@ -34,6 +42,14 @@ export function parseCommand(raw: string): ParsedCommand {
   const rest = (match[2] ?? '').trim();
 
   if (command === 'status') return { kind: 'status' };
+
+  if (command === 'cowork') {
+    if (rest === '') return { kind: 'cowork', agent: undefined };
+    const a = AgentId.safeParse(rest.toLowerCase());
+    // Un argumento que no es un agente NO es un cowork fallido: se trata como
+    // texto comun, igual que /proyecto. Mismo criterio, misma razon.
+    return a.success ? { kind: 'cowork', agent: a.data } : { kind: 'prompt', agent: undefined, text };
+  }
 
   // /start es lo primero que manda Telegram cuando alguien abre el bot, asi
   // que tiene que llevar al mismo lugar que /menu.

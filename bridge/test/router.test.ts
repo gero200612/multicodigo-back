@@ -96,3 +96,27 @@ describe('parseCommand — proyecto', () => {
     expect(parseCommand('/menu')).toEqual({ kind: 'menu' });
   });
 });
+
+describe('/cowork', () => {
+  it('sin argumento pide ver la lista', () => {
+    expect(parseCommand('/cowork')).toEqual({ kind: 'cowork', agent: undefined });
+  });
+
+  it('con un agente lo suma o lo saca', () => {
+    expect(parseCommand('/cowork c2')).toEqual({ kind: 'cowork', agent: 'c2' });
+  });
+
+  it('acepta el agente en mayusculas: se escribe desde un telefono', () => {
+    expect(parseCommand('/cowork C3')).toEqual({ kind: 'cowork', agent: 'c3' });
+  });
+
+  // Mismo criterio que /proyecto: es mas probable que se hayan equivocado de
+  // comando que que quieran un agente llamado asi.
+  it('con algo que no es un agente, es texto comun', () => {
+    expect(parseCommand('/cowork que hace el stock')).toEqual({
+      kind: 'prompt',
+      agent: undefined,
+      text: '/cowork que hace el stock',
+    });
+  });
+});

@@ -25,7 +25,9 @@ export function renderOutcome(outcome: PipelineOutcome): string {
     case 'switched':
       return `Listo, ahora hablas con ${outcome.agent.toUpperCase()}.`;
     case 'status':
-      return `Agente activo: ${outcome.agent.toUpperCase()}.`;
+      return textoDeActivos(outcome.agent, outcome.otros);
+    case 'cowork':
+      return textoDeActivos(outcome.primario, outcome.otros);
     case 'project':
       return `Proyecto activo: ${outcome.project}.`;
     case 'ocupado':
@@ -62,6 +64,30 @@ export function renderOutcome(outcome: PipelineOutcome): string {
         'Escribime lo que querés que haga.'
       );
   }
+}
+
+/**
+ * Con quien estas trabajando.
+ *
+ * El primario primero y marcado como tal: es a quien le llega lo que escribas
+ * sin prefijo, y confundirlo es mandarle un pedido al agente equivocado. Los
+ * otros van con el comando al lado —`/c2`— porque saber que estan no sirve si
+ * no se sabe como hablarles.
+ */
+export function textoDeActivos(primario: AgentId, otros: AgentId[]): string {
+  const cabeza = `Le hablas a ${primario.toUpperCase()}.`;
+  if (otros.length === 0) {
+    return `${cabeza}
+
+Con /cowork c2 sumas otro agente a este chat y le hablas con /c2.`;
+  }
+  const lista = otros.map((a) => `· ${a.toUpperCase()} — escribile con /${a}`).join('\n');
+  return `${cabeza}
+
+Tambien tenes en este chat:
+${lista}
+
+Con /cowork ${otros[0]} lo sacas.`;
 }
 
 /**
@@ -246,7 +272,8 @@ async function bajarAudio(
 const COMANDOS = [
   { command: 'menu', description: 'Elegir con qué agente hablar' },
   { command: 'proyecto', description: 'Ver o cambiar el proyecto activo' },
-  { command: 'status', description: 'Qué está haciendo cada agente' },
+  { command: 'status', description: 'Con qué agentes estás trabajando' },
+  { command: 'cowork', description: 'Sumar o sacar un agente de este chat' },
   { command: 'vincular', description: 'Conectar este chat con tu cuenta del panel' },
 ];
 
@@ -452,7 +479,14 @@ export function buildBot(deps: BridgeDeps): Bot {
     }
 
     // Un mensaje por job: se manda el placeholder y despues se edita.
-    const placeholder = await ctx.reply('🤖 trabajando…');
+    //
+    // Y COLGADO del mensaje que lo pidio. Con dos agentes trabajando a la vez
+    // en el mismo chat —`/c1 esto` y `/c2 aquello`— las dos respuestas llegan
+    // mezcladas y no hay como saber cual contesta a cual. El reply lo dice sin
+    // que nadie tenga que leer las dos.
+    const placeholder = await ctx.reply('🤖 trabajando…', {
+      reply_parameters: { message_id: ctx.message.message_id },
+    });
 
     try {
       let audio: { bytes: Uint8Array; mimeType: string } | undefined;

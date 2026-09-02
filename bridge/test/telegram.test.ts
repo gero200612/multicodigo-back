@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderOutcome, textoDeOcupado } from '../src/telegram.js';
+import { renderOutcome, textoDeOcupado, textoDeActivos } from '../src/telegram.js';
 import { buildWebhookServer } from '../src/webhook.js';
 
 describe('renderOutcome', () => {
@@ -69,7 +69,7 @@ describe('renderOutcome', () => {
   });
 
   it('muestra el agente activo en status', () => {
-    expect(renderOutcome({ kind: 'status', agent: 'c1' })).toContain('C1');
+    expect(renderOutcome({ kind: 'status', agent: 'c1', otros: [] })).toContain('C1');
   });
 
   it('muestra el error sin exponer detalles internos', () => {
@@ -294,5 +294,26 @@ describe('el aviso de slot ocupado', () => {
 
   it('avisa que el mensaje escrito se reenvia: el prompt no se pierde', () => {
     expect(textoDeOcupado('c1', 'martin', AHORA, AHORA)).toContain('lo que me escribiste');
+  });
+});
+
+describe('con quien estas trabajando', () => {
+  // Confundir el primario con los demas es mandarle el pedido al agente
+  // equivocado: es a el a quien le llega el texto sin prefijo.
+  it('con un solo agente dice a quien le hablas y como sumar otro', () => {
+    const t = textoDeActivos('c1', []);
+    expect(t).toContain('C1');
+    expect(t).toContain('/cowork');
+  });
+
+  it('lista los demas con el comando para hablarles', () => {
+    const t = textoDeActivos('c1', ['c2', 'c3']);
+    expect(t).toContain('C2');
+    expect(t).toContain('/c2');
+    expect(t).toContain('C3');
+  });
+
+  it('con varios, explica como sacar uno', () => {
+    expect(textoDeActivos('c1', ['c2'])).toContain('/cowork c2');
   });
 });

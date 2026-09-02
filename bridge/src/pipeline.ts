@@ -83,7 +83,8 @@ export interface PipelineDeps {
 export type PipelineOutcome =
   | { kind: 'answer'; text: string; agent: AgentId; jobId: string }
   | { kind: 'switched'; agent: AgentId }
-  | { kind: 'status'; agent: AgentId }
+  | { kind: 'status'; agent: AgentId; otros: AgentId[] }
+  | { kind: 'cowork'; primario: AgentId; otros: AgentId[] }
   | { kind: 'project'; project: string }
   /** El chat no esta atado a ninguna cuenta del panel. */
   | { kind: 'sin_vincular'; yaEstaba: boolean }
@@ -199,9 +200,20 @@ export async function handleIncoming(
     return { kind: 'project', project: activo };
   }
 
+  if (command.kind === 'cowork') {
+    if (command.agent) await deps.store.alternarCowork(input.chatId, command.agent);
+    const primario = (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
+    // El primario no puede estar ademas en la lista de al lado: seria el mismo
+    // agente mostrado dos veces, y sacarlo de ahi no cambia nada de lo que se
+    // puede hacer con el.
+    const otros = (await deps.store.agentesDeCowork(input.chatId)).filter((a) => a !== primario);
+    return { kind: 'cowork', primario, otros };
+  }
+
   if (command.kind === 'status') {
-    const active = (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
-    return { kind: 'status', agent: active };
+    const primario = (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
+    const otros = (await deps.store.agentesDeCowork(input.chatId)).filter((a) => a !== primario);
+    return { kind: 'status', agent: primario, otros };
   }
 
   const agent =

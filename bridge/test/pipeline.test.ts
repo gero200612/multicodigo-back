@@ -1041,3 +1041,63 @@ describe('el mensaje que quedo esperando', () => {
     expect(await store.tomarPendiente(7)).toBe('segundo');
   });
 });
+
+describe('/cowork: mas de un agente en el mismo chat', () => {
+  it('sin agentes de mas, dice solo a quien le hablas', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/cowork' }, d);
+    expect(r).toEqual({ kind: 'cowork', primario: 'c1', otros: [] });
+  });
+
+  it('suma un agente a la lista', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/cowork c2' }, d);
+    expect(r).toEqual({ kind: 'cowork', primario: 'c1', otros: ['c2'] });
+  });
+
+  // Es un toggle: sumar y sacar son la misma decision vista dos veces.
+  it('el mismo comando otra vez lo saca', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/cowork c2' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/cowork c2' }, d);
+    expect(r).toEqual({ kind: 'cowork', primario: 'c1', otros: [] });
+  });
+
+  // Mostrarlo dos veces no agrega nada y confunde sobre a quien le llega el
+  // texto suelto.
+  it('el primario no aparece ademas en la lista de al lado', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/cowork c1' }, d);
+    if (r.kind !== 'cowork') throw new Error('no es cowork');
+    expect(r.otros).toEqual([]);
+  });
+
+  it('/status muestra la misma lista', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/cowork c3' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/status' }, d);
+    expect(r).toEqual({ kind: 'status', agent: 'c1', otros: ['c3'] });
+  });
+
+  // Lo que hace que cowork sirva: hablarle a uno no cambia a quien le llega el
+  // texto suelto. Sin esto habria que estar cambiando de agente todo el tiempo.
+  it('hablarle a otro agente no cambia el primario', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/c2 arregla el stock' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/status' }, d);
+    if (r.kind !== 'status') throw new Error('no es status');
+    expect(r.agent).toBe('c1');
+  });
+});
