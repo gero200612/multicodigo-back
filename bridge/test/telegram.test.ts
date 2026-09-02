@@ -56,15 +56,12 @@ describe('renderOutcome', () => {
     expect(out).toContain('El stock usa FIFO.');
   });
 
-  it('muestra la transcripcion cuando el mensaje era audio', () => {
-    const out = renderOutcome({
-      kind: 'answer',
-      text: 'listo',
-      agent: 'c2',
-      jobId: 'j',
-      transcript: 'que hace el stock',
-    });
-    expect(out).toContain('te escuche: que hace el stock');
+  it('NO repite la transcripcion del audio', () => {
+    // Estaba y se saco: el que acaba de hablar ya sabe lo que dijo, y esas dos
+    // lineas empujaban la respuesta fuera de la pantalla del telefono.
+    const out = renderOutcome({ kind: 'answer', text: 'listo', agent: 'c2', jobId: 'j' });
+    expect(out).not.toContain('te escuche');
+    expect(out).toContain('listo');
   });
 
   it('confirma el cambio de agente', () => {

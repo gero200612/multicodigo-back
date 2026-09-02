@@ -73,7 +73,7 @@ export interface PipelineDeps {
 }
 
 export type PipelineOutcome =
-  | { kind: 'answer'; text: string; agent: AgentId; jobId: string; transcript?: string }
+  | { kind: 'answer'; text: string; agent: AgentId; jobId: string }
   | { kind: 'switched'; agent: AgentId }
   | { kind: 'status'; agent: AgentId }
   | { kind: 'project'; project: string }
@@ -142,12 +142,12 @@ export async function handleIncoming(
   input: IncomingMessage,
   deps: PipelineDeps,
 ): Promise<PipelineOutcome> {
-  let transcript: string | undefined;
   let raw = input.text ?? '';
 
+  // La transcripcion se usa como si el usuario la hubiera escrito, y nada mas:
+  // ya no vuelve al chat. Ver `renderOutcome` en telegram.ts.
   if (input.audio) {
-    transcript = await deps.transcribe(input.audio.bytes, input.audio.mimeType);
-    raw = transcript;
+    raw = await deps.transcribe(input.audio.bytes, input.audio.mimeType);
   }
 
   const command = parseCommand(raw);
@@ -236,7 +236,6 @@ export async function handleIncoming(
       text: sanitizeForTelegram(r.texto),
       agent,
       jobId: r.jobId,
-      transcript,
     };
   } catch (err) {
     const code = err instanceof Error ? err.message : 'internal';

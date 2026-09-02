@@ -12,10 +12,16 @@ import type { Store } from './store.js';
 
 export function renderOutcome(outcome: PipelineOutcome): string {
   switch (outcome.kind) {
-    case 'answer': {
-      const head = outcome.transcript ? `🎙 te escuche: ${outcome.transcript}\n\n` : '';
-      return `${head}🤖 ${outcome.agent.toUpperCase()}\n\n${outcome.text}`;
-    }
+    case 'answer':
+      // Sin repetir la transcripcion del audio. Estaba como "🎙 te escuche: …"
+      // para mostrar que se habia entendido bien, pero en el uso real es
+      // ruido: el que acaba de hablar ya sabe lo que dijo, y en la pantalla de
+      // un telefono esas lineas empujan la respuesta —lo unico que se vino a
+      // leer— fuera de la vista.
+      //
+      // Si la transcripcion sale mal se nota igual, porque la respuesta va a
+      // hablar de otra cosa.
+      return `🤖 ${outcome.agent.toUpperCase()}\n\n${outcome.text}`;
     case 'switched':
       return `Listo, ahora hablas con ${outcome.agent.toUpperCase()}.`;
     case 'status':
