@@ -11,7 +11,7 @@ import {
 import { parseCommand } from './router.js';
 import { tecladoDeProyectos, tecladoDeAgentes, datosDeAgente, datosDeMenu } from './menu.js';
 import type { Boton } from './render.js';
-import type { Store, Proyecto } from './store.js';
+import type { Store, Proyecto, ModoPermiso } from './store.js';
 import type { Quien } from './agents-client.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
@@ -95,6 +95,14 @@ export type PipelineOutcome =
   | { kind: 'switched'; agent: AgentId }
   | { kind: 'status'; agent: AgentId; otros: AgentId[] }
   | { kind: 'cowork'; primario: AgentId; otros: AgentId[] }
+  /**
+   * El modo de permisos del chat.
+   *
+   * `cambiado` separa "asi quedo" de "asi esta": el mismo outcome contesta a
+   * `/permisos` y a `/permisos todo`, y confirmar un cambio que no se hizo
+   * seria mentir.
+   */
+  | { kind: 'permisos'; modo: ModoPermiso; cambiado: boolean }
   | { kind: 'project'; project: string }
   /** El chat no esta atado a ninguna cuenta del panel. */
   | { kind: 'sin_vincular'; yaEstaba: boolean }
@@ -224,6 +232,15 @@ export async function handleIncoming(
     return { kind: 'project', project: activo };
   }
 
+  if (command.kind === 'permisos') {
+    if (command.modo) await deps.store.setModoDeChat(input.chatId, command.modo);
+    // El actual, o el default del agente si nunca eligio. Se resuelve aca —y no
+    // se muestra "sin elegir"— porque lo que importa saber es que va a pasar la
+    // proxima vez que el agente quiera escribir, no si alguien toco un boton.
+    const modo = command.modo ?? (await deps.store.modoDeChat(input.chatId)) ?? 'preguntar';
+    return { kind: 'permisos', modo, cambiado: command.modo !== undefined };
+  }
+
   if (command.kind === 'cowork') {
     if (command.agent) await deps.store.alternarCowork(input.chatId, command.agent);
     const primario = (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
@@ -269,6 +286,11 @@ export async function handleIncoming(
       ? await deps.documentosDelTurno(proyectoId).catch(() => undefined)
       : undefined;
 
+  // El modo del chat. Un fallo aca no puede voltear el turno: sin modo corre
+  // con el default del agente, que es el estricto — se pregunta de mas, que es
+  // el lado correcto para equivocarse.
+  const modo = await deps.store.modoDeChat(input.chatId).catch(() => undefined);
+
   try {
     const r = await ejecutarTurnoConRelevo(deps, {
       proyectoId,
@@ -276,6 +298,7 @@ export async function handleIncoming(
       agente: agent,
       usuarioId,
       prompt: command.text,
+      modo,
       repos,
       githubToken,
       documentos,
@@ -424,6 +447,16 @@ async function botonesDeRelevo(
  */
 export type PromptConToken = PromptRequest & {
   githubToken?: string;
+  /**
+   * El modo de permisos del turno.
+   *
+   * Se extiende aca y no en `@multicodigo/shared` por lo mismo que el token:
+   * ese contrato vive en un paquete publicado por tag, y agregarle un campo
+   * obliga a publicarlo y actualizarlo en los tres servicios antes de que nada
+   * ande. El agente lo lee al lado de `PromptRequest`, y zod descarta lo que no
+   * declara sin fallar.
+   */
+  modo?: ModoPermiso;
   documentos?: Array<{ nombre: string; url: string; url_texto?: string | null }>;
 };
 
@@ -438,6 +471,13 @@ export interface Turno {
   agente: AgentId;
   usuarioId: string;
   prompt: string;
+  /**
+   * Cuanto se le pregunta antes de actuar.
+   *
+   * Del CHAT y no del proyecto: es una preferencia de quien lee las preguntas.
+   * Ausente = el default del agente, que es el mas estricto.
+   */
+  modo?: ModoPermiso;
   origen: 'telegram' | 'panel';
   /** Solo cuando viene de Telegram: para poder colgar el poller del mensaje. */
   chatId?: number;
@@ -652,6 +692,10 @@ export async function ejecutarTurno(
         repos: t.repos,
         githubToken: t.githubToken,
         documentos: t.documentos,
+        // En el CUERPO y no en un header, al contrario de quien pide el turno:
+        // el modo lo necesita el agente, que es quien decide si pregunta. El
+        // gateway le reenvia el cuerpo, asi que llega sin que nadie lo copie.
+        modo: t.modo,
       },
       { usuarioId: t.usuarioId, chatId: t.chatId },
     );

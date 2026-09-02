@@ -83,6 +83,17 @@ export function recortar(texto: string): string {
     : `${texto.slice(0, LARGO_PROMPT_RESUMEN - 1)}…`;
 }
 
+/**
+ * Los modos de permiso, espejados de `MODOS` en el agente
+ * (`src/agent/src/policy.ts`) y del CHECK de la migracion 018.
+ *
+ * Los tres tienen que moverse juntos: un modo que la base acepta y el agente
+ * no entiende cae en su default en silencio, y nadie sabria por que el bot
+ * sigue preguntando.
+ */
+export const MODOS_PERMISO = ['preguntar', 'ediciones', 'todo'] as const;
+export type ModoPermiso = (typeof MODOS_PERMISO)[number];
+
 export interface Proyecto {
   id: string;
   nombre: string;
@@ -306,6 +317,16 @@ export interface Store {
    * vista dos veces, y quien llama ya recibe el estado nuevo.
    */
   alternarCowork(chatId: number, slot: AgentId): Promise<AgentId[]>;
+  /**
+   * Cuanto se le pregunta a este chat antes de actuar.
+   *
+   * `undefined` = nunca lo eligio, y el turno corre con el default del agente,
+   * que es el mas estricto. No se devuelve el default aca a proposito: quien
+   * muestra el modo tiene que poder distinguir "elegi preguntar" de "no elegi
+   * nada", aunque hagan lo mismo.
+   */
+  modoDeChat(chatId: number): Promise<ModoPermiso | undefined>;
+  setModoDeChat(chatId: number, modo: ModoPermiso): Promise<void>;
   /** Un codigo de un solo uso para vincular este chat. */
   crearCodigoVinculacion(chatId: number, minutos: number): Promise<string>;
   /**
@@ -547,6 +568,16 @@ export class InMemoryStore implements Store {
     else actual.add(slot);
     this.cowork.set(chatId, actual);
     return this.agentesDeCowork(chatId);
+  }
+
+  private modos = new Map<number, ModoPermiso>();
+
+  async modoDeChat(chatId: number): Promise<ModoPermiso | undefined> {
+    return this.modos.get(chatId);
+  }
+
+  async setModoDeChat(chatId: number, modo: ModoPermiso): Promise<void> {
+    this.modos.set(chatId, modo);
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {
@@ -1058,6 +1089,22 @@ export class PgStore implements Store {
       );
     }
     return this.agentesDeCowork(chatId);
+  }
+
+  async modoDeChat(chatId: number): Promise<ModoPermiso | undefined> {
+    const r = await this.pool.query<{ modo: ModoPermiso }>(
+      'SELECT modo FROM telegram_modo WHERE chat_id = $1',
+      [chatId],
+    );
+    return r.rows[0]?.modo;
+  }
+
+  async setModoDeChat(chatId: number, modo: ModoPermiso): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO telegram_modo (chat_id, modo) VALUES ($1, $2)
+       ON CONFLICT (chat_id) DO UPDATE SET modo = $2, cambiado_en = now()`,
+      [chatId, modo],
+    );
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {

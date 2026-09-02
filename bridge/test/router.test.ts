@@ -120,3 +120,24 @@ describe('/cowork', () => {
     });
   });
 });
+
+describe('/permisos', () => {
+  it('sin argumento muestra el actual', () => {
+    expect(parseCommand('/permisos')).toEqual({ kind: 'permisos', modo: undefined });
+  });
+
+  it('con un modo lo cambia', () => {
+    expect(parseCommand('/permisos todo')).toEqual({ kind: 'permisos', modo: 'todo' });
+    expect(parseCommand('/permisos ediciones')).toEqual({ kind: 'permisos', modo: 'ediciones' });
+    expect(parseCommand('/permisos preguntar')).toEqual({ kind: 'permisos', modo: 'preguntar' });
+  });
+
+  // Mismo criterio que /proyecto y /cowork.
+  it('con algo que no es un modo, es texto comun', () => {
+    expect(parseCommand('/permisos dale que va')).toEqual({
+      kind: 'prompt',
+      agent: undefined,
+      text: '/permisos dale que va',
+    });
+  });
+});

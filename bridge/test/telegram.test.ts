@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderOutcome, textoDeOcupado, textoDeActivos } from '../src/telegram.js';
+import { renderOutcome, textoDeOcupado, textoDeActivos, textoDePermisos } from '../src/telegram.js';
 import { buildWebhookServer } from '../src/webhook.js';
 
 describe('renderOutcome', () => {
@@ -332,5 +332,34 @@ describe('por que esta ocupado', () => {
   it('un turno que solo esta trabajando no inventa un motivo', () => {
     const t = textoDeOcupado('c1', 'martin', AHORA - 60_000, false, AHORA);
     expect(t).not.toContain('apruebe');
+  });
+});
+
+describe('el mensaje de los modos de permiso', () => {
+  it('dice el modo y que deja pasar', () => {
+    const t = textoDePermisos('ediciones', false);
+    expect(t).toContain('ediciones');
+    expect(t).toContain('sin preguntarte');
+  });
+
+  it('confirma cuando se acaba de cambiar, y no cuando solo se consulta', () => {
+    expect(textoDePermisos('todo', true)).toContain('cambie');
+    expect(textoDePermisos('todo', false)).not.toContain('cambie');
+  });
+
+  // La excepcion que sorprende. Quien elige "aprobar todo" tiene que leerla
+  // ahi mismo y no en otro mensaje, asi que va en los tres.
+  it('los tres modos avisan que git pregunta siempre', () => {
+    for (const modo of ['preguntar', 'ediciones', 'todo'] as const) {
+      const t = textoDePermisos(modo, false);
+      expect(t).toContain('push');
+      expect(t).toContain('SIEMPRE');
+    }
+  });
+
+  it('los tres avisan que hay cosas que no se tocan en ningun modo', () => {
+    for (const modo of ['preguntar', 'ediciones', 'todo'] as const) {
+      expect(textoDePermisos(modo, false)).toContain('.env');
+    }
   });
 });

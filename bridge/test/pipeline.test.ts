@@ -1101,3 +1101,67 @@ describe('/cowork: mas de un agente en el mismo chat', () => {
     expect(r.agent).toBe('c1');
   });
 });
+
+describe('/permisos: cuanto se pregunta antes de actuar', () => {
+  it('sin haber elegido nunca, muestra preguntar', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/permisos' }, d);
+    expect(r).toEqual({ kind: 'permisos', modo: 'preguntar', cambiado: false });
+  });
+
+  it('cambia el modo y lo confirma', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/permisos todo' }, d);
+    expect(r).toEqual({ kind: 'permisos', modo: 'todo', cambiado: true });
+  });
+
+  // Confirmar un cambio que no se hizo seria mentir: el mismo outcome contesta
+  // a /permisos y a /permisos todo.
+  it('consultarlo despues de cambiarlo no dice que se cambio', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/permisos todo' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/permisos' }, d);
+    expect(r).toEqual({ kind: 'permisos', modo: 'todo', cambiado: false });
+  });
+
+  // Lo que hace que todo esto sirva: el modo tiene que LLEGAR al agente, que es
+  // quien decide si pregunta.
+  it('el modo elegido viaja en el turno', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/permisos ediciones' }, d);
+    await handleIncoming({ chatId: 7, messageId: 2, text: 'arregla el stock' }, d);
+
+    expect(d.ask.mock.calls[0]![0]).toMatchObject({ modo: 'ediciones' });
+  });
+
+  // Sin modo el agente cae en su default, que es el estricto: se pregunta de
+  // mas, que es el lado correcto para equivocarse.
+  it('sin modo elegido, el turno no manda ninguno', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: 'arregla el stock' }, d);
+    expect(d.ask.mock.calls[0]![0].modo).toBeUndefined();
+  });
+
+  // Es del chat, no del proyecto: dos personas sobre el mismo proyecto pueden
+  // querer distinto y ninguna le impone la suya a la otra.
+  it('el modo es de cada chat', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+    const codigo = await d.store.crearCodigoVinculacion(8, 10);
+    await d.store.canjearCodigo(codigo, '22222222-2222-4222-8222-222222222222');
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/permisos todo' }, d);
+    const otro = await handleIncoming({ chatId: 8, messageId: 1, text: '/permisos' }, d);
+    expect(otro).toEqual({ kind: 'permisos', modo: 'preguntar', cambiado: false });
+  });
+});

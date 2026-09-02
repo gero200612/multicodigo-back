@@ -1,6 +1,6 @@
 import { AgentId } from '@multicodigo/shared';
 import type { Boton } from './render.js';
-import type { Proyecto, AgenteResumen } from './store.js';
+import { MODOS_PERMISO, type ModoPermiso, type Proyecto, type AgenteResumen } from './store.js';
 
 /**
  * El tope que impone Telegram al callback_data de un boton.
@@ -26,6 +26,13 @@ const AGENTE = 'a';
  * algo que ya sabemos de este lado.
  */
 const MENU = 'm';
+/**
+ * Elegir el modo de permisos.
+ *
+ * Lleva el modo adentro, que es un dato del cliente y por eso se valida contra
+ * la lista al leerlo: un `k:loquesea` no puede terminar en un INSERT.
+ */
+const PERMISO = 'k';
 
 const ES_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -41,10 +48,15 @@ export function datosDeMenu(): string {
   return `${MENU}:`;
 }
 
+export function datosDePermiso(modo: ModoPermiso): string {
+  return `${PERMISO}:${modo}`;
+}
+
 export type MenuData =
   | { kind: 'proyecto'; id: string }
   | { kind: 'agente'; slot: AgentId }
-  | { kind: 'menu' };
+  | { kind: 'menu' }
+  | { kind: 'permiso'; modo: ModoPermiso };
 
 /**
  * Lee lo que trae un boton.
@@ -76,6 +88,12 @@ export function parseMenuData(data: string): MenuData | null {
     return resto === '' ? { kind: 'menu' } : null;
   }
 
+  if (prefijo === PERMISO) {
+    return (MODOS_PERMISO as readonly string[]).includes(resto)
+      ? { kind: 'permiso', modo: resto as ModoPermiso }
+      : null;
+  }
+
   return null;
 }
 
@@ -96,6 +114,36 @@ export interface AgenteConEstado extends AgenteResumen {
 
 /** Un dato que no matchea ningun prefijo: el boton existe y no hace nada. */
 const INERTE = 'x:';
+
+/**
+ * Como se llama cada modo delante de una persona.
+ *
+ * Los nombres dicen QUE pasa y no como se llama el modo por dentro: "aprobar
+ * todo" no significa nada hasta que se aclara que git queda afuera, y eso no
+ * cabe en la etiqueta de un boton pero si en la del mensaje.
+ */
+export const NOMBRE_DE_MODO: Record<ModoPermiso, string> = {
+  preguntar: 'Preguntar antes de todo',
+  ediciones: 'Aprobar ediciones basicas',
+  todo: 'Aprobar todo (menos git)',
+};
+
+/**
+ * Los tres modos como botones, con el actual marcado.
+ *
+ * El actual se marca y NO se saca de la lista: una lista de dos opciones que
+ * cambia segun donde estas obliga a recordar en cual estabas.
+ */
+export function tecladoDePermisos(actual: ModoPermiso): Boton[][] {
+  return MODOS_PERMISO.map((m) => [
+    {
+      label: `${m === actual ? '◉' : '○'} ${NOMBRE_DE_MODO[m]}`,
+      // El actual queda inerte: volver a elegirlo no cambia nada, y un boton
+      // que contesta "listo, ya estabas ahi" es ruido.
+      data: m === actual ? INERTE : datosDePermiso(m),
+    },
+  ]);
+}
 
 export function tecladoDeProyectos(proyectos: Proyecto[]): Boton[][] {
   // Uno por fila: los nombres de proyecto son largos y dos por fila se cortan

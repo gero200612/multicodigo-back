@@ -1,4 +1,5 @@
 import { AgentId } from '@multicodigo/shared';
+import { MODOS_PERMISO, type ModoPermiso } from './store.js';
 
 export type ParsedCommand =
   | { kind: 'prompt'; agent: AgentId | undefined; text: string }
@@ -14,6 +15,14 @@ export type ParsedCommand =
    * veces, y el estado ya se ve en la respuesta.
    */
   | { kind: 'cowork'; agent: AgentId | undefined }
+  /**
+   * Cuanto quiere que se le pregunte antes de actuar.
+   *
+   * Sin `modo` muestra el actual con botones para cambiarlo. Con botones y no
+   * escribiendo el nombre: son tres opciones fijas y elegir de una lista no se
+   * escribe mal.
+   */
+  | { kind: 'permisos'; modo: ModoPermiso | undefined }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
   | { kind: 'vincular' }
   /** Vuelve al principio: elegir proyecto y agente. */
@@ -42,6 +51,17 @@ export function parseCommand(raw: string): ParsedCommand {
   const rest = (match[2] ?? '').trim();
 
   if (command === 'status') return { kind: 'status' };
+
+  if (command === 'permisos') {
+    if (rest === '') return { kind: 'permisos', modo: undefined };
+    const m = rest.toLowerCase();
+    // Igual que /proyecto y /cowork: un argumento que no es un modo se trata
+    // como texto comun, porque es mas probable la confusion de comando que el
+    // deseo de un modo llamado asi.
+    return (MODOS_PERMISO as readonly string[]).includes(m)
+      ? { kind: 'permisos', modo: m as ModoPermiso }
+      : { kind: 'prompt', agent: undefined, text };
+  }
 
   if (command === 'cowork') {
     if (rest === '') return { kind: 'cowork', agent: undefined };

@@ -6,6 +6,7 @@ import {
   tecladoDeProyectos,
   tecladoDeAgentes,
   TOPE_CALLBACK_DATA,
+  tecladoDePermisos,
 } from '../src/menu.js';
 
 const UUID = '11111111-1111-4111-8111-111111111111';
@@ -120,5 +121,49 @@ describe('el menu marca los slots ocupados', () => {
     const [fila] = tecladoDeAgentes([{ ...base, ocupado: true, agotado: {} }]);
     expect(fila![0]!.label).toContain('⛔');
     expect(fila![0]!.label).not.toContain('🔒');
+  });
+});
+
+describe('los botones de los modos de permiso', () => {
+  it('ofrece los tres modos', () => {
+    const filas = tecladoDePermisos('preguntar');
+    expect(filas).toHaveLength(3);
+  });
+
+  // Una lista que cambia segun donde estas obliga a recordar en cual estabas.
+  it('marca el actual sin sacarlo de la lista', () => {
+    const filas = tecladoDePermisos('ediciones');
+    const marcado = filas.filter((f) => f[0]!.label.startsWith('◉'));
+    expect(marcado).toHaveLength(1);
+    expect(marcado[0]![0]!.label).toContain('ediciones');
+  });
+
+  // Un boton que contesta "listo, ya estabas ahi" es ruido.
+  it('el actual no se puede volver a elegir', () => {
+    const filas = tecladoDePermisos('todo');
+    const actual = filas.find((f) => f[0]!.label.startsWith('◉'))!;
+    expect(parseMenuData(actual[0]!.data)).toBeNull();
+  });
+
+  it('los otros dos si se pueden elegir', () => {
+    const filas = tecladoDePermisos('todo');
+    const otros = filas.filter((f) => f[0]!.label.startsWith('○'));
+    expect(otros).toHaveLength(2);
+    for (const f of otros) {
+      expect(parseMenuData(f[0]!.data)).toMatchObject({ kind: 'permiso' });
+    }
+  });
+
+  // El dato del boton vuelve del cliente: un modo inventado no puede terminar
+  // en un INSERT.
+  it('un modo que no existe no se parsea', () => {
+    expect(parseMenuData('k:aprobame-todo')).toBeNull();
+    expect(parseMenuData('k:')).toBeNull();
+  });
+
+  it('los botones caben en el tope de callback_data de Telegram', () => {
+    for (const fila of tecladoDePermisos('preguntar')) {
+      expect(fila[0]!.data.length).toBeLessThanOrEqual(TOPE_CALLBACK_DATA);
+    }
   });
 });

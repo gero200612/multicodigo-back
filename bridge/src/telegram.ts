@@ -2,9 +2,10 @@ import { Bot, InlineKeyboard } from 'grammy';
 import type { AgentId, ApprovalDecision, ApprovalRequest } from '@multicodigo/shared';
 import type { PipelineDeps, PipelineOutcome } from './pipeline.js';
 import { handleIncoming, armarMenu, armarMenuDeAgentes } from './pipeline.js';
-import { parseMenuData } from './menu.js';
+import { parseMenuData, tecladoDePermisos, NOMBRE_DE_MODO, type MenuData } from './menu.js';
 import { MAXIMO_BYTES, TIPOS, tipoDe } from './documentos.js';
 import type { Boton } from './render.js';
+import type { ModoPermiso } from './store.js';
 import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
 import { decidir } from './decisiones.js';
@@ -28,6 +29,8 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return textoDeActivos(outcome.agent, outcome.otros);
     case 'cowork':
       return textoDeActivos(outcome.primario, outcome.otros);
+    case 'permisos':
+      return textoDePermisos(outcome.modo, outcome.cambiado);
     case 'project':
       return `Proyecto activo: ${outcome.project}.`;
     case 'ocupado':
@@ -81,6 +84,33 @@ export function textoDeActivos(primario: AgentId, otros: AgentId[]): string {
   }
   const lista = otros.map((a) => `· ${a.toUpperCase()} — escribile con /${a}`).join('\n');
   return `${cabeza}\n\nTambien tenes en este chat:\n${lista}\n\nCon /cowork ${otros[0]} lo sacas.`;
+}
+
+/**
+ * El modo de permisos, explicado.
+ *
+ * Cada modo dice QUE deja pasar sin preguntar, y los tres repiten que git
+ * pregunta siempre. Repetirlo en los tres es a proposito: es la excepcion que
+ * sorprende, y quien elige "aprobar todo" tiene que leerla justo ahi y no en
+ * otro mensaje.
+ */
+export function textoDePermisos(modo: ModoPermiso, cambiado: boolean): string {
+  const cabeza = cambiado ? 'Listo, cambie el modo.' : 'Asi estan tus permisos.';
+  const que: Record<ModoPermiso, string> = {
+    preguntar: 'Te pregunto antes de escribir, editar y correr tareas.',
+    ediciones: 'Escribo y edito archivos sin preguntarte. Para correr tareas te pregunto.',
+    todo: 'Escribo, edito y corro tareas sin preguntarte.',
+  };
+  return [
+    cabeza,
+    '',
+    `<b>${NOMBRE_DE_MODO[modo]}</b>`,
+    que[modo],
+    '',
+    'Commit y push te los pregunto SIEMPRE, en cualquier modo: salen de la maquina y ' +
+      'quedan en la historia del repo.',
+    'Y nunca toco un .env ni nada fuera del proyecto, elijas lo que elijas.',
+  ].join('\n');
 }
 
 /**
@@ -138,6 +168,17 @@ function usaHtml(outcome: PipelineOutcome): boolean {
 
 /** El teclado de un outcome de menu, si lo tiene. */
 function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
+  // El de permisos se arma con el modo actual y no viene en el outcome: es el
+  // unico teclado que depende de un valor y no de una lista.
+  if (outcome.kind === 'permisos') {
+    const teclado = new InlineKeyboard();
+    for (const fila of tecladoDePermisos(outcome.modo)) {
+      for (const b of fila) teclado.text(b.label, b.data);
+      teclado.row();
+    }
+    return teclado;
+  }
+
   const botones: Boton[][] | undefined =
     outcome.kind === 'menu_proyectos' ||
     outcome.kind === 'menu_agentes' ||
@@ -273,6 +314,7 @@ const COMANDOS = [
   { command: 'proyecto', description: 'Ver o cambiar el proyecto activo' },
   { command: 'status', description: 'Con qué agentes estás trabajando' },
   { command: 'cowork', description: 'Sumar o sacar un agente de este chat' },
+  { command: 'permisos', description: 'Cuánto te pregunto antes de actuar' },
   { command: 'vincular', description: 'Conectar este chat con tu cuenta del panel' },
 ];
 
@@ -581,7 +623,7 @@ async function manejarMenu(
       opciones?: { parse_mode?: 'HTML'; reply_markup?: InlineKeyboard },
     ) => Promise<unknown>;
   },
-  menu: { kind: 'proyecto'; id: string } | { kind: 'agente'; slot: AgentId } | { kind: 'menu' },
+  menu: MenuData,
   deps: BridgeDeps,
 ): Promise<void> {
   const chatId = ctx.chat?.id;
@@ -593,6 +635,21 @@ async function manejarMenu(
   // El boton que trae el mensaje de "se quedo sin tokens". Es el MISMO menu que
   // /menu: no hay una pantalla especial de agentes agotados, porque el menu ya
   // los marca con su hora de vuelta.
+  // El boton de un modo de permisos. Pasa por handleIncoming como si lo
+  // hubiera escrito: el comando ya sabe guardarlo y armar la respuesta, y
+  // duplicar eso aca dejaria dos lugares donde el modo se puede escribir mal.
+  if (menu.kind === 'permiso') {
+    const out = await handleIncoming(
+      { chatId, messageId: 0, text: `/permisos ${menu.modo}` },
+      deps,
+    );
+    await ctx.reply(renderOutcome(out), {
+      parse_mode: 'HTML',
+      reply_markup: tecladoDe(out),
+    });
+    return;
+  }
+
   if (menu.kind === 'menu') {
     const out = await armarMenu(usuarioId, chatId, deps);
     await ctx.reply(renderOutcome(out), {
