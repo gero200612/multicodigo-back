@@ -97,7 +97,27 @@ export interface PipelineDeps {
 }
 
 export type PipelineOutcome =
-  | { kind: 'answer'; text: string; agent: AgentId; jobId: string }
+  | {
+      kind: 'answer';
+      text: string;
+      /**
+       * Quien contesto DE VERDAD.
+       *
+       * Puede no ser a quien le escribiste: si ese slot se quedo sin tokens,
+       * otro siguio el trabajo. Antes aca iba el agente original y el mensaje
+       * salia firmado por alguien que no lo escribio.
+       */
+      agent: AgentId;
+      jobId: string;
+      /**
+       * Los saltos que hubo, como `c1 -> c2`. Vacio en un turno normal.
+       *
+       * Se avisa porque el hilo NO se muda con el relevo: el que sigue arranca
+       * una sesion nueva con el contexto reinyectado como texto (ver
+       * relevo.ts). Quien escribe despues tiene que saber que le habla a otro.
+       */
+      relevos?: string[];
+    }
   | { kind: 'switched'; agent: AgentId }
   | { kind: 'status'; agent: AgentId; otros: AgentId[] }
   | { kind: 'cowork'; primario: AgentId; otros: AgentId[] }
@@ -352,8 +372,11 @@ export async function handleIncoming(
     return {
       kind: 'answer',
       text: sanitizeForTelegram(r.texto),
-      agent,
+      // El que contesto, no el que se le pidio: con un relevo en el medio son
+      // dos agentes distintos.
+      agent: r.agente,
       jobId: r.jobId,
+      relevos: r.relevos,
     };
   } catch (err) {
     const code = err instanceof Error ? err.message : 'internal';
@@ -647,7 +670,7 @@ const TOPE_DE_RELEVOS = 3;
 export async function ejecutarTurnoConRelevo(
   deps: PipelineDeps,
   t: Turno,
-): Promise<{ jobId: string; texto: string; relevos: string[] }> {
+): Promise<{ jobId: string; texto: string; relevos: string[]; agente: AgentId }> {
   const probados: string[] = [];
   const relevos: string[] = [];
   let turno = t;
@@ -656,7 +679,9 @@ export async function ejecutarTurnoConRelevo(
     probados.push(turno.agente);
     try {
       const r = await ejecutarTurno(deps, turno);
-      return { ...r, relevos };
+      // `turno.agente` y no `t.agente`: despues de un relevo son distintos, y
+      // el que importa es el que contesto.
+      return { ...r, relevos, agente: turno.agente };
     } catch (err) {
       const codigo = err instanceof ErrorDeTurno ? err.codigo : '';
       // Solo por tokens. Cualquier otro fallo se propaga: relevar un
@@ -686,7 +711,7 @@ export async function ejecutarTurnoConRelevo(
 
   // Se agoto el tope. Se corre el ultimo intento sin atrapar nada para que el
   // error que llegue al usuario sea el de verdad y no un "no quedan slots".
-  return { ...(await ejecutarTurno(deps, turno)), relevos };
+  return { ...(await ejecutarTurno(deps, turno)), relevos, agente: turno.agente };
 }
 
 /** Los candidatos que conoce el gateway, o ninguno si no se le puede preguntar. */

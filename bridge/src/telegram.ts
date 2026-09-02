@@ -30,7 +30,7 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       //
       // Si la transcripcion sale mal se nota igual, porque la respuesta va a
       // hablar de otra cosa.
-      return `🤖 ${outcome.agent.toUpperCase()}\n\n${outcome.text}`;
+      return `🤖 ${outcome.agent.toUpperCase()}${avisoDeRelevo(outcome.relevos)}\n\n${outcome.text}`;
     case 'switched':
       return `Listo, ahora le hablás a ${outcome.agent.toUpperCase()}.`;
     case 'status':
@@ -124,6 +124,29 @@ export function textoDePermisos(modo: ModoPermiso, cambiado: boolean): string {
       'quedan en la historia del repo.',
     'Y nunca toco un .env ni nada fuera del proyecto, elijas lo que elijas.',
   ].join('\n');
+}
+
+/**
+ * El cartel de que contesto otro agente.
+ *
+ * Va pegado al nombre y en la MISMA linea, no como un parrafo aparte: es una
+ * aclaracion sobre quien firma la respuesta, y abajo del texto se leeria
+ * despues de haber asumido que hablabas con el de antes.
+ *
+ * Se dice porque el hilo NO se muda con el relevo. El que sigue arranca una
+ * sesion nueva con el contexto reinyectado como texto —el transcript vive en el
+ * HOME del slot viejo y no se puede resumir desde otro, ver relevo.ts— asi que
+ * se pierde el razonamiento intermedio. Quien escriba el proximo mensaje tiene
+ * que saber que le esta hablando a otro.
+ *
+ * Solo los DOS extremos y no la cadena entera: con varios saltos, lo que
+ * importa es quien te habla ahora y de donde venia; el medio es historia.
+ */
+export function avisoDeRelevo(relevos: string[] | undefined): string {
+  if (!relevos || relevos.length === 0) return '';
+  const desde = relevos[0]!.split(' -> ')[0]!.toUpperCase();
+  const hasta = relevos[relevos.length - 1]!.split(' -> ')[1]!.toUpperCase();
+  return ` · sigue ${hasta} porque ${desde} se quedo sin tokens`;
 }
 
 /**

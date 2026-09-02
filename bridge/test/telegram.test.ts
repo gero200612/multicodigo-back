@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { renderOutcome, textoDeOcupado, textoDeActivos, textoDePermisos } from '../src/telegram.js';
+import {
+  renderOutcome,
+  textoDeOcupado,
+  textoDeActivos,
+  textoDePermisos,
+  avisoDeRelevo,
+} from '../src/telegram.js';
 import { buildWebhookServer } from '../src/webhook.js';
 
 describe('renderOutcome', () => {
@@ -361,5 +367,50 @@ describe('el mensaje de los modos de permiso', () => {
     for (const modo of ['preguntar', 'ediciones', 'todo'] as const) {
       expect(textoDePermisos(modo, false)).toContain('.env');
     }
+  });
+});
+
+describe('el aviso de que contesto otro agente', () => {
+  // Sin relevo no hay nada que decir: un cartel en cada respuesta es ruido en
+  // todas para servir a una.
+  it('un turno normal no lleva ningun cartel', () => {
+    expect(avisoDeRelevo(undefined)).toBe('');
+    expect(avisoDeRelevo([])).toBe('');
+  });
+
+  it('dice quien sigue y por que', () => {
+    const t = avisoDeRelevo(['c1 -> c2']);
+    expect(t).toContain('C2');
+    expect(t).toContain('C1');
+    expect(t).toContain('sin tokens');
+  });
+
+  // Con varios saltos importa quien te habla AHORA y de donde venia; el medio
+  // es historia.
+  it('con varios saltos nombra los dos extremos', () => {
+    const t = avisoDeRelevo(['c1 -> c2', 'c2 -> c3']);
+    expect(t).toContain('C3');
+    expect(t).toContain('C1');
+    expect(t).not.toContain('C2');
+  });
+
+  // Va en la misma linea que el nombre: es una aclaracion sobre quien firma, y
+  // abajo del texto se leeria despues de haber asumido otra cosa.
+  it('sale pegado al agente en la respuesta', () => {
+    const t = renderOutcome({
+      kind: 'answer',
+      text: 'Lo termine yo.',
+      agent: 'c2',
+      jobId: 'j',
+      relevos: ['c1 -> c2'],
+    });
+    const primeraLinea = t.split('\n')[0]!;
+    expect(primeraLinea).toContain('C2');
+    expect(primeraLinea).toContain('sin tokens');
+  });
+
+  it('una respuesta sin relevo queda como antes', () => {
+    const t = renderOutcome({ kind: 'answer', text: 'ok', agent: 'c1', jobId: 'j' });
+    expect(t.split('\n')[0]).toBe('🤖 C1');
   });
 });

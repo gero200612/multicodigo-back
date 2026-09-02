@@ -1275,3 +1275,69 @@ describe('/modelo: con que modelo escribe la IA', () => {
     expect(otro).toEqual({ kind: 'modelo', modelo: undefined, cambiado: false });
   });
 });
+
+/**
+ * Cuando un slot se queda sin tokens, otro sigue — y hay que decirlo.
+ *
+ * El relevo ya funcionaba, pero en silencio y ademas MINTIENDO: el mensaje
+ * salia con el nombre del agente ORIGINAL, no del que realmente contesto. Con
+ * cowork —donde importa saber quien te habla— eso deja de ser un detalle.
+ */
+describe('el aviso del relevo', () => {
+  const PROY = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+  /** Un `ask` que falla por tokens en c1 y contesta bien en cualquier otro. */
+  function askQueReleva() {
+    return vi.fn(async (req: { agent: string }) => {
+      if (req.agent === 'c1') {
+        const e = new Error('usage_limit');
+        throw e;
+      }
+      return {
+        jobId: '00000000-0000-4000-8000-000000000001',
+        sessionId: 'sess-2',
+        text: 'Lo termine yo.',
+        turns: 1,
+      };
+    });
+  }
+
+  async function conRelevo() {
+    const store = new InMemoryStore();
+    const d = deps({
+      store,
+      ask: askQueReleva() as never,
+      // Dos agentes: c1 se agota y c2 releva.
+      listarAgentes: async () => [
+        { id: 'c1' as const, arriba: true, cuenta: true },
+        { id: 'c2' as const, arriba: true, cuenta: true },
+      ],
+    });
+    await vincular(d.store, 7);
+    return d;
+  }
+
+  it('la respuesta viene del agente que REALMENTE contesto', async () => {
+    const d = await conRelevo();
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    if (r.kind !== 'answer') throw new Error(`esperaba answer, vino ${r.kind}`);
+    expect(r.agent).toBe('c2');
+  });
+
+  it('dice que hubo un relevo y de quien a quien', async () => {
+    const d = await conRelevo();
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    if (r.kind !== 'answer') throw new Error('esperaba answer');
+    expect(r.relevos).toEqual(['c1 -> c2']);
+  });
+
+  // Sin relevo no hay nada que avisar: un cartel de "no cambie de agente" en
+  // cada respuesta es ruido en todas para servir a una.
+  it('un turno normal no trae ningun relevo', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    if (r.kind !== 'answer') throw new Error('esperaba answer');
+    expect(r.relevos ?? []).toEqual([]);
+  });
+});
