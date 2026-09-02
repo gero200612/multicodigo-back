@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderOutcome } from '../src/telegram.js';
+import { renderOutcome, textoDeOcupado } from '../src/telegram.js';
 import { buildWebhookServer } from '../src/webhook.js';
 
 describe('renderOutcome', () => {
@@ -262,5 +262,37 @@ describe('renderOutcome — proyecto', () => {
   it('confirma el proyecto activo', () => {
     const out = renderOutcome({ kind: 'project', project: 'sincroresto' });
     expect(out).toContain('sincroresto');
+  });
+});
+
+describe('el aviso de slot ocupado', () => {
+  const AHORA = 1_700_000_600_000;
+
+  it('nombra al agente y a quien lo tiene', () => {
+    const t = textoDeOcupado('c1', 'martin', AHORA - 120_000, AHORA);
+    expect(t).toContain('C1');
+    expect(t).toContain('martin');
+  });
+
+  // "hace 1 min" invita a esperar; "hace 40 min", a cambiar de agente. Sin el
+  // tiempo, el aviso obliga a preguntar.
+  it('dice hace cuanto lo tienen', () => {
+    expect(textoDeOcupado('c1', 'martin', AHORA - 120_000, AHORA)).toContain('hace 2 min');
+    expect(textoDeOcupado('c1', 'martin', AHORA - 60_000, AHORA)).toContain('hace 1 min');
+    expect(textoDeOcupado('c1', 'martin', AHORA - 5_000, AHORA)).toContain('recien');
+  });
+
+  it('sin nombre dice "otra persona" en vez de romperse', () => {
+    expect(textoDeOcupado('c2', undefined, AHORA, AHORA)).toContain('otra persona');
+  });
+
+  it('sin saber desde cuando, no inventa un tiempo', () => {
+    const t = textoDeOcupado('c2', 'lucia', undefined, AHORA);
+    expect(t).toContain('lucia');
+    expect(t).not.toContain('hace');
+  });
+
+  it('avisa que el mensaje escrito se reenvia: el prompt no se pierde', () => {
+    expect(textoDeOcupado('c1', 'martin', AHORA, AHORA)).toContain('lo que me escribiste');
   });
 });

@@ -95,6 +95,7 @@ const MIGRACIONES = [
   '013_sesiones_por_proyecto.sql',
   '014_vinculos_visibles.sql',
   '015_agotamiento.sql',
+  '016_pendiente.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 

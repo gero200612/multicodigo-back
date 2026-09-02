@@ -274,6 +274,24 @@ export interface Store {
   slotsAgotados(): Promise<Map<string, Agotamiento>>;
   /** El usuario del panel dueño de este chat, o undefined si no esta vinculado. */
   usuarioDeChat(chatId: number): Promise<string | undefined>;
+  /**
+   * Como llamar a un usuario delante de otra persona.
+   *
+   * Existe para el aviso de slot ocupado: "c1 lo esta usando Martin" en vez de
+   * "c1 lo esta usando otra persona". Sale del email de Supabase —no hay una
+   * tabla de perfiles— y se corta antes de la arroba: el dominio no aporta y
+   * mostrar el email entero de alguien a un tercero es de mas.
+   */
+  nombreDeUsuario(usuarioId: string): Promise<string | undefined>;
+  /**
+   * El mensaje que quedo esperando porque el agente estaba ocupado.
+   *
+   * `null` lo borra. Se guarda uno solo por chat: si escribiste dos veces
+   * mientras el slot estaba tomado, lo que quisiste mandar es lo ultimo.
+   */
+  setPendiente(chatId: number, prompt: string | null): Promise<void>;
+  /** Lo saca y lo borra de una: un pendiente se manda una sola vez. */
+  tomarPendiente(chatId: number): Promise<string | undefined>;
   /** Un codigo de un solo uso para vincular este chat. */
   crearCodigoVinculacion(chatId: number, minutos: number): Promise<string>;
   /**
@@ -475,6 +493,30 @@ export class InMemoryStore implements Store {
 
   async usuarioDeChat(chatId: number): Promise<string | undefined> {
     return this.vinculos.get(chatId);
+  }
+
+  private nombres = new Map<string, string>();
+
+  /** Solo para los tests: define como se llama un usuario. */
+  ponerNombre(usuarioId: string, nombre: string): void {
+    this.nombres.set(usuarioId, nombre);
+  }
+
+  async nombreDeUsuario(usuarioId: string): Promise<string | undefined> {
+    return this.nombres.get(usuarioId);
+  }
+
+  private pendientes = new Map<number, string>();
+
+  async setPendiente(chatId: number, prompt: string | null): Promise<void> {
+    if (prompt === null) this.pendientes.delete(chatId);
+    else this.pendientes.set(chatId, prompt);
+  }
+
+  async tomarPendiente(chatId: number): Promise<string | undefined> {
+    const p = this.pendientes.get(chatId);
+    this.pendientes.delete(chatId);
+    return p;
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {
@@ -909,6 +951,51 @@ export class PgStore implements Store {
       [chatId],
     );
     return r.rows[0]?.usuario_id;
+  }
+
+  /**
+   * El nombre sale de `auth.users`, que es de Supabase y no de este esquema.
+   *
+   * El bridge se conecta como `postgres`, asi que la puede leer. Es la unica
+   * fuente que hay: no existe una tabla de perfiles propia.
+   */
+  async nombreDeUsuario(usuarioId: string): Promise<string | undefined> {
+    const r = await this.pool.query<{ email: string | null }>(
+      'SELECT email FROM auth.users WHERE id = $1',
+      [usuarioId],
+    );
+    const email = r.rows[0]?.email;
+    if (!email) return undefined;
+    const arroba = email.indexOf('@');
+    return arroba > 0 ? email.slice(0, arroba) : email;
+  }
+
+  async setPendiente(chatId: number, prompt: string | null): Promise<void> {
+    if (prompt === null) {
+      await this.pool.query('DELETE FROM telegram_pendiente WHERE chat_id = $1', [chatId]);
+      return;
+    }
+    await this.pool.query(
+      `INSERT INTO telegram_pendiente (chat_id, prompt) VALUES ($1, $2)
+       ON CONFLICT (chat_id) DO UPDATE SET prompt = $2, creado_en = now()`,
+      [chatId, prompt],
+    );
+  }
+
+  /**
+   * Sacarlo y borrarlo en una sola sentencia, y no en dos.
+   *
+   * Con un SELECT y despues un DELETE, dos toques seguidos al boton mandan el
+   * mismo mensaje dos veces: los dos leen antes de que ninguno borre. El
+   * DELETE ... RETURNING lo resuelve en el unico lugar donde la carrera no
+   * existe, que es adentro de Postgres.
+   */
+  async tomarPendiente(chatId: number): Promise<string | undefined> {
+    const r = await this.pool.query<{ prompt: string }>(
+      'DELETE FROM telegram_pendiente WHERE chat_id = $1 RETURNING prompt',
+      [chatId],
+    );
+    return r.rows[0]?.prompt;
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {

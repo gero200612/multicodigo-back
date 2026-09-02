@@ -904,3 +904,140 @@ describe('quedarse sin tokens', () => {
     expect((await d.store.slotsAgotados()).has('c1')).toBe(true);
   });
 });
+
+/**
+ * Un slot lo usa una persona a la vez.
+ *
+ * El gateway es el que lleva la cuenta —ver `Tenencia` alla— y contesta 409
+ * `agente_ocupado`. Lo que se prueba aca es la otra mitad: que eso llegue al
+ * chat como una eleccion y no como una falla.
+ */
+describe('handleIncoming: el agente esta ocupado', () => {
+  /** El error tal como lo levanta `askAgent` a partir del 409 del gateway. */
+  function ocupadoPor(usuarioId: string, desde?: number) {
+    const e = new Error('agente_ocupado') as Error & {
+      duenio?: { usuarioId?: string; desde?: number };
+    };
+    e.duenio = { usuarioId, desde };
+    return e;
+  }
+
+  const OTRO = '11111111-1111-4111-8111-111111111111';
+
+  async function conOcupado(desde?: number) {
+    const store = new InMemoryStore();
+    store.ponerNombre(OTRO, 'martin');
+    const d = deps({
+      store,
+      ask: vi.fn(async () => {
+        throw ocupadoPor(OTRO, desde);
+      }),
+    });
+    await vincular(d.store, 7);
+    return d;
+  }
+
+  it('no lo reporta como error: es un outcome propio', async () => {
+    const d = await conOcupado();
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    expect(r.kind).toBe('ocupado');
+  });
+
+  it('dice quien lo tiene, por su nombre', async () => {
+    const d = await conOcupado();
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    if (r.kind !== 'ocupado') throw new Error('no es ocupado');
+    expect(r.quien).toBe('martin');
+    expect(r.agent).toBe('c1');
+  });
+
+  // Un aviso sin salida obliga a escribir de nuevo desde cero. El prompt ya
+  // esta escrito: lo unico que falta es a quien mandarselo.
+  it('siempre ofrece botones para irse a otro agente', async () => {
+    const d = await conOcupado();
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    if (r.kind !== 'ocupado') throw new Error('no es ocupado');
+    expect(r.botones.length).toBeGreaterThan(0);
+  });
+
+  // No saber el nombre degrada el mensaje, no lo voltea.
+  it('sin nombre para el dueño, el aviso sale igual', async () => {
+    const store = new InMemoryStore();
+    const d = deps({
+      store,
+      ask: vi.fn(async () => {
+        throw ocupadoPor(OTRO);
+      }),
+    });
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    if (r.kind !== 'ocupado') throw new Error('no es ocupado');
+    expect(r.quien).toBeUndefined();
+  });
+
+  it('pasa el instante en que lo tomaron, para poder decir hace cuanto', async () => {
+    const d = await conOcupado(1_700_000_000_000);
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    if (r.kind !== 'ocupado') throw new Error('no es ocupado');
+    expect(r.desde).toBe(1_700_000_000_000);
+  });
+});
+
+describe('quien pide el turno viaja al gateway', () => {
+  it('el turno le dice al gateway de quien es', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+
+    expect(d.ask.mock.calls[0]![1]).toMatchObject({
+      usuarioId: USUARIO_DE_PRUEBA,
+      chatId: 7,
+    });
+  });
+});
+
+describe('el mensaje que quedo esperando', () => {
+  const OTRO = '11111111-1111-4111-8111-111111111111';
+
+  it('se guarda cuando el agente estaba ocupado', async () => {
+    const store = new InMemoryStore();
+    const d = deps({
+      store,
+      ask: vi.fn(async () => {
+        const e = new Error('agente_ocupado') as Error & { duenio?: { usuarioId?: string } };
+        e.duenio = { usuarioId: OTRO };
+        throw e;
+      }),
+    });
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: 'arregla el stock' }, d);
+    expect(await store.tomarPendiente(7)).toBe('arregla el stock');
+  });
+
+  it('no se guarda nada cuando el turno sale bien', async () => {
+    const store = new InMemoryStore();
+    const d = deps({ store });
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    expect(await store.tomarPendiente(7)).toBeUndefined();
+  });
+
+  // Un pendiente se manda UNA vez: dos toques al boton no pueden disparar el
+  // mismo turno dos veces.
+  it('tomarlo lo borra', async () => {
+    const store = new InMemoryStore();
+    await store.setPendiente(7, 'hola');
+    expect(await store.tomarPendiente(7)).toBe('hola');
+    expect(await store.tomarPendiente(7)).toBeUndefined();
+  });
+
+  it('el segundo mensaje pisa al primero: vale el ultimo', async () => {
+    const store = new InMemoryStore();
+    await store.setPendiente(7, 'primero');
+    await store.setPendiente(7, 'segundo');
+    expect(await store.tomarPendiente(7)).toBe('segundo');
+  });
+});

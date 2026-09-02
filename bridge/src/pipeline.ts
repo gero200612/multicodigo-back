@@ -12,6 +12,7 @@ import { parseCommand } from './router.js';
 import { tecladoDeProyectos, tecladoDeAgentes, datosDeAgente, datosDeMenu } from './menu.js';
 import type { Boton } from './render.js';
 import type { Store, Proyecto } from './store.js';
+import type { Quien } from './agents-client.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
 export interface IncomingMessage {
@@ -27,7 +28,14 @@ export interface PipelineDeps {
   project: string;
   /** Cuantos codigos de vinculacion puede pedir cada chat. */
   limite: LimitePorChat;
-  ask: (req: PromptConToken) => Promise<PromptResponse>;
+  /**
+   * Manda el turno al gateway.
+   *
+   * `quien` va aparte del pedido y no adentro: el gateway lo manda por headers
+   * para que no termine en el cuerpo que le reenvia al hijo. Sin esto, el
+   * gateway no puede saber de quien es el slot mientras dura el turno.
+   */
+  ask: (req: PromptConToken, quien: Quien) => Promise<PromptResponse>;
   /**
    * Le pide al panel que firme el token de una instalacion.
    *
@@ -86,6 +94,14 @@ export type PipelineOutcome =
   | { kind: 'sin_proyectos' }
   | { kind: 'elegido'; agente: AgentId; nombre: string; proyecto: string }
   | { kind: 'ignored' }
+  /**
+   * El slot lo esta usando otra persona.
+   *
+   * Separado de `error` porque no es una falla: el sistema hizo justo lo que
+   * tiene que hacer. Y porque la salida es una eleccion —otro agente— y no
+   * algo que haya que ir a arreglar.
+   */
+  | { kind: 'ocupado'; agent: AgentId; quien?: string; desde?: number; botones: Boton[][] }
   | {
       kind: 'error';
       text: string;
@@ -240,6 +256,32 @@ export async function handleIncoming(
   } catch (err) {
     const code = err instanceof Error ? err.message : 'internal';
     const jobId = err instanceof ErrorDeTurno ? err.jobId : '';
+
+    // Ocupado no es una falla: el sistema hizo exactamente lo que tiene que
+    // hacer. Y la salida es una eleccion —otro agente—, no algo que haya que ir
+    // a arreglar a otro lado, asi que sale por su propio outcome y con botones.
+    if (code === 'agente_ocupado') {
+      const duenio = err instanceof ErrorDeTurno ? err.duenio : undefined;
+      // El prompt se guarda para que el boton del agente siguiente lo mande.
+      // Sin esto, el aviso obliga a reescribir el mismo texto que ya se
+      // escribio, que es cambiar un "no" por una molestia.
+      //
+      // `catch` vacio: no poder guardarlo degrada el boton a un cambio de
+      // agente pelado, que es lo que hacia antes. No puede voltear el aviso.
+      await deps.store.setPendiente(input.chatId, command.text).catch(() => {});
+      return {
+        kind: 'ocupado',
+        agent,
+        // `catch` a undefined: no saber el nombre degrada el mensaje a "otra
+        // persona", que sigue siendo util. Voltear el aviso por no poder leer
+        // un email seria cambiar un mensaje incompleto por ninguno.
+        quien: duenio?.usuarioId
+          ? await deps.store.nombreDeUsuario(duenio.usuarioId).catch(() => undefined)
+          : undefined,
+        desde: duenio?.desde,
+        botones: await botonesDeRelevo(agent, project, deps),
+      };
+    }
 
     if (code === 'usage_limit') {
       const resets = err instanceof ErrorDeTurno ? err.resets : undefined;
@@ -405,6 +447,13 @@ export class ErrorDeTurno extends Error {
      * dos minutos o cinco horas.
      */
     readonly resets?: string,
+    /**
+     * Quien tiene el slot. Solo en `agente_ocupado`.
+     *
+     * Es un `usuarioId` crudo: el gateway no puede traducirlo a un nombre
+     * porque no le habla a Supabase. Lo traduce quien arma el mensaje.
+     */
+    readonly duenio?: { usuarioId?: string; desde?: number },
   ) {
     super(codigo);
     this.name = 'ErrorDeTurno';
@@ -544,16 +593,19 @@ export async function ejecutarTurno(
     }) ?? (() => {});
 
   try {
-    const r = await deps.ask({
-      jobId,
-      agent: t.agente,
-      project: t.proyecto,
-      prompt: t.prompt,
-      sessionId,
-      repos: t.repos,
-      githubToken: t.githubToken,
-      documentos: t.documentos,
-    });
+    const r = await deps.ask(
+      {
+        jobId,
+        agent: t.agente,
+        project: t.proyecto,
+        prompt: t.prompt,
+        sessionId,
+        repos: t.repos,
+        githubToken: t.githubToken,
+        documentos: t.documentos,
+      },
+      { usuarioId: t.usuarioId, chatId: t.chatId },
+    );
     // La red de seguridad. El agente ya mira este mismo cartel y deberia haber
     // tirado `usage_limit` antes de llegar aca; esto existe porque el 2026-09-02
     // NO lo hizo y el aviso se guardo como una respuesta buena, en ingles y sin
@@ -581,6 +633,10 @@ export async function ejecutarTurno(
   } catch (err) {
     const codigo = err instanceof Error ? err.message : 'internal';
     const resets = err instanceof Error ? (err as { resets?: string }).resets : undefined;
+    const duenio =
+      err instanceof Error
+        ? (err as { duenio?: { usuarioId?: string; desde?: number } }).duenio
+        : undefined;
     await deps.store.finishJob(jobId, 'failed', codigo);
     if (codigo === 'usage_limit') {
       // Se anota ANTES de relevar: el relevo puede tardar minutos, y si el
@@ -588,7 +644,7 @@ export async function ejecutarTurno(
       // justo en el caso en que mas hace falta.
       await deps.store.marcarAgotado(t.agente, resets).catch(() => {});
     }
-    throw new ErrorDeTurno(jobId, codigo, resets);
+    throw new ErrorDeTurno(jobId, codigo, resets, duenio);
   } finally {
     // En `finally`: si el turno explota, el poller tiene que morir igual o
     // queda un setInterval vivo por cada mensaje que fallo.

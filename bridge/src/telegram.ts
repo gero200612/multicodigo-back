@@ -28,6 +28,8 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return `Agente activo: ${outcome.agent.toUpperCase()}.`;
     case 'project':
       return `Proyecto activo: ${outcome.project}.`;
+    case 'ocupado':
+      return textoDeOcupado(outcome.agent, outcome.quien, outcome.desde);
     case 'error':
       return `⚠️ ${outcome.text}`;
     case 'ignored':
@@ -63,6 +65,41 @@ export function renderOutcome(outcome: PipelineOutcome): string {
 }
 
 /**
+ * Hace cuanto que alguien tiene el slot, en palabras.
+ *
+ * Importa mas de lo que parece: "hace 1 min" invita a esperar y "hace 40 min"
+ * invita a cambiar de agente. Un aviso sin el tiempo obliga a preguntar.
+ */
+function haceCuanto(desde: number | undefined, ahora: number): string {
+  if (desde === undefined) return '';
+  const minutos = Math.floor((ahora - desde) / 60_000);
+  if (minutos < 1) return ' (recien)';
+  if (minutos === 1) return ' (hace 1 min)';
+  return ` (hace ${minutos} min)`;
+}
+
+/**
+ * El aviso de que el slot lo tiene otro.
+ *
+ * Sin nombre queda "otra persona": no saber como se llama degrada el mensaje
+ * pero no lo invalida, y voltearlo por no poder leer un email seria cambiar un
+ * mensaje incompleto por ninguno.
+ */
+export function textoDeOcupado(
+  agente: AgentId,
+  quien: string | undefined,
+  desde: number | undefined,
+  ahora = Date.now(),
+): string {
+  return (
+    `⛔ ${agente.toUpperCase()} lo esta usando ${quien ?? 'otra persona'}${haceCuanto(desde, ahora)}.
+
+` +
+    'Te paso a otro y le mando lo que me escribiste:'
+  );
+}
+
+/**
  * Que outcomes van con parse_mode HTML.
  *
  * Lista explicita y no "todos": la respuesta de un agente es texto arbitrario y
@@ -81,7 +118,10 @@ function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
     outcome.kind === 'menu_agentes' ||
     // El error tambien puede traer botones: `usage_limit` ofrece los otros
     // Claude. Ver `botonesDeRelevo` en el pipeline.
-    outcome.kind === 'error'
+    outcome.kind === 'error' ||
+    // Y ocupado SIEMPRE los trae: sin otro agente que ofrecer, el aviso seria
+    // un "no" sin salida.
+    outcome.kind === 'ocupado'
       ? outcome.botones
       : undefined;
   if (!botones || botones.length === 0) return undefined;
@@ -556,4 +596,18 @@ async function manejarMenu(
   await ctx.reply(renderOutcome({ kind: 'elegido', agente: menu.slot, nombre, proyecto }), {
     parse_mode: 'HTML',
   });
+
+  // Lo que habias escrito cuando el slot anterior estaba ocupado. Se manda al
+  // agente recien elegido en vez de hacerte reescribirlo.
+  //
+  // `tomarPendiente` lo saca y lo borra en la misma sentencia: dos toques
+  // seguidos al boton no pueden mandar el mismo mensaje dos veces.
+  const pendiente = await deps.store.tomarPendiente(chatId).catch(() => undefined);
+  if (pendiente === undefined) return;
+
+  const out = await handleIncoming(
+    { chatId, messageId: 0, text: `/${menu.slot} ${pendiente}` },
+    deps,
+  );
+  await ctx.reply(renderOutcome(out), { reply_markup: tecladoDe(out) });
 }
