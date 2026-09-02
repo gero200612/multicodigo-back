@@ -9,7 +9,13 @@ import {
   type RepoDelPedido,
 } from '@multicodigo/shared';
 import { parseCommand } from './router.js';
-import { tecladoDeProyectos, tecladoDeAgentes, datosDeAgente, datosDeMenu } from './menu.js';
+import {
+  tecladoDeProyectos,
+  tecladoDeAgentes,
+  tecladoDeAcciones,
+  datosDeAgente,
+  datosDeMenu,
+} from './menu.js';
 import type { Boton } from './render.js';
 import type { Store, Proyecto, ModoPermiso } from './store.js';
 import type { Quien } from './agents-client.js';
@@ -107,6 +113,14 @@ export type PipelineOutcome =
   /** El chat no esta atado a ninguna cuenta del panel. */
   | { kind: 'sin_vincular'; yaEstaba: boolean }
   | { kind: 'codigo'; codigo: string; minutos: number }
+  /**
+   * El menu principal: que queres hacer.
+   *
+   * Es lo que `/menu` contesta ahora. Antes contestaba `menu_agentes`, que es
+   * un paso del medio: elegir agente es UNA de las cosas que se pueden hacer,
+   * y era la unica que el menu ofrecia.
+   */
+  | { kind: 'menu'; saluda: boolean; botones: Boton[][] }
   | { kind: 'menu_proyectos'; botones: Boton[][] }
   | { kind: 'menu_agentes'; proyecto: string; botones: Boton[][] }
   /** Vinculado, pero sin pertenecer a ningun proyecto todavia. */
@@ -217,6 +231,10 @@ export async function handleIncoming(
   if (!usuarioId) return { kind: 'sin_vincular', yaEstaba: false };
 
   if (command.kind === 'menu') {
+    return { kind: 'menu', saluda: command.saluda, botones: tecladoDeAcciones() };
+  }
+
+  if (command.kind === 'agentes') {
     return await armarMenu(usuarioId, input.chatId, deps);
   }
 

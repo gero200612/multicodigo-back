@@ -414,7 +414,7 @@ describe('vinculacion en el pipeline', () => {
   });
 });
 
-describe('el menu', () => {
+describe('el selector de agentes', () => {
   const USUARIO = USUARIO_DE_PRUEBA;
 
   async function storeVinculado(chatId: number): Promise<InMemoryStore> {
@@ -425,7 +425,7 @@ describe('el menu', () => {
 
   it('un usuario sin proyectos lo sabe', async () => {
     const d = deps({ store: await storeVinculado(700) });
-    const out = await handleIncoming({ chatId: 700, messageId: 1, text: '/menu' }, d);
+    const out = await handleIncoming({ chatId: 700, messageId: 1, text: '/agente' }, d);
     expect(out).toEqual({ kind: 'sin_proyectos' });
   });
 
@@ -436,7 +436,7 @@ describe('el menu', () => {
     await store.registrarAgente(p, 'c1', 'Backend');
 
     const out = await handleIncoming(
-      { chatId: 700, messageId: 1, text: '/menu' },
+      { chatId: 700, messageId: 1, text: '/agente' },
       deps({ store, listarAgentes: async () => [{ id: 'c1' as const, arriba: true, cuenta: true }] }),
     );
 
@@ -454,7 +454,7 @@ describe('el menu', () => {
     await store.crearProyecto('demo', USUARIO);
     await store.crearProyecto('otro', USUARIO);
 
-    const out = await handleIncoming({ chatId: 700, messageId: 1, text: '/menu' }, deps({ store }));
+    const out = await handleIncoming({ chatId: 700, messageId: 1, text: '/agente' }, deps({ store }));
 
     expect(out.kind).toBe('menu_proyectos');
     if (out.kind === 'menu_proyectos') expect(out.botones).toHaveLength(2);
@@ -467,7 +467,7 @@ describe('el menu', () => {
     await store.registrarAgente(p, 'c2', 'Abajo');
 
     const out = await handleIncoming(
-      { chatId: 700, messageId: 1, text: '/menu' },
+      { chatId: 700, messageId: 1, text: '/agente' },
       deps({
         store,
         listarAgentes: async () => [
@@ -490,7 +490,7 @@ describe('el menu', () => {
     await store.registrarAgente(p, 'c1', 'Nuevo');
 
     const out = await handleIncoming(
-      { chatId: 700, messageId: 1, text: '/menu' },
+      { chatId: 700, messageId: 1, text: '/agente' },
       deps({
         store,
         listarAgentes: async () => [{ id: 'c1' as const, arriba: false, cuenta: false }],
@@ -511,7 +511,7 @@ describe('el menu', () => {
     await store.registrarAgente(p, 'c1', 'Backend');
 
     const out = await handleIncoming(
-      { chatId: 700, messageId: 1, text: '/menu' },
+      { chatId: 700, messageId: 1, text: '/agente' },
       deps({
         store,
         listarAgentes: async () => {
@@ -525,7 +525,7 @@ describe('el menu', () => {
   });
 
   it('un chat sin vincular no ve ningun menu', async () => {
-    const out = await handleIncoming({ chatId: 701, messageId: 1, text: '/menu' }, deps());
+    const out = await handleIncoming({ chatId: 701, messageId: 1, text: '/agente' }, deps());
     expect(out.kind).toBe('sin_vincular');
   });
 });
@@ -1163,5 +1163,54 @@ describe('/permisos: cuanto se pregunta antes de actuar', () => {
     await handleIncoming({ chatId: 7, messageId: 1, text: '/permisos todo' }, d);
     const otro = await handleIncoming({ chatId: 8, messageId: 1, text: '/permisos' }, d);
     expect(otro).toEqual({ kind: 'permisos', modo: 'preguntar', cambiado: false });
+  });
+});
+
+/**
+ * `/menu` es un menu de acciones, y no el selector de agentes.
+ *
+ * Antes te tiraba derecho a "que Claude queres", que es un paso del medio:
+ * elegir agente es UNA de las cosas que se pueden hacer, y era la unica que el
+ * menu ofrecia.
+ */
+describe('el menu principal', () => {
+  it('contesta las acciones y no la lista de agentes', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/menu' }, d);
+    expect(r.kind).toBe('menu');
+  });
+
+  it('ofrece varias cosas para hacer, no una', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/menu' }, d);
+    if (r.kind !== 'menu') throw new Error('no es menu');
+    expect(r.botones.length).toBeGreaterThan(1);
+  });
+
+  // /start es lo primero que manda Telegram cuando alguien abre el bot: ahi la
+  // presentacion sirve. En /menu, repetirla es leer lo mismo veinte veces.
+  it('/start saluda y /menu no', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const start = await handleIncoming({ chatId: 7, messageId: 1, text: '/start' }, d);
+    const menu = await handleIncoming({ chatId: 7, messageId: 2, text: '/menu' }, d);
+    if (start.kind !== 'menu' || menu.kind !== 'menu') throw new Error('no es menu');
+    expect(start.saluda).toBe(true);
+    expect(menu.saluda).toBe(false);
+  });
+
+  // El menu no necesita el gateway ni proyectos: es la lista de lo que el bot
+  // sabe hacer. Antes, sin proyectos, /menu contestaba "no tenes proyectos".
+  it('aparece aunque el usuario no tenga ningun proyecto', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/menu' }, d);
+    expect(r.kind).toBe('menu');
   });
 });

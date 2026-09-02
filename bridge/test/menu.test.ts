@@ -7,6 +7,7 @@ import {
   tecladoDeAgentes,
   TOPE_CALLBACK_DATA,
   tecladoDePermisos,
+  tecladoDeAcciones,
 } from '../src/menu.js';
 
 const UUID = '11111111-1111-4111-8111-111111111111';
@@ -163,6 +164,36 @@ describe('los botones de los modos de permiso', () => {
 
   it('los botones caben en el tope de callback_data de Telegram', () => {
     for (const fila of tecladoDePermisos('preguntar')) {
+      expect(fila[0]!.data.length).toBeLessThanOrEqual(TOPE_CALLBACK_DATA);
+    }
+  });
+});
+
+describe('los botones del menu principal', () => {
+  it('ofrece mas de una cosa: es lo que /menu no hacia', () => {
+    expect(tecladoDeAcciones().length).toBeGreaterThan(1);
+  });
+
+  it('cada boton lleva a una accion que se puede leer de vuelta', () => {
+    for (const fila of tecladoDeAcciones()) {
+      expect(parseMenuData(fila[0]!.data)).toMatchObject({ kind: 'accion' });
+    }
+  });
+
+  it('elegir agente sigue estando: era lo unico que habia antes', () => {
+    const datos = tecladoDeAcciones().map((f) => parseMenuData(f[0]!.data));
+    expect(datos).toContainEqual({ kind: 'accion', accion: 'agentes' });
+  });
+
+  // El dato vuelve del cliente: una accion inventada no puede llegar a ejecutar
+  // un comando.
+  it('una accion que no existe no se parsea', () => {
+    expect(parseMenuData('z:borrar-todo')).toBeNull();
+    expect(parseMenuData('z:')).toBeNull();
+  });
+
+  it('los botones caben en el tope de callback_data', () => {
+    for (const fila of tecladoDeAcciones()) {
       expect(fila[0]!.data.length).toBeLessThanOrEqual(TOPE_CALLBACK_DATA);
     }
   });

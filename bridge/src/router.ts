@@ -25,8 +25,18 @@ export type ParsedCommand =
   | { kind: 'permisos'; modo: ModoPermiso | undefined }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
   | { kind: 'vincular' }
-  /** Vuelve al principio: elegir proyecto y agente. */
-  | { kind: 'menu' }
+  /**
+   * El menu principal: que queres hacer.
+   *
+   * `saluda` distingue `/start` de `/menu`. Antes eran lo mismo y los dos
+   * llevaban al selector de agentes; ahora `/start` se presenta —es lo primero
+   * que manda Telegram cuando alguien abre el bot y no sabe que es— y `/menu`
+   * no, porque repetir la presentacion veinte veces es leer lo mismo veinte
+   * veces.
+   */
+  | { kind: 'menu'; saluda: boolean }
+  /** El selector de agentes, que antes era lo que hacia /menu. */
+  | { kind: 'agentes' }
   | { kind: 'empty' };
 
 /**
@@ -72,8 +82,15 @@ export function parseCommand(raw: string): ParsedCommand {
   }
 
   // /start es lo primero que manda Telegram cuando alguien abre el bot, asi
-  // que tiene que llevar al mismo lugar que /menu.
-  if (command === 'start' || command === 'menu') return { kind: 'menu' };
+  // que lleva al mismo lugar que /menu, pero presentandose: quien lo manda no
+  // sabe todavia que es esto.
+  if (command === 'start') return { kind: 'menu', saluda: true };
+  if (command === 'menu') return { kind: 'menu', saluda: false };
+
+  // El selector de agentes, que es lo que /menu hacia antes. Sigue estando
+  // como comando propio porque es la accion mas usada y llegar por el menu
+  // seria un toque de mas para lo de siempre.
+  if (command === 'agente' || command === 'agentes') return { kind: 'agentes' };
 
   // Sin argumentos: el codigo lo genera el bot, no lo trae el usuario. Lo que
   // venga atras es ruido.

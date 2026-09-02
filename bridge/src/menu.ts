@@ -33,6 +33,13 @@ const MENU = 'm';
  * la lista al leerlo: un `k:loquesea` no puede terminar en un INSERT.
  */
 const PERMISO = 'k';
+/**
+ * Una accion del menu principal.
+ *
+ * Lleva un verbo corto adentro —`agentes`, `proyectos`— y no un id: son
+ * opciones fijas del bot, no filas de una tabla.
+ */
+const ACCION = 'z';
 
 const ES_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -52,11 +59,37 @@ export function datosDePermiso(modo: ModoPermiso): string {
   return `${PERMISO}:${modo}`;
 }
 
+/**
+ * Las cosas que se pueden hacer desde el menu principal.
+ *
+ * Es la lista de lo que el bot sabe hacer, dicha en terminos de lo que la
+ * persona quiere, no de como esta implementado. `/menu` mostraba directamente
+ * los agentes, que es un paso del medio: elegir agente es UNA de estas.
+ */
+export const ACCIONES = ['agentes', 'proyectos', 'permisos', 'cowork', 'estado'] as const;
+export type Accion = (typeof ACCIONES)[number];
+
+export function datosDeAccion(accion: Accion): string {
+  return `${ACCION}:${accion}`;
+}
+
+/** El menu principal: que queres hacer. */
+export function tecladoDeAcciones(): Boton[][] {
+  return [
+    [{ label: '🤖 Elegir agente', data: datosDeAccion('agentes') }],
+    [{ label: '📁 Cambiar de proyecto', data: datosDeAccion('proyectos') }],
+    [{ label: '🔐 Permisos', data: datosDeAccion('permisos') }],
+    [{ label: '👥 Trabajar con varios', data: datosDeAccion('cowork') }],
+    [{ label: '📊 Ver estado', data: datosDeAccion('estado') }],
+  ];
+}
+
 export type MenuData =
   | { kind: 'proyecto'; id: string }
   | { kind: 'agente'; slot: AgentId }
   | { kind: 'menu' }
-  | { kind: 'permiso'; modo: ModoPermiso };
+  | { kind: 'permiso'; modo: ModoPermiso }
+  | { kind: 'accion'; accion: Accion };
 
 /**
  * Lee lo que trae un boton.
@@ -86,6 +119,12 @@ export function parseMenuData(data: string): MenuData | null {
   // del cliente.
   if (prefijo === MENU) {
     return resto === '' ? { kind: 'menu' } : null;
+  }
+
+  if (prefijo === ACCION) {
+    return (ACCIONES as readonly string[]).includes(resto)
+      ? { kind: 'accion', accion: resto as Accion }
+      : null;
   }
 
   if (prefijo === PERMISO) {

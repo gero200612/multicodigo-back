@@ -3,6 +3,7 @@ import type { AgentId, ApprovalDecision, ApprovalRequest } from '@multicodigo/sh
 import type { PipelineDeps, PipelineOutcome } from './pipeline.js';
 import { handleIncoming, armarMenu, armarMenuDeAgentes } from './pipeline.js';
 import { parseMenuData, tecladoDePermisos, NOMBRE_DE_MODO, type MenuData } from './menu.js';
+import { saludo, encabezadoDeMenu, NOMBRE } from './identidad.js';
 import { MAXIMO_BYTES, TIPOS, tipoDe } from './documentos.js';
 import type { Boton } from './render.js';
 import type { ModoPermiso } from './store.js';
@@ -24,13 +25,16 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       // hablar de otra cosa.
       return `🤖 ${outcome.agent.toUpperCase()}\n\n${outcome.text}`;
     case 'switched':
-      return `Listo, ahora hablas con ${outcome.agent.toUpperCase()}.`;
+      return `Listo, ahora le hablás a ${outcome.agent.toUpperCase()}.`;
     case 'status':
       return textoDeActivos(outcome.agent, outcome.otros);
     case 'cowork':
       return textoDeActivos(outcome.primario, outcome.otros);
     case 'permisos':
       return textoDePermisos(outcome.modo, outcome.cambiado);
+    case 'menu':
+      // `/start` se presenta; `/menu` no. Ver `identidad.ts`.
+      return outcome.saluda ? saludo() : encabezadoDeMenu();
     case 'project':
       return `Proyecto activo: ${outcome.project}.`;
     case 'ocupado':
@@ -162,7 +166,13 @@ export function textoDeOcupado(
  */
 function usaHtml(outcome: PipelineOutcome): boolean {
   return (
-    outcome.kind === 'codigo' || outcome.kind === 'menu_agentes' || outcome.kind === 'elegido'
+    outcome.kind === 'codigo' ||
+    outcome.kind === 'menu_agentes' ||
+    outcome.kind === 'elegido' ||
+    // El nombre del bot va en negrita: es lo que separa "esto lo dice Punchi"
+    // de "esto lo contesto el agente".
+    outcome.kind === 'menu' ||
+    outcome.kind === 'permisos'
   );
 }
 
@@ -180,6 +190,7 @@ function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
   }
 
   const botones: Boton[][] | undefined =
+    outcome.kind === 'menu' ||
     outcome.kind === 'menu_proyectos' ||
     outcome.kind === 'menu_agentes' ||
     // El error tambien puede traer botones: `usage_limit` ofrece los otros
@@ -310,7 +321,8 @@ async function bajarAudio(
  * Siguen funcionando escritos a mano.
  */
 const COMANDOS = [
-  { command: 'menu', description: 'Elegir con qué agente hablar' },
+  { command: 'menu', description: 'Qué puedo hacer por vos' },
+  { command: 'agente', description: 'Elegir con qué agente hablar' },
   { command: 'proyecto', description: 'Ver o cambiar el proyecto activo' },
   { command: 'status', description: 'Con qué agentes estás trabajando' },
   { command: 'cowork', description: 'Sumar o sacar un agente de este chat' },
@@ -635,18 +647,41 @@ async function manejarMenu(
   // El boton que trae el mensaje de "se quedo sin tokens". Es el MISMO menu que
   // /menu: no hay una pantalla especial de agentes agotados, porque el menu ya
   // los marca con su hora de vuelta.
-  // El boton de un modo de permisos. Pasa por handleIncoming como si lo
-  // hubiera escrito: el comando ya sabe guardarlo y armar la respuesta, y
-  // duplicar eso aca dejaria dos lugares donde el modo se puede escribir mal.
-  if (menu.kind === 'permiso') {
-    const out = await handleIncoming(
-      { chatId, messageId: 0, text: `/permisos ${menu.modo}` },
-      deps,
-    );
-    await ctx.reply(renderOutcome(out), {
-      parse_mode: 'HTML',
+  /**
+   * Los botones del menu, y los del modo de permisos, pasan por
+   * `handleIncoming` como si la persona hubiera escrito el comando.
+   *
+   * No es un atajo: es lo que hace que el boton y el comando no se puedan
+   * separar. Cada accion del menu ya tiene su comando —`/permisos`, `/cowork`,
+   * `/status`— y reimplementarlas aca dejaria dos caminos que hay que acordarse
+   * de cambiar juntos.
+   */
+  const comoComando = async (texto: string): Promise<void> => {
+    const out = await handleIncoming({ chatId, messageId: 0, text: texto }, deps);
+    const cuerpo = renderOutcome(out);
+    if (cuerpo === '') return;
+    await ctx.reply(cuerpo, {
+      ...(usaHtml(out) ? { parse_mode: 'HTML' as const } : {}),
       reply_markup: tecladoDe(out),
     });
+  };
+
+  if (menu.kind === 'accion') {
+    // 'agentes' es el unico que no tiene comando propio con ese nombre: el
+    // selector se pide con /agente.
+    const comando: Record<typeof menu.accion, string> = {
+      agentes: '/agente',
+      proyectos: '/proyecto',
+      permisos: '/permisos',
+      cowork: '/cowork',
+      estado: '/status',
+    };
+    await comoComando(comando[menu.accion]);
+    return;
+  }
+
+  if (menu.kind === 'permiso') {
+    await comoComando(`/permisos ${menu.modo}`);
     return;
   }
 

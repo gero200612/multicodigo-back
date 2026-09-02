@@ -91,9 +91,18 @@ describe('parseCommand — proyecto', () => {
     expect(c.project).toBe('MiRepo');
   });
 
-  it('reconoce /start y /menu como lo mismo', () => {
-    expect(parseCommand('/start')).toEqual({ kind: 'menu' });
-    expect(parseCommand('/menu')).toEqual({ kind: 'menu' });
+  // Los dos llevan al menu, pero /start se presenta: es lo primero que manda
+  // Telegram cuando alguien abre el bot y todavia no sabe que es esto.
+  it('/start saluda y /menu no', () => {
+    expect(parseCommand('/start')).toEqual({ kind: 'menu', saluda: true });
+    expect(parseCommand('/menu')).toEqual({ kind: 'menu', saluda: false });
+  });
+
+  // El selector de agentes era lo que /menu hacia antes. Ahora es una de las
+  // cosas que se pueden hacer, y tiene su propio comando.
+  it('/agente y /agentes abren el selector', () => {
+    expect(parseCommand('/agente')).toEqual({ kind: 'agentes' });
+    expect(parseCommand('/agentes')).toEqual({ kind: 'agentes' });
   });
 });
 
