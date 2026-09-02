@@ -20,6 +20,21 @@ import { buildWebhookServer } from './webhook.js';
 import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
 
+/**
+ * Una variable opcional que el compose entrega como cadena vacia.
+ *
+ * `${VAR:-}` NO omite la variable: la define en "". Con `.optional()` a secas
+ * eso no es "ausente" sino un string que no pasa el `.min(1)` —o el `.url()`—
+ * y el proceso no arranca. Paso exactamente eso en el primer despliegue de los
+ * documentos: el bridge quedo en crash-loop con
+ * `SUPABASE_SERVICE_KEY: String must contain at least 1 character(s)`.
+ *
+ * Esto hace que "no configurado" y "vacio" signifiquen lo mismo, que es lo que
+ * el compose ya asume al escribir `${VAR:-}`.
+ */
+const opcional = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((v) => (v === '' ? undefined : v), schema.optional());
+
 const Env = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_WEBHOOK_SECRET: z.string().min(16),
@@ -38,7 +53,7 @@ const Env = z.object({
   // turnos de Telegram van por SSH con la deploy key, que es como funcionaban
   // antes de la GitHub App. No se hace obligatorio para no voltear el bridge de
   // un despliegue que todavia no registro la App.
-  PANEL_URL: z.string().url().optional(),
+  PANEL_URL: opcional(z.string().url()),
   /**
    * Supabase, para los documentos que llegan por Telegram.
    *
@@ -52,10 +67,10 @@ const Env = z.object({
    * ya se conecta a la misma base como `postgres` —o sea que ya puede escribir
    * cualquier fila—. Ver el comentario largo de documentos.ts.
    */
-  SUPABASE_URL: z.string().url().optional(),
-  SUPABASE_SERVICE_KEY: z.string().min(1).optional(),
+  SUPABASE_URL: opcional(z.string().url()),
+  SUPABASE_SERVICE_KEY: opcional(z.string().min(1)),
   /** Por la red del compose. El bridge y el conversor comparten `puente`. */
-  CONVERSOR_URL: z.string().url().optional(),
+  CONVERSOR_URL: opcional(z.string().url()),
   PORT: z.coerce.number().int().positive().default(3000),
 });
 
