@@ -1,8 +1,9 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import type { AgentId, ApprovalDecision, ApprovalRequest } from '@multicodigo/shared';
 import type { PipelineDeps, PipelineOutcome } from './pipeline.js';
-import { handleIncoming, armarMenuDeAgentes } from './pipeline.js';
+import { handleIncoming, armarMenu, armarMenuDeAgentes } from './pipeline.js';
 import { parseMenuData } from './menu.js';
+import { MAXIMO_BYTES, TIPOS, tipoDe } from './documentos.js';
 import type { Boton } from './render.js';
 import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
@@ -37,12 +38,19 @@ export function renderOutcome(outcome: PipelineOutcome): string {
     case 'menu_proyectos':
       return 'Elegi un proyecto:';
     case 'menu_agentes':
-      return `Agentes de <b>${outcome.proyecto}</b>:\n\n● listo · ○ apagado · ⚠ sin cuenta`;
+      return (
+        `Agentes de <b>${outcome.proyecto}</b>:\n\n` +
+        '● listo · ○ apagado · ⚠ sin cuenta · ⛔ sin tokens'
+      );
     case 'sin_proyectos':
       return 'Todavia no pertenecés a ningun proyecto. Creá uno desde el panel y volvé.';
     case 'elegido':
+      // El tick y el slot en la primera linea, como etiqueta de estado y no
+      // como frase: lo que se busca al volver al chat es "con cual estoy
+      // hablando", y eso tiene que leerse de un vistazo.
       return (
-        `Listo, hablás con <b>${outcome.nombre}</b> en <i>${outcome.proyecto}</i>.\n\n` +
+        `✅ <b>${outcome.agente.toUpperCase()} conectado</b>\n` +
+        `${outcome.nombre} · <i>${outcome.proyecto}</i>\n\n` +
         'Escribime lo que querés que haga.'
       );
   }
@@ -63,7 +71,11 @@ function usaHtml(outcome: PipelineOutcome): boolean {
 /** El teclado de un outcome de menu, si lo tiene. */
 function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
   const botones: Boton[][] | undefined =
-    outcome.kind === 'menu_proyectos' || outcome.kind === 'menu_agentes'
+    outcome.kind === 'menu_proyectos' ||
+    outcome.kind === 'menu_agentes' ||
+    // El error tambien puede traer botones: `usage_limit` ofrece los otros
+    // Claude. Ver `botonesDeRelevo` en el pipeline.
+    outcome.kind === 'error'
       ? outcome.botones
       : undefined;
   if (!botones || botones.length === 0) return undefined;
@@ -124,6 +136,37 @@ export interface BridgeDeps extends PipelineDeps {
   botToken: string;
   fetchPending: (agent: AgentId) => Promise<ApprovalRequest[]>;
   sendDecision: (agent: AgentId, approvalId: string, decision: ApprovalDecision) => Promise<void>;
+  /**
+   * Guarda un archivo que llego por el chat como documento del proyecto.
+   *
+   * Opcional: sin `SUPABASE_SERVICE_KEY` el bridge no puede escribir en el
+   * Storage, y entonces esto no se pasa. El bot lo dice en vez de aceptar un
+   * archivo que se iba a perder — ver el handler de `message:document`.
+   */
+  guardarDocumento?: (entrada: {
+    proyectoId: string;
+    usuarioId: string;
+    nombreOriginal: string;
+    datos: Uint8Array;
+  }) => Promise<{ nombre: string; error?: string }>;
+}
+
+/**
+ * Baja cualquier archivo de Telegram por su file_id.
+ *
+ * Telegram no manda el contenido en el update: manda un id que hay que canjear
+ * por una ruta con `getFile` y despues bajar del CDN, con el token del bot en
+ * la URL. Por eso esto necesita el token y no alcanza con el `ctx`.
+ */
+async function bajarArchivo(
+  api: { getFile: (id: string) => Promise<{ file_path?: string }> },
+  fileId: string,
+  botToken: string,
+): Promise<Uint8Array> {
+  const file = await api.getFile(fileId);
+  const res = await fetch(`https://api.telegram.org/file/bot${botToken}/${file.file_path}`);
+  if (!res.ok) throw new Error(`telegram devolvio ${res.status} al bajar el archivo`);
+  return new Uint8Array(await res.arrayBuffer());
 }
 
 /** Baja un audio de Telegram. Se usa tanto para un prompt como para un motivo. */
@@ -209,11 +252,115 @@ export function buildBot(deps: BridgeDeps): Bot {
     await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
   });
 
+  /**
+   * Un archivo mandado al chat.
+   *
+   * Va ANTES del handler general de mensajes porque un documento no es un
+   * prompt: no arranca un turno, se guarda. Antes de esto, mandarle un archivo
+   * al bot no hacia nada y no contestaba nada — el handler de abajo miraba
+   * `voice`, `audio` y `text`, y todo lo demas caia en un `return` mudo.
+   *
+   * Las fotos NO entran por aca a proposito. Telegram las manda como `photo`
+   * —recomprimidas y sin nombre de archivo— y el conversor no lee imagenes: no
+   * habria de donde sacar texto. Una imagen mandada "como archivo" si entra,
+   * porque viaja como `document`, y ahi el rechazo lo da el tipo.
+   */
+  bot.on('message:document', async (ctx) => {
+    const usuarioId = await deps.store.usuarioDeChat(ctx.chat.id);
+    if (!usuarioId) {
+      await ctx.reply(
+        'No te tengo vinculado a ninguna cuenta, asi que no se a que proyecto guardar esto. ' +
+          'Mandame /vincular.',
+      );
+      return;
+    }
+
+    if (!deps.guardarDocumento) {
+      // Se dice, no se ignora: aceptar el archivo en silencio y perderlo es
+      // justo el comportamiento que esta feature vino a sacar.
+      await ctx.reply('Todavia no puedo guardar archivos. Subilo desde el panel, en Configuracion.');
+      return;
+    }
+
+    const doc = ctx.message.document;
+    const nombreOriginal = doc.file_name ?? 'documento';
+
+    // El tamaño se mira ANTES de bajar: Telegram ya lo dice en el update, y
+    // bajar 20 MB para despues rechazarlos es tiempo y memoria por nada.
+    if (doc.file_size !== undefined && doc.file_size > MAXIMO_BYTES) {
+      await ctx.reply(`Ese archivo pasa los ${MAXIMO_BYTES / (1024 * 1024)} MB.`);
+      return;
+    }
+
+    const tipo = tipoDe(nombreOriginal);
+    if (!tipo) {
+      await ctx.reply(`No se leer ese tipo de archivo. Puedo con: ${TIPOS.join(', ')}.`);
+      return;
+    }
+
+    // El proyecto al que va: el activo del chat. Es el mismo con el que
+    // hablarian los turnos, asi que el documento aparece donde la persona
+    // espera y no en otro proyecto.
+    const proyecto = (await deps.store.getActiveProject(ctx.chat.id)) ?? deps.project;
+    const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
+    const proyectoId = proyectos.find((p) => p.nombre === proyecto)?.id;
+    if (!proyectoId) {
+      await ctx.reply(
+        `El proyecto activo (${proyecto}) no existe en el panel, asi que no tiene donde guardarse. ` +
+          'Elegi otro con /menu.',
+      );
+      return;
+    }
+
+    const aviso = await ctx.reply('📎 guardando…');
+    try {
+      const datos = await bajarArchivo(ctx.api, doc.file_id, deps.botToken);
+      const guardado = await deps.guardarDocumento({
+        proyectoId,
+        usuarioId,
+        nombreOriginal,
+        datos,
+      });
+
+      // El error de conversion NO es un fallo del guardado: el original quedo,
+      // y se puede descargar del panel. Se cuenta aparte para que se entienda
+      // que el archivo esta pero el agente no lo va a poder leer.
+      const cola = guardado.error
+        ? `\n\n⚠️ No pude convertirlo a texto (${guardado.error}), asi que el agente no va a poder leerlo.`
+        : '\n\nYa lo pueden leer los agentes de este proyecto.';
+
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        aviso.message_id,
+        `✅ Guardado en <b>${proyecto}</b> como <code>${guardado.nombre}</code>.${cola}`,
+        { parse_mode: 'HTML' },
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        aviso.message_id,
+        `⚠️ No pude guardar el archivo: ${message}`,
+      );
+    }
+  });
+
   bot.on('message', async (ctx) => {
     // Antes habia aca un filtro por TELEGRAM_ALLOWED_USER_IDS. Quien puede
     // hablarle al bot ahora sale de telegram_vinculos, y lo resuelve el
     // pipeline: un chat sin vincular recibe una linea y nada mas.
     const voice = ctx.message.voice ?? ctx.message.audio;
+
+    // Una foto tiene su propio aviso: cae aca porque no es `document`, y sin
+    // esto seria otro mensaje que el bot ignora en silencio.
+    if (ctx.message.photo) {
+      await ctx.reply(
+        'No puedo leer imagenes. Si es un PDF o un Excel, mandalo como archivo ' +
+          `(clip → Archivo). Puedo con: ${TIPOS.join(', ')}.`,
+      );
+      return;
+    }
+
     if (!voice && !ctx.message.text) return;
 
     // Si el chat quedo esperando un motivo, este mensaje ES el motivo y no un
@@ -355,7 +502,7 @@ async function manejarMenu(
       opciones?: { parse_mode?: 'HTML'; reply_markup?: InlineKeyboard },
     ) => Promise<unknown>;
   },
-  menu: { kind: 'proyecto'; id: string } | { kind: 'agente'; slot: AgentId },
+  menu: { kind: 'proyecto'; id: string } | { kind: 'agente'; slot: AgentId } | { kind: 'menu' },
   deps: BridgeDeps,
 ): Promise<void> {
   const chatId = ctx.chat?.id;
@@ -363,6 +510,18 @@ async function manejarMenu(
 
   const usuarioId = await deps.store.usuarioDeChat(chatId);
   if (!usuarioId) return;
+
+  // El boton que trae el mensaje de "se quedo sin tokens". Es el MISMO menu que
+  // /menu: no hay una pantalla especial de agentes agotados, porque el menu ya
+  // los marca con su hora de vuelta.
+  if (menu.kind === 'menu') {
+    const out = await armarMenu(usuarioId, chatId, deps);
+    await ctx.reply(renderOutcome(out), {
+      parse_mode: 'HTML',
+      reply_markup: tecladoDe(out),
+    });
+    return;
+  }
 
   if (menu.kind === 'proyecto') {
     const proyectos = await deps.store.proyectosDeUsuario(usuarioId);

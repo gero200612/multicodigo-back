@@ -21,16 +21,34 @@ export async function askAgent(
 
   const text = await response.text();
   if (!response.ok) {
-    const code = (() => {
+    const cuerpo = (() => {
       try {
-        return (JSON.parse(text) as { code?: string }).code ?? 'internal';
+        return JSON.parse(text) as { code?: string; resets?: string };
       } catch {
-        return 'internal';
+        return {};
       }
     })();
-    throw new Error(code);
+    throw new ErrorDelAgente(cuerpo.code ?? 'internal', cuerpo.resets);
   }
   return PromptResponse.parse(JSON.parse(text));
+}
+
+/**
+ * El error que devolvio el agente, con lo que traiga de mas.
+ *
+ * El `message` sigue siendo el codigo pelado —hay codigo que lo compara asi— y
+ * los datos extra viajan como propiedades. Meter el reset adentro del message
+ * romperia todos esos `=== 'usage_limit'`.
+ */
+export class ErrorDelAgente extends Error {
+  constructor(
+    readonly codigo: string,
+    /** Cuando vuelve la cuenta, si el agente lo supo decir. Solo en usage_limit. */
+    readonly resets?: string,
+  ) {
+    super(codigo);
+    this.name = 'ErrorDelAgente';
+  }
 }
 
 /**

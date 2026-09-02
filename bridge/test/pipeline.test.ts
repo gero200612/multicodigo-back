@@ -782,3 +782,125 @@ describe('ejecutarTurno', () => {
     expect(r.texto).toBe('ok');
   });
 });
+
+/**
+ * El agotamiento: lo que pasa cuando una cuenta se queda sin tokens.
+ *
+ * El bug que motivo todo esto tenia tres mitades, y cada una se prueba aparte:
+ * el cartel no se reconocia (eso vive en `@multicodigo/shared`), el aviso salia
+ * en ingles, y el estado no se guardaba en ningun lado — asi que el menu
+ * seguia ofreciendo un slot vacio.
+ */
+describe('quedarse sin tokens', () => {
+  /** Un `ask` que falla como falla el gateway cuando la cuenta se agoto. */
+  function askSinTokens(resets?: string): Mock {
+    return vi.fn(async () => {
+      const e = new Error('usage_limit') as Error & { resets?: string };
+      e.resets = resets;
+      throw e;
+    });
+  }
+
+  it('avisa en castellano y dice cuando vuelve la cuenta', async () => {
+    const d = deps({ ask: askSinTokens('1:30am (UTC)') });
+    await vincular(d.store, 1);
+
+    const out = await handleIncoming({ chatId: 1, messageId: 5, text: 'hola' }, d);
+
+    expect(out.kind).toBe('error');
+    // Ni una palabra del cartel de Anthropic: eso es lo que llegaba antes.
+    expect(out.kind === 'error' && out.text).toBe('C1 se quedo sin tokens. La cuenta vuelve 1:30am (UTC).');
+  });
+
+  it('sin hora de reset, avisa igual sin inventarla', async () => {
+    const d = deps({ ask: askSinTokens() });
+    await vincular(d.store, 1);
+
+    const out = await handleIncoming({ chatId: 1, messageId: 5, text: 'hola' }, d);
+
+    expect(out.kind === 'error' && out.text).toBe('C1 se quedo sin tokens.');
+  });
+
+  it('siempre deja como salir a elegir otro agente', async () => {
+    const d = deps({
+      ask: askSinTokens('1:30am (UTC)'),
+      listarAgentes: async () => [
+        { id: 'c1' as const, arriba: true, cuenta: true },
+        { id: 'c2' as const, arriba: false, cuenta: true },
+      ],
+    });
+    await vincular(d.store, 1);
+
+    const out = await handleIncoming({ chatId: 1, messageId: 5, text: 'hola' }, d);
+
+    // c2 NO aparece como atajo, y es correcto: el relevo automatico ya lo
+    // probo en este mismo turno y tambien se quedo sin tokens. Ofrecerlo seria
+    // mandar a la persona a repetir el error que acaba de pasar.
+    expect(out.kind === 'error' && out.botones).toEqual([
+      [{ label: '🔀 Elegir otro agente', data: 'm:' }],
+    ]);
+  });
+
+  it('ofrece el atajo al slot que el relevo no llego a probar', async () => {
+    // El relevo se rinde a los 3 intentos (TOPE_DE_RELEVOS), asi que con cinco
+    // cuentas queda una sin probar y sin marcar. Ese es el unico caso en que un
+    // atajo directo ahorra toques de verdad, y por eso existe.
+    const d = deps({
+      ask: askSinTokens('1:30am (UTC)'),
+      listarAgentes: async () =>
+        (['c1', 'c2', 'c3', 'c4', 'c5'] as const).map((id) => ({ id, arriba: true, cuenta: true })),
+    });
+    await vincular(d.store, 1);
+
+    const out = await handleIncoming({ chatId: 1, messageId: 5, text: 'hola' }, d);
+    const botones = out.kind === 'error' ? out.botones : undefined;
+
+    // c5 quedo sin probar: se ofrece derecho.
+    expect(botones?.[0]).toEqual([{ label: 'Seguir con C5', data: 'a:c5' }]);
+    // Y el menu siempre cierra la lista.
+    expect(botones?.at(-1)).toEqual([{ label: '🔀 Elegir otro agente', data: 'm:' }]);
+  });
+
+  it('deja anotado el slot para que el menu no lo ofrezca', async () => {
+    const d = deps({ ask: askSinTokens('1:30am (UTC)') });
+    await vincular(d.store, 1);
+
+    await handleIncoming({ chatId: 1, messageId: 5, text: 'hola' }, d);
+
+    // Esto es lo que no existia: el dato sobrevive al turno.
+    const agotados = await d.store.slotsAgotados();
+    expect(agotados.get('c1')?.resets).toBe('1:30am (UTC)');
+  });
+
+  it('borra la marca cuando el slot vuelve a contestar bien', async () => {
+    const d = deps();
+    await vincular(d.store, 1);
+    await d.store.marcarAgotado('c1', '1:30am (UTC)');
+
+    await handleIncoming({ chatId: 1, messageId: 5, text: 'hola' }, d);
+
+    // Un turno que salio bien es la unica prueba de que hay tokens.
+    expect((await d.store.slotsAgotados()).has('c1')).toBe(false);
+  });
+
+  it('atrapa el cartel aunque el agente lo devuelva como respuesta buena', async () => {
+    // La red de seguridad. Es exactamente la fila del 2026-09-02: el agente
+    // contesto 200 con el cartel adentro y sin codigo de error.
+    const d = deps({
+      ask: vi.fn(async () => ({
+        jobId: '00000000-0000-4000-8000-000000000001',
+        sessionId: 'sess-1',
+        text: "You're out of extra usage · resets 1:30am (UTC)",
+        turns: 1,
+      })),
+    });
+    await vincular(d.store, 1);
+
+    const out = await handleIncoming({ chatId: 1, messageId: 5, text: 'hola' }, d);
+
+    // Antes esto era un `answer` con el cartel adentro.
+    expect(out.kind).toBe('error');
+    expect(out.kind === 'error' && out.text).toBe('C1 se quedo sin tokens. La cuenta vuelve 1:30am (UTC).');
+    expect((await d.store.slotsAgotados()).has('c1')).toBe(true);
+  });
+});

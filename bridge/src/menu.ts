@@ -18,6 +18,14 @@ export const TOPE_CALLBACK_DATA = 64;
  */
 const PROYECTO = 'p';
 const AGENTE = 'a';
+/**
+ * "Volver a mostrarme el menu".
+ *
+ * No lleva nada adentro: el menu se arma con el usuario del chat, que sale del
+ * vinculo y no del boton. Un id ahi seria un dato que viene del cliente para
+ * algo que ya sabemos de este lado.
+ */
+const MENU = 'm';
 
 const ES_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -29,9 +37,14 @@ export function datosDeAgente(slot: AgentId): string {
   return `${AGENTE}:${slot}`;
 }
 
+export function datosDeMenu(): string {
+  return `${MENU}:`;
+}
+
 export type MenuData =
   | { kind: 'proyecto'; id: string }
-  | { kind: 'agente'; slot: AgentId };
+  | { kind: 'agente'; slot: AgentId }
+  | { kind: 'menu' };
 
 /**
  * Lee lo que trae un boton.
@@ -56,12 +69,27 @@ export function parseMenuData(data: string): MenuData | null {
     return slot.success ? { kind: 'agente', slot: slot.data } : null;
   }
 
+  // Se exige que no traiga nada: `m:` y solo eso. Aceptar `m:loquesea` seria
+  // dejar entrar un dato que nadie lee, y el dia que alguien lo lea ya venia
+  // del cliente.
+  if (prefijo === MENU) {
+    return resto === '' ? { kind: 'menu' } : null;
+  }
+
   return null;
 }
 
 export interface AgenteConEstado extends AgenteResumen {
   arriba: boolean;
   tieneCuenta: boolean;
+  /**
+   * La cuenta esta sin tokens, y hasta cuando.
+   *
+   * Ausente = tiene tokens, hasta donde se sabe. La marca la escribe el turno
+   * que se topo con el limite; no hay forma de preguntarle a Anthropic cuanto
+   * queda, asi que esto es lo unico que se sabe.
+   */
+  agotado?: { resets?: string };
 }
 
 /** Un dato que no matchea ningun prefijo: el boton existe y no hace nada. */
@@ -75,14 +103,25 @@ export function tecladoDeProyectos(proyectos: Proyecto[]): Boton[][] {
 
 export function tecladoDeAgentes(agentes: AgenteConEstado[]): Boton[][] {
   return agentes.map((a) => {
-    const marca = !a.tieneCuenta ? '⚠' : a.arriba ? '●' : '○';
+    // El orden importa: primero "no tiene cuenta", despues "no tiene tokens".
+    // Un slot sin cuenta cargada tampoco puede estar agotado, y si las dos
+    // marcas compitieran, la de tokens taparia la que dice que hacer.
+    const marca = !a.tieneCuenta ? '⚠' : a.agotado ? '⛔' : a.arriba ? '●' : '○';
     const nombre = a.nombre ?? a.slot.toUpperCase();
+
+    // La hora del reset en el boton y no solo en la leyenda: es lo que decide
+    // si conviene esperar o cambiar de agente, y en la leyenda seria una nota
+    // al pie que no dice de cual de los seis habla.
+    const cola = a.agotado ? ` — sin tokens${a.agotado.resets ? `, vuelve ${a.agotado.resets}` : ''}` : '';
+
     return [
       {
-        label: `${marca} ${nombre}`,
-        // Un slot sin cuenta lleva a un turno que falla con sin_credencial.
-        // Mejor que el boton no haga nada y el texto lo explique.
-        data: a.tieneCuenta ? datosDeAgente(a.slot) : INERTE,
+        label: `${marca} ${nombre}${cola}`,
+        // Un slot sin cuenta lleva a un turno que falla con sin_credencial, y
+        // uno agotado a un turno que falla con usage_limit. En los dos casos el
+        // boton no hace nada y la etiqueta explica por que: hacer perder un
+        // turno para llegar a un error que ya sabemos es lo que esto arregla.
+        data: a.tieneCuenta && !a.agotado ? datosDeAgente(a.slot) : INERTE,
       },
     ];
   });

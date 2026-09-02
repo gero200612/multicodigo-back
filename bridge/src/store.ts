@@ -108,6 +108,26 @@ function codigoLegible(): string {
   return [...bytes].map((b) => ALFABETO[b % ALFABETO.length]).join('');
 }
 
+/** Lo que se sabe de un slot sin tokens. */
+export interface Agotamiento {
+  /** La hora cruda del cartel ("1:30am (UTC)"), si el aviso la traia. */
+  resets?: string;
+  vistoEn: Date;
+}
+
+/**
+ * Cuanto vale una marca de agotamiento.
+ *
+ * Cinco horas es la ventana de uso de Claude, asi que pasada esa la marca ya
+ * no dice nada util. Caduca por tiempo y no por el `resets` del cartel porque
+ * ese texto no trae el dia (ver la migracion 015).
+ *
+ * Equivocarse por exceso —seguir mostrando el aviso cuando la cuenta ya
+ * volvio— es el lado barato: la persona igual puede elegir el slot y el turno
+ * corre. Al reves, ofrecer como listo un slot vacio es el bug que esto arregla.
+ */
+export const HORAS_DE_AGOTAMIENTO = 5;
+
 export interface Store {
   /**
    * El installation_id de la GitHub App del proyecto, o undefined.
@@ -231,6 +251,27 @@ export interface Store {
   agentesDeProyecto(proyectoId: string): Promise<AgenteResumen[]>;
   /** Anota que el slot pertenece al proyecto. NO crea el contenedor. */
   registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void>;
+
+  /**
+   * Anota que un slot se quedo sin tokens.
+   *
+   * Lo llama el turno cuando el agente contesta `usage_limit`. Sin esto el
+   * dato existe por un instante —el tiempo de armar el mensaje de error— y se
+   * pierde, que es por lo que el menu seguia ofreciendo un slot agotado.
+   */
+  marcarAgotado(slot: AgentId, resets?: string): Promise<void>;
+
+  /**
+   * Borra la marca. Lo llama un turno que SALIO BIEN en ese slot.
+   *
+   * Es la señal mas confiable de que la cuenta volvio: mas que cualquier
+   * cuenta de horas, porque lo unico que prueba que hay tokens es haberlos
+   * usado recien.
+   */
+  limpiarAgotado(slot: AgentId): Promise<void>;
+
+  /** Los slots agotados que todavia valen, por slot. */
+  slotsAgotados(): Promise<Map<string, Agotamiento>>;
   /** El usuario del panel dueño de este chat, o undefined si no esta vinculado. */
   usuarioDeChat(chatId: number): Promise<string | undefined>;
   /** Un codigo de un solo uso para vincular este chat. */
@@ -408,6 +449,25 @@ export class InMemoryStore implements Store {
   async registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void> {
     const previo = this.agentes.get(slot);
     this.agentes.set(slot, { proyectoId, nombre: nombre ?? previo?.nombre, cuenta: previo?.cuenta });
+  }
+
+  private agotados = new Map<string, Agotamiento>();
+
+  async marcarAgotado(slot: AgentId, resets?: string): Promise<void> {
+    this.agotados.set(slot, { resets, vistoEn: new Date() });
+  }
+
+  async limpiarAgotado(slot: AgentId): Promise<void> {
+    this.agotados.delete(slot);
+  }
+
+  async slotsAgotados(): Promise<Map<string, Agotamiento>> {
+    // El filtro por antiguedad va ACA y no en el que escribe: una marca no
+    // caduca porque alguien la mire, caduca por su cuenta.
+    const corte = Date.now() - HORAS_DE_AGOTAMIENTO * 3600_000;
+    return new Map(
+      [...this.agotados.entries()].filter(([, a]) => a.vistoEn.getTime() > corte),
+    );
   }
 
   private vinculos = new Map<number, string>();
@@ -810,6 +870,36 @@ export class PgStore implements Store {
       `INSERT INTO agentes (slot, proyecto_id, nombre) VALUES ($1, $2, $3)
        ON CONFLICT (slot) DO UPDATE SET proyecto_id = $2, nombre = COALESCE($3, agentes.nombre)`,
       [slot, proyectoId, nombre ?? null],
+    );
+  }
+
+  async marcarAgotado(slot: AgentId, resets?: string): Promise<void> {
+    // `visto_en = now()` tambien en el UPDATE: si el slot ya estaba marcado y
+    // se vuelve a agotar, lo que importa es la ultima vez. Sin esto la marca
+    // caducaria contando desde la primera y volveria a mostrarse como listo.
+    await this.pool.query(
+      `INSERT INTO slots_agotados (slot, resets) VALUES ($1, $2)
+       ON CONFLICT (slot) DO UPDATE SET resets = $2, visto_en = now()`,
+      [slot, resets ?? null],
+    );
+  }
+
+  async limpiarAgotado(slot: AgentId): Promise<void> {
+    await this.pool.query('DELETE FROM slots_agotados WHERE slot = $1', [slot]);
+  }
+
+  async slotsAgotados(): Promise<Map<string, Agotamiento>> {
+    // El corte por antiguedad va en el SELECT y no hay barrido que borre las
+    // viejas: son una fila por slot como mucho, asi que la basura que puede
+    // acumular tiene el tamaño del pool. Un job de limpieza para eso seria mas
+    // codigo del que ahorra.
+    const r = await this.pool.query<{ slot: string; resets: string | null; visto_en: Date }>(
+      `SELECT slot, resets, visto_en FROM slots_agotados
+       WHERE visto_en > now() - ($1 || ' hours')::interval`,
+      [String(HORAS_DE_AGOTAMIENTO)],
+    );
+    return new Map(
+      r.rows.map((f) => [f.slot, { resets: f.resets ?? undefined, vistoEn: f.visto_en }]),
     );
   }
 

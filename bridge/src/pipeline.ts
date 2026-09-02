@@ -1,5 +1,7 @@
 import { promptDeRelevo, proximoSlot } from './relevo.js';
 import {
+  esAvisoDeLimite,
+  horaDeReset,
   sanitizeForTelegram,
   type AgentId,
   type PromptRequest,
@@ -7,7 +9,7 @@ import {
   type RepoDelPedido,
 } from '@multicodigo/shared';
 import { parseCommand } from './router.js';
-import { tecladoDeProyectos, tecladoDeAgentes } from './menu.js';
+import { tecladoDeProyectos, tecladoDeAgentes, datosDeAgente, datosDeMenu } from './menu.js';
 import type { Boton } from './render.js';
 import type { Store, Proyecto } from './store.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
@@ -34,6 +36,17 @@ export interface PipelineDeps {
    * para por que la firma la hace el panel y no este servicio.
    */
   firmarToken?: (installationId: number) => Promise<string | undefined>;
+  /**
+   * Los documentos del proyecto, con URLs firmadas.
+   *
+   * Opcional: sin esto el turno corre sin documentos, que es como funcionaba
+   * antes. En el camino del PANEL esta lista la arma el panel; en el de
+   * Telegram no habia nadie que la armara, asi que un documento subido al chat
+   * —o al panel— se guardaba y el agente igual no lo veia.
+   */
+  documentosDelTurno?: (proyectoId: string) => Promise<
+    Array<{ nombre: string; url: string; url_texto?: string | null }>
+  >;
   transcribe: (bytes: Uint8Array, mimeType: string) => Promise<string>;
   /**
    * El estado de los agentes, del gateway.
@@ -73,7 +86,20 @@ export type PipelineOutcome =
   | { kind: 'sin_proyectos' }
   | { kind: 'elegido'; agente: AgentId; nombre: string; proyecto: string }
   | { kind: 'ignored' }
-  | { kind: 'error'; text: string; jobId: string };
+  | {
+      kind: 'error';
+      text: string;
+      jobId: string;
+      /**
+       * Botones para salir del error, cuando los hay.
+       *
+       * Hoy solo los pone `usage_limit`: es el unico error en el que la salida
+       * es una eleccion —otro Claude— y no algo que hay que ir a arreglar a
+       * otro lado. Un mensaje que dice "carga otra cuenta" y no te deja
+       * elegirla te manda al panel para algo que el chat ya puede hacer.
+       */
+      botones?: Boton[][];
+    };
 
 const ERROR_TEXT: Record<string, string> = {
   auth_expired: 'Ese agente necesita re-login: su credencial vencio.',
@@ -98,6 +124,8 @@ const ERROR_TEXT: Record<string, string> = {
   worktree_failed:
     'No pude preparar el repositorio del proyecto. Fijate que la App de GitHub ' +
     'tenga acceso a ese repo, o que la clave del servidor este cargada.',
+  // Ver `textoDeAgotado`: este es el texto de respaldo, para cuando no se sabe
+  // ni que slot fue ni cuando vuelve.
   usage_limit:
     'Ese agente se quedo sin tokens y no habia otro libre para seguir. ' +
     'Proba mas tarde o carga otra cuenta.',
@@ -181,6 +209,14 @@ export async function handleIncoming(
   const repos = proyectoId ? await deps.store.reposDeProyecto(proyectoId) : undefined;
   const githubToken = await tokenDelProyecto(proyectoId, deps);
 
+  // Los documentos, igual que los repos: en el camino del panel los pone el
+  // panel, y aca los tiene que juntar el bridge. Sin proyecto en la base no hay
+  // documentos que buscar — no hay clave con que buscarlos.
+  const documentos =
+    proyectoId && deps.documentosDelTurno
+      ? await deps.documentosDelTurno(proyectoId).catch(() => undefined)
+      : undefined;
+
   try {
     const r = await ejecutarTurnoConRelevo(deps, {
       proyectoId,
@@ -190,6 +226,7 @@ export async function handleIncoming(
       prompt: command.text,
       repos,
       githubToken,
+      documentos,
       origen: 'telegram',
       chatId: input.chatId,
       messageId: input.messageId,
@@ -204,8 +241,87 @@ export async function handleIncoming(
   } catch (err) {
     const code = err instanceof Error ? err.message : 'internal';
     const jobId = err instanceof ErrorDeTurno ? err.jobId : '';
+
+    if (code === 'usage_limit') {
+      const resets = err instanceof ErrorDeTurno ? err.resets : undefined;
+      return {
+        kind: 'error',
+        jobId,
+        text: textoDeAgotado(agent, resets),
+        botones: await botonesDeRelevo(agent, project, deps),
+      };
+    }
+
     return { kind: 'error', text: ERROR_TEXT[code] ?? `Fallo el agente: ${code}`, jobId };
   }
+}
+
+/**
+ * El aviso de que un slot se quedo sin tokens, en castellano.
+ *
+ * Existe porque el aviso de Anthropic llegaba tal cual: en ingles, con la hora
+ * en UTC y sin decir de que agente hablaba. Y llegaba porque el turno lo tomaba
+ * por una respuesta valida — ver `esAvisoDeLimite` en el agente, que es donde
+ * estaba el bug de verdad. Esto es la otra mitad: una vez detectado, decirlo
+ * como se lo diria una persona.
+ *
+ * La hora se muestra tal como vino, con su `(UTC)` incluido: convertirla a la
+ * zona de quien lee pide saber cual es, y el bot no la sabe. Mostrar una hora
+ * mal convertida es peor que mostrar una que dice de que zona es.
+ */
+export function textoDeAgotado(agente: AgentId, resets?: string): string {
+  const quien = agente.toUpperCase();
+  return resets
+    ? `${quien} se quedo sin tokens. La cuenta vuelve ${resets}.`
+    : `${quien} se quedo sin tokens.`;
+}
+
+/**
+ * Como cambiar de Claude desde el mensaje de error.
+ *
+ * ## Por que casi siempre es el menu y no un slot
+ *
+ * La primera version ofrecia "Seguir con C2" y nada mas, y un test la tiro
+ * abajo: para cuando este mensaje se escribe, `ejecutarTurnoConRelevo` YA
+ * probo los otros slots —hasta tres— y los marco agotados a todos. O sea que
+ * el boton que ofrecia el slot siguiente no tenia, en el caso normal, ningun
+ * slot que ofrecer.
+ *
+ * Eso no significa que no haya nada que ofrecer: significa que lo util es
+ * MOSTRAR el estado, no proponer un salto. El menu dice cual esta agotado y
+ * hasta que hora, y deja elegir. Por eso el boton del menu va siempre.
+ *
+ * Un slot suelto se ofrece igual cuando de verdad quedo alguno sin probar —hay
+ * mas slots que el tope de relevos, o el gateway lo listo despues— porque ahi
+ * es un toque en vez de tres.
+ */
+async function botonesDeRelevo(
+  agotado: AgentId,
+  proyecto: string,
+  deps: Pick<PipelineDeps, 'store' | 'listarAgentes'>,
+): Promise<Boton[][]> {
+  const menu: Boton[][] = [[{ label: '🔀 Elegir otro agente', data: datosDeMenu() }]];
+
+  let candidatos: { id: AgentId; arriba: boolean; cuenta: boolean }[] = [];
+  try {
+    candidatos = await deps.listarAgentes(proyecto);
+  } catch {
+    // Sin gateway no se puede saber quien esta libre, pero el menu se ofrece
+    // igual: sabe caerse solo a "todos apagados" y sigue mostrando los nombres.
+    return menu;
+  }
+
+  const sinTokens = await deps.store.slotsAgotados().catch(() => new Map<string, unknown>());
+  const libres = candidatos
+    .filter((c) => c.cuenta && c.id !== agotado && !sinTokens.has(c.id))
+    .sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }));
+
+  return [
+    ...libres.map((c) => [
+      { label: `Seguir con ${c.id.toUpperCase()}`, data: datosDeAgente(c.id) },
+    ]),
+    ...menu,
+  ];
 }
 
 /**
@@ -282,6 +398,14 @@ export class ErrorDeTurno extends Error {
      * confiar en que nadie le agregue un prefijo.
      */
     readonly codigo: string,
+    /**
+     * Cuando vuelve la cuenta, si el aviso lo decia. Solo en `usage_limit`.
+     *
+     * Viaja hasta aca desde el agente para que el mensaje pueda decir "vuelve
+     * a la 1:30am" en vez de "proba mas tarde", que no le dice a nadie si son
+     * dos minutos o cinco horas.
+     */
+    readonly resets?: string,
   ) {
     super(codigo);
     this.name = 'ErrorDeTurno';
@@ -431,13 +555,41 @@ export async function ejecutarTurno(
       githubToken: t.githubToken,
       documentos: t.documentos,
     });
+    // La red de seguridad. El agente ya mira este mismo cartel y deberia haber
+    // tirado `usage_limit` antes de llegar aca; esto existe porque el 2026-09-02
+    // NO lo hizo y el aviso se guardo como una respuesta buena, en ingles y sin
+    // relevo. Que el agente falle en reconocerlo no puede volver a significar
+    // que el sistema entero se lo coma.
+    //
+    // Se tira ANTES de guardar la sesion y de cerrar el job: el `catch` de abajo
+    // lo cierra como `failed` con el codigo correcto, y el relevo lo agarra.
+    if (esAvisoDeLimite(r.text)) {
+      const e = new Error('usage_limit') as Error & { resets?: string };
+      e.resets = horaDeReset(r.text);
+      throw e;
+    }
+
     if (t.proyectoId) await deps.store.setSession(t.proyectoId, t.agente, r.sessionId);
     await deps.store.finishJob(jobId, 'done', undefined, r.text);
+    // Un turno que salio bien PRUEBA que la cuenta tiene tokens, y es la unica
+    // prueba que existe. Por eso la marca se borra aca y no con un reloj: se
+    // limpia sola en cuanto el slot vuelve a trabajar.
+    //
+    // `catch` vacio: la marca es un adorno del menu, y no puede voltear un
+    // turno que ya salio bien y que el usuario esta esperando.
+    await deps.store.limpiarAgotado(t.agente).catch(() => {});
     return { jobId, texto: r.text };
   } catch (err) {
     const codigo = err instanceof Error ? err.message : 'internal';
+    const resets = err instanceof Error ? (err as { resets?: string }).resets : undefined;
     await deps.store.finishJob(jobId, 'failed', codigo);
-    throw new ErrorDeTurno(jobId, codigo);
+    if (codigo === 'usage_limit') {
+      // Se anota ANTES de relevar: el relevo puede tardar minutos, y si el
+      // proceso se cae en el medio la marca ya quedo. Al reves se perderia
+      // justo en el caso en que mas hace falta.
+      await deps.store.marcarAgotado(t.agente, resets).catch(() => {});
+    }
+    throw new ErrorDeTurno(jobId, codigo, resets);
   } finally {
     // En `finally`: si el turno explota, el poller tiene que morir igual o
     // queda un setInterval vivo por cada mensaje que fallo.
@@ -451,7 +603,7 @@ export async function ejecutarTurno(
  * Con un solo proyecto se saltea la eleccion: preguntar entre una opcion es un
  * toque de mas que no decide nada.
  */
-async function armarMenu(
+export async function armarMenu(
   usuarioId: string,
   chatId: number,
   deps: PipelineDeps,
@@ -483,11 +635,22 @@ export async function armarMenuDeAgentes(
     estados = [];
   }
 
+  // Los agotados salen de la base y no del gateway: el gateway sabe que
+  // contenedores hay y si tienen cuenta cargada, pero no cuanto le queda a esa
+  // cuenta. Eso lo aprende el bridge cuando un turno se choca con el limite.
+  //
+  // Un fallo aca no puede voltear el menu: sin esto se muestra lo de antes, que
+  // es todo como disponible. Es el mismo criterio con el que se trata al
+  // gateway caido dos lineas mas arriba.
+  const agotados = await deps.store.slotsAgotados().catch(() => new Map());
+
   const porSlot = new Map(estados.map((e) => [e.id, e]));
   const conEstado = registrados.map((a) => {
     const estado = porSlot.get(a.slot);
+    const sinTokens = agotados.get(a.slot);
     return {
       ...a,
+      agotado: sinTokens ? { resets: sinTokens.resets } : undefined,
       arriba: estado?.arriba ?? false,
       // Quien sabe si el slot tiene cuenta es el gateway: el marcador lo
       // escribe el servicio de login, en la VM. La columna `cuenta` de la tabla

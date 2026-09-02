@@ -14,6 +14,7 @@ import { askAgent, listarAgentes } from './agents-client.js';
 import { firmarToken } from './panel-client.js';
 import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
+import { documentosDelTurno, guardarDocumento } from './documentos.js';
 import { buildBot } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
 import { startWatching } from './approvals.js';
@@ -38,6 +39,23 @@ const Env = z.object({
   // antes de la GitHub App. No se hace obligatorio para no voltear el bridge de
   // un despliegue que todavia no registro la App.
   PANEL_URL: z.string().url().optional(),
+  /**
+   * Supabase, para los documentos que llegan por Telegram.
+   *
+   * Los tres son OPCIONALES juntos: sin ellos el bot avisa que no puede
+   * guardar archivos y todo lo demas anda igual. No se hacen obligatorios para
+   * no voltear un despliegue que todavia no los configuro.
+   *
+   * `SUPABASE_SERVICE_KEY` es la service_role, y pasa por encima de RLS. Vive
+   * aca y NO en el panel a proposito: el panel es el proceso expuesto a
+   * internet y la tiene negada desde el diseño original, mientras que el bridge
+   * ya se conecta a la misma base como `postgres` —o sea que ya puede escribir
+   * cualquier fila—. Ver el comentario largo de documentos.ts.
+   */
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_SERVICE_KEY: z.string().min(1).optional(),
+  /** Por la red del compose. El bridge y el conversor comparten `puente`. */
+  CONVERSOR_URL: z.string().url().optional(),
   PORT: z.coerce.number().int().positive().default(3000),
 });
 
@@ -61,12 +79,38 @@ const MIGRACIONES = [
   '012_aprobaciones.sql',
   '013_sesiones_por_proyecto.sql',
   '014_vinculos_visibles.sql',
+  '015_agotamiento.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 
 // Un solo lugar con la URL y el token del gateway: prompt, aprobaciones y git
 // salen todos por ahi.
 const gatewayDeps = { gatewayUrl: env.GATEWAY_URL, token: env.GATEWAY_TOKEN };
+
+/**
+ * Con que guardar y leer los documentos, o `undefined`.
+ *
+ * Las dos claves van juntas: con la URL y sin la key no se puede escribir nada,
+ * y al reves tampoco. Tenerlo en una sola constante evita un estado a medias en
+ * el que el bot acepta un archivo y despues no lo puede subir.
+ */
+const docsDeps =
+  env.SUPABASE_URL && env.SUPABASE_SERVICE_KEY
+    ? {
+        supabaseUrl: env.SUPABASE_URL.replace(/\/$/, ''),
+        serviceKey: env.SUPABASE_SERVICE_KEY,
+        conversorUrl: env.CONVERSOR_URL,
+      }
+    : undefined;
+
+if (!docsDeps) {
+  // Ruidoso a proposito: es una funcionalidad apagada, no un default. El
+  // sintoma sin este aviso seria "el bot no guarda mis archivos" sin nada en
+  // los logs que diga por que.
+  console.warn(
+    '[bridge] sin SUPABASE_URL/SUPABASE_SERVICE_KEY: no se pueden guardar documentos de Telegram',
+  );
+}
 
 /**
  * Lo que un turno necesita, sin lo que es propio de Telegram.
@@ -89,6 +133,11 @@ const pipelineDeps = {
     : undefined,
   transcribe: (bytes: Uint8Array, mimeType: string) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),
+  // Sin Supabase no se pasa: el turno corre sin documentos, que es como
+  // funcionaba antes de esto.
+  documentosDelTurno: docsDeps
+    ? (proyectoId: string) => documentosDelTurno(proyectoId, docsDeps)
+    : undefined,
   listarAgentes: () => listarAgentes(gatewayDeps),
 };
 
@@ -98,6 +147,9 @@ const bot = buildBot({
   fetchPending: (agent) => fetchPending(agent, gatewayDeps),
   sendDecision: (agent, approvalId, decision) =>
     sendDecision(agent, approvalId, decision, gatewayDeps),
+  guardarDocumento: docsDeps
+    ? (entrada) => guardarDocumento(entrada, docsDeps)
+    : undefined,
 });
 
 await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start()
