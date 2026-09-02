@@ -691,10 +691,30 @@ export function buildBot(deps: BridgeDeps): Bot {
  * callback_data vuelve del cliente y no hay nada que garantice que sea el que
  * mandamos.
  */
-async function manejarMenu(
+/**
+ * Exportada para poder testearla.
+ *
+ * Es el handler de todos los botones y decide si cada paso reemplaza al
+ * anterior o manda un mensaje nuevo — la diferencia entre un menu que se
+ * navega y un chat que se llena. Ejercitarla de otra forma pide levantar el
+ * bot entero contra la API de Telegram.
+ */
+export async function manejarMenu(
   ctx: {
     chat?: { id: number };
     reply: (
+      texto: string,
+      opciones?: { parse_mode?: 'HTML'; reply_markup?: InlineKeyboard },
+    ) => Promise<unknown>;
+    /**
+     * Edita el mensaje que tiene el boton que se toco.
+     *
+     * Es lo que hace que navegar el menu no llene el chat: cada paso REEMPLAZA
+     * al anterior en vez de apilarse. Sin esto, elegir proyecto y despues
+     * agente dejaba tres mensajes —el menu, la lista de agentes y la
+     * confirmacion— y el chat quedaba lleno de pantallas que ya no sirven.
+     */
+    editMessageText?: (
       texto: string,
       opciones?: { parse_mode?: 'HTML'; reply_markup?: InlineKeyboard },
     ) => Promise<unknown>;
@@ -704,6 +724,27 @@ async function manejarMenu(
 ): Promise<void> {
   const chatId = ctx.chat?.id;
   if (chatId === undefined) return;
+
+  /**
+   * Muestra un paso del menu EDITANDO el mensaje que se toco.
+   *
+   * Cae a `reply` si no se puede editar, que pasa de verdad: Telegram rechaza
+   * la edicion cuando el texto y el teclado son identicos a lo que ya estaba,
+   * y ademas un mensaje de mas de 48 horas no se puede editar. En los dos
+   * casos, un mensaje nuevo es peor que nada.
+   */
+  const mostrar = async (texto: string, opciones: { parse_mode?: 'HTML'; reply_markup?: InlineKeyboard }) => {
+    if (texto === '') return;
+    if (ctx.editMessageText) {
+      try {
+        await ctx.editMessageText(texto, opciones);
+        return;
+      } catch {
+        // Sigue al reply de abajo.
+      }
+    }
+    await ctx.reply(texto, opciones);
+  };
 
   const usuarioId = await deps.store.usuarioDeChat(chatId);
   if (!usuarioId) return;
@@ -722,9 +763,7 @@ async function manejarMenu(
    */
   const comoComando = async (texto: string): Promise<void> => {
     const out = await handleIncoming({ chatId, messageId: 0, text: texto }, deps);
-    const cuerpo = renderOutcome(out);
-    if (cuerpo === '') return;
-    await ctx.reply(cuerpo, {
+    await mostrar(renderOutcome(out), {
       ...(usaHtml(out) ? { parse_mode: 'HTML' as const } : {}),
       reply_markup: tecladoDe(out),
     });
@@ -771,7 +810,7 @@ async function manejarMenu(
 
     await deps.store.setActiveProject(chatId, elegido.nombre);
     const out = await armarMenuDeAgentes(elegido, deps);
-    await ctx.reply(renderOutcome(out), {
+    await mostrar(renderOutcome(out), {
       parse_mode: 'HTML',
       reply_markup: tecladoDe(out),
     });
@@ -788,7 +827,7 @@ async function manejarMenu(
   const registrados = p ? await deps.store.agentesDeProyecto(p.id) : [];
   const nombre = registrados.find((a) => a.slot === menu.slot)?.nombre ?? menu.slot.toUpperCase();
 
-  await ctx.reply(renderOutcome({ kind: 'elegido', agente: menu.slot, nombre, proyecto }), {
+  await mostrar(renderOutcome({ kind: 'elegido', agente: menu.slot, nombre, proyecto }), {
     parse_mode: 'HTML',
   });
 
@@ -804,5 +843,9 @@ async function manejarMenu(
     { chatId, messageId: 0, text: `/${menu.slot} ${pendiente}` },
     deps,
   );
+  // `reply` y NO `mostrar`: la respuesta de un turno es contenido nuevo, no un
+  // paso del menu. Editar el mensaje del menu para poner ahi la respuesta
+  // borraria la pantalla desde la que se eligio, y encima la dejaria sin
+  // teclado. Los pasos del menu se reemplazan; lo que el agente contesta, no.
   await ctx.reply(renderOutcome(out), { reply_markup: tecladoDe(out) });
 }

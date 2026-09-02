@@ -5,7 +5,9 @@ import {
   textoDeActivos,
   textoDePermisos,
   avisoDeRelevo,
+  manejarMenu,
 } from '../src/telegram.js';
+import { LimitePorChat } from '../src/vinculacion.js';
 import { buildWebhookServer } from '../src/webhook.js';
 
 describe('renderOutcome', () => {
@@ -412,5 +414,75 @@ describe('el aviso de que contesto otro agente', () => {
   it('una respuesta sin relevo queda como antes', () => {
     const t = renderOutcome({ kind: 'answer', text: 'ok', agent: 'c1', jobId: 'j' });
     expect(t.split('\n')[0]).toBe('🤖 C1');
+  });
+});
+
+/**
+ * Navegar el menu no llena el chat.
+ *
+ * Cada paso REEMPLAZA al anterior. Antes cada toque mandaba un mensaje nuevo:
+ * elegir proyecto y despues agente dejaba tres —el menu, la lista de agentes y
+ * la confirmacion— y el chat quedaba lleno de pantallas que ya no sirven.
+ */
+describe('los pasos del menu se reemplazan', () => {
+  /** Lo minimo para que `manejarMenu` corra: un chat vinculado y nada mas. */
+  async function depsDeMenu() {
+    const store = new InMemoryStore();
+    const codigo = await store.crearCodigoVinculacion(7, 10);
+    await store.canjearCodigo(codigo, '99999999-9999-4999-8999-999999999999');
+    return {
+      store,
+      defaultAgent: 'c1' as const,
+      project: 'demo',
+      limite: new LimitePorChat(),
+      ask: async () => ({ jobId: 'j', sessionId: 's', text: 'ok', turns: 1 }),
+      transcribe: async () => '',
+      listarAgentes: async () => [],
+      botToken: 'x',
+      fetchPending: async () => [],
+      sendDecision: async () => {},
+    } as unknown as Parameters<typeof manejarMenu>[2];
+  }
+
+  function ctxFalso(editFalla = false) {
+    const editados: string[] = [];
+    const respondidos: string[] = [];
+    return {
+      editados,
+      respondidos,
+      ctx: {
+        chat: { id: 7 },
+        async reply(t: string) {
+          respondidos.push(t);
+        },
+        async editMessageText(t: string) {
+          if (editFalla) throw new Error('message is not modified');
+          editados.push(t);
+        },
+      },
+    };
+  }
+
+  it('edita el mensaje del boton en vez de mandar uno nuevo', async () => {
+    const { ctx, editados, respondidos } = ctxFalso();
+    const deps = await depsDeMenu();
+
+    await manejarMenu(ctx, { kind: 'accion', accion: 'permisos' }, deps);
+
+    expect(editados).toHaveLength(1);
+    expect(respondidos).toHaveLength(0);
+  });
+
+  // Telegram rechaza la edicion cuando el texto y el teclado son identicos a
+  // lo que ya estaba, y un mensaje de mas de 48 horas no se puede editar. Un
+  // mensaje nuevo es peor que nada.
+  it('si no puede editar, manda uno nuevo', async () => {
+    const { ctx, editados, respondidos } = ctxFalso(true);
+    const deps = await depsDeMenu();
+
+    await manejarMenu(ctx, { kind: 'accion', accion: 'permisos' }, deps);
+
+    expect(editados).toHaveLength(0);
+    expect(respondidos).toHaveLength(1);
   });
 });
