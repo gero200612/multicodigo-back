@@ -72,6 +72,16 @@ export interface PipelineDeps {
    * esto el turno se cuelga en silencio: el hijo bloquea esperando un OK que
    * nadie va a ir a buscar, porque el hijo no tiene egress a Render.
    */
+  /**
+   * Las aprobaciones que el agente tiene pendientes.
+   *
+   * Solo para explicar POR QUE un slot esta ocupado: un turno frenado
+   * esperando un OK retiene el slot hasta quince minutos, y "ocupado" a secas
+   * no dice si conviene esperar o irse a otro agente.
+   *
+   * Opcional: sin esto el aviso sale igual, un poco mas pobre.
+   */
+  pendientesDe?: (agent: AgentId) => Promise<unknown[]>;
   watchApprovals?: (ctx: {
     agent: AgentId;
     jobId: string;
@@ -102,7 +112,15 @@ export type PipelineOutcome =
    * tiene que hacer. Y porque la salida es una eleccion —otro agente— y no
    * algo que haya que ir a arreglar.
    */
-  | { kind: 'ocupado'; agent: AgentId; quien?: string; desde?: number; botones: Boton[][] }
+  | {
+      kind: 'ocupado';
+      agent: AgentId;
+      quien?: string;
+      desde?: number;
+      /** El turno esta frenado esperando que el dueño apruebe algo. */
+      esperandoOk?: boolean;
+      botones: Boton[][];
+    }
   | {
       kind: 'error';
       text: string;
@@ -125,7 +143,13 @@ const ERROR_TEXT: Record<string, string> = {
   // puede ser el mismo.
   sin_credencial: 'Ese slot todavia no tiene una cuenta de Claude cargada. Cargasela y volve a escribir.',
   agent_unavailable: 'No pude contactar al agente. Puede estar reiniciandose.',
-  agent_timeout: 'El agente tardo demasiado y corte la espera.',
+  // "Sigue trabajando" y no "fallo", que es lo que decia antes. El bridge se
+  // rinde a los 11 minutos, pero el gateway tiene su propio tope y el turno
+  // sigue corriendo de verdad —con el slot tomado—. Decir que fallo invita a
+  // reintentar contra un agente que esta ocupado con lo mismo que se pidio.
+  agent_timeout:
+    'El agente tardo mas de lo que puedo esperar, asi que solte la espera. ' +
+    'Igual sigue trabajando: preguntale con /status o escribile en un rato.',
   unknown_agent: 'Ese agente no existe.',
   unknown_project: 'Ese proyecto no esta configurado en el agente.',
   // Este mensaje dice QUE hacer y no solo que fallo. Sin el, el sintoma que
@@ -281,9 +305,19 @@ export async function handleIncoming(
       // `catch` vacio: no poder guardarlo degrada el boton a un cambio de
       // agente pelado, que es lo que hacia antes. No puede voltear el aviso.
       await deps.store.setPendiente(input.chatId, command.text).catch(() => {});
+      // Por que esta ocupado, cuando se puede saber. Un turno frenado en una
+      // aprobacion no es lo mismo que uno trabajando: el primero se destraba
+      // con un toque de la otra persona y el segundo hay que esperarlo.
+      //
+      // `catch`: no poder preguntarle al agente degrada el aviso, no lo voltea.
+      const esperandoOk = deps.pendientesDe
+        ? await deps.pendientesDe(agent).then((p) => p.length > 0).catch(() => false)
+        : false;
+
       return {
         kind: 'ocupado',
         agent,
+        esperandoOk,
         // `catch` a undefined: no saber el nombre degrada el mensaje a "otra
         // persona", que sigue siendo util. Voltear el aviso por no poder leer
         // un email seria cambiar un mensaje incompleto por ninguno.

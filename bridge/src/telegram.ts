@@ -31,7 +31,7 @@ export function renderOutcome(outcome: PipelineOutcome): string {
     case 'project':
       return `Proyecto activo: ${outcome.project}.`;
     case 'ocupado':
-      return textoDeOcupado(outcome.agent, outcome.quien, outcome.desde);
+      return textoDeOcupado(outcome.agent, outcome.quien, outcome.desde, outcome.esperandoOk);
     case 'error':
       return `⚠️ ${outcome.text}`;
     case 'ignored':
@@ -77,17 +77,10 @@ export function renderOutcome(outcome: PipelineOutcome): string {
 export function textoDeActivos(primario: AgentId, otros: AgentId[]): string {
   const cabeza = `Le hablas a ${primario.toUpperCase()}.`;
   if (otros.length === 0) {
-    return `${cabeza}
-
-Con /cowork c2 sumas otro agente a este chat y le hablas con /c2.`;
+    return `${cabeza}\n\nCon /cowork c2 sumas otro agente a este chat y le hablas con /c2.`;
   }
   const lista = otros.map((a) => `· ${a.toUpperCase()} — escribile con /${a}`).join('\n');
-  return `${cabeza}
-
-Tambien tenes en este chat:
-${lista}
-
-Con /cowork ${otros[0]} lo sacas.`;
+  return `${cabeza}\n\nTambien tenes en este chat:\n${lista}\n\nCon /cowork ${otros[0]} lo sacas.`;
 }
 
 /**
@@ -115,12 +108,18 @@ export function textoDeOcupado(
   agente: AgentId,
   quien: string | undefined,
   desde: number | undefined,
+  esperandoOk = false,
   ahora = Date.now(),
 ): string {
+  const duenio = quien ?? 'otra persona';
+  // Un turno frenado en una aprobacion se destraba con un toque de la otra
+  // persona; uno trabajando hay que esperarlo. Es la diferencia entre esperar
+  // un cachito e irse a otro agente, y sin decirlo hay que adivinar.
+  const porque = esperandoOk
+    ? `\nEsta frenado esperando que ${duenio} apruebe algo, asi que puede destrabarse en cualquier momento.`
+    : '';
   return (
-    `⛔ ${agente.toUpperCase()} lo esta usando ${quien ?? 'otra persona'}${haceCuanto(desde, ahora)}.
-
-` +
+    `⛔ ${agente.toUpperCase()} lo esta usando ${duenio}${haceCuanto(desde, ahora)}.${porque}\n\n` +
     'Te paso a otro y le mando lo que me escribiste:'
   );
 }

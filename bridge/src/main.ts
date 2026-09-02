@@ -156,6 +156,10 @@ const pipelineDeps = {
     ? (proyectoId: string) => documentosDelTurno(proyectoId, docsDeps)
     : undefined,
   listarAgentes: () => listarAgentes(gatewayDeps),
+  // Para poder decir POR QUE un slot esta ocupado: un turno frenado esperando
+  // un OK se destraba con un toque de la otra persona, y uno trabajando hay que
+  // esperarlo. Es el mismo fetchPending del poller de aprobaciones.
+  pendientesDe: (agent: AgentId) => fetchPending(agent, gatewayDeps),
 };
 
 const bot = buildBot({

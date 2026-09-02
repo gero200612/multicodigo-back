@@ -269,7 +269,7 @@ describe('el aviso de slot ocupado', () => {
   const AHORA = 1_700_000_600_000;
 
   it('nombra al agente y a quien lo tiene', () => {
-    const t = textoDeOcupado('c1', 'martin', AHORA - 120_000, AHORA);
+    const t = textoDeOcupado('c1', 'martin', AHORA - 120_000, false, AHORA);
     expect(t).toContain('C1');
     expect(t).toContain('martin');
   });
@@ -277,23 +277,23 @@ describe('el aviso de slot ocupado', () => {
   // "hace 1 min" invita a esperar; "hace 40 min", a cambiar de agente. Sin el
   // tiempo, el aviso obliga a preguntar.
   it('dice hace cuanto lo tienen', () => {
-    expect(textoDeOcupado('c1', 'martin', AHORA - 120_000, AHORA)).toContain('hace 2 min');
-    expect(textoDeOcupado('c1', 'martin', AHORA - 60_000, AHORA)).toContain('hace 1 min');
-    expect(textoDeOcupado('c1', 'martin', AHORA - 5_000, AHORA)).toContain('recien');
+    expect(textoDeOcupado('c1', 'martin', AHORA - 120_000, false, AHORA)).toContain('hace 2 min');
+    expect(textoDeOcupado('c1', 'martin', AHORA - 60_000, false, AHORA)).toContain('hace 1 min');
+    expect(textoDeOcupado('c1', 'martin', AHORA - 5_000, false, AHORA)).toContain('recien');
   });
 
   it('sin nombre dice "otra persona" en vez de romperse', () => {
-    expect(textoDeOcupado('c2', undefined, AHORA, AHORA)).toContain('otra persona');
+    expect(textoDeOcupado('c2', undefined, AHORA, false, AHORA)).toContain('otra persona');
   });
 
   it('sin saber desde cuando, no inventa un tiempo', () => {
-    const t = textoDeOcupado('c2', 'lucia', undefined, AHORA);
+    const t = textoDeOcupado('c2', 'lucia', undefined, false, AHORA);
     expect(t).toContain('lucia');
     expect(t).not.toContain('hace');
   });
 
   it('avisa que el mensaje escrito se reenvia: el prompt no se pierde', () => {
-    expect(textoDeOcupado('c1', 'martin', AHORA, AHORA)).toContain('lo que me escribiste');
+    expect(textoDeOcupado('c1', 'martin', AHORA, false, AHORA)).toContain('lo que me escribiste');
   });
 });
 
@@ -315,5 +315,22 @@ describe('con quien estas trabajando', () => {
 
   it('con varios, explica como sacar uno', () => {
     expect(textoDeActivos('c1', ['c2'])).toContain('/cowork c2');
+  });
+});
+
+describe('por que esta ocupado', () => {
+  const AHORA = 1_700_000_600_000;
+
+  // "Esperá un cachito" y "andate a otro agente" son consejos distintos, y sin
+  // decir cual es, hay que adivinar.
+  it('un turno frenado en una aprobacion lo dice', () => {
+    const t = textoDeOcupado('c1', 'martin', AHORA - 60_000, true, AHORA);
+    expect(t).toContain('apruebe');
+    expect(t).toContain('martin');
+  });
+
+  it('un turno que solo esta trabajando no inventa un motivo', () => {
+    const t = textoDeOcupado('c1', 'martin', AHORA - 60_000, false, AHORA);
+    expect(t).not.toContain('apruebe');
   });
 });
