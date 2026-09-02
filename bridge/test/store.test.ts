@@ -669,3 +669,52 @@ describe('recentJobs', () => {
     expect(job!.prompt.length).toBeLessThanOrEqual(160);
   });
 });
+
+/**
+ * Desvincular un chat de Telegram.
+ *
+ * Faltaba: se podia vincular y nunca desatar, asi que un chat quedaba pegado a
+ * la cuenta para siempre —y con el, quien pudiera escribirle al bot desde ahi—.
+ */
+describe('desvincular un chat', () => {
+  const USUARIO = '99999999-9999-4999-8999-999999999999';
+  const OTRO = '11111111-1111-4111-8111-111111111111';
+
+  async function conVinculo(store: InMemoryStore, chatId: number, usuarioId: string) {
+    const codigo = await store.crearCodigoVinculacion(chatId, 10);
+    await store.canjearCodigo(codigo, usuarioId);
+  }
+
+  it('borra el vinculo y lo dice', async () => {
+    const store = new InMemoryStore();
+    await conVinculo(store, 7, USUARIO);
+
+    expect(await store.desvincularChat(7, USUARIO)).toBe(true);
+    expect(await store.usuarioDeChat(7)).toBeUndefined();
+  });
+
+  // Lo que impide que alguien con sesion desate el chat de otro pasando su id.
+  it('no borra el chat de otra persona', async () => {
+    const store = new InMemoryStore();
+    await conVinculo(store, 7, USUARIO);
+
+    expect(await store.desvincularChat(7, OTRO)).toBe(false);
+    expect(await store.usuarioDeChat(7)).toBe(USUARIO);
+  });
+
+  it('un chat que no existe no rompe', async () => {
+    const store = new InMemoryStore();
+    expect(await store.desvincularChat(999, USUARIO)).toBe(false);
+  });
+
+  // Volver a vincularlo tiene que funcionar: desvincular no puede dejar el chat
+  // en un estado del que no se sale.
+  it('se puede volver a vincular despues', async () => {
+    const store = new InMemoryStore();
+    await conVinculo(store, 7, USUARIO);
+    await store.desvincularChat(7, USUARIO);
+    await conVinculo(store, 7, OTRO);
+
+    expect(await store.usuarioDeChat(7)).toBe(OTRO);
+  });
+});

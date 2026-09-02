@@ -365,6 +365,13 @@ export interface Store {
   cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void>;
   /** Cancela lo PENDIENTE. Devuelve cuantas saco. */
   cancelarCola(chatId: number): Promise<number>;
+  /**
+   * Desata un chat de una cuenta. Devuelve si habia algo que desatar.
+   *
+   * `usuarioId` no es opcional y se usa en el WHERE: es lo que impide que
+   * alguien con sesion desate el chat de otro mandando su chat_id.
+   */
+  desvincularChat(chatId: number, usuarioId: string): Promise<boolean>;
   /** Un codigo de un solo uso para vincular este chat. */
   crearCodigoVinculacion(chatId: number, minutos: number): Promise<string>;
   /**
@@ -566,6 +573,12 @@ export class InMemoryStore implements Store {
 
   async usuarioDeChat(chatId: number): Promise<string | undefined> {
     return this.vinculos.get(chatId);
+  }
+
+  async desvincularChat(chatId: number, usuarioId: string): Promise<boolean> {
+    if (this.vinculos.get(chatId) !== usuarioId) return false;
+    this.vinculos.delete(chatId);
+    return true;
   }
 
   private nombres = new Map<string, string>();
@@ -1105,6 +1118,20 @@ export class PgStore implements Store {
       [chatId],
     );
     return r.rows[0]?.usuario_id;
+  }
+
+  /**
+   * El `usuario_id` va en el WHERE y no se chequea antes en otra consulta.
+   *
+   * Con un SELECT y despues un DELETE hay una ventana entre los dos; y ademas
+   * el WHERE es lo que hace imposible —no improbable— borrar el chat de otro.
+   */
+  async desvincularChat(chatId: number, usuarioId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      'DELETE FROM telegram_vinculos WHERE chat_id = $1 AND usuario_id = $2',
+      [chatId, usuarioId],
+    );
+    return (r.rowCount ?? 0) > 0;
   }
 
   /**

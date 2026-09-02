@@ -464,3 +464,69 @@ describe('POST /turnos', () => {
     expect(r.json().code).toBe('agent_unavailable');
   });
 });
+
+/**
+ * Desvincular un chat de Telegram.
+ *
+ * Es POST y no DELETE porque el cuerpo lleva el usuarioId: un DELETE con cuerpo
+ * lo descartan algunos proxies. El panel lo expone como DELETE hacia el front.
+ */
+describe('POST /vinculos/borrar', () => {
+  const USUARIO = '99999999-9999-4999-8999-999999999999';
+
+  it('rechaza sin bearer', async () => {
+    const { app } = await servidor();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/vinculos/borrar',
+      payload: { chatId: 7, usuarioId: USUARIO },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('desvincula y lo dice', async () => {
+    const { app, store } = await servidor();
+    const codigo = await store.crearCodigoVinculacion(7, 10);
+    await store.canjearCodigo(codigo, USUARIO);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/vinculos/borrar',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { chatId: 7, usuarioId: USUARIO },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ desvinculado: true });
+    expect(await store.usuarioDeChat(7)).toBeUndefined();
+  });
+
+  // Aca no hay JWT que verificar —esto esta detras del bearer del panel— asi
+  // que la unica defensa es que el borrado exija el usuario correcto.
+  it('no desvincula el chat de otra persona', async () => {
+    const { app, store } = await servidor();
+    const codigo = await store.crearCodigoVinculacion(7, 10);
+    await store.canjearCodigo(codigo, USUARIO);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/vinculos/borrar',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { chatId: 7, usuarioId: '11111111-1111-4111-8111-111111111111' },
+    });
+
+    expect(res.json()).toEqual({ desvinculado: false });
+    expect(await store.usuarioDeChat(7)).toBe(USUARIO);
+  });
+
+  it('un cuerpo sin usuarioId se rechaza', async () => {
+    const { app } = await servidor();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/vinculos/borrar',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { chatId: 7 },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});

@@ -17,7 +17,10 @@ const JOBS_POR_DEFECTO = 20;
  * es como arranco. Los tests que no la ejercitan no la pasan.
  */
 export interface ApiDeps {
-  store: Pick<Store, 'recentJobs' | 'canjearCodigo' | 'usuarioDeChat' | 'deleteSessions'>;
+  store: Pick<
+    Store,
+    'recentJobs' | 'canjearCodigo' | 'usuarioDeChat' | 'deleteSessions' | 'desvincularChat'
+  >;
   /**
    * Como decidir una aprobacion desde afuera de Telegram.
    *
@@ -86,6 +89,13 @@ export function buildWebhookServer(
       usuarioId: z.string().uuid(),
     });
 
+    const CuerpoDesvinculo = z.object({
+      // `chat_id` es un BIGINT y los ids de Telegram entran de sobra en un
+      // double, asi que number alcanza. `int()` corta un float mandado a mano.
+      chatId: z.coerce.number().int(),
+      usuarioId: z.string().uuid(),
+    });
+
     /**
      * Canjea un codigo de vinculacion a nombre de un usuario del panel.
      *
@@ -114,6 +124,35 @@ export function buildWebhookServer(
         desconocido: 'codigo_desconocido',
       } as const;
       return reply.code(400).send({ code: codigos[r], message: 'el codigo no sirve' });
+    });
+
+    /**
+     * Desata un chat de una cuenta.
+     *
+     * POST y no DELETE porque el cuerpo lleva el `usuarioId`, y un DELETE con
+     * cuerpo es algo que algunos proxies descartan. Quien decide la forma REST
+     * es el panel, que expone esto como DELETE hacia el front.
+     *
+     * El `usuarioId` es obligatorio y viaja al WHERE del borrado: sin eso,
+     * cualquiera que llegue a este endpoint podria desatar el chat de otro.
+     * Aca no hay JWT que verificar —esta detras del bearer del panel— asi que
+     * la unica defensa es que el panel mande el usuario del JWT y este borrado
+     * lo exija.
+     */
+    app.post('/vinculos/borrar', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+
+      const cuerpo = CuerpoDesvinculo.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply
+          .code(400)
+          .send({ code: 'cuerpo_invalido', message: 'falta chatId o usuarioId' });
+      }
+
+      const fue = await api.store.desvincularChat(cuerpo.data.chatId, cuerpo.data.usuarioId);
+      return reply.code(200).send({ desvinculado: fue });
     });
 
     if (api.decisiones) {

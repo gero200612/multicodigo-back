@@ -93,6 +93,17 @@ public interface IBridgeClient
     /// </summary>
     Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default);
     /// <summary>
+    /// Desata un chat de Telegram de esta cuenta. Devuelve si habia algo que
+    /// desatar.
+    /// </summary>
+    /// <remarks>
+    /// Pasa por el bridge y no por Supabase directo como el resto de las
+    /// lecturas: la RLS de `telegram_vinculos` solo permite SELECT —la escribe
+    /// el bridge, que es `postgres`— asi que un DELETE desde el front no
+    /// borraria nada y fallaria en silencio.
+    /// </remarks>
+    Task<bool> DesvincularTelegramAsync(long chatId, string usuarioId, CancellationToken ct = default);
+    /// <summary>
     /// Decide una aprobacion. Tira UpstreamException("ya_decidida") si alguien
     /// se adelanto.
     /// </summary>
@@ -476,6 +487,28 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         catch (JsonException) { /* sin cuerpo util; se usa el status */ }
 
         throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
+    }
+
+    private sealed record RespuestaDesvinculo(bool Desvinculado);
+
+    public async Task<bool> DesvincularTelegramAsync(
+        long chatId, string usuarioId, CancellationToken ct = default)
+    {
+        // El usuarioId viaja y el bridge lo exige: sin eso, cualquiera con
+        // sesion podria desatar el chat de otro pasando su chatId.
+        var res = await http.PostAsJsonAsync(
+            "/vinculos/borrar",
+            new { chatId, usuarioId },
+            Json.Opciones,
+            ct);
+
+        if (!res.IsSuccessStatusCode)
+        {
+            throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
+        }
+
+        var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaDesvinculo>(Json.Opciones, ct);
+        return cuerpo?.Desvinculado ?? false;
     }
 }
 

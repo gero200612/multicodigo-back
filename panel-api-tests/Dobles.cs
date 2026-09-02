@@ -373,6 +373,20 @@ public sealed class BridgeFalso : IBridgeClient
         Canjeados.Add((codigo, usuarioId));
         return Task.CompletedTask;
     }
+
+    /// <summary>Los chats desvinculados: chat -> usuario que lo pidio.</summary>
+    public List<(long ChatId, string UsuarioId)> Desvinculados { get; } = [];
+
+    /// <summary>Lo que devuelve el bridge. False = ese chat no era de ese usuario.</summary>
+    public bool HayQueDesvincular { get; set; } = true;
+
+    public Task<bool> DesvincularTelegramAsync(
+        long chatId, string usuarioId, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        Desvinculados.Add((chatId, usuarioId));
+        return Task.FromResult(HayQueDesvincular);
+    }
 }
 
 public sealed class HistorialFalso : IHistorialClient

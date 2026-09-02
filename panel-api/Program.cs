@@ -1263,6 +1263,49 @@ api.MapPost("/telegram/vincular", async (
     }
 });
 
+/// <remarks>
+/// Desata un chat de Telegram de la cuenta.
+///
+/// Faltaba: se podia vincular y nunca desvincular, asi que un chat quedaba
+/// pegado a la cuenta para siempre —y con el, quien pudiera escribirle al bot
+/// desde ese chat—.
+///
+/// Pasa por el bridge y no por Supabase directo como el resto de las lecturas:
+/// la RLS de `telegram_vinculos` solo permite SELECT, porque la escribe el
+/// bridge como `postgres`. Un DELETE desde el front no borraria nada.
+/// </remarks>
+api.MapDelete("/telegram/vinculos/{chatId:long}", async (
+    long chatId,
+    HttpContext ctx,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    // El usuarioId sale del JWT y el bridge lo exige: sin eso, cualquiera con
+    // sesion podria desatar el chat de otro pasando su chatId.
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId))
+    {
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        var fue = await bridge.DesvincularTelegramAsync(chatId, usuarioId, ct);
+        // 404 y no 200 cuando no habia nada: pedir borrar un chat que no es
+        // tuyo y que conteste "listo" haria creer que se borro algo.
+        return fue
+            ? Results.Ok(new { estado = "ok" })
+            : Results.NotFound(new { code = "no_esta", message = "ese chat no esta vinculado a tu cuenta" });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        app.Logger.LogError(ex, "no se pudo desvincular el chat {ChatId}", chatId);
+        return Results.Json(
+            new { code = "bridge_unavailable", message = "no pude desvincular el chat" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
 // --- el front -------------------------------------------------------------
 //
 // En el despliegue de hoy esto NO sirve nada: el front vive en su propio repo y
