@@ -153,9 +153,10 @@ public sealed class DocumentosFalso : IDocumentosClient
         string jwt, string proyectoId, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyList<DocumentoDelTurno>>(ParaTurno);
 
-    public Task<string?> UrlDeDescargaAsync(
+    /// <summary>Bytes de mentira: alcanza para saber que la descarga sale.</summary>
+    public Task<byte[]?> DescargarAsync(
         string jwt, string proyectoId, string nombre, CancellationToken ct = default)
-        => Task.FromResult<string?>($"https://firmada.test/{nombre}");
+        => Task.FromResult<byte[]?>(System.Text.Encoding.UTF8.GetBytes($"contenido de {nombre}"));
 }
 
 /// <summary>El conversor que siempre puede. Los tests que necesitan un fallo lo pisan.</summary>

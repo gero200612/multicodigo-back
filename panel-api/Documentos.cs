@@ -18,7 +18,10 @@ public sealed record Documento(
     [property: JsonPropertyName("error")] string? Error = null);
 
 /// <summary>Lo que viaja con el turno: el nombre y de dónde bajarlo.</summary>
-public sealed record DocumentoDelTurno(string Nombre, string Url, string? UrlTexto);
+/// <summary>
+/// Un documento tal como viaja al gateway: rutas en el disco, no URLs.
+/// </summary>
+public sealed record DocumentoDelTurno(string Nombre, string Ruta, string? RutaTexto);
 
 /// <summary>
 /// Los documentos de cada proyecto: la tabla y los archivos.
@@ -56,14 +59,22 @@ public interface IDocumentosClient
         string jwt, string proyectoId, CancellationToken ct = default);
 
     /// <summary>Una URL temporal para descargar el original desde el panel.</summary>
-    Task<string?> UrlDeDescargaAsync(
+    Task<byte[]?> DescargarAsync(
         string jwt, string proyectoId, string nombre, CancellationToken ct = default);
 }
 
 public sealed class DocumentosClient(
     HttpClient http, string anonKey, ILogger<DocumentosClient> log) : IDocumentosClient
 {
-    private const string Bucket = "documentos";
+    /// <summary>
+    /// Dónde viven los documentos en el disco del servidor.
+    /// </summary>
+    /// <remarks>
+    /// El gateway monta este mismo directorio y lee de ahí. Se puede mover con
+    /// DOCS_ROOT para un despliegue con otra estructura.
+    /// </remarks>
+    private static readonly string RaizDocs =
+        Environment.GetEnvironmentVariable("DOCS_ROOT") is { Length: > 0 } r ? r : "/srv/docs";
 
     /// <summary>
     /// Cuánto vive una URL firmada.
@@ -169,22 +180,43 @@ public sealed class DocumentosClient(
             : new Documento(f.Id, f.Nombre, f.NombreOriginal, f.Tipo, f.Bytes, f.Error);
     }
 
+    /// <summary>
+    /// Escribe el archivo en el disco del servidor.
+    /// </summary>
+    /// <remarks>
+    /// En disco y no en Supabase Storage. El panel y el gateway corren en la
+    /// misma máquina y montan el mismo directorio, así que Storage era mandar
+    /// el archivo a internet para que el gateway lo bajara tres líneas después
+    /// — con una URL firmada por documento y por turno, y una service_role que
+    /// este proceso tenía negada por diseño.
+    ///
+    /// El escape de la ruta se chequea igual: `ruta` la arma este proceso a
+    /// partir del id del proyecto y un nombre ya validado, pero un archivo que
+    /// se escribe fuera de su directorio es un agujero demasiado caro como para
+    /// depender de que quien llame lo haya hecho bien.
+    /// </remarks>
     private async Task GuardarArchivoAsync(
         string jwt, string ruta, byte[] datos, CancellationToken ct)
     {
-        var req = Pedido(HttpMethod.Post, $"/storage/v1/object/{Bucket}/{ruta}", jwt);
-        // `x-upsert` para que reemplazar un documento no falle contra el archivo
-        // que ya está: la fila hace upsert, y sin esto las dos mitades quedarían
-        // desincronizadas.
-        req.Headers.TryAddWithoutValidation("x-upsert", "true");
-        req.Content = new ByteArrayContent(datos);
-        req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-
-        var res = await http.SendAsync(req, ct);
-        if (!res.IsSuccessStatusCode)
+        var destino = Path.GetFullPath(Path.Combine(RaizDocs, ruta));
+        var raiz = Path.GetFullPath(RaizDocs);
+        if (!destino.StartsWith(raiz + Path.DirectorySeparatorChar, StringComparison.Ordinal))
         {
-            var detalle = await res.Content.ReadAsStringAsync(ct);
-            log.LogError("no se pudo subir {Ruta}: {Status} {Detalle}", ruta, (int)res.StatusCode, detalle);
+            log.LogError("ruta de documento fuera de la raíz: {Ruta}", ruta);
+            throw new UpstreamException("archivo_no_subido");
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(destino)!);
+            // Sobrescribe: reemplazar un documento no puede fallar contra el
+            // archivo que ya está. La fila hace upsert, y si esto no lo hiciera
+            // las dos mitades quedarían desincronizadas.
+            await File.WriteAllBytesAsync(destino, datos, ct);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            log.LogError(e, "no se pudo escribir {Ruta}", ruta);
             throw new UpstreamException("archivo_no_subido");
         }
     }
@@ -211,10 +243,10 @@ public sealed class DocumentosClient(
         {
             try
             {
-                await http.SendAsync(
-                    Pedido(HttpMethod.Delete, $"/storage/v1/object/{Bucket}/{ruta}", jwt), ct);
+                var destino = RutaSegura(ruta);
+                if (destino is not null) File.Delete(destino);
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 log.LogWarning(ex, "quedo un archivo huerfano en {Ruta}", ruta);
             }
@@ -226,51 +258,66 @@ public sealed class DocumentosClient(
     {
         try
         {
+            // La ruta viaja tal cual: el gateway lee el archivo del disco que
+            // los dos montan. Antes se firmaba una URL de Storage por documento
+            // y por turno para mover un archivo entre dos procesos de la misma
+            // máquina.
             var filas = await FilasAsync(jwt, proyectoId, ct);
-            var salida = new List<DocumentoDelTurno>();
-            foreach (var f in filas)
-            {
-                var url = await FirmarAsync(jwt, f.Ruta, ct);
-                if (url is null) continue;
-                salida.Add(new DocumentoDelTurno(
-                    f.Nombre, url,
-                    f.RutaTexto is null ? null : await FirmarAsync(jwt, f.RutaTexto, ct)));
-            }
-            return salida;
+            return filas
+                .Select(f => new DocumentoDelTurno(f.Nombre, f.Ruta, f.RutaTexto))
+                .ToList();
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
             // Sin documentos el turno corre igual: el agente trabaja sobre el
             // código y nada más, que es como funcionaba antes de esta feature.
-            log.LogWarning(ex, "no se pudieron firmar los documentos de {Proyecto}", proyectoId);
+            log.LogWarning(ex, "no se pudieron leer los documentos de {Proyecto}", proyectoId);
             return [];
         }
     }
 
-    public async Task<string?> UrlDeDescargaAsync(
+    /// <summary>
+    /// El archivo, para que el panel lo sirva.
+    /// </summary>
+    /// <remarks>
+    /// Antes esto devolvía una URL firmada de Storage y el navegador iba a
+    /// buscarla directo, con el argumento de que el panel no tiene que hacer de
+    /// proxy de 20 MB. Sin Storage ese atajo no existe: el archivo está en un
+    /// disco que solo este proceso ve, así que lo sirve él.
+    ///
+    /// El costo es real y acotado — 20 MB es el tope de subida, y una descarga
+    /// es algo que alguien pide a mano, no algo que pase en cada turno.
+    /// </remarks>
+    public async Task<byte[]?> DescargarAsync(
         string jwt, string proyectoId, string nombre, CancellationToken ct = default)
-        => await FirmarAsync(jwt, $"{proyectoId}/{nombre}", ct);
-
-    private sealed record RespuestaFirma([property: JsonPropertyName("signedURL")] string? SignedUrl);
-
-    private async Task<string?> FirmarAsync(string jwt, string ruta, CancellationToken ct)
     {
-        var req = Pedido(HttpMethod.Post, $"/storage/v1/object/sign/{Bucket}/{ruta}", jwt);
-        req.Content = JsonContent.Create(new { expiresIn = SegundosDeUrl }, options: Json.Opciones);
-
-        var res = await http.SendAsync(req, ct);
-        if (!res.IsSuccessStatusCode)
+        var destino = RutaSegura($"{proyectoId}/{nombre}");
+        if (destino is null || !File.Exists(destino)) return null;
+        try
         {
-            log.LogWarning("no se pudo firmar {Ruta}: {Status}", ruta, (int)res.StatusCode);
+            return await File.ReadAllBytesAsync(destino, ct);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            log.LogWarning(ex, "no se pudo leer {Nombre}", nombre);
             return null;
         }
+    }
 
-        var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaFirma>(Json.Opciones, ct);
-        if (cuerpo?.SignedUrl is null) return null;
-
-        // Supabase devuelve la URL relativa al endpoint de storage. El gateway
-        // corre en otra máquina, así que necesita la absoluta.
-        var basePath = http.BaseAddress?.ToString().TrimEnd('/') ?? "";
-        return $"{basePath}/storage/v1{cuerpo.SignedUrl}";
+    /// <summary>
+    /// La ruta absoluta de un documento, o null si se escapa de la raíz.
+    /// </summary>
+    /// <remarks>
+    /// `ruta` la arma este proceso con el id del proyecto y un nombre ya
+    /// validado, pero escribir o borrar fuera del directorio es un agujero
+    /// demasiado caro como para depender de que quien llame lo haya hecho bien.
+    /// </remarks>
+    private static string? RutaSegura(string ruta)
+    {
+        var raiz = Path.GetFullPath(RaizDocs);
+        var destino = Path.GetFullPath(Path.Combine(raiz, ruta));
+        return destino.StartsWith(raiz + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            ? destino
+            : null;
     }
 }

@@ -433,14 +433,14 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
                 // gateway sin mirarlo, y el gateway NO se lo pasa al agente.
                 // Null cuando el proyecto no instalo la App: ahi se va por SSH.
                 githubToken,
-                // Los documentos, con URLs firmadas que vencen en una hora. El
-                // gateway los baja a `_docs` del worktree y el agente los lee
-                // como un archivo mas.
+                // Los documentos, como RUTAS en el disco del servidor. El
+                // gateway monta el mismo directorio, los copia a `_docs` del
+                // worktree y el agente los lee como un archivo mas.
                 documentos = documentos.Select(d => new
                 {
                     nombre = d.Nombre,
-                    url = d.Url,
-                    url_texto = d.UrlTexto,
+                    ruta = d.Ruta,
+                    ruta_texto = d.RutaTexto,
                 }),
             },
             Json.Opciones,

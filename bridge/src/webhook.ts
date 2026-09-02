@@ -179,14 +179,15 @@ export function buildWebhookServer(
         // los reenvia al gateway, que los baja al worktree.
         //
         // La `url` se valida como URL a secas y no contra un host: es una URL
-        // firmada de Supabase Storage y el bridge no tiene por que conocer ese
-        // dominio. Quien la usa es el gateway.
+        // La RUTA en el disco del servidor, no una URL: el panel deja el
+        // archivo en un directorio que el gateway tambien monta. El bridge solo
+        // la reenvia; quien la lee es el gateway, que sabe cual es la raiz.
         documentos: z
           .array(
             z.object({
               nombre: z.string().regex(/^[A-Za-z0-9._-]+$/).max(200),
-              url: z.string().url(),
-              url_texto: z.string().url().nullable().optional(),
+              ruta: z.string().min(1).max(500),
+              ruta_texto: z.string().min(1).max(500).nullable().optional(),
             }),
           )
           .max(50)

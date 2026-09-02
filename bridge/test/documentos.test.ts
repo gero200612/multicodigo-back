@@ -179,30 +179,51 @@ describe('guardarDocumento', () => {
 });
 
 describe('documentosDelTurno', () => {
-  it('devuelve las URLs firmadas y absolutas', async () => {
+  /**
+   * La ruta viaja tal cual: no se firma nada.
+   *
+   * El gateway lee el archivo del disco —el panel lo dejo en un directorio que
+   * los dos montan— asi que firmar una URL de Storage por documento era mandar
+   * un archivo a internet para traerlo de vuelta entre dos procesos de la misma
+   * maquina.
+   */
+  it('devuelve las rutas del disco, sin firmar nada', async () => {
     const f = vi.fn(async (url: string, _init?: RequestInit) => {
       if (String(url).includes('/rest/v1/documentos')) {
         return new Response(
-          JSON.stringify([{ nombre: 'pliego.pdf', ruta: `${PROYECTO}/pliego.pdf`, ruta_texto: `${PROYECTO}/pliego.pdf.md` }]),
+          JSON.stringify([
+            { nombre: 'pliego.pdf', ruta: `${PROYECTO}/pliego.pdf`, ruta_texto: `${PROYECTO}/pliego.pdf.md` },
+          ]),
           { status: 200 },
         );
       }
-      return new Response(JSON.stringify({ signedURL: '/object/sign/documentos/x?token=t' }), {
-        status: 200,
-      });
+      throw new Error('no deberia pedir nada mas: firmar una URL ya no existe');
     });
 
     const docs = await documentosDelTurno(PROYECTO, deps(f));
 
-    // Absolutas: el gateway corre en otro contenedor y no puede resolver una
-    // ruta relativa al endpoint de storage.
     expect(docs).toEqual([
       {
         nombre: 'pliego.pdf',
-        url: 'https://proj.supabase.co/storage/v1/object/sign/documentos/x?token=t',
-        url_texto: 'https://proj.supabase.co/storage/v1/object/sign/documentos/x?token=t',
+        ruta: `${PROYECTO}/pliego.pdf`,
+        ruta_texto: `${PROYECTO}/pliego.pdf.md`,
       },
     ]);
+    // Una sola llamada: la de leer la tabla. Antes eran tres.
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  // Un documento sin conversion a texto viaja igual: el agente no lo puede
+  // leer, pero lo puede citar.
+  it('un documento sin .md viaja con ruta_texto en null', async () => {
+    const f = vi.fn(async () =>
+      new Response(
+        JSON.stringify([{ nombre: 'foto.pdf', ruta: `${PROYECTO}/foto.pdf`, ruta_texto: null }]),
+        { status: 200 },
+      ),
+    );
+    const docs = await documentosDelTurno(PROYECTO, deps(f));
+    expect(docs).toEqual([{ nombre: 'foto.pdf', ruta: `${PROYECTO}/foto.pdf`, ruta_texto: null }]);
   });
 
   it('devuelve vacio si Supabase no contesta, sin tirar', async () => {

@@ -257,28 +257,10 @@ export async function guardarDocumento(
 
 export interface DocumentoDelTurno {
   nombre: string;
-  url: string;
-  url_texto?: string | null;
-}
-
-async function firmar(ruta: string, deps: DocumentosDeps): Promise<string | undefined> {
-  const doFetch = deps.fetchImpl ?? fetch;
-  try {
-    const res = await doFetch(`${deps.supabaseUrl}/storage/v1/object/sign/${BUCKET}/${ruta}`, {
-      method: 'POST',
-      headers: { ...cabeceras(deps), 'content-type': 'application/json' },
-      body: JSON.stringify({ expiresIn: SEGUNDOS_DE_URL }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return undefined;
-    const cuerpo = (await res.json()) as { signedURL?: string };
-    if (!cuerpo.signedURL) return undefined;
-    // Supabase devuelve la URL relativa al endpoint de storage; el gateway
-    // corre en otro contenedor y necesita la absoluta.
-    return `${deps.supabaseUrl}/storage/v1${cuerpo.signedURL}`;
-  } catch {
-    return undefined;
-  }
+  /** Donde esta el archivo, relativo a la raiz de documentos del servidor. */
+  ruta: string;
+  /** La version en texto (.md), si el conversor la pudo hacer. */
+  ruta_texto?: string | null;
 }
 
 /**
@@ -311,19 +293,17 @@ export async function documentosDelTurno(
       ruta_texto: string | null;
     }>;
 
-    const salida: DocumentoDelTurno[] = [];
-    for (const f of filas) {
-      const url = await firmar(f.ruta, deps);
-      // Sin URL no viaja: el gateway lo tomaria por un documento que no se pudo
-      // bajar y anotaria un aviso por algo que ya sabemos aca.
-      if (!url) continue;
-      salida.push({
-        nombre: f.nombre,
-        url,
-        url_texto: f.ruta_texto ? await firmar(f.ruta_texto, deps) : null,
-      });
-    }
-    return salida;
+    // La ruta viaja tal cual, sin firmar nada.
+    //
+    // El gateway lee el archivo del disco: el panel lo dejo en un directorio
+    // que los dos montan. Antes se firmaba una URL de Storage por documento
+    // —dos llamadas mas por turno— para mandar un archivo entre dos procesos de
+    // la misma maquina.
+    return filas.map((f) => ({
+      nombre: f.nombre,
+      ruta: f.ruta,
+      ruta_texto: f.ruta_texto,
+    }));
   } catch {
     return [];
   }

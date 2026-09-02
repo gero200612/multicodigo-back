@@ -60,7 +60,7 @@ export interface PipelineDeps {
    * —o al panel— se guardaba y el agente igual no lo veia.
    */
   documentosDelTurno?: (proyectoId: string) => Promise<
-    Array<{ nombre: string; url: string; url_texto?: string | null }>
+    Array<{ nombre: string; ruta: string; ruta_texto?: string | null }>
   >;
   transcribe: (bytes: Uint8Array, mimeType: string) => Promise<string>;
   /**
@@ -565,7 +565,7 @@ export type PromptConToken = PromptRequest & {
    * un modelo se retira.
    */
   modelo?: ClaveDeModelo;
-  documentos?: Array<{ nombre: string; url: string; url_texto?: string | null }>;
+  documentos?: Array<{ nombre: string; ruta: string; ruta_texto?: string | null }>;
 };
 
 export interface Turno {
@@ -617,7 +617,7 @@ export interface Turno {
    * El bridge no los mira ni los guarda: los reenvia al gateway, igual que el
    * token. Las URLs vencen en una hora, asi que no sirven guardadas.
    */
-  documentos?: Array<{ nombre: string; url: string; url_texto?: string | null }>;
+  documentos?: Array<{ nombre: string; ruta: string; ruta_texto?: string | null }>;
 }
 
 /**

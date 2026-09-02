@@ -975,12 +975,14 @@ api.MapGet("/proyectos/{proyectoId}/documentos/{nombre}/descarga", async (
         return Results.BadRequest(new { code = "nombre_invalido", message = "ese nombre no es valido" });
     }
 
-    // Una URL firmada y no el archivo por aca: el panel no tiene que hacer de
-    // proxy de 20 MB, y la URL vence en una hora.
-    var url = await documentos.UrlDeDescargaAsync(jwt, proyectoId, nombre, ct);
-    return url is null
+    // El archivo por aca y no una URL firmada: desde que los documentos viven
+    // en el disco del servidor, no hay a donde mandar al navegador. El tope de
+    // subida son 20 MB y una descarga la pide alguien a mano, asi que el costo
+    // de hacer de proxy esta acotado.
+    var datos = await documentos.DescargarAsync(jwt, proyectoId, nombre, ct);
+    return datos is null
         ? Results.NotFound(new { code = "no_esta", message = "ese documento no existe" })
-        : Results.Ok(new { url });
+        : Results.File(datos, "application/octet-stream", nombre);
 });
 
 api.MapDelete("/proyectos/{proyectoId}/documentos/{nombre}", async (
