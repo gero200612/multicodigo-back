@@ -1214,3 +1214,64 @@ describe('el menu principal', () => {
     expect(r.kind).toBe('menu');
   });
 });
+
+describe('/modelo: con que modelo escribe la IA', () => {
+  it('sin haber elegido, no afirma ningun modelo', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/modelo' }, d);
+    expect(r).toEqual({ kind: 'modelo', modelo: undefined, cambiado: false });
+  });
+
+  it('cambia el modelo y lo confirma', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/modelo sonnet' }, d);
+    expect(r).toEqual({ kind: 'modelo', modelo: 'sonnet', cambiado: true });
+  });
+
+  // Lo que hace que sirva: la clave tiene que LLEGAR al turno.
+  it('el modelo elegido viaja en el turno', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/modelo haiku' }, d);
+    await handleIncoming({ chatId: 7, messageId: 2, text: 'arregla el stock' }, d);
+
+    expect(d.ask.mock.calls[0]![0]).toMatchObject({ modelo: 'haiku' });
+  });
+
+  // Se manda la CLAVE y no el id: el id lo resuelve el agente, que es quien
+  // habla con el SDK.
+  it('viaja la clave, no el id del modelo', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/modelo opus' }, d);
+    await handleIncoming({ chatId: 7, messageId: 2, text: 'hola' }, d);
+
+    expect(d.ask.mock.calls[0]![0].modelo).toBe('opus');
+    expect(d.ask.mock.calls[0]![0].modelo).not.toContain('claude-');
+  });
+
+  it('sin elegir, el turno no fuerza ningun modelo', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
+    expect(d.ask.mock.calls[0]![0].modelo).toBeUndefined();
+  });
+
+  it('el modelo es de cada chat', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+    const codigo = await d.store.crearCodigoVinculacion(8, 10);
+    await d.store.canjearCodigo(codigo, '22222222-2222-4222-8222-222222222222');
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/modelo haiku' }, d);
+    const otro = await handleIncoming({ chatId: 8, messageId: 1, text: '/modelo' }, d);
+    expect(otro).toEqual({ kind: 'modelo', modelo: undefined, cambiado: false });
+  });
+});

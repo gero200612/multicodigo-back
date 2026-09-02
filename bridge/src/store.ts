@@ -94,6 +94,17 @@ export function recortar(texto: string): string {
 export const MODOS_PERMISO = ['preguntar', 'ediciones', 'todo'] as const;
 export type ModoPermiso = (typeof MODOS_PERMISO)[number];
 
+/**
+ * Las claves de modelo, espejadas de `MODELOS` en el agente
+ * (`src/agent/src/modelos.ts`) y del CHECK de la migracion 019.
+ *
+ * Claves y no ids: el id del modelo vive del lado del agente, que es quien
+ * habla con el SDK. Guardar un id aca dejaria filas apuntando a modelos
+ * retirados que nadie sabria traducir.
+ */
+export const CLAVES_DE_MODELO = ['opus', 'sonnet', 'haiku'] as const;
+export type ClaveDeModelo = (typeof CLAVES_DE_MODELO)[number];
+
 export interface Proyecto {
   id: string;
   nombre: string;
@@ -327,6 +338,15 @@ export interface Store {
    */
   modoDeChat(chatId: number): Promise<ModoPermiso | undefined>;
   setModoDeChat(chatId: number, modo: ModoPermiso): Promise<void>;
+  /**
+   * Con que modelo corre este chat.
+   *
+   * `undefined` = nunca lo eligio, y el turno usa el default del CLI. No se
+   * devuelve un default aca: el dia que el CLI cambie el suyo, un valor
+   * nuestro lo estaria pisando sin que nadie lo haya pedido.
+   */
+  modeloDeChat(chatId: number): Promise<ClaveDeModelo | undefined>;
+  setModeloDeChat(chatId: number, modelo: ClaveDeModelo): Promise<void>;
   /** Un codigo de un solo uso para vincular este chat. */
   crearCodigoVinculacion(chatId: number, minutos: number): Promise<string>;
   /**
@@ -578,6 +598,16 @@ export class InMemoryStore implements Store {
 
   async setModoDeChat(chatId: number, modo: ModoPermiso): Promise<void> {
     this.modos.set(chatId, modo);
+  }
+
+  private modelos = new Map<number, ClaveDeModelo>();
+
+  async modeloDeChat(chatId: number): Promise<ClaveDeModelo | undefined> {
+    return this.modelos.get(chatId);
+  }
+
+  async setModeloDeChat(chatId: number, modelo: ClaveDeModelo): Promise<void> {
+    this.modelos.set(chatId, modelo);
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {
@@ -1104,6 +1134,22 @@ export class PgStore implements Store {
       `INSERT INTO telegram_modo (chat_id, modo) VALUES ($1, $2)
        ON CONFLICT (chat_id) DO UPDATE SET modo = $2, cambiado_en = now()`,
       [chatId, modo],
+    );
+  }
+
+  async modeloDeChat(chatId: number): Promise<ClaveDeModelo | undefined> {
+    const r = await this.pool.query<{ modelo: ClaveDeModelo }>(
+      'SELECT modelo FROM telegram_modelo WHERE chat_id = $1',
+      [chatId],
+    );
+    return r.rows[0]?.modelo;
+  }
+
+  async setModeloDeChat(chatId: number, modelo: ClaveDeModelo): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO telegram_modelo (chat_id, modelo) VALUES ($1, $2)
+       ON CONFLICT (chat_id) DO UPDATE SET modelo = $2, cambiado_en = now()`,
+      [chatId, modelo],
     );
   }
 

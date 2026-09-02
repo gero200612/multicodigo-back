@@ -47,7 +47,15 @@ export async function askAgent(
       ...headersDeQuien(quien),
     },
     body: JSON.stringify(req),
-    signal: AbortSignal.timeout(11 * 60 * 1000),
+    // 20 minutos, y el numero no es libre: tiene que ser mayor que el
+    // AGENT_TIMEOUT_MS del gateway (18 min), que a su vez es mayor que los 15
+    // que el agente espera una aprobacion. El de afuera aguanta mas que el de
+    // adentro, o el de afuera convierte una espera legitima en un error de red.
+    //
+    // Con 11 min este era el segundo eslabon en rendirse: un turno frenado
+    // esperando un OK moria aca o en el gateway —los dos por debajo de los 15—
+    // y llegaba como "fetch failed".
+    signal: AbortSignal.timeout(20 * 60 * 1000),
   });
 
   const text = await response.text();

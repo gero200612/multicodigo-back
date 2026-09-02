@@ -17,7 +17,7 @@ import {
   datosDeMenu,
 } from './menu.js';
 import type { Boton } from './render.js';
-import type { Store, Proyecto, ModoPermiso } from './store.js';
+import type { Store, Proyecto, ModoPermiso, ClaveDeModelo } from './store.js';
 import type { Quien } from './agents-client.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
@@ -109,6 +109,13 @@ export type PipelineOutcome =
    * seria mentir.
    */
   | { kind: 'permisos'; modo: ModoPermiso; cambiado: boolean }
+  /**
+   * Con que modelo corre el chat.
+   *
+   * `modelo` puede faltar y eso es informacion: significa "el default del
+   * CLI". Resolverlo a uno concreto aca seria inventar cual es.
+   */
+  | { kind: 'modelo'; modelo?: ClaveDeModelo; cambiado: boolean }
   | { kind: 'project'; project: string }
   /** El chat no esta atado a ninguna cuenta del panel. */
   | { kind: 'sin_vincular'; yaEstaba: boolean }
@@ -172,6 +179,15 @@ const ERROR_TEXT: Record<string, string> = {
   agent_timeout:
     'El agente tardo mas de lo que puedo esperar, asi que solte la espera. ' +
     'Igual sigue trabajando: preguntale con /status o escribile en un rato.',
+  // `fetch failed` es lo que tira undici cuando el gateway no contesta a
+  // tiempo, y llegaba CRUDO: "Fallo el agente: fetch failed", que no le dice
+  // nada a nadie y suena a que se rompio la red. Casi siempre es lo mismo que
+  // agent_timeout —un turno que tardo mas que la espera— asi que se dice igual.
+  'fetch failed':
+    'Perdi la conexion con el agente mientras trabajaba. ' +
+    'Puede seguir andando: preguntale con /status o escribile en un rato.',
+  agent_unavailable_timeout:
+    'El agente tardo demasiado y solte la espera. Fijate con /status si sigue trabajando.',
   unknown_agent: 'Ese agente no existe.',
   unknown_project: 'Ese proyecto no esta configurado en el agente.',
   // Este mensaje dice QUE hacer y no solo que fallo. Sin el, el sintoma que
@@ -250,6 +266,12 @@ export async function handleIncoming(
     return { kind: 'project', project: activo };
   }
 
+  if (command.kind === 'modelo') {
+    if (command.modelo) await deps.store.setModeloDeChat(input.chatId, command.modelo);
+    const modelo = command.modelo ?? (await deps.store.modeloDeChat(input.chatId));
+    return { kind: 'modelo', modelo, cambiado: command.modelo !== undefined };
+  }
+
   if (command.kind === 'permisos') {
     if (command.modo) await deps.store.setModoDeChat(input.chatId, command.modo);
     // El actual, o el default del agente si nunca eligio. Se resuelve aca —y no
@@ -308,6 +330,8 @@ export async function handleIncoming(
   // con el default del agente, que es el estricto — se pregunta de mas, que es
   // el lado correcto para equivocarse.
   const modo = await deps.store.modoDeChat(input.chatId).catch(() => undefined);
+  // Igual que el modo: un fallo aca no voltea el turno, corre con el default.
+  const modelo = await deps.store.modeloDeChat(input.chatId).catch(() => undefined);
 
   try {
     const r = await ejecutarTurnoConRelevo(deps, {
@@ -317,6 +341,7 @@ export async function handleIncoming(
       usuarioId,
       prompt: command.text,
       modo,
+      modelo,
       repos,
       githubToken,
       documentos,
@@ -475,6 +500,14 @@ export type PromptConToken = PromptRequest & {
    * declara sin fallar.
    */
   modo?: ModoPermiso;
+  /**
+   * La CLAVE del modelo (`sonnet`), no su id.
+   *
+   * El id lo resuelve el agente contra su propia lista: es quien habla con el
+   * SDK, y mandarlo desde aca dejaria dos lugares que hay que actualizar cuando
+   * un modelo se retira.
+   */
+  modelo?: ClaveDeModelo;
   documentos?: Array<{ nombre: string; url: string; url_texto?: string | null }>;
 };
 
@@ -496,6 +529,8 @@ export interface Turno {
    * Ausente = el default del agente, que es el mas estricto.
    */
   modo?: ModoPermiso;
+  /** Con que modelo corre. Ausente = el default del CLI de Claude. */
+  modelo?: ClaveDeModelo;
   origen: 'telegram' | 'panel';
   /** Solo cuando viene de Telegram: para poder colgar el poller del mensaje. */
   chatId?: number;
@@ -714,6 +749,7 @@ export async function ejecutarTurno(
         // el modo lo necesita el agente, que es quien decide si pregunta. El
         // gateway le reenvia el cuerpo, asi que llega sin que nadie lo copie.
         modo: t.modo,
+        modelo: t.modelo,
       },
       { usuarioId: t.usuarioId, chatId: t.chatId },
     );

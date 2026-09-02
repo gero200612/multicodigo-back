@@ -8,6 +8,7 @@ import {
   TOPE_CALLBACK_DATA,
   tecladoDePermisos,
   tecladoDeAcciones,
+  tecladoDeModelos,
 } from '../src/menu.js';
 
 const UUID = '11111111-1111-4111-8111-111111111111';
@@ -196,5 +197,47 @@ describe('los botones del menu principal', () => {
     for (const fila of tecladoDeAcciones()) {
       expect(fila[0]!.data.length).toBeLessThanOrEqual(TOPE_CALLBACK_DATA);
     }
+  });
+});
+
+describe('los botones de modelo', () => {
+  it('ofrece los tres modelos y dice para que sirve cada uno', () => {
+    const filas = tecladoDeModelos(undefined);
+    expect(filas).toHaveLength(3);
+    // El nombre solo no alcanza para decidir: "Sonnet 5" no dice si conviene.
+    for (const f of filas) expect(f[0]!.label).toContain('—');
+  });
+
+  // Marcar uno cuando nadie eligio seria afirmar cual usa el CLI por default,
+  // que es justo lo que no sabemos.
+  it('sin eleccion no marca ninguno', () => {
+    const filas = tecladoDeModelos(undefined);
+    expect(filas.filter((f) => f[0]!.label.startsWith('◉'))).toHaveLength(0);
+    for (const f of filas) {
+      expect(parseMenuData(f[0]!.data)).toMatchObject({ kind: 'modelo' });
+    }
+  });
+
+  it('marca el actual y lo deja inerte', () => {
+    const filas = tecladoDeModelos('sonnet');
+    const actual = filas.find((f) => f[0]!.label.startsWith('◉'))!;
+    expect(actual[0]!.label).toContain('Sonnet');
+    expect(parseMenuData(actual[0]!.data)).toBeNull();
+  });
+
+  it('un modelo inventado no se parsea', () => {
+    expect(parseMenuData('q:gpt-4')).toBeNull();
+    expect(parseMenuData('q:')).toBeNull();
+  });
+
+  it('los botones caben en el tope de callback_data', () => {
+    for (const f of tecladoDeModelos('opus')) {
+      expect(f[0]!.data.length).toBeLessThanOrEqual(TOPE_CALLBACK_DATA);
+    }
+  });
+
+  it('el menu principal ofrece elegir el modelo', () => {
+    const datos = tecladoDeAcciones().map((f) => parseMenuData(f[0]!.data));
+    expect(datos).toContainEqual({ kind: 'accion', accion: 'modelo' });
   });
 });

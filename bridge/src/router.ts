@@ -1,5 +1,5 @@
 import { AgentId } from '@multicodigo/shared';
-import { MODOS_PERMISO, type ModoPermiso } from './store.js';
+import { MODOS_PERMISO, CLAVES_DE_MODELO, type ModoPermiso, type ClaveDeModelo } from './store.js';
 
 export type ParsedCommand =
   | { kind: 'prompt'; agent: AgentId | undefined; text: string }
@@ -23,6 +23,8 @@ export type ParsedCommand =
    * escribe mal.
    */
   | { kind: 'permisos'; modo: ModoPermiso | undefined }
+  /** Con que modelo escribe la IA. Sin `modelo`, muestra el actual. */
+  | { kind: 'modelo'; modelo: ClaveDeModelo | undefined }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
   | { kind: 'vincular' }
   /**
@@ -61,6 +63,14 @@ export function parseCommand(raw: string): ParsedCommand {
   const rest = (match[2] ?? '').trim();
 
   if (command === 'status') return { kind: 'status' };
+
+  if (command === 'modelo' || command === 'modelos') {
+    if (rest === '') return { kind: 'modelo', modelo: undefined };
+    const m = rest.toLowerCase();
+    return (CLAVES_DE_MODELO as readonly string[]).includes(m)
+      ? { kind: 'modelo', modelo: m as ClaveDeModelo }
+      : { kind: 'prompt', agent: undefined, text };
+  }
 
   if (command === 'permisos') {
     if (rest === '') return { kind: 'permisos', modo: undefined };

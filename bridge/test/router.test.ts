@@ -150,3 +150,23 @@ describe('/permisos', () => {
     });
   });
 });
+
+describe('/modelo', () => {
+  it('sin argumento muestra el actual', () => {
+    expect(parseCommand('/modelo')).toEqual({ kind: 'modelo', modelo: undefined });
+  });
+
+  it('con una clave la cambia', () => {
+    expect(parseCommand('/modelo sonnet')).toEqual({ kind: 'modelo', modelo: 'sonnet' });
+    expect(parseCommand('/modelo Opus')).toEqual({ kind: 'modelo', modelo: 'opus' });
+  });
+
+  // Un id completo no es una clave: la traduccion vive del lado del agente.
+  it('un id de modelo no es una clave valida', () => {
+    expect(parseCommand('/modelo claude-opus-5')).toEqual({
+      kind: 'prompt',
+      agent: undefined,
+      text: '/modelo claude-opus-5',
+    });
+  });
+});

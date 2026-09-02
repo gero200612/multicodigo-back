@@ -2,11 +2,18 @@ import { Bot, InlineKeyboard } from 'grammy';
 import type { AgentId, ApprovalDecision, ApprovalRequest } from '@multicodigo/shared';
 import type { PipelineDeps, PipelineOutcome } from './pipeline.js';
 import { handleIncoming, armarMenu, armarMenuDeAgentes } from './pipeline.js';
-import { parseMenuData, tecladoDePermisos, NOMBRE_DE_MODO, type MenuData } from './menu.js';
+import {
+  parseMenuData,
+  tecladoDePermisos,
+  tecladoDeModelos,
+  NOMBRE_DE_MODO,
+  NOMBRE_DE_MODELO,
+  type MenuData,
+} from './menu.js';
 import { saludo, encabezadoDeMenu, NOMBRE } from './identidad.js';
 import { MAXIMO_BYTES, TIPOS, tipoDe } from './documentos.js';
 import type { Boton } from './render.js';
-import type { ModoPermiso } from './store.js';
+import type { ModoPermiso, ClaveDeModelo } from './store.js';
 import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
 import { decidir } from './decisiones.js';
@@ -32,6 +39,8 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return textoDeActivos(outcome.primario, outcome.otros);
     case 'permisos':
       return textoDePermisos(outcome.modo, outcome.cambiado);
+    case 'modelo':
+      return textoDeModelo(outcome.modelo, outcome.cambiado);
     case 'menu':
       // `/start` se presenta; `/menu` no. Ver `identidad.ts`.
       return outcome.saluda ? saludo() : encabezadoDeMenu();
@@ -118,6 +127,32 @@ export function textoDePermisos(modo: ModoPermiso, cambiado: boolean): string {
 }
 
 /**
+ * Con que modelo escribe la IA.
+ *
+ * Cuando nadie eligio se dice ASI, y no se nombra un modelo: el turno corre con
+ * el default del CLI de Claude, y afirmar cual es seria inventarlo — el dia que
+ * el CLI cambie el suyo, el cartel estaria mintiendo.
+ */
+export function textoDeModelo(modelo: ClaveDeModelo | undefined, cambiado: boolean): string {
+  if (!modelo) {
+    return [
+      'Estas usando el modelo que viene por defecto.',
+      '',
+      'Podes elegir otro: uno mas capaz para lo dificil, o uno mas barato para lo simple.',
+    ].join('\n');
+  }
+  const m = NOMBRE_DE_MODELO[modelo];
+  return [
+    cambiado ? 'Listo, cambie el modelo.' : 'Este es el modelo que estas usando.',
+    '',
+    `<b>${m.nombre}</b>`,
+    m.para,
+    '',
+    'Cambiarlo no borra la conversacion: el agente sigue el mismo hilo.',
+  ].join('\n');
+}
+
+/**
  * Hace cuanto que alguien tiene el slot, en palabras.
  *
  * Importa mas de lo que parece: "hace 1 min" invita a esperar y "hace 40 min"
@@ -172,7 +207,8 @@ function usaHtml(outcome: PipelineOutcome): boolean {
     // El nombre del bot va en negrita: es lo que separa "esto lo dice Punchi"
     // de "esto lo contesto el agente".
     outcome.kind === 'menu' ||
-    outcome.kind === 'permisos'
+    outcome.kind === 'permisos' ||
+    outcome.kind === 'modelo'
   );
 }
 
@@ -180,9 +216,13 @@ function usaHtml(outcome: PipelineOutcome): boolean {
 function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
   // El de permisos se arma con el modo actual y no viene en el outcome: es el
   // unico teclado que depende de un valor y no de una lista.
-  if (outcome.kind === 'permisos') {
+  if (outcome.kind === 'permisos' || outcome.kind === 'modelo') {
+    const filas =
+      outcome.kind === 'permisos'
+        ? tecladoDePermisos(outcome.modo)
+        : tecladoDeModelos(outcome.modelo);
     const teclado = new InlineKeyboard();
-    for (const fila of tecladoDePermisos(outcome.modo)) {
+    for (const fila of filas) {
       for (const b of fila) teclado.text(b.label, b.data);
       teclado.row();
     }
@@ -327,6 +367,7 @@ const COMANDOS = [
   { command: 'status', description: 'Con qué agentes estás trabajando' },
   { command: 'cowork', description: 'Sumar o sacar un agente de este chat' },
   { command: 'permisos', description: 'Cuánto te pregunto antes de actuar' },
+  { command: 'modelo', description: 'Con qué modelo te contesto' },
   { command: 'vincular', description: 'Conectar este chat con tu cuenta del panel' },
 ];
 
@@ -673,6 +714,7 @@ async function manejarMenu(
       agentes: '/agente',
       proyectos: '/proyecto',
       permisos: '/permisos',
+      modelo: '/modelo',
       cowork: '/cowork',
       estado: '/status',
     };
@@ -682,6 +724,11 @@ async function manejarMenu(
 
   if (menu.kind === 'permiso') {
     await comoComando(`/permisos ${menu.modo}`);
+    return;
+  }
+
+  if (menu.kind === 'modelo') {
+    await comoComando(`/modelo ${menu.modelo}`);
     return;
   }
 

@@ -1,6 +1,13 @@
 import { AgentId } from '@multicodigo/shared';
 import type { Boton } from './render.js';
-import { MODOS_PERMISO, type ModoPermiso, type Proyecto, type AgenteResumen } from './store.js';
+import {
+  MODOS_PERMISO,
+  CLAVES_DE_MODELO,
+  type ModoPermiso,
+  type ClaveDeModelo,
+  type Proyecto,
+  type AgenteResumen,
+} from './store.js';
 
 /**
  * El tope que impone Telegram al callback_data de un boton.
@@ -40,6 +47,8 @@ const PERMISO = 'k';
  * opciones fijas del bot, no filas de una tabla.
  */
 const ACCION = 'z';
+/** Elegir con que modelo escribe la IA. */
+const MODELO = 'q';
 
 const ES_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -59,6 +68,41 @@ export function datosDePermiso(modo: ModoPermiso): string {
   return `${PERMISO}:${modo}`;
 }
 
+export function datosDeModelo(clave: ClaveDeModelo): string {
+  return `${MODELO}:${clave}`;
+}
+
+/**
+ * Como se llama cada modelo delante de una persona, y para que sirve.
+ *
+ * El "para que" y no solo el nombre: "Sonnet 5" no le dice a nadie si conviene
+ * usarlo, y la decision real es entre lo mejor, lo equilibrado y lo barato.
+ *
+ * Espeja `MODELOS` del agente (`src/agent/src/modelos.ts`), que es donde viven
+ * los ids. Aca solo estan las etiquetas.
+ */
+export const NOMBRE_DE_MODELO: Record<ClaveDeModelo, { nombre: string; para: string }> = {
+  opus: { nombre: 'Opus 5', para: 'lo mas capaz, para lo dificil' },
+  sonnet: { nombre: 'Sonnet 5', para: 'rapido y mucho mas barato' },
+  haiku: { nombre: 'Haiku 4.5', para: 'lo mas barato, para cosas simples' },
+};
+
+/**
+ * Los modelos como botones, con el actual marcado.
+ *
+ * `actual` puede faltar —nadie eligio— y entonces no se marca ninguno: marcar
+ * uno seria afirmar cual usa el CLI por default, que es justo lo que no
+ * sabemos.
+ */
+export function tecladoDeModelos(actual: ClaveDeModelo | undefined): Boton[][] {
+  return CLAVES_DE_MODELO.map((c) => [
+    {
+      label: `${c === actual ? '◉' : '○'} ${NOMBRE_DE_MODELO[c].nombre} — ${NOMBRE_DE_MODELO[c].para}`,
+      data: c === actual ? INERTE : datosDeModelo(c),
+    },
+  ]);
+}
+
 /**
  * Las cosas que se pueden hacer desde el menu principal.
  *
@@ -66,7 +110,14 @@ export function datosDePermiso(modo: ModoPermiso): string {
  * persona quiere, no de como esta implementado. `/menu` mostraba directamente
  * los agentes, que es un paso del medio: elegir agente es UNA de estas.
  */
-export const ACCIONES = ['agentes', 'proyectos', 'permisos', 'cowork', 'estado'] as const;
+export const ACCIONES = [
+  'agentes',
+  'proyectos',
+  'permisos',
+  'modelo',
+  'cowork',
+  'estado',
+] as const;
 export type Accion = (typeof ACCIONES)[number];
 
 export function datosDeAccion(accion: Accion): string {
@@ -79,6 +130,7 @@ export function tecladoDeAcciones(): Boton[][] {
     [{ label: '🤖 Elegir agente', data: datosDeAccion('agentes') }],
     [{ label: '📁 Cambiar de proyecto', data: datosDeAccion('proyectos') }],
     [{ label: '🔐 Permisos', data: datosDeAccion('permisos') }],
+    [{ label: '🧠 Modelo', data: datosDeAccion('modelo') }],
     [{ label: '👥 Trabajar con varios', data: datosDeAccion('cowork') }],
     [{ label: '📊 Ver estado', data: datosDeAccion('estado') }],
   ];
@@ -89,7 +141,8 @@ export type MenuData =
   | { kind: 'agente'; slot: AgentId }
   | { kind: 'menu' }
   | { kind: 'permiso'; modo: ModoPermiso }
-  | { kind: 'accion'; accion: Accion };
+  | { kind: 'accion'; accion: Accion }
+  | { kind: 'modelo'; modelo: ClaveDeModelo };
 
 /**
  * Lee lo que trae un boton.
@@ -124,6 +177,12 @@ export function parseMenuData(data: string): MenuData | null {
   if (prefijo === ACCION) {
     return (ACCIONES as readonly string[]).includes(resto)
       ? { kind: 'accion', accion: resto as Accion }
+      : null;
+  }
+
+  if (prefijo === MODELO) {
+    return (CLAVES_DE_MODELO as readonly string[]).includes(resto)
+      ? { kind: 'modelo', modelo: resto as ClaveDeModelo }
       : null;
   }
 
