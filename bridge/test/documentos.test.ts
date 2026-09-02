@@ -7,10 +7,22 @@ import {
   MAXIMO_BYTES,
 } from '../src/documentos.js';
 
-const deps = (fetchImpl: unknown) => ({
+/**
+ * Las deps con el disco falso.
+ *
+ * `escribir` puede fallar a pedido: es lo que reemplaza al "Storage devolvio
+ * 507" de cuando los archivos se subian a un bucket, y prueba lo mismo — que
+ * la fila no se escriba si el archivo no se pudo guardar.
+ */
+const deps = (fetchImpl: unknown, fallaEscribir = false) => ({
   supabaseUrl: 'https://proj.supabase.co',
   serviceKey: 'service-role-secreta',
   conversorUrl: 'http://conversor:8096',
+  docsRaiz: '/srv/docs',
+  crearDir: async () => {},
+  escribir: async () => {
+    if (fallaEscribir) throw new Error('no space left on device');
+  },
   fetchImpl: fetchImpl as never,
 });
 
@@ -87,12 +99,10 @@ describe('guardarDocumento', () => {
     expect(out.nombre).toBe('Pliego-Final.pdf');
     expect(out.error).toBeUndefined();
 
+    // Solo la fila va por HTTP; el archivo se escribe en el disco.
     const urls = f.mock.calls.map((c) => String(c[0]));
-    expect(urls).toContain(`https://proj.supabase.co/storage/v1/object/documentos/${PROYECTO}/Pliego-Final.pdf`);
-    // El .md pegado al nombre entero: asi precios.xlsx y precios.csv no se
-    // pisan en el bucket.
-    expect(urls).toContain(`https://proj.supabase.co/storage/v1/object/documentos/${PROYECTO}/Pliego-Final.pdf.md`);
     expect(urls).toContain('https://proj.supabase.co/rest/v1/documentos');
+    expect(urls.some((u) => u.includes('/storage/v1'))).toBe(false);
   });
 
   it('anota quien lo mando', async () => {
@@ -118,16 +128,16 @@ describe('guardarDocumento', () => {
       return new Response('{}', { status: 200 });
     });
 
+    const escritos: string[] = [];
     const out = await guardarDocumento(
       { proyectoId: PROYECTO, usuarioId: USUARIO, nombreOriginal: 'escaneo.pdf', datos: new Uint8Array([1]) },
-      deps(f),
+      { ...deps(f), escribir: async (ruta: string) => void escritos.push(ruta) } as never,
     );
 
     expect(out.error).toBe('el PDF es un escaneo');
-    // El original se subio; el .md no, porque no hay texto.
-    const urls = f.mock.calls.map((c) => String(c[0]));
-    expect(urls.some((u) => u.endsWith('escaneo.pdf'))).toBe(true);
-    expect(urls.some((u) => u.endsWith('escaneo.pdf.md'))).toBe(false);
+    // El original se escribio; el .md no, porque no hay texto.
+    expect(escritos.some((r) => r.endsWith('escaneo.pdf'))).toBe(true);
+    expect(escritos.some((r) => r.endsWith('escaneo.pdf.md'))).toBe(false);
   });
 
   it('rechaza un tipo que no se sabe leer, sin subir nada', async () => {
@@ -157,23 +167,22 @@ describe('guardarDocumento', () => {
     expect(f).not.toHaveBeenCalled();
   });
 
-  it('no escribe la fila si el archivo no se pudo subir', async () => {
+  it('no escribe la fila si el archivo no se pudo guardar', async () => {
     // Una fila que apunta a un archivo que no esta hace fallar el turno
-    // siguiente al bajarlo.
+    // siguiente al copiarlo al worktree.
     const f = vi.fn(async (url: string, _init?: RequestInit) => {
       if (String(url).includes('/convertir')) {
         return new Response(JSON.stringify({ texto: 'x' }), { status: 200 });
       }
-      if (String(url).includes('/storage/')) return new Response('lleno', { status: 507 });
       return new Response('{}', { status: 200 });
     });
 
     await expect(
       guardarDocumento(
         { proyectoId: PROYECTO, usuarioId: USUARIO, nombreOriginal: 'a.txt', datos: new Uint8Array([1]) },
-        deps(f),
+        deps(f, true),
       ),
-    ).rejects.toThrow('storage 507');
+    ).rejects.toThrow('no space left on device');
     expect(f.mock.calls.some((c) => String(c[0]).includes('/rest/v1/documentos'))).toBe(false);
   });
 });
@@ -233,5 +242,66 @@ describe('documentosDelTurno', () => {
       throw new Error('sin red');
     });
     await expect(documentosDelTurno(PROYECTO, deps(f))).resolves.toEqual([]);
+  });
+});
+
+/**
+ * Un archivo mandado al bot va al DISCO, igual que uno subido por el panel.
+ *
+ * Los dos caminos tienen que terminar en el mismo lugar: `_docs` del worktree.
+ * Cuando el panel dejo de usar Supabase Storage, este camino quedo escribiendo
+ * en el bucket —o sea, en un lugar que el gateway ya no mira— y un archivo
+ * mandado por Telegram se guardaba sin que el agente lo viera nunca.
+ */
+describe('guardarDocumento: al disco, no a Storage', () => {
+  const ENTRADA = {
+    proyectoId: PROYECTO,
+    usuarioId: '11111111-1111-4111-8111-111111111111',
+    nombreOriginal: 'pliego.pdf',
+    datos: new Uint8Array([1, 2, 3]),
+  };
+
+  function conEscritura() {
+    const escritos: Array<{ ruta: string; datos: Uint8Array }> = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      // La fila en la tabla sigue yendo por REST; lo que no puede pasar es un
+      // POST a /storage/v1.
+      if (String(url).includes('/storage/v1')) {
+        throw new Error('no deberia tocar Storage: los archivos van al disco');
+      }
+      return new Response('[]', { status: 201 });
+    });
+    return {
+      escritos,
+      deps: {
+        supabaseUrl: 'https://proj.supabase.co',
+        serviceKey: 'k',
+        docsRaiz: '/srv/docs',
+        crearDir: async () => {},
+        escribir: async (ruta: string, datos: Uint8Array) => {
+          escritos.push({ ruta, datos });
+        },
+        fetchImpl,
+      },
+    };
+  }
+
+  it('escribe el archivo bajo la raiz de documentos', async () => {
+    const { deps, escritos } = conEscritura();
+    await guardarDocumento(ENTRADA, deps as never);
+
+    expect(escritos[0]!.ruta).toBe(`/srv/docs/${PROYECTO}/pliego.pdf`);
+    expect(escritos[0]!.datos).toEqual(ENTRADA.datos);
+  });
+
+  // El mismo nombre dos veces reemplaza, no acumula: la fila hace upsert y las
+  // dos mitades tienen que quedar iguales.
+  it('el mismo archivo dos veces se sobrescribe', async () => {
+    const { deps, escritos } = conEscritura();
+    await guardarDocumento(ENTRADA, deps as never);
+    await guardarDocumento(ENTRADA, deps as never);
+
+    expect(escritos).toHaveLength(2);
+    expect(escritos[0]!.ruta).toBe(escritos[1]!.ruta);
   });
 });

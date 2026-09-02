@@ -105,6 +105,16 @@ export interface DocumentosDeps {
   serviceKey: string;
   /** Por la red del compose: http://conversor:8096. */
   conversorUrl?: string;
+  /**
+   * Donde se escriben los archivos: el directorio que el gateway tambien monta.
+   *
+   * Antes esto subia a Supabase Storage. Los dos procesos corren en la misma
+   * maquina, asi que era mandar el archivo a internet para que el gateway lo
+   * bajara — y ademas obligaba a tener la service_role cargada solo para eso.
+   */
+  docsRaiz: string;
+  crearDir: (ruta: string) => Promise<void>;
+  escribir: (ruta: string, datos: Uint8Array) => Promise<void>;
   fetchImpl?: typeof fetch;
 }
 
@@ -158,26 +168,22 @@ async function convertir(
   }
 }
 
+/**
+ * Deja el archivo en el disco del servidor.
+ *
+ * `escribir` sobrescribe: mandar dos veces el mismo archivo lo reemplaza en vez
+ * de fallar. La fila de la tabla hace upsert, y si esto no hiciera lo mismo las
+ * dos mitades quedarian desincronizadas.
+ */
 async function subirArchivo(
   ruta: string,
   datos: Uint8Array,
   deps: DocumentosDeps,
 ): Promise<void> {
-  const doFetch = deps.fetchImpl ?? fetch;
-  const res = await doFetch(`${deps.supabaseUrl}/storage/v1/object/${BUCKET}/${ruta}`, {
-    method: 'POST',
-    headers: {
-      ...cabeceras(deps),
-      'content-type': 'application/octet-stream',
-      // Para que mandar dos veces el mismo archivo lo reemplace en vez de
-      // fallar: la fila hace upsert, y sin esto las dos mitades quedarian
-      // desincronizadas.
-      'x-upsert': 'true',
-    },
-    body: datos as unknown as BodyInit,
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!res.ok) throw new Error(`storage ${res.status}: ${await res.text()}`);
+  const destino = `${deps.docsRaiz}/${ruta}`;
+  const dir = destino.slice(0, destino.lastIndexOf('/'));
+  await deps.crearDir(dir);
+  await deps.escribir(destino, datos);
 }
 
 export interface DocumentoGuardado {

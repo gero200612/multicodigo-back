@@ -6,6 +6,7 @@
  * nombre mentia y ademas rompia la simetria con el agente y el gateway, que ya
  * tienen su main.ts separado.
  */
+import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
@@ -71,6 +72,14 @@ const Env = z.object({
   SUPABASE_SERVICE_KEY: opcional(z.string().min(1)),
   /** Por la red del compose. El bridge y el conversor comparten `puente`. */
   CONVERSOR_URL: opcional(z.string().url()),
+  /**
+   * Donde se escriben los documentos que llegan por Telegram.
+   *
+   * El gateway monta el MISMO directorio y los copia al worktree del agente.
+   * Antes iban a Supabase Storage, que entre dos procesos de la misma maquina
+   * era mandar el archivo a internet para traerlo de vuelta.
+   */
+  DOCS_ROOT: z.string().min(1).default('/srv/docs'),
   PORT: z.coerce.number().int().positive().default(3000),
 });
 
@@ -120,6 +129,16 @@ const docsDeps =
         supabaseUrl: env.SUPABASE_URL.replace(/\/$/, ''),
         serviceKey: env.SUPABASE_SERVICE_KEY,
         conversorUrl: env.CONVERSOR_URL,
+        // El ARCHIVO va al disco que el gateway tambien monta; a Supabase solo
+        // va la fila que lo describe. Antes el archivo iba a Storage, y por eso
+        // sin la service_role no se podia guardar nada.
+        docsRaiz: env.DOCS_ROOT,
+        crearDir: async (ruta: string) => {
+          await mkdir(ruta, { recursive: true });
+        },
+        escribir: async (ruta: string, datos: Uint8Array) => {
+          await writeFile(ruta, datos);
+        },
       }
     : undefined;
 
