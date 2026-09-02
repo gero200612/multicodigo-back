@@ -111,6 +111,7 @@ export function tecladoDeModelos(actual: ClaveDeModelo | undefined): Boton[][] {
  * los agentes, que es un paso del medio: elegir agente es UNA de estas.
  */
 export const ACCIONES = [
+  'cola',
   'agentes',
   'proyectos',
   'permisos',
@@ -127,6 +128,8 @@ export function datosDeAccion(accion: Accion): string {
 /** El menu principal: que queres hacer. */
 export function tecladoDeAcciones(): Boton[][] {
   return [
+    // Primero: es lo que se viene a hacer. El resto del menu es configuracion.
+    [{ label: '📋 Cola de trabajo', data: datosDeAccion('cola') }],
     [{ label: '🤖 Elegir agente', data: datosDeAccion('agentes') }],
     [{ label: '📁 Cambiar de proyecto', data: datosDeAccion('proyectos') }],
     [{ label: '🔐 Permisos', data: datosDeAccion('permisos') }],

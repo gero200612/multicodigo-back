@@ -1,7 +1,7 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import type { AgentId, ApprovalDecision, ApprovalRequest } from '@multicodigo/shared';
 import type { PipelineDeps, PipelineOutcome } from './pipeline.js';
-import { handleIncoming, armarMenu, armarMenuDeAgentes } from './pipeline.js';
+import { handleIncoming, armarMenu, armarMenuDeAgentes, correrCola } from './pipeline.js';
 import {
   parseMenuData,
   tecladoDePermisos,
@@ -14,6 +14,7 @@ import { saludo, encabezadoDeMenu, NOMBRE } from './identidad.js';
 import { MAXIMO_BYTES, TIPOS, tipoDe } from './documentos.js';
 import type { Boton } from './render.js';
 import type { ModoPermiso, ClaveDeModelo } from './store.js';
+import type { Tarea } from './cola.js';
 import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
 import { decidir } from './decisiones.js';
@@ -41,6 +42,12 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return textoDePermisos(outcome.modo, outcome.cambiado);
     case 'modelo':
       return textoDeModelo(outcome.modelo, outcome.cambiado);
+    case 'cola':
+      return textoDeCola(outcome.tareas, outcome.encoladas, outcome.agente);
+    case 'cola_cancelada':
+      return outcome.cuantas === 0
+        ? 'No habia nada esperando en la cola.'
+        : `Listo, saque ${outcome.cuantas} tarea(s) de la cola. Lo que ya estaba corriendo sigue.`;
     case 'menu':
       // `/start` se presenta; `/menu` no. Ver `identidad.ts`.
       return outcome.saluda ? saludo() : encabezadoDeMenu();
@@ -150,6 +157,50 @@ export function avisoDeRelevo(relevos: string[] | undefined): string {
 }
 
 /**
+ * Como va la cola.
+ *
+ * Se muestra lo que FALTA y lo que esta corriendo, no el historial completo:
+ * en un chat lo que importa es cuanto queda. Lo ya hecho se cuenta en una
+ * linea, que alcanza para saber que avanzo.
+ */
+export function textoDeCola(tareas: Tarea[], encoladas: number, agente?: AgentId): string {
+  const pendientes = tareas.filter((t) => t.estado === 'pendiente');
+  const corriendo = tareas.find((t) => t.estado === 'corriendo');
+  const hechas = tareas.filter((t) => t.estado === 'lista').length;
+  const fallidas = tareas.filter((t) => t.estado === 'fallida').length;
+
+  if (tareas.length === 0) {
+    return [
+      'La cola esta vacia.',
+      '',
+      'Mandame <b>/cola</b> y abajo la lista de cosas que hay que hacer, una por linea.',
+      'Las voy haciendo en orden y te aviso al terminar cada una.',
+    ].join('\n');
+  }
+
+  const lineas: string[] = [];
+  if (encoladas > 0) {
+    lineas.push(
+      `Anote ${encoladas} tarea(s)${agente ? ` para ${agente.toUpperCase()}` : ''}. Arranco.`,
+      '',
+    );
+  }
+  if (corriendo) lineas.push(`▶ Haciendo: ${corriendo.texto}`, '');
+  if (pendientes.length > 0) {
+    lineas.push('<b>Falta:</b>');
+    // Numeradas porque ACA el orden es real: se hacen en esta secuencia.
+    pendientes.forEach((t, i) => lineas.push(`${i + 1}. ${t.texto}`));
+  } else if (!corriendo) {
+    lineas.push('No queda nada pendiente.');
+  }
+  if (hechas > 0 || fallidas > 0) {
+    lineas.push('', `Hechas: ${hechas}${fallidas > 0 ? ` · fallaron: ${fallidas}` : ''}`);
+  }
+  if (pendientes.length > 0) lineas.push('', 'Con /cancelar corto lo que falta.');
+  return lineas.join('\n');
+}
+
+/**
  * Con que modelo escribe la IA.
  *
  * Cuando nadie eligio se dice ASI, y no se nombra un modelo: el turno corre con
@@ -231,7 +282,8 @@ function usaHtml(outcome: PipelineOutcome): boolean {
     // de "esto lo contesto el agente".
     outcome.kind === 'menu' ||
     outcome.kind === 'permisos' ||
-    outcome.kind === 'modelo'
+    outcome.kind === 'modelo' ||
+    outcome.kind === 'cola'
   );
 }
 
@@ -385,6 +437,8 @@ async function bajarAudio(
  */
 const COMANDOS = [
   { command: 'menu', description: 'Qué puedo hacer por vos' },
+  { command: 'cola', description: 'Todo lo que hay que hacer, una tarea por línea' },
+  { command: 'cancelar', description: 'Cortar lo que queda en la cola' },
   { command: 'agente', description: 'Elegir con qué agente hablar' },
   { command: 'proyecto', description: 'Ver o cambiar el proyecto activo' },
   { command: 'status', description: 'Con qué agentes estás trabajando' },
@@ -393,6 +447,43 @@ const COMANDOS = [
   { command: 'modelo', description: 'Con qué modelo te contesto' },
   { command: 'vincular', description: 'Conectar este chat con tu cuenta del panel' },
 ];
+
+/**
+ * Los chats que ya tienen su cola corriendo.
+ *
+ * Sin esto, mandar `/cola` dos veces seguidas arranca dos bucles sobre la misma
+ * cola: los dos hacen `tomarProxima` y se reparten las tareas de a pares,
+ * corriendo dos turnos a la vez contra el mismo agente —que la tenencia
+ * rechaza con un 409—. El resultado serian tareas fallando por chocarse entre
+ * si.
+ *
+ * En memoria y no en la base: es del PROCESO que esta corriendo el bucle. Si el
+ * bridge se reinicia, no hay ningun bucle vivo que proteger, y las tareas que
+ * quedaron en 'corriendo' se ven en /cola.
+ */
+const colasVivas = new Set<number>();
+
+/** Arranca la cola de un chat si no la esta corriendo ya. */
+async function arrancarCola(
+  chatId: number,
+  deps: BridgeDeps,
+  avisar: (texto: string) => Promise<void>,
+): Promise<void> {
+  if (colasVivas.has(chatId)) return;
+  colasVivas.add(chatId);
+  try {
+    await correrCola(chatId, deps, avisar);
+  } catch (err) {
+    console.error(`[bridge] la cola de ${chatId} se corto:`, err);
+    await avisar('Se me corto la cola por un error mio. Mandame /cola para ver que quedo.').catch(
+      () => {},
+    );
+  } finally {
+    // En `finally`: si el bucle explota y no se saca la marca, ese chat no
+    // puede volver a arrancar su cola hasta que se reinicie el bridge.
+    colasVivas.delete(chatId);
+  }
+}
 
 export function buildBot(deps: BridgeDeps): Bot {
   const bot = new Bot(deps.botToken);
@@ -671,6 +762,15 @@ export function buildBot(deps: BridgeDeps): Bot {
         ...(usaHtml(outcome) ? { parse_mode: 'HTML' as const } : {}),
         ...(teclado ? { reply_markup: teclado } : {}),
       });
+
+      // Recien encolo algo: se arranca a hacerlo.
+      //
+      // SIN `await` a proposito: una cola de cinco tareas puede tardar media
+      // hora y este handler tiene que devolver el control ya. El progreso
+      // llega por mensajes sueltos, uno por tarea terminada.
+      if (outcome.kind === 'cola' && outcome.encoladas > 0) {
+        void arrancarCola(ctx.chat.id, deps, (t) => ctx.reply(t).then(() => undefined));
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await ctx.api.editMessageText(
@@ -773,6 +873,7 @@ export async function manejarMenu(
     // 'agentes' es el unico que no tiene comando propio con ese nombre: el
     // selector se pide con /agente.
     const comando: Record<typeof menu.accion, string> = {
+      cola: '/cola',
       agentes: '/agente',
       proyectos: '/proyecto',
       permisos: '/permisos',

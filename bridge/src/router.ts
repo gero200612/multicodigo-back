@@ -25,6 +25,16 @@ export type ParsedCommand =
   | { kind: 'permisos'; modo: ModoPermiso | undefined }
   /** Con que modelo escribe la IA. Sin `modelo`, muestra el actual. */
   | { kind: 'modelo'; modelo: ClaveDeModelo | undefined }
+  /**
+   * La cola de trabajo.
+   *
+   * Con texto, encola una tarea por linea. Sin texto, muestra como va. El
+   * texto se guarda CRUDO —con sus saltos— y lo parte `partirEnTareas`: el
+   * router decide que comando es, no que hay adentro.
+   */
+  | { kind: 'cola'; texto: string }
+  /** Corta lo que queda por hacer. */
+  | { kind: 'cola_cancelar' }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
   | { kind: 'vincular' }
   /**
@@ -63,6 +73,14 @@ export function parseCommand(raw: string): ParsedCommand {
   const rest = (match[2] ?? '').trim();
 
   if (command === 'status') return { kind: 'status' };
+
+  if (command === 'cola') {
+    // `rest` de un /cola multilinea trae los saltos: el regex de arriba captura
+    // con [\s\S]*, no con .*, justamente para que una lista sobreviva entera.
+    return { kind: 'cola', texto: rest };
+  }
+
+  if (command === 'cancelar') return { kind: 'cola_cancelar' };
 
   if (command === 'modelo' || command === 'modelos') {
     if (rest === '') return { kind: 'modelo', modelo: undefined };

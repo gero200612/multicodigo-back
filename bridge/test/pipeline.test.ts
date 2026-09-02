@@ -3,6 +3,7 @@ import {
   handleIncoming,
   ejecutarTurno,
   ejecutarTurnoConRelevo,
+  correrCola,
   type PipelineDeps,
 } from '../src/pipeline.js';
 import { InMemoryStore, type Store } from '../src/store.js';
@@ -1339,5 +1340,118 @@ describe('el aviso del relevo', () => {
     const r = await handleIncoming({ chatId: 7, messageId: 1, text: 'hola' }, d);
     if (r.kind !== 'answer') throw new Error('esperaba answer');
     expect(r.relevos ?? []).toEqual([]);
+  });
+});
+
+describe('/cola: dictar todo lo que hay que hacer', () => {
+  it('encola una tarea por linea', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: '/cola arregla el stock\nagrega tests\nactualiza el readme' },
+      d,
+    );
+    if (r.kind !== 'cola') throw new Error('no es cola');
+    expect(r.encoladas).toBe(3);
+    expect(r.tareas.map((t) => t.texto)).toEqual([
+      'arregla el stock',
+      'agrega tests',
+      'actualiza el readme',
+    ]);
+  });
+
+  // `/cola` a secas es "mostrame como va", no "encola nada".
+  it('sin texto muestra la cola sin encolar', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/cola uno\ndos' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/cola' }, d);
+    if (r.kind !== 'cola') throw new Error('no es cola');
+    expect(r.encoladas).toBe(0);
+    expect(r.tareas).toHaveLength(2);
+  });
+
+  it('una tanda nueva va al final de lo que ya estaba', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/cola uno' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/cola dos' }, d);
+    if (r.kind !== 'cola') throw new Error('no es cola');
+    expect(r.tareas.map((t) => t.texto)).toEqual(['uno', 'dos']);
+  });
+
+  it('/cancelar corta lo que falta', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/cola uno\ndos' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/cancelar' }, d);
+    expect(r).toEqual({ kind: 'cola_cancelada', cuantas: 2 });
+  });
+});
+
+describe('correrCola: hacer la lista de a una', () => {
+  async function conTareas(textos: string[], ask?: unknown) {
+    const d = deps(ask ? { ask: ask as never } : {});
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: `/cola ${textos.join('\n')}` }, d);
+    return d;
+  }
+
+  it('hace todas las tareas, en orden', async () => {
+    const d = await conTareas(['uno', 'dos', 'tres']);
+    const avisos: string[] = [];
+    await correrCola(7, d, async (t) => {
+      avisos.push(t);
+    });
+
+    expect(d.ask.mock.calls.map((c) => c[0].prompt)).toEqual(['uno', 'dos', 'tres']);
+    expect(avisos).toHaveLength(3);
+    const tareas = await d.store.tareasDeChat(7);
+    expect(tareas.every((t) => t.estado === 'lista')).toBe(true);
+  });
+
+  // Seguir con la siguiente cuando la anterior no salio es trabajar sobre una
+  // base que nadie miro.
+  it('se detiene en la primera que falla y deja el resto pendiente', async () => {
+    const ask = vi.fn(async (req: { prompt: string }) => {
+      if (req.prompt === 'dos') throw new Error('internal');
+      return { jobId: 'j', sessionId: 's', text: 'ok', turns: 1 };
+    });
+    const d = await conTareas(['uno', 'dos', 'tres'], ask);
+    const avisos: string[] = [];
+    await correrCola(7, d, async (t) => {
+      avisos.push(t);
+    });
+
+    const tareas = await d.store.tareasDeChat(7);
+    expect(tareas.map((t) => t.estado)).toEqual(['lista', 'fallida', 'pendiente']);
+    // El aviso dice cuanto quedo sin hacer: es lo que decide si se retoma.
+    expect(avisos[avisos.length - 1]).toContain('1 tarea');
+  });
+
+  it('con la cola vacia no hace nada', async () => {
+    const d = deps();
+    await vincular(d.store, 7);
+    const avisos: string[] = [];
+    await correrCola(7, d, async (t) => {
+      avisos.push(t);
+    });
+    expect(avisos).toEqual([]);
+    expect(d.ask.mock.calls).toHaveLength(0);
+  });
+
+  // Un chat sin vincular no puede disparar turnos: es el mismo guard que el
+  // resto del pipeline.
+  it('un chat sin vincular no corre nada', async () => {
+    const d = deps();
+    const avisos: string[] = [];
+    await correrCola(999, d, async (t) => {
+      avisos.push(t);
+    });
+    expect(avisos).toEqual([]);
   });
 });

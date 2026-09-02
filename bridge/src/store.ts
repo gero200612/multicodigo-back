@@ -2,6 +2,7 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import type { AgentId, ApprovalDecision } from '@multicodigo/shared';
+import type { Encargo, Tarea } from './cola.js';
 
 /**
  * Los estados del spec 5.
@@ -347,6 +348,23 @@ export interface Store {
    */
   modeloDeChat(chatId: number): Promise<ClaveDeModelo | undefined>;
   setModeloDeChat(chatId: number, modelo: ClaveDeModelo): Promise<void>;
+  /** Suma una tanda de tareas al final de la cola del chat. */
+  encolar(chatId: number, encargo: Encargo): Promise<number>;
+  /** Lo que hay en la cola, en orden. Para mostrarla. */
+  tareasDeChat(chatId: number): Promise<Tarea[]>;
+  /** La proxima pendiente, sin tocarla. Para saber si hay trabajo. */
+  proximaTarea(chatId: number): Promise<Tarea | undefined>;
+  /**
+   * Se lleva la proxima pendiente y la marca corriendo, en un solo paso.
+   *
+   * Atomico a proposito: si dos vueltas del bucle preguntan a la vez —o el
+   * bridge arranca dos veces— con un SELECT y despues un UPDATE las dos se
+   * llevarian la misma tarea y el agente la haria dos veces.
+   */
+  tomarProxima(chatId: number): Promise<Tarea | undefined>;
+  cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void>;
+  /** Cancela lo PENDIENTE. Devuelve cuantas saco. */
+  cancelarCola(chatId: number): Promise<number>;
   /** Un codigo de un solo uso para vincular este chat. */
   crearCodigoVinculacion(chatId: number, minutos: number): Promise<string>;
   /**
@@ -608,6 +626,51 @@ export class InMemoryStore implements Store {
 
   async setModeloDeChat(chatId: number, modelo: ClaveDeModelo): Promise<void> {
     this.modelos.set(chatId, modelo);
+  }
+
+  private cola: Tarea[] = [];
+
+  async encolar(chatId: number, e: Encargo): Promise<number> {
+    const base = this.cola.filter((t) => t.chatId === chatId).length;
+    e.textos.forEach((texto, i) => {
+      this.cola.push({
+        id: randomUUID(),
+        chatId,
+        agente: e.agente,
+        proyecto: e.proyecto,
+        texto,
+        posicion: base + i,
+        estado: 'pendiente',
+      });
+    });
+    return e.textos.length;
+  }
+
+  async tareasDeChat(chatId: number): Promise<Tarea[]> {
+    return this.cola.filter((t) => t.chatId === chatId).sort((a, b) => a.posicion - b.posicion);
+  }
+
+  async proximaTarea(chatId: number): Promise<Tarea | undefined> {
+    return (await this.tareasDeChat(chatId)).find((t) => t.estado === 'pendiente');
+  }
+
+  async tomarProxima(chatId: number): Promise<Tarea | undefined> {
+    const t = await this.proximaTarea(chatId);
+    if (t) t.estado = 'corriendo';
+    return t;
+  }
+
+  async cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void> {
+    const t = this.cola.find((x) => x.id === id);
+    if (!t) return;
+    t.estado = estado;
+    t.resultado = resultado;
+  }
+
+  async cancelarCola(chatId: number): Promise<number> {
+    const pend = this.cola.filter((t) => t.chatId === chatId && t.estado === 'pendiente');
+    for (const t of pend) t.estado = 'cancelada';
+    return pend.length;
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {
@@ -1151,6 +1214,104 @@ export class PgStore implements Store {
        ON CONFLICT (chat_id) DO UPDATE SET modelo = $2, cambiado_en = now()`,
       [chatId, modelo],
     );
+  }
+
+  async encolar(chatId: number, e: Encargo): Promise<number> {
+    if (e.textos.length === 0) return 0;
+    // La posicion arranca donde termino la cola anterior, asi que una tanda
+    // nueva va al FINAL y no se mezcla con lo que ya estaba esperando.
+    const r = await this.pool.query<{ n: number }>(
+      'SELECT COALESCE(MAX(posicion) + 1, 0)::int n FROM cola_tareas WHERE chat_id = $1',
+      [chatId],
+    );
+    const base = r.rows[0]?.n ?? 0;
+    // UNNEST y no un INSERT por tarea: una tanda entra en una sola ida a la
+    // base, y o entran todas o no entra ninguna.
+    await this.pool.query(
+      `INSERT INTO cola_tareas (chat_id, agente, proyecto, texto, posicion)
+       SELECT $1, $2, $3, t.texto, $4 + (t.i - 1)
+       FROM unnest($5::text[]) WITH ORDINALITY AS t(texto, i)`,
+      [chatId, e.agente, e.proyecto, base, e.textos],
+    );
+    return e.textos.length;
+  }
+
+  private static readonly CAMPOS_TAREA =
+    'id, chat_id, agente, proyecto, texto, posicion, estado, resultado';
+
+  private aTarea(f: Record<string, unknown>): Tarea {
+    return {
+      id: f.id as string,
+      chatId: Number(f.chat_id),
+      agente: f.agente as string,
+      proyecto: f.proyecto as string,
+      texto: f.texto as string,
+      posicion: f.posicion as number,
+      estado: f.estado as Tarea['estado'],
+      resultado: (f.resultado as string | null) ?? undefined,
+    };
+  }
+
+  async tareasDeChat(chatId: number): Promise<Tarea[]> {
+    const r = await this.pool.query(
+      `SELECT ${PgStore.CAMPOS_TAREA} FROM cola_tareas WHERE chat_id = $1 ORDER BY posicion`,
+      [chatId],
+    );
+    return r.rows.map((f) => this.aTarea(f));
+  }
+
+  async proximaTarea(chatId: number): Promise<Tarea | undefined> {
+    const r = await this.pool.query(
+      `SELECT ${PgStore.CAMPOS_TAREA} FROM cola_tareas
+       WHERE chat_id = $1 AND estado = 'pendiente' ORDER BY posicion LIMIT 1`,
+      [chatId],
+    );
+    return r.rows[0] ? this.aTarea(r.rows[0]) : undefined;
+  }
+
+  /**
+   * Tomarla y marcarla corriendo en UNA sentencia.
+   *
+   * El `FOR UPDATE SKIP LOCKED` del subselect es lo que hace que dos lectores
+   * simultaneos no se lleven la misma: el segundo saltea la fila bloqueada y
+   * agarra la siguiente, en vez de esperarla y despues pisarla.
+   */
+  async tomarProxima(chatId: number): Promise<Tarea | undefined> {
+    const r = await this.pool.query(
+      `UPDATE cola_tareas SET estado = 'corriendo', empezado_en = now()
+       WHERE id = (
+         SELECT id FROM cola_tareas
+         WHERE chat_id = $1 AND estado = 'pendiente'
+         ORDER BY posicion LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING ${PgStore.CAMPOS_TAREA}`,
+      [chatId],
+    );
+    return r.rows[0] ? this.aTarea(r.rows[0]) : undefined;
+  }
+
+  async cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE cola_tareas SET estado = $2, resultado = $3, cerrado_en = now() WHERE id = $1',
+      [id, estado, resultado ?? null],
+    );
+  }
+
+  /**
+   * Cancela lo PENDIENTE, no lo que ya corre.
+   *
+   * Un turno en vuelo no se puede abortar —el agente ya esta trabajando— asi
+   * que prometer que se detiene seria mentir. Lo que se corta es todo lo que
+   * viene despues.
+   */
+  async cancelarCola(chatId: number): Promise<number> {
+    const r = await this.pool.query(
+      `UPDATE cola_tareas SET estado = 'cancelada', cerrado_en = now()
+       WHERE chat_id = $1 AND estado = 'pendiente'`,
+      [chatId],
+    );
+    return r.rowCount ?? 0;
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {

@@ -18,6 +18,7 @@ import {
 } from './menu.js';
 import type { Boton } from './render.js';
 import type { Store, Proyecto, ModoPermiso, ClaveDeModelo } from './store.js';
+import { partirEnTareas, type Tarea } from './cola.js';
 import type { Quien } from './agents-client.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
@@ -136,6 +137,14 @@ export type PipelineOutcome =
    * CLI". Resolverlo a uno concreto aca seria inventar cual es.
    */
   | { kind: 'modelo'; modelo?: ClaveDeModelo; cambiado: boolean }
+  /**
+   * La cola de trabajo.
+   *
+   * `encoladas` en 0 significa "solo vine a mirar": el mismo outcome contesta
+   * a `/cola` y a `/cola <lista>`, y decir "sume 0 tareas" seria raro.
+   */
+  | { kind: 'cola'; tareas: Tarea[]; encoladas: number; agente?: AgentId }
+  | { kind: 'cola_cancelada'; cuantas: number }
   | { kind: 'project'; project: string }
   /** El chat no esta atado a ninguna cuenta del panel. */
   | { kind: 'sin_vincular'; yaEstaba: boolean }
@@ -284,6 +293,31 @@ export async function handleIncoming(
     const activo =
       command.project ?? (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
     return { kind: 'project', project: activo };
+  }
+
+  if (command.kind === 'cola') {
+    const tareas = partirEnTareas(command.texto);
+    if (tareas.length === 0) {
+      // Sin texto: se muestra como va, que es lo que quiere quien escribe
+      // `/cola` a secas.
+      return { kind: 'cola', tareas: await deps.store.tareasDeChat(input.chatId), encoladas: 0 };
+    }
+
+    const agente =
+      (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
+    const proyecto = (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
+    const n = await deps.store.encolar(input.chatId, { agente, proyecto, textos: tareas });
+    return {
+      kind: 'cola',
+      tareas: await deps.store.tareasDeChat(input.chatId),
+      encoladas: n,
+      agente,
+    };
+  }
+
+  if (command.kind === 'cola_cancelar') {
+    const n = await deps.store.cancelarCola(input.chatId);
+    return { kind: 'cola_cancelada', cuantas: n };
   }
 
   if (command.kind === 'modelo') {
@@ -898,4 +932,92 @@ export async function armarMenuDeAgentes(
     proyecto: proyecto.nombre,
     botones: tecladoDeAgentes(conEstado),
   };
+}
+
+/**
+ * Recorre la cola de un chat, una tarea por vez, hasta que no queda nada.
+ *
+ * ## Por que de a una y no en paralelo
+ *
+ * Podria repartir entre agentes —hay varios— pero las tareas de una lista
+ * suelen depender de la anterior ("arregla el bug", "ahora corre los tests"), y
+ * hacerlas juntas sobre el mismo worktree es pisarse. Ademas el slot lo toma
+ * una persona a la vez: dos tareas del mismo chat contra el mismo agente
+ * chocarian con el 409 de la tenencia.
+ *
+ * ## Por que se detiene ante un fallo
+ *
+ * Seguir con la siguiente cuando la anterior no salio es hacer trabajo sobre
+ * una base que nadie miro. Se avisa y se deja lo que queda como pendiente, para
+ * que se pueda retomar o cancelar.
+ *
+ * ## Por que no hay `await` afuera
+ *
+ * Quien la dispara no la espera: una cola de cinco tareas puede tardar media
+ * hora, y el handler de Telegram tiene que contestar ya. El progreso llega por
+ * `avisar`.
+ */
+export async function correrCola(
+  chatId: number,
+  deps: PipelineDeps,
+  avisar: (texto: string) => Promise<void>,
+): Promise<void> {
+  const usuarioId = await deps.store.usuarioDeChat(chatId);
+  if (!usuarioId) return;
+
+  for (;;) {
+    const tarea = await deps.store.tomarProxima(chatId);
+    if (!tarea) return;
+
+    const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
+    const proyectoId = proyectos.find((p) => p.nombre === tarea.proyecto)?.id;
+    const repos = proyectoId ? await deps.store.reposDeProyecto(proyectoId) : undefined;
+    const githubToken = await tokenDelProyecto(proyectoId, deps);
+    const documentos =
+      proyectoId && deps.documentosDelTurno
+        ? await deps.documentosDelTurno(proyectoId).catch(() => undefined)
+        : undefined;
+    const modo = await deps.store.modoDeChat(chatId).catch(() => undefined);
+    const modelo = await deps.store.modeloDeChat(chatId).catch(() => undefined);
+
+    try {
+      const r = await ejecutarTurnoConRelevo(deps, {
+        proyectoId,
+        proyecto: tarea.proyecto,
+        agente: tarea.agente as AgentId,
+        usuarioId,
+        prompt: tarea.texto,
+        modo,
+        modelo,
+        repos,
+        githubToken,
+        documentos,
+        origen: 'telegram',
+        chatId,
+      });
+      await deps.store.cerrarTarea(tarea.id, 'lista', r.texto);
+      await avisar(`✅ ${tarea.texto}
+
+${sanitizeForTelegram(r.texto)}`);
+    } catch (err) {
+      const codigo = err instanceof Error ? err.message : 'internal';
+      await deps.store.cerrarTarea(tarea.id, 'fallida', codigo);
+      // Se cuenta lo que queda ANTES de avisar: el mensaje dice cuanto se
+      // detuvo, que es lo que decide si se retoma o se cancela.
+      const quedan = (await deps.store.tareasDeChat(chatId)).filter(
+        (t) => t.estado === 'pendiente',
+      ).length;
+      await avisar(
+        `⛔ Fallo: ${tarea.texto}
+
+${ERROR_TEXT[codigo] ?? codigo}
+
+` +
+          (quedan > 0
+            ? `Pare la cola con ${quedan} tarea(s) sin hacer. Mandame /cola para verlas o /cancelar para descartarlas.`
+            : 'Era la ultima de la cola.'),
+      );
+      return;
+    }
+  }
 }
