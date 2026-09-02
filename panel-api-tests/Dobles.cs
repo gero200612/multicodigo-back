@@ -234,8 +234,23 @@ public sealed class AgentesFalso : IAgentesClient
         string jwt, CancellationToken ct = default)
         => Task.FromResult<IReadOnlyDictionary<string, string>>(SinCuota);
 
-    /// <summary>La asignacion slot -> proyecto que devuelve la tabla.</summary>
-    public Dictionary<string, string> PorSlot { get; } = [];
+    /// <summary>
+    /// La asignacion slot -> proyecto que devuelve la tabla.
+    /// </summary>
+    /// <remarks>
+    /// Arranca con c1 y c2 —los dos de <see cref="GatewayFalso"/>— porque el
+    /// caso normal es que los slots de la maquina sean los del usuario. Desde
+    /// que el panorama FILTRA por esta asignacion, un diccionario vacio
+    /// significa "este usuario no tiene ningun agente", y con ese default los
+    /// tests de degradacion afirmaban sobre una lista vacia sin notarlo.
+    ///
+    /// Los tests de aislamiento lo pisan para poner solo lo que corresponde.
+    /// </remarks>
+    public Dictionary<string, string> PorSlot { get; } = new()
+    {
+        ["c1"] = "11111111-1111-4111-8111-111111111111",
+        ["c2"] = "11111111-1111-4111-8111-111111111111",
+    };
 
     public Task<IReadOnlyDictionary<string, string>> ProyectosPorSlotAsync(
         string jwt, CancellationToken ct = default)

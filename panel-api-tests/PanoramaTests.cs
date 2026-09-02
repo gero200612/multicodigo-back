@@ -17,6 +17,49 @@ public class PanoramaTests
     }
 
     /// <summary>
+    /// Cada uno ve SOLO los agentes de sus proyectos.
+    ///
+    /// El panorama pedía la lista al gateway —que la saca de Docker y no sabe
+    /// nada de usuarios— y la devolvía entera. El JWT se usaba para enriquecer
+    /// cada slot, no para decidir cuáles se ven, así que alguien recién invitado
+    /// a su propio proyecto entraba y veía los agentes de todos los demás.
+    ///
+    /// El filtro correcto ya estaba a mano: `ProyectosPorSlotAsync` consulta con
+    /// el JWT del usuario y RLS deja pasar solo los slots de sus proyectos.
+    /// </summary>
+    [Fact]
+    public async Task SoloSeVenLosAgentesDeMisProyectos()
+    {
+        var (svc, g, _, _, _, a) = Armar();
+        // Tres slots en la máquina; dos son de otro proyecto.
+        g.Agentes = [new("c1", true, "ajeno"), new("c2", true, "ajeno"), new("c3", true, "mio")];
+        a.PorSlot.Clear();
+        a.PorSlot["c3"] = "33333333-3333-4333-8333-333333333333";
+
+        var p = await svc.VerAsync("jwt");
+
+        Assert.Equal(["c3"], p.Slots.Select(s => s.Slot).ToArray());
+    }
+
+    /// <summary>
+    /// Sin ningún slot propio, la lista viene vacía y no completa.
+    ///
+    /// Es el caso de alguien recién invitado, y el que más importa: es
+    /// exactamente cuando el bug de arriba mostraba todo.
+    /// </summary>
+    [Fact]
+    public async Task SinSlotsPropiosNoSeVeNinguno()
+    {
+        var (svc, g, _, _, _, a) = Armar();
+        g.Agentes = [new("c1", true, "ajeno"), new("c2", true, "ajeno")];
+        a.PorSlot.Clear();
+
+        var p = await svc.VerAsync("jwt");
+
+        Assert.Empty(p.Slots);
+    }
+
+    /// <summary>
     /// El id del proyecto sale de la TABLA y no del contenedor.
     ///
     /// Los dos pueden divergir: el contenedor lleva el proyecto con el que se
@@ -39,17 +82,28 @@ public class PanoramaTests
         Assert.Equal("nombre-viejo-del-contenedor", slot.Proyecto);
     }
 
+    /// <summary>
+    /// Un slot que la tabla no conoce NO se muestra.
+    ///
+    /// Antes se mostraba con `proyectoId` en null y el front deshabilitaba el
+    /// botón de probar. Desde que el panorama filtra por la asignación de la
+    /// tabla, un slot sin anotar es indistinguible de uno de otro usuario —en
+    /// los dos casos la consulta con el JWT no lo devuelve— y mostrarlo sería
+    /// exponer los agentes ajenos por la puerta de atrás.
+    ///
+    /// El costo es real: un slot recién creado que todavía no se registró en la
+    /// tabla no aparece hasta que se registre. Es preferible a la alternativa.
+    /// </summary>
     [Fact]
-    public async Task UnSlotSinAnotarNoTraeProyectoId()
+    public async Task UnSlotSinAnotarNoSeMuestra()
     {
-        var (svc, g, _, _, _, _) = Armar();
+        var (svc, g, _, _, _, a) = Armar();
         g.Agentes = [new("c1", true, "demo")];
+        a.PorSlot.Clear();
 
         var p = await svc.VerAsync("jwt");
 
-        // Null y no vacio: el front deshabilita el boton, que es honesto — sin
-        // proyecto no hay worktree que probar.
-        Assert.Null(p.Slots.Single().ProyectoId);
+        Assert.Empty(p.Slots);
     }
 
     /// <summary>

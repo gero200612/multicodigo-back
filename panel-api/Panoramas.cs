@@ -42,10 +42,27 @@ public sealed class PanoramaService(
             (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(),
             "los slots sin cuota");
 
+        // SOLO los agentes de los proyectos del usuario.
+        //
+        // `agentes` viene del gateway, que los saca de Docker: ahí están todos
+        // los slots de la máquina, sin ninguna noción de quién es quién. Sin
+        // este filtro, alguien recién invitado a su propio proyecto entraba al
+        // panel y veía los agentes de todos los demás.
+        //
+        // `porSlot` es el filtro correcto y ya estaba a mano: se consulta con el
+        // JWT del usuario, así que RLS deja pasar únicamente los slots de sus
+        // proyectos.
+        //
+        // Si `porSlot` no se pudo leer llega vacío —`Degradar` lo trata como
+        // degradación— y entonces no se ve ningún agente. Es el lado correcto
+        // para equivocarse: una lista vacía se arregla recargando; una lista de
+        // más muestra los agentes de otro.
+        var mios = agentes.Where(a => porSlot.ContainsKey(a.Id));
+
         // En paralelo y no en fila: con seis slots y una consulta lenta, la
         // página tardaría seis veces más de lo necesario.
         var slots = await Task.WhenAll(
-            agentes.Select(a => VerSlotAsync(jwt, a, porSlot, sinCuota, ct)));
+            mios.Select(a => VerSlotAsync(jwt, a, porSlot, sinCuota, ct)));
 
         return new Panorama(slots, cola, jobs);
     }
