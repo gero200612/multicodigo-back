@@ -781,3 +781,109 @@ describe('el consumo por agente', () => {
     expect((await store.consumoPorAgente()).get('c9')).toBeUndefined();
   });
 });
+
+/**
+ * Los documentos de un proyecto salen del store, no de la API REST.
+ *
+ * Estaban detras de `SUPABASE_SERVICE_KEY` porque se leian por HTTP con la
+ * service_role. El bridge ya se conecta a la MISMA base como `postgres` —sin
+ * RLS— asi que esa clave era un rodeo: sin ella los documentos quedaban
+ * apagados enteros y el agente no veia ningun archivo, ni del panel ni del bot.
+ */
+describe('los documentos de un proyecto', () => {
+  const PROYECTO = 'd1b03617-c358-4da1-a94c-266bfcc66e6a';
+
+  it('sin documentos devuelve una lista vacia', async () => {
+    const store = new InMemoryStore();
+    expect(await store.documentosDeProyecto(PROYECTO)).toEqual([]);
+  });
+
+  it('devuelve nombre y rutas de los que hay', async () => {
+    const store = new InMemoryStore();
+    store.ponerDocumento(PROYECTO, {
+      nombre: 'pliego.pdf',
+      ruta: `${PROYECTO}/pliego.pdf`,
+      ruta_texto: `${PROYECTO}/pliego.pdf.md`,
+    });
+
+    expect(await store.documentosDeProyecto(PROYECTO)).toEqual([
+      { nombre: 'pliego.pdf', ruta: `${PROYECTO}/pliego.pdf`, ruta_texto: `${PROYECTO}/pliego.pdf.md` },
+    ]);
+  });
+
+  // Un documento de otro proyecto no puede aparecer en este turno: el agente
+  // trabaja sobre un worktree y solo le corresponden los suyos.
+  it('no mezcla los de otro proyecto', async () => {
+    const store = new InMemoryStore();
+    store.ponerDocumento(PROYECTO, { nombre: 'mio.pdf', ruta: 'a/mio.pdf' });
+    store.ponerDocumento('otro-id', { nombre: 'ajeno.pdf', ruta: 'b/ajeno.pdf' });
+
+    const docs = await store.documentosDeProyecto(PROYECTO);
+    expect(docs.map((d) => d.nombre)).toEqual(['mio.pdf']);
+  });
+
+  // Un PDF que el conversor no pudo leer viaja igual: el agente no lo puede
+  // leer pero lo puede citar, y el original se descarga del panel.
+  it('un documento sin .md viaja igual', async () => {
+    const store = new InMemoryStore();
+    store.ponerDocumento(PROYECTO, { nombre: 'foto.pdf', ruta: 'a/foto.pdf', ruta_texto: null });
+
+    const docs = await store.documentosDeProyecto(PROYECTO);
+    expect(docs[0]!.ruta_texto).toBeNull();
+  });
+});
+
+/**
+ * La fila del documento se escribe por el store, no por la API REST.
+ *
+ * Era lo ultimo que ataba los documentos a `SUPABASE_SERVICE_KEY`: el archivo
+ * ya iba al disco, pero la fila se mandaba por HTTP con esa clave. Sin ella el
+ * bot aceptaba el archivo y no lo podia registrar, asi que subir por Telegram
+ * quedaba apagado igual.
+ */
+describe('guardar la fila de un documento', () => {
+  const PROYECTO = 'd1b03617-c358-4da1-a94c-266bfcc66e6a';
+  const USUARIO = '99999999-9999-4999-8999-999999999999';
+
+  const FILA = {
+    proyectoId: PROYECTO,
+    nombre: 'pliego.pdf',
+    nombreOriginal: 'Pliego Final.pdf',
+    ruta: `${PROYECTO}/pliego.pdf`,
+    rutaTexto: `${PROYECTO}/pliego.pdf.md`,
+    tipo: 'pdf',
+    bytes: 1234,
+    subidoPor: USUARIO,
+  };
+
+  it('lo deja disponible para el turno', async () => {
+    const store = new InMemoryStore();
+    await store.guardarDocumento(FILA);
+
+    expect(await store.documentosDeProyecto(PROYECTO)).toEqual([
+      { nombre: 'pliego.pdf', ruta: FILA.ruta, ruta_texto: FILA.rutaTexto },
+    ]);
+  });
+
+  // Mandar de nuevo el mismo archivo lo reemplaza: es lo que espera quien
+  // manda una version corregida, no un duplicado.
+  it('el mismo nombre dos veces reemplaza en vez de duplicar', async () => {
+    const store = new InMemoryStore();
+    await store.guardarDocumento(FILA);
+    await store.guardarDocumento({ ...FILA, bytes: 999 });
+
+    expect(await store.documentosDeProyecto(PROYECTO)).toHaveLength(1);
+  });
+
+  // Un PDF que el conversor no pudo leer se guarda igual, con el motivo: perder
+  // el archivo que la persona ya mando es peor que no poder convertirlo.
+  it('guarda el que no se pudo convertir, con su error', async () => {
+    const store = new InMemoryStore();
+    await store.guardarDocumento({
+      ...FILA, rutaTexto: null, error: 'el PDF es un escaneo',
+    });
+
+    const docs = await store.documentosDeProyecto(PROYECTO);
+    expect(docs[0]!.ruta_texto).toBeNull();
+  });
+});

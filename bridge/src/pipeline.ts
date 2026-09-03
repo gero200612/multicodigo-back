@@ -56,16 +56,15 @@ export interface PipelineDeps {
    */
   firmarToken?: (installationId: number) => Promise<string | undefined>;
   /**
-   * Los documentos del proyecto, con URLs firmadas.
+   * De donde salen los documentos del proyecto.
    *
-   * Opcional: sin esto el turno corre sin documentos, que es como funcionaba
-   * antes. En el camino del PANEL esta lista la arma el panel; en el de
-   * Telegram no habia nadie que la armara, asi que un documento subido al chat
-   * —o al panel— se guardaba y el agente igual no lo veia.
+   * Ya no es una dependencia opcional: se leen del store, que siempre esta.
+   * Antes se pedian por HTTP a la API REST de Supabase con la `service_role`, y
+   * sin esa clave la funcion no se pasaba —los documentos quedaban apagados
+   * enteros y el agente no veia ningun archivo, ni del panel ni del bot—. El
+   * bridge se conecta a la misma base como `postgres`, asi que ese rodeo
+   * costaba una clave y una llamada de red para nada.
    */
-  documentosDelTurno?: (proyectoId: string) => Promise<
-    Array<{ nombre: string; ruta: string; ruta_texto?: string | null }>
-  >;
   transcribe: (bytes: Uint8Array, mimeType: string) => Promise<string>;
   /**
    * El estado de los agentes, del gateway.
@@ -380,8 +379,10 @@ export async function handleIncoming(
   // panel, y aca los tiene que juntar el bridge. Sin proyecto en la base no hay
   // documentos que buscar — no hay clave con que buscarlos.
   const documentos =
-    proyectoId && deps.documentosDelTurno
-      ? await deps.documentosDelTurno(proyectoId).catch(() => undefined)
+    proyectoId
+      // `catch`: no poder leerlos degrada el turno —el agente trabaja sobre el
+      // codigo— pero no lo voltea.
+      ? await deps.store.documentosDeProyecto(proyectoId).catch(() => undefined)
       : undefined;
 
   // El modo del chat. Un fallo aca no puede voltear el turno: sin modo corre
@@ -986,8 +987,8 @@ export async function correrCola(
     const repos = proyectoId ? await deps.store.reposDeProyecto(proyectoId) : undefined;
     const githubToken = await tokenDelProyecto(proyectoId, deps);
     const documentos =
-      proyectoId && deps.documentosDelTurno
-        ? await deps.documentosDelTurno(proyectoId).catch(() => undefined)
+      proyectoId
+        ? await deps.store.documentosDeProyecto(proyectoId).catch(() => undefined)
         : undefined;
     const modo = await deps.store.modoDeChat(chatId).catch(() => undefined);
     const modelo = await deps.store.modeloDeChat(chatId).catch(() => undefined);

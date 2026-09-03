@@ -10,7 +10,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
-import { PgStore } from './store.js';
+import { PgStore, type FilaDeDocumento } from './store.js';
 import { askAgent, listarAgentes } from './agents-client.js';
 import { firmarToken } from './panel-client.js';
 import { fetchPending, sendDecision } from './approvals.js';
@@ -124,32 +124,32 @@ const gatewayDeps = { gatewayUrl: env.GATEWAY_URL, token: env.GATEWAY_TOKEN };
  * y al reves tampoco. Tenerlo en una sola constante evita un estado a medias en
  * el que el bot acepta un archivo y despues no lo puede subir.
  */
-const docsDeps =
-  env.SUPABASE_URL && env.SUPABASE_SERVICE_KEY
-    ? {
-        supabaseUrl: env.SUPABASE_URL.replace(/\/$/, ''),
-        serviceKey: env.SUPABASE_SERVICE_KEY,
-        conversorUrl: env.CONVERSOR_URL,
-        // El ARCHIVO va al disco que el gateway tambien monta; a Supabase solo
-        // va la fila que lo describe. Antes el archivo iba a Storage, y por eso
-        // sin la service_role no se podia guardar nada.
-        docsRaiz: env.DOCS_ROOT,
-        crearDir: async (ruta: string) => {
-          await mkdir(ruta, { recursive: true });
-        },
-        escribir: async (ruta: string, datos: Uint8Array) => {
-          await writeFile(ruta, datos);
-        },
-      }
-    : undefined;
+const docsDeps = {
+  // Las dos claves de Supabase quedaron sin uso en este camino y se dejan por
+  // compatibilidad del tipo: el archivo va al disco y la fila va por el store,
+  // que se conecta a la misma base como `postgres`.
+  supabaseUrl: (env.SUPABASE_URL ?? '').replace(/\/$/, ''),
+  serviceKey: env.SUPABASE_SERVICE_KEY ?? '',
+  conversorUrl: env.CONVERSOR_URL,
+  docsRaiz: env.DOCS_ROOT,
+  crearDir: async (ruta: string) => {
+    await mkdir(ruta, { recursive: true });
+  },
+  escribir: async (ruta: string, datos: Uint8Array) => {
+    await writeFile(ruta, datos);
+  },
+  guardarFila: (fila: FilaDeDocumento) => store.guardarDocumento(fila),
+};
 
-if (!docsDeps) {
-  // Ruidoso a proposito: es una funcionalidad apagada, no un default. El
-  // sintoma sin este aviso seria "el bot no guarda mis archivos" sin nada en
-  // los logs que diga por que.
-  console.warn(
-    '[bridge] sin SUPABASE_URL/SUPABASE_SERVICE_KEY: no se pueden guardar documentos de Telegram',
-  );
+// El aviso de "sin SUPABASE_SERVICE_KEY no se pueden guardar documentos" se
+// fue: ya no es cierto. El archivo va al disco y la fila por el store, asi que
+// los documentos andan sin esa clave — que es lo que los tenia apagados
+// enteros, tanto los del panel como los del bot.
+if (!env.CONVERSOR_URL) {
+  // Lo unico que sigue siendo una funcionalidad a medias: sin conversor, un PDF
+  // se guarda pero el agente no lo puede LEER —solo citarlo—, porque lo que lee
+  // es la version en Markdown.
+  console.warn('[bridge] sin CONVERSOR_URL: los documentos se guardan sin convertir a texto');
 }
 
 /**
@@ -173,11 +173,9 @@ const pipelineDeps = {
     : undefined,
   transcribe: (bytes: Uint8Array, mimeType: string) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),
-  // Sin Supabase no se pasa: el turno corre sin documentos, que es como
-  // funcionaba antes de esto.
-  documentosDelTurno: docsDeps
-    ? (proyectoId: string) => documentosDelTurno(proyectoId, docsDeps)
-    : undefined,
+  // Los documentos ya no se pasan: el pipeline los lee del store, que se
+  // conecta a la misma base como `postgres`. Antes iban por la API REST de
+  // Supabase con la service_role, y sin esa clave quedaban apagados enteros.
   listarAgentes: () => listarAgentes(gatewayDeps),
   // Para poder decir POR QUE un slot esta ocupado: un turno frenado esperando
   // un OK se destraba con un toque de la otra persona, y uno trabajando hay que
@@ -191,9 +189,9 @@ const bot = buildBot({
   fetchPending: (agent) => fetchPending(agent, gatewayDeps),
   sendDecision: (agent, approvalId, decision) =>
     sendDecision(agent, approvalId, decision, gatewayDeps),
-  guardarDocumento: docsDeps
-    ? (entrada) => guardarDocumento(entrada, docsDeps)
-    : undefined,
+  // Siempre, ya no condicionado a tener la service_role: el archivo va al
+  // disco y la fila por el store.
+  guardarDocumento: (entrada) => guardarDocumento(entrada, docsDeps),
 });
 
 await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start()

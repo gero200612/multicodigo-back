@@ -23,6 +23,8 @@ const deps = (fetchImpl: unknown, fallaEscribir = false) => ({
   escribir: async () => {
     if (fallaEscribir) throw new Error('no space left on device');
   },
+  // La fila va por el store; aca solo hace falta que no explote.
+  guardarFila: async () => {},
   fetchImpl: fetchImpl as never,
 });
 
@@ -99,23 +101,21 @@ describe('guardarDocumento', () => {
     expect(out.nombre).toBe('Pliego-Final.pdf');
     expect(out.error).toBeUndefined();
 
-    // Solo la fila va por HTTP; el archivo se escribe en el disco.
+    // Nada por HTTP salvo el conversor: el archivo va al disco y la fila por
+    // el store. Antes las dos cosas eran llamadas a Supabase.
     const urls = f.mock.calls.map((c) => String(c[0]));
-    expect(urls).toContain('https://proj.supabase.co/rest/v1/documentos');
-    expect(urls.some((u) => u.includes('/storage/v1'))).toBe(false);
+    expect(urls.every((u) => u.includes('/convertir'))).toBe(true);
   });
 
   it('anota quien lo mando', async () => {
-    const f = todoOk();
+    const filas: Array<{ subidoPor: string; proyectoId: string }> = [];
     await guardarDocumento(
       { proyectoId: PROYECTO, usuarioId: USUARIO, nombreOriginal: 'a.txt', datos: new Uint8Array([1]) },
-      deps(f),
+      { ...deps(todoOk()), guardarFila: async (f: never) => void filas.push(f) } as never,
     );
-    const fila = f.mock.calls.find((c) => String(c[0]).includes('/rest/v1/documentos'))!;
-    const cuerpo = JSON.parse(fila[1]!.body as string);
     // La columna es NOT NULL y referencia auth.users: sin esto la fila no entra.
-    expect(cuerpo.subido_por).toBe(USUARIO);
-    expect(cuerpo.proyecto_id).toBe(PROYECTO);
+    expect(filas[0]!.subidoPor).toBe(USUARIO);
+    expect(filas[0]!.proyectoId).toBe(PROYECTO);
   });
 
   it('guarda igual el documento que no se pudo convertir', async () => {
@@ -176,14 +176,15 @@ describe('guardarDocumento', () => {
       }
       return new Response('{}', { status: 200 });
     });
+    const filas: unknown[] = [];
 
     await expect(
       guardarDocumento(
         { proyectoId: PROYECTO, usuarioId: USUARIO, nombreOriginal: 'a.txt', datos: new Uint8Array([1]) },
-        deps(f, true),
+        { ...deps(f, true), guardarFila: async (x: never) => void filas.push(x) } as never,
       ),
     ).rejects.toThrow('no space left on device');
-    expect(f.mock.calls.some((c) => String(c[0]).includes('/rest/v1/documentos'))).toBe(false);
+    expect(filas).toEqual([]);
   });
 });
 
@@ -281,6 +282,7 @@ describe('guardarDocumento: al disco, no a Storage', () => {
         escribir: async (ruta: string, datos: Uint8Array) => {
           escritos.push({ ruta, datos });
         },
+        guardarFila: async () => {},
         fetchImpl,
       },
     };

@@ -103,6 +103,39 @@ export type ModoPermiso = (typeof MODOS_PERMISO)[number];
  * habla con el SDK. Guardar un id aca dejaria filas apuntando a modelos
  * retirados que nadie sabria traducir.
  */
+/**
+ * Un documento del proyecto, como viaja al gateway.
+ *
+ * Rutas y no URLs: el gateway monta el mismo directorio y copia el archivo al
+ * worktree. `ruta_texto` es la conversion a Markdown —lo que el agente
+ * realmente lee— y falta cuando el conversor no pudo con el original.
+ */
+export interface DocumentoDeProyecto {
+  nombre: string;
+  ruta: string;
+  ruta_texto?: string | null;
+}
+
+/** Todo lo que se guarda de un documento que llego por Telegram. */
+export interface FilaDeDocumento {
+  proyectoId: string;
+  nombre: string;
+  nombreOriginal: string;
+  ruta: string;
+  rutaTexto: string | null;
+  tipo: string;
+  bytes: number;
+  /** Por que no se pudo convertir a texto, si fallo. */
+  error?: string;
+  /**
+   * Quien lo mando: el usuario del panel atado a este chat.
+   *
+   * La columna es NOT NULL y referencia auth.users. Sin vinculo no hay
+   * documento, y sin vinculo tampoco hay turno.
+   */
+  subidoPor: string;
+}
+
 /** Lo que consumio un turno, o la suma de varios. */
 export interface Consumo {
   /** Entrada + salida, que es como los cuenta la cuota. */
@@ -258,6 +291,27 @@ export interface Store {
    * contra el cual dividir y un porcentaje seria inventado.
    */
   consumoPorAgente(): Promise<Map<string, Consumo>>;
+  /**
+   * Los documentos del proyecto, con sus rutas en el disco del servidor.
+   *
+   * Sale de ACA y no de la API REST de Supabase, que es como se leia antes: eso
+   * pedia la `service_role` y dejaba los documentos apagados enteros cuando esa
+   * clave faltaba —ni los del panel ni los del bot llegaban al agente—. El
+   * bridge ya se conecta a la misma base como `postgres`, sin RLS, asi que la
+   * clave era un rodeo por HTTP para leer una tabla que ya tiene a mano.
+   */
+  documentosDeProyecto(proyectoId: string): Promise<DocumentoDeProyecto[]>;
+  /**
+   * Registra un documento que llego por Telegram.
+   *
+   * Por aca y no por la API REST con la `service_role`, que es lo que ataba el
+   * guardado a esa clave: sin ella el bot aceptaba el archivo y despues no lo
+   * podia registrar. El archivo ya va al disco; esto es la otra mitad.
+   *
+   * Es un upsert por (proyecto, nombre): mandar de nuevo el mismo archivo lo
+   * reemplaza, que es lo que espera quien manda una version corregida.
+   */
+  guardarDocumento(fila: FilaDeDocumento): Promise<void>;
   /**
    * Mueve un job entre estados transitorios. No reabre uno ya cerrado: un
    * estado que llega tarde —el poller vio una aprobacion justo cuando el turno
@@ -490,6 +544,27 @@ export class InMemoryStore implements Store {
   ) {
     const previo = this.jobs.get(jobId);
     this.jobs.set(jobId, { ...previo, status, error, respuesta, consumo });
+  }
+
+  private documentos = new Map<string, DocumentoDeProyecto[]>();
+
+  /** Solo para los tests: agrega un documento a un proyecto. */
+  ponerDocumento(proyectoId: string, doc: DocumentoDeProyecto): void {
+    this.documentos.set(proyectoId, [...(this.documentos.get(proyectoId) ?? []), doc]);
+  }
+
+  async documentosDeProyecto(proyectoId: string): Promise<DocumentoDeProyecto[]> {
+    return this.documentos.get(proyectoId) ?? [];
+  }
+
+  async guardarDocumento(fila: FilaDeDocumento): Promise<void> {
+    const previos = (this.documentos.get(fila.proyectoId) ?? []).filter(
+      (d) => d.nombre !== fila.nombre,
+    );
+    this.documentos.set(fila.proyectoId, [
+      ...previos,
+      { nombre: fila.nombre, ruta: fila.ruta, ruta_texto: fila.rutaTexto },
+    ]);
   }
 
   async consumoPorAgente(): Promise<Map<string, Consumo>> {
@@ -875,6 +950,42 @@ export class PgStore implements Store {
               ended_at = now()
         WHERE id = $1`,
       [jobId, status, error ?? null, respuesta ?? null, consumo?.tokens ?? null, consumo?.costoUsd ?? null],
+    );
+  }
+
+  async documentosDeProyecto(proyectoId: string): Promise<DocumentoDeProyecto[]> {
+    const r = await this.pool.query<DocumentoDeProyecto>(
+      `SELECT nombre, ruta, ruta_texto FROM documentos
+        WHERE proyecto_id = $1 ORDER BY nombre`,
+      [proyectoId],
+    );
+    return r.rows;
+  }
+
+  async guardarDocumento(fila: FilaDeDocumento): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO documentos
+         (proyecto_id, nombre, nombre_original, ruta, ruta_texto, tipo, bytes, error, subido_por)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (proyecto_id, nombre) DO UPDATE SET
+         nombre_original = EXCLUDED.nombre_original,
+         ruta = EXCLUDED.ruta,
+         ruta_texto = EXCLUDED.ruta_texto,
+         tipo = EXCLUDED.tipo,
+         bytes = EXCLUDED.bytes,
+         error = EXCLUDED.error,
+         subido_por = EXCLUDED.subido_por`,
+      [
+        fila.proyectoId,
+        fila.nombre,
+        fila.nombreOriginal,
+        fila.ruta,
+        fila.rutaTexto,
+        fila.tipo,
+        fila.bytes,
+        fila.error ?? null,
+        fila.subidoPor,
+      ],
     );
   }
 

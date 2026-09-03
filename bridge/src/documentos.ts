@@ -32,6 +32,8 @@
  * un archivo que se acepta y se pierde.
  */
 
+import type { FilaDeDocumento } from './store.js';
+
 /**
  * Lo que el conversor sabe leer.
  *
@@ -115,6 +117,13 @@ export interface DocumentosDeps {
   docsRaiz: string;
   crearDir: (ruta: string) => Promise<void>;
   escribir: (ruta: string, datos: Uint8Array) => Promise<void>;
+  /**
+   * Registra el documento en la base.
+   *
+   * Se inyecta —y no se llama al store directo— por lo mismo que `escribir`:
+   * asi este modulo se puede testear sin una base y sin un disco.
+   */
+  guardarFila: (fila: FilaDeDocumento) => Promise<void>;
   fetchImpl?: typeof fetch;
 }
 
@@ -230,33 +239,22 @@ export async function guardarDocumento(
     await subirArchivo(rutaTexto, new TextEncoder().encode(texto), deps);
   }
 
-  const doFetch = deps.fetchImpl ?? fetch;
-  const res = await doFetch(`${deps.supabaseUrl}/rest/v1/documentos`, {
-    method: 'POST',
-    headers: {
-      ...cabeceras(deps),
-      'content-type': 'application/json',
-      // Upsert: mandar de nuevo el mismo archivo lo reemplaza, que es lo que la
-      // persona espera al mandar una version corregida.
-      prefer: 'resolution=merge-duplicates',
-    },
-    body: JSON.stringify({
-      proyecto_id: entrada.proyectoId,
-      nombre,
-      nombre_original: entrada.nombreOriginal,
-      ruta,
-      ruta_texto: rutaTexto,
-      tipo,
-      bytes: entrada.datos.byteLength,
-      error: error ?? null,
-      // Quien lo mando, que es el usuario del panel atado a este chat. La
-      // columna es NOT NULL y referencia auth.users: sin el vinculo no habria
-      // documento, y sin vinculo tampoco hay turno.
-      subido_por: entrada.usuarioId,
-    }),
-    signal: AbortSignal.timeout(20_000),
+  // La fila por el STORE y no por la API REST con la service_role.
+  //
+  // Era lo ultimo que ataba los documentos a esa clave: el archivo ya iba al
+  // disco, pero sin la clave el bot aceptaba el archivo y despues no lo podia
+  // registrar. El bridge se conecta a la misma base como `postgres`.
+  await deps.guardarFila({
+    proyectoId: entrada.proyectoId,
+    nombre,
+    nombreOriginal: entrada.nombreOriginal,
+    ruta,
+    rutaTexto,
+    tipo,
+    bytes: entrada.datos.byteLength,
+    error,
+    subidoPor: entrada.usuarioId,
   });
-  if (!res.ok) throw new Error(`documentos ${res.status}: ${await res.text()}`);
 
   return { nombre, tipo, bytes: entrada.datos.byteLength, error };
 }
