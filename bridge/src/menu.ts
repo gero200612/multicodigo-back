@@ -1,5 +1,6 @@
 import { AgentId } from '@multicodigo/shared';
 import type { Boton } from './render.js';
+import { aHoraArgentina } from './horas.js';
 import {
   MODOS_PERMISO,
   CLAVES_DE_MODELO,
@@ -276,7 +277,7 @@ export function tecladoDeAgentes(agentes: AgenteConEstado[]): Boton[][] {
     // si conviene esperar o cambiar de agente, y en la leyenda seria una nota
     // al pie que no dice de cual de los seis habla.
     const cola = a.agotado
-      ? ` — sin tokens${a.agotado.resets ? `, vuelve ${a.agotado.resets}` : ''}`
+      ? ` — sin tokens${a.agotado.resets ? `, vuelve ${aHoraArgentina(a.agotado.resets)}` : ''}`
       : a.ocupado
         ? ' — lo esta usando otro'
         : '';

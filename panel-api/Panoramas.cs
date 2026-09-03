@@ -42,6 +42,13 @@ public sealed class PanoramaService(
             (IReadOnlyDictionary<string, string>)new Dictionary<string, string>(),
             "los slots sin cuota");
 
+        // Lo gastado por cada agente en las últimas 5 horas. Degradado como el
+        // resto: sin esto las tarjetas no muestran el consumo y nada más.
+        var consumo = await Degradar(
+            () => bridge.ConsumoAsync(ct),
+            (IReadOnlyDictionary<string, Consumo>)new Dictionary<string, Consumo>(),
+            "el consumo de los agentes");
+
         // SOLO los agentes de los proyectos del usuario.
         //
         // `agentes` viene del gateway, que los saca de Docker: ahí están todos
@@ -62,7 +69,7 @@ public sealed class PanoramaService(
         // En paralelo y no en fila: con seis slots y una consulta lenta, la
         // página tardaría seis veces más de lo necesario.
         var slots = await Task.WhenAll(
-            mios.Select(a => VerSlotAsync(jwt, a, porSlot, sinCuota, ct)));
+            mios.Select(a => VerSlotAsync(jwt, a, porSlot, sinCuota, consumo, ct)));
 
         return new Panorama(slots, cola, jobs);
     }
@@ -72,6 +79,7 @@ public sealed class PanoramaService(
         Agente a,
         IReadOnlyDictionary<string, string> porSlot,
         IReadOnlyDictionary<string, string> sinCuota,
+        IReadOnlyDictionary<string, Consumo> consumo,
         CancellationToken ct)
     {
         var credTask = Degradar(
@@ -95,7 +103,8 @@ public sealed class PanoramaService(
             UltimoTest: test,
             Proyecto: a.Proyecto,
             ProyectoId: porSlot.TryGetValue(a.Id, out var pid) ? pid : null,
-            SinCuotaHasta: sinCuota.TryGetValue(a.Id, out var hasta) ? hasta : null);
+            SinCuotaHasta: sinCuota.TryGetValue(a.Id, out var hasta) ? hasta : null,
+            Consumo: consumo.TryGetValue(a.Id, out var gasto) ? gasto : null);
     }
 
     /// <summary>

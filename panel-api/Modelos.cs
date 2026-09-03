@@ -90,7 +90,21 @@ public sealed record SlotVista(
     /// vuelva a probar —sigue siendo cierto hasta esa hora— y dice qué hacer,
     /// que es esperar o cargar otra cuenta. Ver Cuota.cs.
     /// </summary>
-    string? SinCuotaHasta = null);
+    string? SinCuotaHasta = null,
+    /// <summary>
+    /// Lo que este agente gastó en las últimas 5 horas, o null si no trabajó.
+    /// </summary>
+    /// <remarks>
+    /// NO es "cuánto le queda": Anthropic no publica la cuota, así que no hay
+    /// total contra el cual dividir y un porcentaje sería un número inventado
+    /// por nosotros. La ventana de 5 horas es la misma que usa su límite, y eso
+    /// es lo que hace comparable el número: se puede mirar contra lo que había
+    /// gastado la vez que se quedó sin cuota.
+    /// </remarks>
+    Consumo? Consumo = null);
+
+/// <summary>Lo gastado por un agente: tokens de entrada y salida, y dólares.</summary>
+public sealed record Consumo(long Tokens, decimal CostoUsd);
 
 /// <summary>Todo lo que la página muestra, en una sola respuesta.</summary>
 public sealed record Panorama(

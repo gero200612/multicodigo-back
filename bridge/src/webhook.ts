@@ -19,7 +19,12 @@ const JOBS_POR_DEFECTO = 20;
 export interface ApiDeps {
   store: Pick<
     Store,
-    'recentJobs' | 'canjearCodigo' | 'usuarioDeChat' | 'deleteSessions' | 'desvincularChat'
+    | 'recentJobs'
+    | 'canjearCodigo'
+    | 'usuarioDeChat'
+    | 'deleteSessions'
+    | 'desvincularChat'
+    | 'consumoPorAgente'
   >;
   /**
    * Como decidir una aprobacion desde afuera de Telegram.
@@ -69,6 +74,21 @@ export function buildWebhookServer(
   });
 
   if (api) {
+    /**
+     * Cuanto gasto cada agente en las ultimas 5 horas.
+     *
+     * No dice cuanto QUEDA: Anthropic no publica la cuota, asi que no hay
+     * total contra el cual dividir y un porcentaje seria inventado. Lo que se
+     * puede medir es lo gastado, sobre la misma ventana que usa su limite.
+     */
+    app.get('/consumo', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      const consumo = await api.store.consumoPorAgente();
+      return reply.code(200).send({ consumo: Object.fromEntries(consumo) });
+    });
+
     app.get<{ Querystring: { limit?: string } }>('/jobs', async (request, reply) => {
       // Este endpoint expone los prompts, o sea todo lo que le hablaste a tus
       // agentes. Sin bearer seria una filtracion de la conversacion entera.

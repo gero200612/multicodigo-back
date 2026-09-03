@@ -19,6 +19,7 @@ import {
 import type { Boton } from './render.js';
 import type { Store, Proyecto, ModoPermiso, ClaveDeModelo } from './store.js';
 import { partirEnTareas, type Tarea } from './cola.js';
+import { aHoraArgentina } from './horas.js';
 import type { Quien } from './agents-client.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
@@ -42,7 +43,10 @@ export interface PipelineDeps {
    * para que no termine en el cuerpo que le reenvia al hijo. Sin esto, el
    * gateway no puede saber de quien es el slot mientras dura el turno.
    */
-  ask: (req: PromptConToken, quien: Quien) => Promise<PromptResponse>;
+  ask: (
+    req: PromptConToken,
+    quien: Quien,
+  ) => Promise<PromptResponse & { tokens?: number; costoUsd?: number }>;
   /**
    * Le pide al panel que firme el token de una instalacion.
    *
@@ -475,14 +479,16 @@ export async function handleIncoming(
  * estaba el bug de verdad. Esto es la otra mitad: una vez detectado, decirlo
  * como se lo diria una persona.
  *
- * La hora se muestra tal como vino, con su `(UTC)` incluido: convertirla a la
- * zona de quien lee pide saber cual es, y el bot no la sabe. Mostrar una hora
- * mal convertida es peor que mostrar una que dice de que zona es.
+ * La hora se pasa a hora de Argentina. Antes se mostraba cruda, con su `(UTC)`
+ * incluido, porque el bot no sabia en que zona estaba quien lee — ahora si, y
+ * esa hora es la que decide si conviene esperar o cambiar de agente: leerla
+ * tres horas corrida es peor que no tenerla. Un formato que `aHoraArgentina` no
+ * reconoce vuelve tal cual, que es como se comportaba antes.
  */
 export function textoDeAgotado(agente: AgentId, resets?: string): string {
   const quien = agente.toUpperCase();
   return resets
-    ? `${quien} se quedo sin tokens. La cuenta vuelve ${resets}.`
+    ? `${quien} se quedo sin tokens. La cuenta vuelve ${aHoraArgentina(resets)}.`
     : `${quien} se quedo sin tokens.`;
 }
 
@@ -827,7 +833,13 @@ export async function ejecutarTurno(
     }
 
     if (t.proyectoId) await deps.store.setSession(t.proyectoId, t.agente, r.sessionId);
-    await deps.store.finishJob(jobId, 'done', undefined, r.text);
+    // El consumo del turno, si el agente lo mando. Es lo que despues suma
+    // `consumoPorAgente` para mostrar cuanto gasto cada uno.
+    const consumo =
+      r.tokens !== undefined || r.costoUsd !== undefined
+        ? { tokens: r.tokens ?? 0, costoUsd: r.costoUsd ?? 0 }
+        : undefined;
+    await deps.store.finishJob(jobId, 'done', undefined, r.text, consumo);
     // Un turno que salio bien PRUEBA que la cuenta tiene tokens, y es la unica
     // prueba que existe. Por eso la marca se borra aca y no con un reloj: se
     // limpia sola en cuanto el slot vuelve a trabajar.

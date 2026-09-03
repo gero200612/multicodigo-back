@@ -718,3 +718,66 @@ describe('desvincular un chat', () => {
     expect(await store.usuarioDeChat(7)).toBe(OTRO);
   });
 });
+
+/**
+ * Cuanto consumio cada agente en la ventana de 5 horas.
+ *
+ * Anthropic no publica cuanta cuota queda, asi que "que porcentaje va" no tiene
+ * respuesta: no hay total contra el cual dividir. Lo medible es lo gastado, y
+ * la ventana de 5h es la misma que usa Anthropic para su limite — sumar sobre
+ * ella es lo que hace que el numero se pueda comparar con algo.
+ */
+describe('el consumo por agente', () => {
+  it('suma los tokens y el costo de cada agente', async () => {
+    const store = new InMemoryStore();
+    const a = await store.createJob({
+      chatId: 1, agent: 'c1', project: 'p', usuarioId: 'u', origen: 'telegram',
+      prompt: 'x', messageId: 0,
+    });
+    const b = await store.createJob({
+      chatId: 1, agent: 'c1', project: 'p', usuarioId: 'u', origen: 'telegram',
+      prompt: 'y', messageId: 0,
+    });
+    await store.finishJob(a, 'done', undefined, 'ok', { tokens: 1000, costoUsd: 0.02 });
+    await store.finishJob(b, 'done', undefined, 'ok', { tokens: 500, costoUsd: 0.01 });
+
+    const c = await store.consumoPorAgente();
+    expect(c.get('c1')).toEqual({ tokens: 1500, costoUsd: 0.03 });
+  });
+
+  it('separa por agente', async () => {
+    const store = new InMemoryStore();
+    const a = await store.createJob({
+      chatId: 1, agent: 'c1', project: 'p', usuarioId: 'u', origen: 'telegram',
+      prompt: 'x', messageId: 0,
+    });
+    const b = await store.createJob({
+      chatId: 1, agent: 'c2', project: 'p', usuarioId: 'u', origen: 'telegram',
+      prompt: 'y', messageId: 0,
+    });
+    await store.finishJob(a, 'done', undefined, 'ok', { tokens: 100, costoUsd: 0.001 });
+    await store.finishJob(b, 'done', undefined, 'ok', { tokens: 900, costoUsd: 0.009 });
+
+    const c = await store.consumoPorAgente();
+    expect(c.get('c1')?.tokens).toBe(100);
+    expect(c.get('c2')?.tokens).toBe(900);
+  });
+
+  // Un turno sin datos de uso —un SDK viejo, o uno que fallo— no puede
+  // ensuciar la suma con un NaN.
+  it('ignora los turnos sin datos de consumo', async () => {
+    const store = new InMemoryStore();
+    const a = await store.createJob({
+      chatId: 1, agent: 'c1', project: 'p', usuarioId: 'u', origen: 'telegram',
+      prompt: 'x', messageId: 0,
+    });
+    await store.finishJob(a, 'done', undefined, 'ok');
+
+    expect(await store.consumoPorAgente()).toEqual(new Map());
+  });
+
+  it('un agente que no trabajo no aparece', async () => {
+    const store = new InMemoryStore();
+    expect((await store.consumoPorAgente()).get('c9')).toBeUndefined();
+  });
+});

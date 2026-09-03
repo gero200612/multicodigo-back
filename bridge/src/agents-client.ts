@@ -37,7 +37,7 @@ export async function askAgent(
   req: PromptConToken,
   deps: AgentsClientDeps,
   quien?: Quien,
-): Promise<PromptResponse> {
+): Promise<PromptResponse & { tokens?: number; costoUsd?: number }> {
   const doFetch = deps.fetchImpl ?? fetch;
   const response = await doFetch(`${deps.gatewayUrl.replace(/\/$/, '')}/agents/${req.agent}/prompt`, {
     method: 'POST',
@@ -73,7 +73,15 @@ export async function askAgent(
     })();
     throw new ErrorDelAgente(cuerpo.code ?? 'internal', cuerpo.resets, cuerpo.duenio);
   }
-  return PromptResponse.parse(JSON.parse(text));
+  const crudo = JSON.parse(text) as { tokens?: unknown; costoUsd?: unknown };
+  // `parse` valida el contrato y DESCARTA lo que no declara, asi que el consumo
+  // se lee del cuerpo crudo. Va al lado y no adentro porque el contrato vive en
+  // un paquete publicado por tag; ver el comentario del agente.
+  return {
+    ...PromptResponse.parse(crudo),
+    tokens: typeof crudo.tokens === 'number' ? crudo.tokens : undefined,
+    costoUsd: typeof crudo.costoUsd === 'number' ? crudo.costoUsd : undefined,
+  };
 }
 
 /**

@@ -103,6 +103,13 @@ export type ModoPermiso = (typeof MODOS_PERMISO)[number];
  * habla con el SDK. Guardar un id aca dejaria filas apuntando a modelos
  * retirados que nadie sabria traducir.
  */
+/** Lo que consumio un turno, o la suma de varios. */
+export interface Consumo {
+  /** Entrada + salida, que es como los cuenta la cuota. */
+  tokens: number;
+  costoUsd: number;
+}
+
 export const CLAVES_DE_MODELO = ['opus', 'sonnet', 'haiku'] as const;
 export type ClaveDeModelo = (typeof CLAVES_DE_MODELO)[number];
 
@@ -233,7 +240,24 @@ export interface Store {
    * Sin guardarla, la tabla tiene lo que pediste y no lo que te contestaron:
    * no hay historial que mostrar ni en el panel ni en el chat compartido.
    */
-  finishJob(jobId: string, status: JobStatus, error?: string, respuesta?: string): Promise<void>;
+  finishJob(
+    jobId: string,
+    status: JobStatus,
+    error?: string,
+    respuesta?: string,
+    consumo?: Consumo,
+  ): Promise<void>;
+  /**
+   * Lo gastado por cada agente en las ultimas 5 horas, indexado por slot.
+   *
+   * Cinco horas es la ventana del limite de Anthropic (ver
+   * HORAS_DE_AGOTAMIENTO): sumar sobre ella es lo que hace que el numero se
+   * pueda comparar contra el momento en que el slot se agoto la vez pasada.
+   *
+   * NO es "cuanto queda": Anthropic no publica la cuota, asi que no hay total
+   * contra el cual dividir y un porcentaje seria inventado.
+   */
+  consumoPorAgente(): Promise<Map<string, Consumo>>;
   /**
    * Mueve un job entre estados transitorios. No reabre uno ya cerrado: un
    * estado que llega tarde —el poller vio una aprobacion justo cuando el turno
@@ -392,7 +416,13 @@ export class InMemoryStore implements Store {
   private sessions = new Map<string, string>();
   private jobs = new Map<
     string,
-    { status: JobStatus; error?: string; respuesta?: string; resumen?: JobResumen }
+    {
+      status: JobStatus;
+      error?: string;
+      respuesta?: string;
+      resumen?: JobResumen;
+      consumo?: Consumo;
+    }
   >();
 
   private key(proyectoId: string, agent: AgentId) {
@@ -451,9 +481,31 @@ export class InMemoryStore implements Store {
       .reverse()
       .slice(0, limite);
   }
-  async finishJob(jobId: string, status: JobStatus, error?: string, respuesta?: string) {
+  async finishJob(
+    jobId: string,
+    status: JobStatus,
+    error?: string,
+    respuesta?: string,
+    consumo?: Consumo,
+  ) {
     const previo = this.jobs.get(jobId);
-    this.jobs.set(jobId, { ...previo, status, error, respuesta });
+    this.jobs.set(jobId, { ...previo, status, error, respuesta, consumo });
+  }
+
+  async consumoPorAgente(): Promise<Map<string, Consumo>> {
+    const total = new Map<string, Consumo>();
+    for (const j of this.jobs.values()) {
+      const agente = j.resumen?.agent;
+      if (!agente || !j.consumo) continue;
+      const previo = total.get(agente) ?? { tokens: 0, costoUsd: 0 };
+      total.set(agente, {
+        tokens: previo.tokens + j.consumo.tokens,
+        // Se redondea a seis decimales, los mismos que la columna NUMERIC:
+        // sumar floats acumula error y 0.02 + 0.01 da 0.030000000000000002.
+        costoUsd: Number((previo.costoUsd + j.consumo.costoUsd).toFixed(6)),
+      });
+    }
+    return total;
   }
   async setJobStatus(jobId: string, status: JobStatus) {
     const job = this.jobs.get(jobId);
@@ -807,14 +859,41 @@ export class PgStore implements Store {
     return id;
   }
 
-  async finishJob(jobId: string, status: JobStatus, error?: string, respuesta?: string) {
+  async finishJob(
+    jobId: string,
+    status: JobStatus,
+    error?: string,
+    respuesta?: string,
+    consumo?: Consumo,
+  ) {
     // COALESCE en la respuesta: un finishJob de error no puede borrar lo que ya
-    // habia contestado el agente antes de que algo fallara despues.
+    // habia contestado el agente antes de que algo fallara despues. Lo mismo
+    // con el consumo: el turno gasto lo que gasto, aunque despues fallara.
     await this.pool.query(
       `UPDATE jobs SET status = $2, error = $3, respuesta = COALESCE($4, respuesta),
+              tokens = COALESCE($5, tokens), costo_usd = COALESCE($6, costo_usd),
               ended_at = now()
         WHERE id = $1`,
-      [jobId, status, error ?? null, respuesta ?? null],
+      [jobId, status, error ?? null, respuesta ?? null, consumo?.tokens ?? null, consumo?.costoUsd ?? null],
+    );
+  }
+
+  async consumoPorAgente(): Promise<Map<string, Consumo>> {
+    // La ventana de 5 horas, la misma del limite de Anthropic. El indice de la
+    // migracion 021 cubre exactamente este WHERE.
+    const r = await this.pool.query<{ agent: string; tokens: string; costo: string }>(
+      `SELECT agent,
+              COALESCE(SUM(tokens), 0)::text tokens,
+              COALESCE(SUM(costo_usd), 0)::text costo
+         FROM jobs
+        WHERE tokens IS NOT NULL
+          AND created_at > now() - interval '${HORAS_DE_AGOTAMIENTO} hours'
+        GROUP BY agent`,
+    );
+    // Los dos vienen como texto: un BIGINT de SUM no entra siempre en un number
+    // de JS, y un NUMERIC pasado a float pierde los centavos.
+    return new Map(
+      r.rows.map((f) => [f.agent, { tokens: Number(f.tokens), costoUsd: Number(f.costo) }]),
     );
   }
 

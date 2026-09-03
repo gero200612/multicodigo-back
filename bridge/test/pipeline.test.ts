@@ -810,7 +810,8 @@ describe('quedarse sin tokens', () => {
 
     expect(out.kind).toBe('error');
     // Ni una palabra del cartel de Anthropic: eso es lo que llegaba antes.
-    expect(out.kind === 'error' && out.text).toBe('C1 se quedo sin tokens. La cuenta vuelve 1:30am (UTC).');
+    // En hora de Argentina: 1:30am UTC son las 10:30pm de aca.
+    expect(out.kind === 'error' && out.text).toBe('C1 se quedo sin tokens. La cuenta vuelve 10:30pm.');
   });
 
   it('sin hora de reset, avisa igual sin inventarla', async () => {
@@ -901,7 +902,8 @@ describe('quedarse sin tokens', () => {
 
     // Antes esto era un `answer` con el cartel adentro.
     expect(out.kind).toBe('error');
-    expect(out.kind === 'error' && out.text).toBe('C1 se quedo sin tokens. La cuenta vuelve 1:30am (UTC).');
+    // En hora de Argentina: 1:30am UTC son las 10:30pm de aca.
+    expect(out.kind === 'error' && out.text).toBe('C1 se quedo sin tokens. La cuenta vuelve 10:30pm.');
     expect((await d.store.slotsAgotados()).has('c1')).toBe(true);
   });
 });

@@ -85,6 +85,16 @@ public interface IBridgeClient
 {
     Task<IReadOnlyList<JobResumen>> JobsAsync(int limite, CancellationToken ct = default);
     /// <summary>
+    /// Cuánto gastó cada agente en las últimas 5 horas, indexado por slot.
+    /// </summary>
+    /// <remarks>
+    /// No dice cuánto QUEDA: Anthropic no publica la cuota, así que no hay
+    /// total contra el cual dividir y un porcentaje sería inventado. La ventana
+    /// de 5 horas es la misma que usa su límite, y es lo que hace que el número
+    /// se pueda comparar contra el momento en que el slot se agotó.
+    /// </remarks>
+    Task<IReadOnlyDictionary<string, Consumo>> ConsumoAsync(CancellationToken ct = default);
+    /// <summary>
     /// Canjea un codigo de vinculacion a nombre del usuario. Lo llamamos desde
     /// el endpoint POST /api/telegram/vincular que le expone el panel al front.
     ///
@@ -384,6 +394,15 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
             ? []
             : [.. r.Jobs.Select(j => new JobResumen(
                 j.Id, j.Agent, j.Project, j.Prompt, j.Status, j.CreatedAt, j.Error))];
+    }
+
+    private sealed record RespuestaConsumo(Dictionary<string, Consumo>? Consumo);
+
+    public async Task<IReadOnlyDictionary<string, Consumo>> ConsumoAsync(
+        CancellationToken ct = default)
+    {
+        var r = await http.GetFromJsonAsync<RespuestaConsumo>("/consumo", Json.Opciones, ct);
+        return r?.Consumo ?? [];
     }
 
     /// <summary>

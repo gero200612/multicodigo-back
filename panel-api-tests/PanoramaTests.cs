@@ -17,6 +17,64 @@ public class PanoramaTests
     }
 
     /// <summary>
+    /// Lo gastado por cada agente llega a su tarjeta.
+    ///
+    /// Es lo medible: Anthropic no publica cuánta cuota queda, así que un
+    /// porcentaje sería un número inventado por nosotros.
+    /// </summary>
+    [Fact]
+    public async Task ElConsumoDeCadaAgenteLlegaAlPanorama()
+    {
+        var (svc, g, _, b, _, a) = Armar();
+        g.Agentes = [new("c1", true, "demo")];
+        a.PorSlot.Clear();
+        a.PorSlot["c1"] = "11111111-1111-4111-8111-111111111111";
+        b.Consumo["c1"] = new Consumo(1_500_000, 3.4m);
+
+        var p = await svc.VerAsync("jwt");
+
+        Assert.Equal(1_500_000, p.Slots.Single().Consumo!.Tokens);
+        Assert.Equal(3.4m, p.Slots.Single().Consumo!.CostoUsd);
+    }
+
+    /// <summary>
+    /// Un agente que no trabajó no trae consumo, y eso NO es cero.
+    ///
+    /// Null y cero se leen distinto: cero dice "corrió y no gastó nada", que es
+    /// falso. Sin turnos en la ventana no hay nada que informar.
+    /// </summary>
+    [Fact]
+    public async Task UnAgenteSinTurnosNoTraeConsumo()
+    {
+        var (svc, g, _, _, _, a) = Armar();
+        g.Agentes = [new("c1", true, "demo")];
+        a.PorSlot.Clear();
+        a.PorSlot["c1"] = "11111111-1111-4111-8111-111111111111";
+
+        var p = await svc.VerAsync("jwt");
+
+        Assert.Null(p.Slots.Single().Consumo);
+    }
+
+    /// <summary>
+    /// Si el bridge se cae, la página sigue: solo falta el consumo.
+    /// </summary>
+    [Fact]
+    public async Task SiNoSePuedeLeerElConsumoElRestoIgualSeVe()
+    {
+        var (svc, g, _, b, _, a) = Armar();
+        g.Agentes = [new("c1", true, "demo")];
+        a.PorSlot.Clear();
+        a.PorSlot["c1"] = "11111111-1111-4111-8111-111111111111";
+        b.Falla = true;
+
+        var p = await svc.VerAsync("jwt");
+
+        Assert.Single(p.Slots);
+        Assert.Null(p.Slots.Single().Consumo);
+    }
+
+    /// <summary>
     /// Cada uno ve SOLO los agentes de sus proyectos.
     ///
     /// El panorama pedía la lista al gateway —que la saca de Docker y no sabe

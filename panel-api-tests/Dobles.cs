@@ -374,6 +374,15 @@ public sealed class BridgeFalso : IBridgeClient
         return Task.CompletedTask;
     }
 
+    /// <summary>Lo gastado por agente que devuelve el bridge. Vacio por default.</summary>
+    public Dictionary<string, Consumo> Consumo { get; } = [];
+
+    public Task<IReadOnlyDictionary<string, Consumo>> ConsumoAsync(CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        return Task.FromResult<IReadOnlyDictionary<string, Consumo>>(Consumo);
+    }
+
     /// <summary>Los chats desvinculados: chat -> usuario que lo pidio.</summary>
     public List<(long ChatId, string UsuarioId)> Desvinculados { get; } = [];
 
