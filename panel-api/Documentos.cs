@@ -15,13 +15,22 @@ public sealed record Documento(
     [property: JsonPropertyName("nombreOriginal")] string NombreOriginal,
     [property: JsonPropertyName("tipo")] string Tipo,
     [property: JsonPropertyName("bytes")] long Bytes,
-    [property: JsonPropertyName("error")] string? Error = null);
+    [property: JsonPropertyName("error")] string? Error = null,
+    /// <summary>Si es EL instructivo del proyecto y no un documento más.</summary>
+    [property: JsonPropertyName("esInstruccion")] bool EsInstruccion = false);
 
 /// <summary>Lo que viaja con el turno: el nombre y de dónde bajarlo.</summary>
 /// <summary>
 /// Un documento tal como viaja al gateway: rutas en el disco, no URLs.
 /// </summary>
-public sealed record DocumentoDelTurno(string Nombre, string Ruta, string? RutaTexto);
+/// <remarks>
+/// `EsInstruccion` viaja con el documento y el bridge es el que separa: hay dos
+/// caminos que llegan al gateway —éste y el de Telegram, donde los documentos
+/// los junta el bridge contra la base— así que separar acá dejaría al bot sin
+/// instructivo. Ver `separarInstructivo` en el bridge.
+/// </remarks>
+public sealed record DocumentoDelTurno(
+    string Nombre, string Ruta, string? RutaTexto, bool EsInstruccion = false);
 
 /// <summary>
 /// Los documentos de cada proyecto: la tabla y los archivos.
@@ -36,6 +45,18 @@ public interface IDocumentosClient
         string jwt, string proyectoId, CancellationToken ct = default);
 
     /// <summary>
+    /// El instructivo del proyecto, o null si no tiene.
+    /// </summary>
+    /// <remarks>
+    /// Aparte de `DeProyectoAsync`, que lo excluye: son dos secciones distintas
+    /// de la pantalla, y el instructivo rige a todo lo demás en vez de ser un
+    /// documento más de la lista. Ver el diseño en
+    /// `multicodigo-vm/docs/superpowers/specs/2026-09-03-instrucciones-de-proyecto-design.md`.
+    /// </remarks>
+    Task<Documento?> InstructivoDeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default);
+
+    /// <summary>
     /// Sube el original y su texto, y escribe la fila.
     ///
     /// `texto` es null cuando la conversión falló; `error` dice por qué. El
@@ -44,7 +65,8 @@ public interface IDocumentosClient
     /// </summary>
     Task<Documento> SubirAsync(
         string jwt, string proyectoId, string nombre, string nombreOriginal, string tipo,
-        byte[] datos, string? texto, string? error, CancellationToken ct = default);
+        byte[] datos, string? texto, string? error, bool esInstruccion = false,
+        CancellationToken ct = default);
 
     Task BorrarAsync(string jwt, string proyectoId, string nombre, CancellationToken ct = default);
 
@@ -87,7 +109,7 @@ public sealed class DocumentosClient(
 
     private sealed record Fila(
         string Id, string Nombre, string NombreOriginal, string Tipo, long Bytes,
-        string? Error, string Ruta, string? RutaTexto);
+        string? Error, string Ruta, string? RutaTexto, bool EsInstruccion = false);
 
     private HttpRequestMessage Pedido(HttpMethod metodo, string url, string jwt)
     {
@@ -98,7 +120,7 @@ public sealed class DocumentosClient(
     }
 
     private const string Columnas =
-        "select=id,nombre,nombre_original,tipo,bytes,error,ruta,ruta_texto&order=nombre";
+        "select=id,nombre,nombre_original,tipo,bytes,error,ruta,ruta_texto,es_instruccion&order=nombre";
 
     private async Task<List<Fila>> FilasAsync(string jwt, string proyectoId, CancellationToken ct)
     {
@@ -118,8 +140,12 @@ public sealed class DocumentosClient(
         try
         {
             var filas = await FilasAsync(jwt, proyectoId, ct);
-            return [.. filas.Select(f => new Documento(
-                f.Id, f.Nombre, f.NombreOriginal, f.Tipo, f.Bytes, f.Error))];
+            // El instructivo NO va en esta lista: tiene su propia sección en la
+            // pantalla, y verlo dos veces haría creer que son dos archivos.
+            return [.. filas
+                .Where(f => !f.EsInstruccion)
+                .Select(f => new Documento(
+                    f.Id, f.Nombre, f.NombreOriginal, f.Tipo, f.Bytes, f.Error))];
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -128,9 +154,32 @@ public sealed class DocumentosClient(
         }
     }
 
+    public async Task<Documento?> InstructivoDeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+    {
+        try
+        {
+            var filas = await FilasAsync(jwt, proyectoId, ct);
+            // `FirstOrDefault` y no `Single`: la base tiene un índice único
+            // parcial que impide dos, y si por lo que sea hubiera dos, mostrar
+            // uno es mejor que tirarle una excepción a la pantalla.
+            var f = filas.FirstOrDefault(x => x.EsInstruccion);
+            return f is null
+                ? null
+                : new Documento(
+                    f.Id, f.Nombre, f.NombreOriginal, f.Tipo, f.Bytes, f.Error, true);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            log.LogWarning(ex, "no se pudo leer el instructivo de {Proyecto}", proyectoId);
+            return null;
+        }
+    }
+
     public async Task<Documento> SubirAsync(
         string jwt, string proyectoId, string nombre, string nombreOriginal, string tipo,
-        byte[] datos, string? texto, string? error, CancellationToken ct = default)
+        byte[] datos, string? texto, string? error, bool esInstruccion = false,
+        CancellationToken ct = default)
     {
         var ruta = $"{proyectoId}/{nombre}";
         await GuardarArchivoAsync(jwt, ruta, datos, ct);
@@ -161,6 +210,7 @@ public sealed class DocumentosClient(
                 tipo,
                 bytes = datos.LongLength,
                 error,
+                es_instruccion = esInstruccion,
             },
             options: Json.Opciones);
 
@@ -176,8 +226,10 @@ public sealed class DocumentosClient(
         var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Supabase, ct);
         var f = filas?.FirstOrDefault();
         return f is null
-            ? new Documento("", nombre, nombreOriginal, tipo, datos.LongLength, error)
-            : new Documento(f.Id, f.Nombre, f.NombreOriginal, f.Tipo, f.Bytes, f.Error);
+            ? new Documento(
+                "", nombre, nombreOriginal, tipo, datos.LongLength, error, esInstruccion)
+            : new Documento(
+                f.Id, f.Nombre, f.NombreOriginal, f.Tipo, f.Bytes, f.Error, f.EsInstruccion);
     }
 
     /// <summary>
@@ -264,7 +316,7 @@ public sealed class DocumentosClient(
             // máquina.
             var filas = await FilasAsync(jwt, proyectoId, ct);
             return filas
-                .Select(f => new DocumentoDelTurno(f.Nombre, f.Ruta, f.RutaTexto))
+                .Select(f => new DocumentoDelTurno(f.Nombre, f.Ruta, f.RutaTexto, f.EsInstruccion))
                 .ToList();
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)

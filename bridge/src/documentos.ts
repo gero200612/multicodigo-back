@@ -337,3 +337,59 @@ export async function documentosDelTurno(
     return [];
   }
 }
+
+/**
+ * Un documento del proyecto tal como sale de la base, con la marca.
+ *
+ * Es la misma forma que viaja al gateway. `es_instruccion` es opcional porque
+ * toda fila vieja la trae en `false` por el default de la columna, y porque un
+ * panel sin actualizar no la manda.
+ */
+export interface DocumentoConMarca {
+  nombre: string;
+  ruta: string;
+  ruta_texto?: string | null;
+  es_instruccion?: boolean;
+}
+
+export interface DocumentosSeparados<T extends DocumentoConMarca> {
+  /**
+   * TODOS los documentos, incluido el instructivo.
+   *
+   * El instructivo se queda en la lista a proposito: de aca sale la copia a
+   * `_docs` del worktree, que es lo que le deja al agente CITARLO ("el paso 4
+   * del instructivo dice..."). Sacarlo le daria el texto en el prompt y ningun
+   * archivo que nombrar.
+   */
+  documentos: T[] | undefined;
+  /** El instructivo, si el proyecto tiene uno. */
+  instrucciones: T | undefined;
+}
+
+/**
+ * Separa el instructivo del proyecto del resto de los documentos.
+ *
+ * Vive en el bridge, y no en el panel, porque hay DOS caminos que llegan al
+ * gateway: el del panel —los documentos vienen en el pedido— y el de Telegram,
+ * donde el bridge los busca solo contra la base. Separar en el panel dejaria al
+ * bot sin instructivo, que es justo el camino que mas se usa.
+ *
+ * Ver
+ * `multicodigo-vm/docs/superpowers/specs/2026-09-03-instrucciones-de-proyecto-design.md`.
+ */
+export function separarInstructivo<T extends DocumentoConMarca>(
+  documentos: T[] | undefined,
+): DocumentosSeparados<T> {
+  if (!documentos) return { documentos: undefined, instrucciones: undefined };
+
+  // El indice unico parcial de la base impide dos instructivos por proyecto,
+  // asi que este `sort` no deberia decidir nada. Esta igual porque "no deberia
+  // pasar" no es un comportamiento: si alguna vez hay dos, lo que no puede es
+  // que el instructivo cambie de turno en turno segun como venga ordenada la
+  // lista.
+  const candidatos = documentos
+    .filter((d) => d.es_instruccion === true)
+    .sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+  return { documentos, instrucciones: candidatos[0] };
+}

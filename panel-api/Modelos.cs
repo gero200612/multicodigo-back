@@ -112,7 +112,31 @@ public sealed record Panorama(
     Cola Cola,
     IReadOnlyList<JobResumen> Jobs);
 
-public sealed record ConfigFront(string SupabaseUrl, string SupabaseAnonKey);
+/// <param name="GoogleClientId">
+/// El client ID de OAuth para elegir archivos de Google Drive, o null si no está
+/// configurado (y entonces el botón queda apagado).
+/// </param>
+/// <param name="GoogleApiKey">
+/// La API key del Google Picker, o null.
+/// </param>
+/// <remarks>
+/// Los dos valores de Google son PÚBLICOS por diseño, igual que la clave anon de
+/// Supabase: el navegador los necesita antes de poder pedirle nada a Google, así
+/// que no hay forma de tenerlos del lado del servidor. Lo que los protege no es
+/// el secreto: el client ID sólo funciona desde los orígenes JavaScript que se
+/// dan de alta en Google Cloud, y la API key hay que restringirla por referrer
+/// HTTP en la misma consola. Sin esas dos restricciones, cualquiera puede usar
+/// la cuota del proyecto desde otro sitio.
+///
+/// Ambos son nullable a propósito: sin ellos el panel funciona igual y el botón
+/// de Drive se muestra apagado, que es como está hoy. Ver el diseño en
+/// <c>multicodigo-vm/docs/superpowers/specs/2026-09-03-google-drive-design.md</c>.
+/// </remarks>
+public sealed record ConfigFront(
+    string SupabaseUrl,
+    string SupabaseAnonKey,
+    string? GoogleClientId = null,
+    string? GoogleApiKey = null);
 
 // --- cuerpos de request ---------------------------------------------------
 

@@ -45,6 +45,35 @@ public static partial class Documentos
     /// </summary>
     public const long MaximoBytes = 20 * 1024 * 1024;
 
+    /// <summary>
+    /// Cuánto puede pesar el instructivo de un proyecto: 32 KB.
+    /// </summary>
+    /// <remarks>
+    /// Mucho menos que los 20 MB de un documento, y por una razón de fondo: un
+    /// documento se copia al worktree y el agente lo abre si lo necesita, pero
+    /// el instructivo entra en el system prompt de CADA turno. Cada KB se paga
+    /// en tokens en todos los mensajes y empuja el contexto útil afuera.
+    ///
+    /// 32 KB son unas 8.000 palabras, así que un instructivo de pasos largo
+    /// entra de sobra.
+    ///
+    /// Tiene que moverse junto con `TOPE_DE_INSTRUCCIONES` del gateway, que es
+    /// la última capa antes del prompt y lo revalida.
+    /// </remarks>
+    public const long MaximoBytesInstruccion = 32 * 1024;
+
+    /// <summary>
+    /// El único tipo que se acepta como instructivo.
+    /// </summary>
+    /// <remarks>
+    /// Sólo `.md` y no cualquier tipo que el conversor sepa leer: un PDF hay
+    /// que convertirlo y la conversión puede fallar —un escaneo no tiene capa de
+    /// texto—, y un instructivo obligatorio que a veces no está es peor que no
+    /// tener la feature: el turno corre igual y nadie se entera de que faltaron
+    /// los pasos. Un `.md` es texto y no hay conversión que pueda fallar.
+    /// </remarks>
+    public const string TipoDeInstruccion = "md";
+
     /// <summary>El tipo según la extensión, o null si no se sabe leer.</summary>
     public static string? TipoDe(string? nombreOriginal)
     {

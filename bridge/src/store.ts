@@ -114,6 +114,13 @@ export interface DocumentoDeProyecto {
   nombre: string;
   ruta: string;
   ruta_texto?: string | null;
+  /**
+   * Si este documento es EL instructivo del proyecto.
+   *
+   * Un indice unico parcial en la base impide que haya dos por proyecto. Ver
+   * `multicodigo-vm/docs/superpowers/specs/2026-09-03-instrucciones-de-proyecto-design.md`.
+   */
+  es_instruccion?: boolean;
 }
 
 /** Todo lo que se guarda de un documento que llego por Telegram. */
@@ -955,7 +962,7 @@ export class PgStore implements Store {
 
   async documentosDeProyecto(proyectoId: string): Promise<DocumentoDeProyecto[]> {
     const r = await this.pool.query<DocumentoDeProyecto>(
-      `SELECT nombre, ruta, ruta_texto FROM documentos
+      `SELECT nombre, ruta, ruta_texto, es_instruccion FROM documentos
         WHERE proyecto_id = $1 ORDER BY nombre`,
       [proyectoId],
     );

@@ -9,6 +9,7 @@ import {
   type RepoDelPedido,
 } from '@multicodigo/shared';
 import { parseCommand } from './router.js';
+import { separarInstructivo, type DocumentoConMarca } from './documentos.js';
 import {
   tecladoDeProyectos,
   tecladoDeAgentes,
@@ -573,7 +574,19 @@ export type PromptConToken = PromptRequest & {
    * un modelo se retira.
    */
   modelo?: ClaveDeModelo;
-  documentos?: Array<{ nombre: string; ruta: string; ruta_texto?: string | null }>;
+  documentos?: DocumentoConMarca[];
+  /**
+   * El instructivo del proyecto, aparte de `documentos`.
+   *
+   * Aparte y no un flag adentro del arreglo porque el consumidor es otro: de
+   * `documentos` sale una copia a `_docs` del worktree, y de esto sale el texto
+   * que el gateway lee y le mete al system prompt. Con un campo propio, "hay a
+   * lo sumo uno" lo dice el tipo.
+   *
+   * Sigue siendo una RUTA y no el texto: el unico proceso que monta `/srv/docs`
+   * —y el que tiene la validacion de rutas— es el gateway.
+   */
+  instrucciones?: DocumentoConMarca;
 };
 
 export interface Turno {
@@ -620,12 +633,25 @@ export interface Turno {
    */
   githubToken?: string;
   /**
-   * Los documentos del proyecto, con URLs firmadas por el panel.
+   * Los documentos del proyecto: rutas en el disco que el panel y el gateway
+   * montan los dos.
    *
    * El bridge no los mira ni los guarda: los reenvia al gateway, igual que el
-   * token. Las URLs vencen en una hora, asi que no sirven guardadas.
+   * token. Incluye al instructivo, para que el gateway lo copie a `_docs`.
    */
-  documentos?: Array<{ nombre: string; ruta: string; ruta_texto?: string | null }>;
+  documentos?: DocumentoConMarca[];
+  /**
+   * El instructivo del proyecto, aparte.
+   *
+   * Aparte y no un flag adentro del arreglo porque el consumidor es otro: de
+   * `documentos` sale una copia al worktree, y de esto sale el texto que va al
+   * system prompt. Con un campo propio, "hay a lo sumo uno" lo dice el tipo y
+   * el gateway no tiene que filtrar la lista ni acordarse de la regla.
+   *
+   * Sigue siendo una RUTA y no el texto: el que lee el archivo es el gateway,
+   * que es el unico que monta `/srv/docs`.
+   */
+  instrucciones?: DocumentoConMarca;
 }
 
 /**
@@ -802,6 +828,17 @@ export async function ejecutarTurno(
     }) ?? (() => {});
 
   try {
+    // El instructivo del proyecto se separa ACA y no en cada camino de entrada.
+    //
+    // Es el unico lugar por el que pasan los dos —el turno del panel, que trae
+    // los documentos en el pedido, y el de Telegram, donde los junta el
+    // bridge— asi que separar aca es lo que hace que el bot tenga instructivo
+    // sin duplicar la logica. El instructivo viaja ADEMAS adentro de
+    // `documentos`, para que el gateway lo copie a `_docs` y el agente lo pueda
+    // citar. Ver
+    // `multicodigo-vm/docs/superpowers/specs/2026-09-03-instrucciones-de-proyecto-design.md`.
+    const separados = separarInstructivo(t.documentos);
+
     const r = await deps.ask(
       {
         jobId,
@@ -811,7 +848,8 @@ export async function ejecutarTurno(
         sessionId,
         repos: t.repos,
         githubToken: t.githubToken,
-        documentos: t.documentos,
+        documentos: separados.documentos,
+        instrucciones: separados.instrucciones,
         // En el CUERPO y no en un header, al contrario de quien pide el turno:
         // el modo lo necesita el agente, que es quien decide si pregunta. El
         // gateway le reenvia el cuerpo, asi que llega sin que nadie lo copie.

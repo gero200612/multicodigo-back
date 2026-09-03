@@ -131,14 +131,23 @@ public sealed class DocumentosFalso : IDocumentosClient
 
     public Task<IReadOnlyList<Documento>> DeProyectoAsync(
         string jwt, string proyectoId, CancellationToken ct = default)
-        => Task.FromResult<IReadOnlyList<Documento>>(Filas);
+        // Espeja al cliente de verdad: el instructivo NO va en esta lista, que
+        // es lo que hace que la pantalla no lo muestre dos veces.
+        => Task.FromResult<IReadOnlyList<Documento>>(
+            [.. Filas.Where(f => !f.EsInstruccion)]);
+
+    public Task<Documento?> InstructivoDeProyectoAsync(
+        string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult(Filas.FirstOrDefault(f => f.EsInstruccion));
 
     public Task<Documento> SubirAsync(
         string jwt, string proyectoId, string nombre, string nombreOriginal, string tipo,
-        byte[] datos, string? texto, string? error, CancellationToken ct = default)
+        byte[] datos, string? texto, string? error, bool esInstruccion = false,
+        CancellationToken ct = default)
     {
         Subidos.Add((nombre, texto, error));
-        var doc = new Documento("id", nombre, nombreOriginal, tipo, datos.LongLength, error);
+        var doc = new Documento(
+            "id", nombre, nombreOriginal, tipo, datos.LongLength, error, esInstruccion);
         Filas.Add(doc);
         return Task.FromResult(doc);
     }
@@ -146,6 +155,7 @@ public sealed class DocumentosFalso : IDocumentosClient
     public Task BorrarAsync(string jwt, string proyectoId, string nombre, CancellationToken ct = default)
     {
         Borrados.Add(nombre);
+        Filas.RemoveAll(f => f.Nombre == nombre);
         return Task.CompletedTask;
     }
 

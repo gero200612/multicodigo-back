@@ -169,3 +169,33 @@ create policy "documentos: borrar los de mis proyectos"
     bucket_id = 'documentos'
     and public.es_miembro(((storage.foldername(name))[1])::uuid)
   );
+
+-- --- el instructivo del proyecto ---------------------------------------------
+--
+-- Parte de las instrucciones de proyecto. Ver el diseño en
+-- `multicodigo-vm/docs/superpowers/specs/2026-09-03-instrucciones-de-proyecto-design.md`.
+--
+-- El .md que rige TODOS los turnos de un proyecto: su texto se le agrega al
+-- system prompt de cada turno, con precedencia declarada sobre las reglas de
+-- estilo fijas del agente. Es lo que hace que un proyecto pueda exigir una
+-- serie de pasos —redactar una sentencia, por ejemplo— en vez de que el
+-- instructivo sea un documento que el modelo abre si se acuerda.
+--
+-- Es una columna sobre esta tabla y no una tabla nueva porque un instructivo
+-- es, en todo lo demas, un documento del proyecto: se sube, se guarda, se
+-- descarga, se borra, se copia al worktree, y lo protege esta misma RLS. Lo
+-- unico que lo distingue es a donde va su texto.
+alter table public.documentos
+  add column if not exists es_instruccion boolean not null default false;
+
+-- A LO SUMO UNO por proyecto, y la regla vive ACA y no en el panel.
+--
+-- Si hubiera dos, cual manda lo decidiria un `order by` y nadie podria saberlo
+-- mirando la pantalla. El bridge ademas desempata por nombre (ver
+-- `separarInstructivo`), pero eso es una red por si esta base quedo sin migrar:
+-- la garantia es este indice.
+--
+-- Parcial: sin el `where`, un unique sobre (proyecto_id) prohibiria tener mas
+-- de un documento comun por proyecto.
+create unique index if not exists documentos_instruccion_unica
+  on public.documentos (proyecto_id) where es_instruccion;

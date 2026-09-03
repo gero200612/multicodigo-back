@@ -247,6 +247,11 @@ export function buildWebhookServer(
               nombre: z.string().regex(/^[A-Za-z0-9._-]+$/).max(200),
               ruta: z.string().min(1).max(500),
               ruta_texto: z.string().min(1).max(500).nullable().optional(),
+              // La marca de instructivo. Opcional: un panel sin actualizar no
+              // la manda, y ahi el proyecto simplemente no tiene instructivo.
+              // El bridge la usa para separarlo (ver `separarInstructivo`); el
+              // gateway recibe el instructivo en su propio campo.
+              es_instruccion: z.boolean().optional(),
             }),
           )
           .max(50)

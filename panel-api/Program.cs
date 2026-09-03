@@ -266,7 +266,18 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 // autenticarse. La clave anon es publica por diseño (viaja al navegador); los
 // bearers del gateway, del login y del bridge viven en este mismo proceso y NO
 // pueden salir por aca.
-app.MapGet("/config.json", () => Results.Ok(new ConfigFront(supabaseUrl, supabaseAnonKey)));
+// Las dos de Google son OPCIONALES: sin ellas el panel arranca igual y el botón
+// de Drive queda apagado. Es lo contrario de los tokens del gateway o del
+// bridge, que tienen un guard de arranque — porque sin aquellos el panel no
+// puede hacer su trabajo, y sin estas sólo falta una comodidad.
+var googleClientId = app.Configuration["GOOGLE_CLIENT_ID"];
+var googleApiKey = app.Configuration["GOOGLE_API_KEY"];
+
+app.MapGet("/config.json", () => Results.Ok(new ConfigFront(
+    supabaseUrl,
+    supabaseAnonKey,
+    string.IsNullOrWhiteSpace(googleClientId) ? null : googleClientId,
+    string.IsNullOrWhiteSpace(googleApiKey) ? null : googleApiKey)));
 
 /// <remarks>
 /// El token de GitHub de un proyecto, para el BRIDGE.
@@ -951,9 +962,12 @@ api.MapPost("/proyectos/{proyectoId}/documentos", async (
 
     try
     {
+        // `ct` con nombre: `SubirAsync` ganó un `esInstruccion` opcional antes
+        // del token, así que posicionalmente el `ct` caía ahí. Nombrarlo lo deja
+        // a prueba del próximo parámetro que se agregue.
         var doc = await documentos.SubirAsync(
             jwt, proyectoId, nombre, archivo.FileName, tipo, datos,
-            conversion.Texto, conversion.Error, ct);
+            conversion.Texto, conversion.Error, ct: ct);
         // 200 aunque la conversion falle: el documento se guardo y el `error`
         // viaja adentro para que la pantalla lo muestre al lado del archivo. Un
         // 400 aca haria perder el original que la persona ya subio.
@@ -966,6 +980,146 @@ api.MapPost("/proyectos/{proyectoId}/documentos", async (
             : Results.BadRequest(new { code = ex.Message, message = "no se pudo guardar el documento" });
     }
 }).DisableAntiforgery();
+
+// --- instrucciones del proyecto -------------------------------------------
+
+/// El instructivo que rige TODOS los turnos del proyecto.
+///
+/// Un `.md` que se le agrega al system prompt de cada turno, con precedencia
+/// declarada sobre las reglas de estilo fijas del agente. Es lo que hace que un
+/// proyecto pueda exigir una serie de pasos —redactar una sentencia, por
+/// ejemplo— en vez de que el instructivo sea un documento que el modelo abre si
+/// se acuerda.
+///
+/// Ver el diseño en
+/// `multicodigo-vm/docs/superpowers/specs/2026-09-03-instrucciones-de-proyecto-design.md`.
+api.MapGet("/proyectos/{proyectoId}/instrucciones", async (
+    string proyectoId, HttpContext ctx, IProyectosClient proyectos,
+    IDocumentosClient documentos, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var doc = await documentos.InstructivoDeProyectoAsync(jwt, proyectoId, ct);
+    // 204 y no un 404: "este proyecto no tiene instructivo" es el estado normal
+    // de casi todos, no algo que falta. Un 404 haría que la pantalla muestre un
+    // error donde tiene que mostrar la zona de subida.
+    return doc is null ? Results.NoContent() : Results.Ok(doc);
+});
+
+api.MapPost("/proyectos/{proyectoId}/instrucciones", async (
+    string proyectoId, HttpContext ctx, IProyectosClient proyectos,
+    IDocumentosClient documentos, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    if (!ctx.Request.HasFormContentType)
+    {
+        return Results.BadRequest(new { code = "sin_archivo", message = "falta el archivo" });
+    }
+
+    var form = await ctx.Request.ReadFormAsync(ct);
+    var archivo = form.Files.FirstOrDefault();
+    if (archivo is null || archivo.Length == 0)
+    {
+        return Results.BadRequest(new { code = "sin_archivo", message = "falta el archivo" });
+    }
+
+    // El tope es MUCHO más chico que el de un documento y por una razón de
+    // fondo: esto entra en el system prompt de cada turno. El número real va en
+    // el mensaje para que la persona sepa cuánto se pasó.
+    if (archivo.Length > Documentos.MaximoBytesInstruccion)
+    {
+        return Results.BadRequest(new
+        {
+            code = "muy_grande",
+            message =
+                $"las instrucciones pasan los {Documentos.MaximoBytesInstruccion / 1024} KB " +
+                $"(el archivo tiene {archivo.Length / 1024} KB). Entran en el prompt de cada " +
+                "turno, así que el límite es chico a propósito.",
+        });
+    }
+
+    var tipo = Documentos.TipoDe(archivo.FileName);
+    if (tipo != Documentos.TipoDeInstruccion)
+    {
+        return Results.BadRequest(new
+        {
+            code = "tipo_desconocido",
+            message = "las instrucciones tienen que ser un archivo .md",
+        });
+    }
+
+    var nombre = Documentos.NombreDeArchivo(archivo.FileName, tipo);
+
+    using var ms = new MemoryStream();
+    await archivo.CopyToAsync(ms, ct);
+    var datos = ms.ToArray();
+
+    // No pasa por el conversor: un `.md` YA es texto. `ruta_texto` apunta a su
+    // propia copia, que es lo que el gateway lee para el prompt.
+    var texto = System.Text.Encoding.UTF8.GetString(datos);
+
+    try
+    {
+        // Se reemplaza el que hubiera: el índice único de la base impide dos por
+        // proyecto, así que subir uno nuevo cuando ya hay otro con OTRO nombre
+        // fallaría con un 23505. Se borra primero y queda uno solo, que es lo
+        // que la persona espera al subir una versión nueva.
+        var previo = await documentos.InstructivoDeProyectoAsync(jwt, proyectoId, ct);
+        if (previo is not null && previo.Nombre != nombre)
+        {
+            await documentos.BorrarAsync(jwt, proyectoId, previo.Nombre, ct);
+        }
+
+        var doc = await documentos.SubirAsync(
+            jwt, proyectoId, nombre, archivo.FileName, tipo, datos, texto, null, true, ct);
+        return Results.Ok(doc);
+    }
+    catch (UpstreamException ex)
+    {
+        return ex.Message == "no_sos_miembro"
+            ? Results.StatusCode(StatusCodes.Status403Forbidden)
+            : Results.BadRequest(
+                new { code = ex.Message, message = "no se pudieron guardar las instrucciones" });
+    }
+}).DisableAntiforgery();
+
+api.MapDelete("/proyectos/{proyectoId}/instrucciones", async (
+    string proyectoId, HttpContext ctx, IProyectosClient proyectos,
+    IDocumentosClient documentos, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var doc = await documentos.InstructivoDeProyectoAsync(jwt, proyectoId, ct);
+    // Sin instructivo, quitar ya está hecho: 204 y no un 404, que haría que dos
+    // clicks seguidos muestren un error donde no pasó nada malo.
+    if (doc is null) return Results.NoContent();
+
+    try
+    {
+        await documentos.BorrarAsync(jwt, proyectoId, doc.Nombre, ct);
+        return Results.NoContent();
+    }
+    catch (UpstreamException ex)
+    {
+        return ex.Message == "no_sos_miembro"
+            ? Results.StatusCode(StatusCodes.Status403Forbidden)
+            : Results.BadRequest(
+                new { code = ex.Message, message = "no se pudieron quitar las instrucciones" });
+    }
+});
 
 api.MapGet("/proyectos/{proyectoId}/documentos/{nombre}/descarga", async (
     string proyectoId, string nombre, HttpContext ctx, IProyectosClient proyectos,
