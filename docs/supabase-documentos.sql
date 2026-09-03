@@ -26,7 +26,14 @@ create table if not exists public.documentos (
   -- reconoce.
   nombre_original text not null,
 
-  -- Donde vive en Supabase Storage. El original y el texto van al mismo bucket.
+  -- Donde vive en el disco del servidor, relativo a DOCS_ROOT (/srv/docs). El
+  -- panel y el bridge escriben ahi, y el gateway monta el mismo directorio para
+  -- copiarlo al worktree del agente.
+  --
+  -- Antes era la ruta en Supabase Storage. Los tres procesos corren en la misma
+  -- maquina, asi que mandar el archivo a internet para bajarlo tres lineas
+  -- despues era todo costo: una URL firmada por documento y por turno, y la
+  -- service_role cargada solo para eso.
   ruta         text not null,
   -- Null mientras no se convirtio o si la conversion fallo.
   ruta_texto   text,
@@ -60,9 +67,27 @@ create table if not exists public.documentos (
   subido_por   uuid not null references auth.users(id) default auth.uid(),
   creado_en    timestamptz not null default now(),
 
+  -- El `$` del final NO es decorativo, y la base estuvo sin el.
+  --
+  -- Sin ancla, `^[A-Za-z0-9._-]+` acepta cualquier cosa DESPUES de un prefijo
+  -- valido: `pliego.pdf/../../etc/passwd` pasaba el check. Esta columna arma
+  -- una ruta en `_docs`, asi que era el agujero que las otras tres capas de
+  -- validacion vienen a cerrar — y la ultima en la que uno confiaria.
+  --
+  -- Corregido en produccion el 2026-09-03 con un DROP + ADD del constraint,
+  -- despues de verificar que ninguna fila existente lo violaba.
   constraint documentos_nombre_forma check (nombre ~ '^[A-Za-z0-9._-]+$'),
   constraint documentos_nombre_no_relativo check (nombre <> '.' and nombre <> '..'),
-  constraint documentos_tipo_conocido check (tipo in ('pdf','xlsx','docx','csv','md','txt')),
+  -- Los tipos que el sistema acepta. Las imagenes entraron cuando se vio que el
+  -- agente las VE con `Read` —vision nativa del SDK— y no hacen falta convertir.
+  --
+  -- Tiene que moverse junto con `TIPOS`/`TIPOS_IMAGEN` del bridge y
+  -- `Documentos.Tipos`/`TiposImagen` del panel. Si esta lista queda corta, el
+  -- archivo pasa las tres validaciones de la aplicacion y muere en el insert
+  -- con un 23514 que no dice cual fue el tipo rechazado.
+  constraint documentos_tipo_conocido check (
+    tipo in ('pdf','xlsx','docx','csv','md','txt','png','jpg','jpeg','webp','gif')
+  ),
   constraint documentos_unico unique (proyecto_id, nombre)
 );
 
@@ -102,11 +127,18 @@ create policy "documentos: borrar los de mis proyectos"
 
 -- --- el bucket ---------------------------------------------------------------
 --
--- PRIVADO. Los documentos de un proyecto pueden ser un pliego con precios o una
--- especificacion que no es publica, y un bucket publico los deja accesibles a
--- quien tenga la URL —que ademas es adivinable si se conoce el id del proyecto.
+-- YA NO SE USA. Los archivos viven en el disco del servidor (/srv/docs), que
+-- los tres procesos montan: el panel y el bridge escriben, el gateway lee.
 --
--- El panel firma URLs temporales para la descarga y para que el gateway los baje.
+-- Se deja creado y con sus policies, y no se borra, por una razon concreta: el
+-- bucket todavia tiene los documentos subidos antes del cambio. Un `drop`
+-- alegre los perderia, y las filas viejas que apuntan ahi son justamente las
+-- que hay que poder mirar para migrarlas o descartarlas a mano.
+--
+-- PRIVADO, como estaba: un bucket publico deja los documentos accesibles a
+-- quien tenga la URL —que ademas es adivinable si se conoce el id del
+-- proyecto—. Mientras las policies de abajo sigan pidiendo membresia, lo que
+-- quedo ahi adentro sigue tan protegido como antes.
 insert into storage.buckets (id, name, public)
 values ('documentos', 'documentos', false)
 on conflict (id) do nothing;
