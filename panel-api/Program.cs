@@ -746,6 +746,22 @@ api.MapGet("/proyectos/{proyectoId}/github", async (
 /// Sin esto habria que confiar en un `state` para autorizar una escritura, que
 /// es exactamente el agujero de CSRF que este rodeo evita.
 /// </remarks>
+// El origen del front, a donde vuelve el callback de la GitHub App.
+//
+// Existe porque el panel y el front viven en ORIGENES DISTINTOS desde la salida
+// de Render: el front en https://punchi.dev (Vercel) y esto en
+// https://panel.punchi.dev. El redirect del callback era relativo, que era
+// correcto cuando los dos compartian origen y dejo de serlo en silencio: el
+// navegador venia del panel, `/configuracion` resolvia contra el panel, y el
+// panel no sirve el front —sus UseStaticFiles son inertes, ver el comentario
+// del final— asi que el usuario caia en un 404 en blanco justo despues de
+// darle acceso a sus repos a GitHub, y la instalacion no se guardaba nunca.
+//
+// Vacio deja el redirect RELATIVO, que es lo correcto corriendo el panel a mano
+// con un wwwroot al lado — el caso para el que esas tres lineas del final
+// existen.
+var frontUrl = (app.Configuration["FRONT_URL"] ?? "").TrimEnd('/');
+
 app.MapGet("/api/github/callback", (string? installation_id, string? state) =>
 {
     if (string.IsNullOrWhiteSpace(installation_id) || string.IsNullOrWhiteSpace(state))
@@ -761,7 +777,12 @@ app.MapGet("/api/github/callback", (string? installation_id, string? state) =>
     // A /configuracion y no a /proyectos: la seccion de GitHub vive ahi, que es
     // donde esta todo lo que se configura una vez. El front lee estos dos
     // parametros, guarda con el JWT del usuario y los limpia de la URL.
-    return Results.Redirect($"/configuracion?instalacion={id}&proyecto={state}");
+    //
+    // Absoluto al front cuando hay FRONT_URL. No es un open redirect: el origen
+    // sale de la configuracion del servidor y nunca del pedido — lo que llega de
+    // afuera son los dos valores de la query, que ya se validaron arriba como
+    // un entero positivo y un GUID.
+    return Results.Redirect($"{frontUrl}/configuracion?instalacion={id}&proyecto={state}");
 }).AllowAnonymous();
 
 /// <remarks>

@@ -78,6 +78,9 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
     public DocumentosFalso Documentos { get; } = new();
     public ConversorFalso Conversor { get; } = new();
 
+    /// <summary>Deja el panel sin FRONT_URL, para el caso del wwwroot al lado.</summary>
+    public bool SinFrontUrl { get; set; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // La configuración que Program.cs exige para arrancar. Los tokens tienen
@@ -90,6 +93,10 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
         builder.UseSetting("BRIDGE_API_TOKEN", "token-de-prueba-largo-3");
         builder.UseSetting("SUPABASE_URL", "https://proyecto.supabase.co");
         builder.UseSetting("SUPABASE_ANON_KEY", "anon-de-prueba");
+        // El origen del front, que es a donde tiene que volver el callback de
+        // GitHub. En produccion es https://punchi.dev; el panel vive en otro
+        // origen y no sirve el front.
+        if (!SinFrontUrl) builder.UseSetting("FRONT_URL", "https://front.de-prueba.test");
 
         builder.ConfigureTestServices(s =>
         {
@@ -313,6 +320,72 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         // A /configuracion, que es donde vive la seccion de GitHub en el front.
         Assert.Contains("/configuracion", r.Headers.Location!.ToString());
         Assert.Contains("instalacion=42", r.Headers.Location!.ToString());
+    }
+
+    /// <summary>
+    /// EL test de este bug: el redirect tiene que ir al FRONT, no al panel.
+    /// </summary>
+    /// <remarks>
+    /// El panel no guarda nada en el callback — solo redirige, y quien guarda es
+    /// el front al leer `?instalacion=&amp;proyecto=` en /configuracion. Asi que
+    /// si el redirect cae en el panel, la instalacion NUNCA se guarda.
+    ///
+    /// Y eso es exactamente lo que pasaba: el Location era relativo, el
+    /// navegador venia de panel.punchi.dev, y `/configuracion` resolvia contra
+    /// ESE origen. El panel no sirve el front —sus `UseStaticFiles` son inertes
+    /// desde que el front se fue a Vercel, lo dice su propio comentario— asi que
+    /// el usuario terminaba en un 404 en blanco despues de darle acceso a
+    /// GitHub, y al volver al panel no habia nada guardado.
+    ///
+    /// Es una secuela de la salida de Render: con el panel y el front en el
+    /// mismo origen, el redirect relativo era correcto.
+    /// </remarks>
+    [Fact]
+    public async Task ElCallbackRedirigeAlFrontYNoAlPanel()
+    {
+        var sinRedirect = f.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+
+        var r = await sinRedirect.GetAsync(
+            $"/api/github/callback?installation_id=42&state={ProyectoDePrueba}");
+
+        Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
+        var destino = r.Headers.Location!.ToString();
+        // Absoluto y al origen del front: relativo cae en el panel, que no
+        // sirve el front y devuelve 404.
+        Assert.StartsWith("https://front.de-prueba.test/configuracion", destino);
+        Assert.Contains("instalacion=42", destino);
+        Assert.Contains($"proyecto={ProyectoDePrueba}", destino);
+    }
+
+    /// <summary>
+    /// Sin FRONT_URL el redirect queda RELATIVO, como era antes.
+    /// </summary>
+    /// <remarks>
+    /// Es el caso de correr el panel a mano con un wwwroot al lado: ahi el panel
+    /// SI sirve el front, los dos comparten origen y un absoluto lo mandaria a
+    /// otra maquina. Sin esta rama, arreglar produccion romperia el unico modo
+    /// en que se reproduce un bug de integracion sin levantar los contenedores.
+    /// </remarks>
+    [Fact]
+    public async Task SinFrontUrlElCallbackSigueSiendoRelativo()
+    {
+        // Una factory propia: la compartida trae FRONT_URL, que es justo lo que
+        // este caso necesita que NO este.
+        using var sinFront = new PanelFactory();
+        sinFront.SinFrontUrl = true;
+        var cliente = sinFront.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+
+        var r = await cliente.GetAsync(
+            $"/api/github/callback?installation_id=42&state={ProyectoDePrueba}");
+
+        Assert.Equal(HttpStatusCode.Redirect, r.StatusCode);
+        Assert.StartsWith("/configuracion", r.Headers.Location!.ToString());
     }
 
     // Los dos valores terminan en un header Location, y llegan de afuera.
