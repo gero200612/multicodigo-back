@@ -20,6 +20,7 @@ import type { Boton } from './render.js';
 import type { Store, Proyecto, ModoPermiso, ClaveDeModelo } from './store.js';
 import { partirEnTareas, type Tarea } from './cola.js';
 import { aHoraArgentina } from './horas.js';
+import { conCodigoParaTelegram } from './codigo.js';
 import type { Quien } from './agents-client.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
@@ -410,7 +411,7 @@ export async function handleIncoming(
     });
     return {
       kind: 'answer',
-      text: sanitizeForTelegram(r.texto),
+      text: conCodigoParaTelegram(r.texto),
       // El que contesto, no el que se le pidio: con un relevo en el medio son
       // dos agentes distintos.
       agent: r.agente,
@@ -1011,7 +1012,7 @@ export async function correrCola(
       await deps.store.cerrarTarea(tarea.id, 'lista', r.texto);
       await avisar(`✅ ${tarea.texto}
 
-${sanitizeForTelegram(r.texto)}`);
+${conCodigoParaTelegram(r.texto)}`);
     } catch (err) {
       const codigo = err instanceof Error ? err.message : 'internal';
       await deps.store.cerrarTarea(tarea.id, 'fallida', codigo);

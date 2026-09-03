@@ -51,7 +51,9 @@ describe('handleIncoming', () => {
     expect(out.kind === 'answer' && out.text).toBe('El stock usa FIFO.');
   });
 
-  it('sanitiza el codigo que devuelve el agente', async () => {
+  // Antes esto BORRABA el bloque y dejaba «codigo omitido — 1 linea». Para un
+  // console.log o un mensaje de error eso escondia justo lo que se venia a leer.
+  it('muestra el codigo del agente como consola', async () => {
     const d = deps({
       ask: vi.fn(async () => ({
         jobId: '00000000-0000-4000-8000-000000000001',
@@ -62,7 +64,7 @@ describe('handleIncoming', () => {
     });
     await vincular(d.store, 1);
     const out = await handleIncoming({ chatId: 1, messageId: 5, text: 'x' }, d);
-    expect(out.kind === 'answer' && out.text).toBe('Asi:\n«codigo omitido — 1 linea»');
+    expect(out.kind === 'answer' && out.text).toBe('Asi:\n<pre>const a = 1;</pre>');
   });
 
   it('transcribe el audio antes de preguntar', async () => {

@@ -270,11 +270,17 @@ export function textoDeOcupado(
 /**
  * Que outcomes van con parse_mode HTML.
  *
- * Lista explicita y no "todos": la respuesta de un agente es texto arbitrario y
- * mandarla como HTML haria que un `<` suelto rompa el mensaje entero.
+ * Lista explicita y no "todos": el texto que no pasa por un armador propio es
+ * arbitrario, y un `<` suelto rompe el mensaje entero con "can't parse
+ * entities" — no se ve mal, no llega.
+ *
+ * `answer` esta en la lista desde que la respuesta del agente pasa por
+ * `conCodigoParaTelegram`, que escapa TODO —prosa incluida— antes de meter sus
+ * `<pre>`. Sin ese escapado, esto no podria estar aca.
  */
 function usaHtml(outcome: PipelineOutcome): boolean {
   return (
+    outcome.kind === 'answer' ||
     outcome.kind === 'codigo' ||
     outcome.kind === 'menu_agentes' ||
     outcome.kind === 'elegido' ||
