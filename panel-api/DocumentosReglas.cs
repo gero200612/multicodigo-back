@@ -22,6 +22,23 @@ public static partial class Documentos
     public static readonly string[] Tipos = ["pdf", "xlsx", "docx", "csv", "md", "txt"];
 
     /// <summary>
+    /// Las imágenes, que el agente VE en vez de leer.
+    /// </summary>
+    /// <remarks>
+    /// No pasan por el conversor y no tienen <c>.md</c>: el agente las abre con
+    /// <c>Read</c>, que se las pasa al modelo como imagen. Eso es mejor que un
+    /// OCR — ve el diagrama o la captura entera, no sólo el texto que tenga.
+    ///
+    /// Espeja <c>TIPOS_IMAGEN</c> del bridge. Los dos tienen que moverse juntos:
+    /// si acá se acepta algo que allá no, el mismo archivo entra por el panel y
+    /// se rechaza por Telegram.
+    /// </remarks>
+    public static readonly string[] TiposImagen = ["png", "jpg", "jpeg", "webp", "gif"];
+
+    /// <summary>Si este tipo se guarda tal cual, sin convertir.</summary>
+    public static bool EsImagen(string tipo) => TiposImagen.Contains(tipo);
+
+    /// <summary>
     /// 20 MB. Declarado también en el conversor, y en los dos lugares a
     /// propósito: éste rechaza antes de leer el cuerpo, y aquél no puede confiar
     /// en que su único llamador valide.
@@ -33,7 +50,7 @@ public static partial class Documentos
     {
         if (string.IsNullOrWhiteSpace(nombreOriginal)) return null;
         var ext = Path.GetExtension(nombreOriginal).TrimStart('.').ToLowerInvariant();
-        return Tipos.Contains(ext) ? ext : null;
+        return Tipos.Contains(ext) || TiposImagen.Contains(ext) ? ext : null;
     }
 
     /// <summary>

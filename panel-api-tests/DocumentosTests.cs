@@ -129,4 +129,40 @@ public class DocumentosTests
         // sin poder convertirlo nunca.
         Assert.Null(Documentos.TipoDe(archivo));
     }
+
+    // --- imagenes -----------------------------------------------------------
+
+    /// <summary>
+    /// Las imágenes se aceptan: el agente las VE con Read.
+    /// </summary>
+    /// <remarks>
+    /// Antes se rechazaban porque el conversor no las lee — pero no hace falta
+    /// convertirlas: `Read` se las pasa al modelo como imagen, así que ve el
+    /// diagrama o la captura entera y no sólo el texto que tenga.
+    /// </remarks>
+    [Theory]
+    [InlineData("captura.png", "png")]
+    [InlineData("foto.JPG", "jpg")]
+    [InlineData("diagrama.jpeg", "jpeg")]
+    [InlineData("logo.webp", "webp")]
+    public void UnaImagenSeAcepta(string nombre, string esperado)
+        => Assert.Equal(esperado, Documentos.TipoDe(nombre));
+
+    /// <summary>
+    /// Un formato sin soporte de visión se sigue rechazando: guardarlo sería
+    /// aceptar un archivo que el agente nunca va a poder abrir.
+    /// </summary>
+    [Theory]
+    [InlineData("animacion.svg")]
+    [InlineData("video.mp4")]
+    public void UnFormatoQueElModeloNoVeSeRechaza(string nombre)
+        => Assert.Null(Documentos.TipoDe(nombre));
+
+    [Fact]
+    public void EsImagenDistingueLoQueNoSeConvierte()
+    {
+        Assert.True(Documentos.EsImagen("png"));
+        // Un PDF sí pasa por el conversor: de ahí sale el .md que el agente lee.
+        Assert.False(Documentos.EsImagen("pdf"));
+    }
 }

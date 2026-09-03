@@ -38,9 +38,11 @@ describe('tipoDe', () => {
   });
 
   it('rechaza lo que no', () => {
-    // Una foto no tiene texto que sacar, y aceptarla seria guardar algo que el
-    // agente nunca va a poder leer.
-    expect(tipoDe('foto.jpg')).toBeUndefined();
+    // Un formato SIN soporte de vision: guardarlo seria aceptar algo que el
+    // agente nunca va a poder abrir. Las imagenes (jpg, png) SI se aceptan
+    // desde que el agente las lee con vision; ver el describe de mas abajo.
+    expect(tipoDe('animacion.svg')).toBeUndefined();
+    expect(tipoDe('video.mp4')).toBeUndefined();
     expect(tipoDe('sinextension')).toBeUndefined();
     expect(tipoDe(undefined)).toBeUndefined();
   });
@@ -144,7 +146,7 @@ describe('guardarDocumento', () => {
     const f = todoOk();
     await expect(
       guardarDocumento(
-        { proyectoId: PROYECTO, usuarioId: USUARIO, nombreOriginal: 'foto.jpg', datos: new Uint8Array([1]) },
+        { proyectoId: PROYECTO, usuarioId: USUARIO, nombreOriginal: 'video.mp4', datos: new Uint8Array([1]) },
         deps(f),
       ),
     ).rejects.toThrow('tipo_desconocido');
@@ -305,5 +307,54 @@ describe('guardarDocumento: al disco, no a Storage', () => {
 
     expect(escritos).toHaveLength(2);
     expect(escritos[0]!.ruta).toBe(escritos[1]!.ruta);
+  });
+});
+
+/**
+ * Las imagenes se aceptan y NO se convierten.
+ *
+ * El agente tiene `Read`, que las procesa como imagen —vision nativa del SDK—
+ * asi que no hace falta OCR ni conversor: ve el diagrama entero, no solo el
+ * texto que tenga. Lo unico que faltaba era dejar de rechazarlas.
+ */
+describe('imagenes', () => {
+  it('se reconocen los formatos que el modelo puede ver', () => {
+    expect(tipoDe('captura.png')).toBe('png');
+    expect(tipoDe('foto.JPG')).toBe('jpg');
+    expect(tipoDe('diagrama.jpeg')).toBe('jpeg');
+    expect(tipoDe('logo.webp')).toBe('webp');
+  });
+
+  it('un formato que el modelo no ve se sigue rechazando', () => {
+    // Sin soporte de vision, guardarlo seria aceptar algo que el agente nunca
+    // va a poder abrir.
+    expect(tipoDe('animacion.svg')).toBeUndefined();
+    expect(tipoDe('video.mp4')).toBeUndefined();
+  });
+
+  it('no se manda al conversor: no hay texto que sacar', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 200 }));
+    const escritos: string[] = [];
+
+    const out = await guardarDocumento(
+      { proyectoId: PROYECTO, usuarioId: USUARIO, nombreOriginal: 'captura.png', datos: new Uint8Array([1]) },
+      { ...deps(f), escribir: async (r: string) => void escritos.push(r) } as never,
+    );
+
+    // Ni una llamada: el conversor no sabe leer imagenes y pedirle una
+    // conversion que va a fallar deja un error anotado que no significa nada.
+    expect(f).not.toHaveBeenCalled();
+    expect(out.error).toBeUndefined();
+    // Solo el original; no hay `.md` que escribir.
+    expect(escritos).toEqual(['/srv/docs/' + PROYECTO + '/captura.png']);
+  });
+
+  it('un documento de texto sigue yendo al conversor', async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ texto: '# hola' }), { status: 200 }));
+    await guardarDocumento(
+      { proyectoId: PROYECTO, usuarioId: USUARIO, nombreOriginal: 'pliego.pdf', datos: new Uint8Array([1]) },
+      deps(f),
+    );
+    expect(f).toHaveBeenCalled();
   });
 });

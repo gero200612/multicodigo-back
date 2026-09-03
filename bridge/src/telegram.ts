@@ -11,7 +11,7 @@ import {
   type MenuData,
 } from './menu.js';
 import { saludo, encabezadoDeMenu, NOMBRE } from './identidad.js';
-import { MAXIMO_BYTES, TIPOS, tipoDe } from './documentos.js';
+import { MAXIMO_BYTES, TIPOS, TIPOS_IMAGEN, esImagen, tipoDe } from './documentos.js';
 import type { Boton } from './render.js';
 import type { ModoPermiso, ClaveDeModelo } from './store.js';
 import type { Tarea } from './cola.js';
@@ -534,19 +534,21 @@ export function buildBot(deps: BridgeDeps): Bot {
   });
 
   /**
-   * Un archivo mandado al chat.
+   * Guarda un archivo del chat, venga como documento o como foto.
    *
-   * Va ANTES del handler general de mensajes porque un documento no es un
-   * prompt: no arranca un turno, se guarda. Antes de esto, mandarle un archivo
-   * al bot no hacia nada y no contestaba nada — el handler de abajo miraba
-   * `voice`, `audio` y `text`, y todo lo demas caia en un `return` mudo.
-   *
-   * Las fotos NO entran por aca a proposito. Telegram las manda como `photo`
-   * —recomprimidas y sin nombre de archivo— y el conversor no lee imagenes: no
-   * habria de donde sacar texto. Una imagen mandada "como archivo" si entra,
-   * porque viaja como `document`, y ahi el rechazo lo da el tipo.
+   * Los dos caminos hacen lo mismo salvo de donde sacan el `file_id`, el nombre
+   * y el tamaño — una foto de Telegram no trae nombre y viene recomprimida—,
+   * asi que la diferencia se resuelve en el llamador y esto queda igual para
+   * los dos.
    */
-  bot.on('message:document', async (ctx) => {
+  const guardarDelChat = async (
+    ctx: {
+      chat: { id: number };
+      api: { getFile: (id: string) => Promise<{ file_path?: string }>; editMessageText: (c: number, m: number, t: string, o?: { parse_mode?: 'HTML' }) => Promise<unknown> };
+      reply: (t: string) => Promise<{ message_id: number }>;
+    },
+    archivo: { fileId: string; nombreOriginal: string; bytes?: number },
+  ): Promise<void> => {
     const usuarioId = await deps.store.usuarioDeChat(ctx.chat.id);
     if (!usuarioId) {
       await ctx.reply(
@@ -563,19 +565,20 @@ export function buildBot(deps: BridgeDeps): Bot {
       return;
     }
 
-    const doc = ctx.message.document;
-    const nombreOriginal = doc.file_name ?? 'documento';
+    const { nombreOriginal } = archivo;
 
     // El tamaño se mira ANTES de bajar: Telegram ya lo dice en el update, y
     // bajar 20 MB para despues rechazarlos es tiempo y memoria por nada.
-    if (doc.file_size !== undefined && doc.file_size > MAXIMO_BYTES) {
+    if (archivo.bytes !== undefined && archivo.bytes > MAXIMO_BYTES) {
       await ctx.reply(`Ese archivo pasa los ${MAXIMO_BYTES / (1024 * 1024)} MB.`);
       return;
     }
 
     const tipo = tipoDe(nombreOriginal);
     if (!tipo) {
-      await ctx.reply(`No se leer ese tipo de archivo. Puedo con: ${TIPOS.join(', ')}.`);
+      await ctx.reply(
+        `No se leer ese tipo de archivo. Puedo con: ${[...TIPOS, ...TIPOS_IMAGEN].join(', ')}.`,
+      );
       return;
     }
 
@@ -595,7 +598,7 @@ export function buildBot(deps: BridgeDeps): Bot {
 
     const aviso = await ctx.reply('📎 guardando…');
     try {
-      const datos = await bajarArchivo(ctx.api, doc.file_id, deps.botToken);
+      const datos = await bajarArchivo(ctx.api as never, archivo.fileId, deps.botToken);
       const guardado = await deps.guardarDocumento({
         proyectoId,
         usuarioId,
@@ -606,9 +609,13 @@ export function buildBot(deps: BridgeDeps): Bot {
       // El error de conversion NO es un fallo del guardado: el original quedo,
       // y se puede descargar del panel. Se cuenta aparte para que se entienda
       // que el archivo esta pero el agente no lo va a poder leer.
-      const cola = guardado.error
-        ? `\n\n⚠️ No pude convertirlo a texto (${guardado.error}), asi que el agente no va a poder leerlo.`
-        : '\n\nYa lo pueden leer los agentes de este proyecto.';
+      // Una imagen no se convierte y no le falta nada: el agente la VE con
+      // `Read`. Decir "ya lo pueden leer" sonaria a que se le saco el texto.
+      const cola = esImagen(tipo)
+        ? '\n\nLos agentes de este proyecto ya la pueden ver.'
+        : guardado.error
+          ? `\n\n⚠️ No pude convertirlo a texto (${guardado.error}), asi que el agente no va a poder leerlo.`
+          : '\n\nYa lo pueden leer los agentes de este proyecto.';
 
       await ctx.api.editMessageText(
         ctx.chat.id,
@@ -624,6 +631,45 @@ export function buildBot(deps: BridgeDeps): Bot {
         `⚠️ No pude guardar el archivo: ${message}`,
       );
     }
+  };
+
+  /**
+   * Un archivo mandado al chat.
+   *
+   * Va ANTES del handler general de mensajes porque un documento no es un
+   * prompt: no arranca un turno, se guarda.
+   */
+  bot.on('message:document', async (ctx) => {
+    const doc = ctx.message.document;
+    await guardarDelChat(ctx as never, {
+      fileId: doc.file_id,
+      nombreOriginal: doc.file_name ?? 'documento',
+      bytes: doc.file_size,
+    });
+  });
+
+  /**
+   * Una foto, mandada como foto.
+   *
+   * Antes se ignoraba: Telegram las manda recomprimidas y sin nombre, y el
+   * conversor no lee imagenes. Esa razon dejo de valer — el agente las abre con
+   * `Read` y las VE, asi que no hay texto que sacar. Y mandar una captura desde
+   * el celular es el caso normal: obligar a adjuntarla "como archivo" es un
+   * paso de mas que se olvida siempre.
+   *
+   * Se toma la ULTIMA del array, que es la de mayor resolucion: Telegram manda
+   * varias miniaturas y la primera es diminuta.
+   */
+  bot.on('message:photo', async (ctx) => {
+    const foto = ctx.message.photo[ctx.message.photo.length - 1];
+    if (!foto) return;
+    // Sin nombre: Telegram no lo manda para las fotos. Se arma con el id del
+    // mensaje para que dos capturas del mismo chat no se pisen entre si.
+    await guardarDelChat(ctx as never, {
+      fileId: foto.file_id,
+      nombreOriginal: `captura-${ctx.message.message_id}.jpg`,
+      bytes: foto.file_size,
+    });
   });
 
   bot.on('message', async (ctx) => {
@@ -632,15 +678,8 @@ export function buildBot(deps: BridgeDeps): Bot {
     // pipeline: un chat sin vincular recibe una linea y nada mas.
     const voice = ctx.message.voice ?? ctx.message.audio;
 
-    // Una foto tiene su propio aviso: cae aca porque no es `document`, y sin
-    // esto seria otro mensaje que el bot ignora en silencio.
-    if (ctx.message.photo) {
-      await ctx.reply(
-        'No puedo leer imagenes. Si es un PDF o un Excel, mandalo como archivo ' +
-          `(clip → Archivo). Puedo con: ${TIPOS.join(', ')}.`,
-      );
-      return;
-    }
+    // Las fotos ya no caen aca: las agarra `message:photo`, que las guarda
+    // como documento. El agente las VE con `Read`.
 
     if (!voice && !ctx.message.text) return;
 

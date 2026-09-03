@@ -941,7 +941,13 @@ api.MapPost("/proyectos/{proyectoId}/documentos", async (
     // Se convierte ACA, una vez, y no en el gateway antes de cada turno: el
     // error aparece con el archivo en la mano —"este PDF es un escaneo"— y no
     // como un turno raro tres capas mas abajo. Y el costo se paga una vez.
-    var conversion = await conversor.ConvertirAsync(datos, tipo, ct);
+    //
+    // Una imagen NO se convierte: el agente la abre con `Read` y la ve. Pedirle
+    // al conversor algo que no sabe hacer dejaria un error anotado sobre un
+    // archivo que esta perfecto.
+    var conversion = Documentos.EsImagen(tipo)
+        ? new Conversion(null, null)
+        : await conversor.ConvertirAsync(datos, tipo, ct);
 
     try
     {

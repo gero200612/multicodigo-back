@@ -43,6 +43,24 @@ import type { FilaDeDocumento } from './store.js';
  */
 export const TIPOS = ['pdf', 'xlsx', 'docx', 'csv', 'md', 'txt'] as const;
 
+/**
+ * Las imagenes que el agente puede VER.
+ *
+ * No pasan por el conversor y no tienen `.md`: el agente las abre con `Read`,
+ * que el SDK procesa como imagen. Eso es mejor que un OCR — ve el diagrama, la
+ * captura de pantalla o el error entero, no solo el texto que tenga adentro.
+ *
+ * La lista es la de formatos con soporte de vision. Un SVG o un video se
+ * rechazan igual que antes: guardar algo que el agente no puede abrir es
+ * aceptar un archivo para perderlo.
+ */
+export const TIPOS_IMAGEN = ['png', 'jpg', 'jpeg', 'webp', 'gif'] as const;
+
+/** Si este tipo es una imagen, o sea: se guarda tal cual y no se convierte. */
+export function esImagen(tipo: string): boolean {
+  return (TIPOS_IMAGEN as readonly string[]).includes(tipo);
+}
+
 /** 20 MB, el mismo tope que el panel y el conversor. */
 export const MAXIMO_BYTES = 20 * 1024 * 1024;
 
@@ -52,7 +70,8 @@ export function tipoDe(nombreOriginal: string | undefined): string | undefined {
   const punto = nombreOriginal.lastIndexOf('.');
   if (punto < 0) return undefined;
   const ext = nombreOriginal.slice(punto + 1).toLowerCase();
-  return (TIPOS as readonly string[]).includes(ext) ? ext : undefined;
+  const aceptados: readonly string[] = [...TIPOS, ...TIPOS_IMAGEN];
+  return aceptados.includes(ext) ? ext : undefined;
 }
 
 /**
@@ -227,7 +246,13 @@ export async function guardarDocumento(
   const nombre = nombreDeArchivo(entrada.nombreOriginal, tipo);
   const ruta = `${entrada.proyectoId}/${nombre}`;
 
-  const { texto, error } = await convertir(entrada.datos, tipo, deps);
+  // Una imagen no se convierte: el agente la abre con `Read` y la ve. Pedirle
+  // al conversor una conversion que no sabe hacer dejaria un error anotado que
+  // no significa nada —"el conversor respondio 422" sobre un archivo que esta
+  // perfecto—.
+  const { texto, error } = esImagen(tipo)
+    ? { texto: undefined, error: undefined }
+    : await convertir(entrada.datos, tipo, deps);
 
   await subirArchivo(ruta, entrada.datos, deps);
 
