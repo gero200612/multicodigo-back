@@ -120,6 +120,16 @@ public sealed class InstalacionesFalso : IInstalacionesClient
         Guardadas.Add((proyectoId, inst));
         return Task.CompletedTask;
     }
+
+    public Task BorrarAsync(string jwt, string proyectoId, CancellationToken ct = default)
+    {
+        if (NoSosDueno) throw new UpstreamException("no_sos_dueño");
+        Fila = null;
+        Borradas.Add(proyectoId);
+        return Task.CompletedTask;
+    }
+
+    public List<string> Borradas { get; } = [];
 }
 
 public sealed class DocumentosFalso : IDocumentosClient

@@ -442,6 +442,52 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         Assert.Null(f.Bridge.TokensDeCadaTurno[^1]);
     }
 
+    // --- desvincular GitHub ---
+
+    /// <summary>
+    /// Desvincular corta que ESTE proyecto use la instalación.
+    /// </summary>
+    /// <remarks>
+    /// No desinstala la App del lado de GitHub, y es deliberado: una
+    /// instalación puede estar compartida por varios proyectos, y desinstalarla
+    /// desde acá se los rompería a todos. Esa decisión es del dueño de la cuenta
+    /// de GitHub, no de este panel.
+    /// </remarks>
+    [Fact]
+    public async Task DesvincularGithubBorraLaInstalacionDelProyecto()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        f.Instalaciones.Fila = new Instalacion(42, "sincrosns");
+        f.Instalaciones.Borradas.Clear();
+
+        var r = await Cliente().DeleteAsync($"/api/proyectos/{ProyectoDePrueba}/github");
+
+        Assert.Equal(HttpStatusCode.NoContent, r.StatusCode);
+        Assert.Contains(ProyectoDePrueba, f.Instalaciones.Borradas);
+    }
+
+    /// <summary>Desvincular dos veces no es un error: la segunda ya está hecho.</summary>
+    [Fact]
+    public async Task DesvincularGithubDosVecesNoEsUnError()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "sincro";
+        f.Instalaciones.Fila = null;
+
+        var r = await Cliente().DeleteAsync($"/api/proyectos/{ProyectoDePrueba}/github");
+
+        Assert.Equal(HttpStatusCode.NoContent, r.StatusCode);
+    }
+
+    /// <summary>Un proyecto ajeno no se puede desvincular.</summary>
+    [Fact]
+    public async Task NoSePuedeDesvincularElGithubDeUnProyectoAjeno()
+    {
+        var r = await Cliente().DeleteAsync(
+            "/api/proyectos/44444444-4444-4444-8444-444444444444/github");
+
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+    }
+
     // --- documentos ---
 
     /// <summary>

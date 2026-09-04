@@ -579,6 +579,17 @@ public interface IInstalacionesClient
     /// <summary>La instalación del proyecto, o null si todavía no instaló la App.</summary>
     Task<Instalacion?> DeProyectoAsync(string jwt, string proyectoId, CancellationToken ct = default);
     Task GuardarAsync(string jwt, string proyectoId, Instalacion inst, CancellationToken ct = default);
+
+    /// <summary>
+    /// Desvincula la instalación del proyecto.
+    /// </summary>
+    /// <remarks>
+    /// Borra la fila y nada más: la App sigue instalada del lado de GitHub. Es
+    /// deliberado — desinstalarla desde acá afectaría a los OTROS proyectos que
+    /// comparten esa instalación, y esa decisión es del dueño de la cuenta de
+    /// GitHub, no de este panel. Lo que se corta es que ESTE proyecto la use.
+    /// </remarks>
+    Task BorrarAsync(string jwt, string proyectoId, CancellationToken ct = default);
 }
 
 public sealed class InstalacionesClient(
@@ -638,6 +649,19 @@ public sealed class InstalacionesClient(
             // 403 es RLS: no sos dueño. Es un caso del usuario y no una caída.
             throw new UpstreamException(
                 res.StatusCode == HttpStatusCode.Forbidden ? "no_sos_dueño" : "instalacion_no_guardada");
+        }
+    }
+
+    public async Task BorrarAsync(string jwt, string proyectoId, CancellationToken ct = default)
+    {
+        var url = $"/rest/v1/github_instalaciones?proyecto_id=eq.{proyectoId}";
+        var res = await http.SendAsync(Pedido(HttpMethod.Delete, url, jwt), ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            var detalle = await res.Content.ReadAsStringAsync(ct);
+            log.LogError("no se pudo desvincular la instalacion de {Proyecto}: {Detalle}", proyectoId, detalle);
+            throw new UpstreamException(
+                res.StatusCode == HttpStatusCode.Forbidden ? "no_sos_dueño" : "instalacion_no_borrada");
         }
     }
 }

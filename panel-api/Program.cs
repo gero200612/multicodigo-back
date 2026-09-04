@@ -791,6 +791,38 @@ app.MapGet("/api/github/callback", (string? installation_id, string? state) =>
 /// Es la pantalla que hace que la App valga la pena: sin esto el usuario tiene
 /// que tipear `owner/nombre` a mano, que es el paso que la App venia a eliminar.
 /// </remarks>
+/// Desvincula la instalación de GitHub de ESTE proyecto.
+///
+/// No desinstala la App del lado de GitHub, y es deliberado: una instalación
+/// puede estar compartida por varios proyectos, y desinstalarla desde acá se
+/// los rompería a todos. Esa decisión es del dueño de la cuenta de GitHub, no
+/// de este panel. Lo que se corta es que este proyecto la use.
+api.MapDelete("/proyectos/{proyectoId}/github", async (
+    string proyectoId, HttpContext ctx, IProyectosClient proyectos,
+    IInstalacionesClient instalaciones, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    try
+    {
+        // Sin instalación, desvincular ya está hecho: 204 y no un 404, que
+        // haría que dos clicks seguidos muestren un error donde no pasó nada.
+        await instalaciones.BorrarAsync(jwt, proyectoId, ct);
+        return Results.NoContent();
+    }
+    catch (UpstreamException ex)
+    {
+        // RLS deja borrar solo al dueño, igual que guardar.
+        return ex.Message == "no_sos_dueño"
+            ? Results.StatusCode(StatusCodes.Status403Forbidden)
+            : Results.BadRequest(new { code = ex.Message, message = "no se pudo desvincular" });
+    }
+});
+
 api.MapGet("/proyectos/{proyectoId}/github/repos", async (
     string proyectoId, HttpContext ctx, AppDeGitHub gh, IProyectosClient proyectos,
     IInstalacionesClient instalaciones, IReposClient repos, IHttpClientFactory clientes,
