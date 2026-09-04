@@ -461,3 +461,38 @@ public sealed class NombresFalso : INombresClient
         return Task.CompletedTask;
     }
 }
+
+
+/// <summary>
+/// Los archivos de un repo, sin salir a GitHub.
+///
+/// El token de instalación lo resuelve el cliente de verdad, así que este doble
+/// no tiene que firmar nada: es justo la razón de que ese token viva ahí adentro
+/// y no en el endpoint.
+/// </summary>
+public sealed class ArbolFalso : IRepoArbolClient
+{
+    public List<EntradaDeRepo> Entradas { get; } = [];
+    /// <summary>Los `full_name` que se pidieron, para verificar cuál se resolvió.</summary>
+    public List<string> Pedidos { get; } = [];
+    /// <summary>Fuerza un fallo de upstream: "sin_app", "sin_instalacion", "github_404".</summary>
+    public string? Falla { get; set; }
+
+    public Task<IReadOnlyList<EntradaDeRepo>> ArbolAsync(
+        string jwt, string proyectoId, string fullName, CancellationToken ct = default)
+    {
+        if (Falla is not null) throw new UpstreamException(Falla);
+        Pedidos.Add(fullName);
+        return Task.FromResult<IReadOnlyList<EntradaDeRepo>>(Entradas);
+    }
+
+    public Task<byte[]?> ArchivoAsync(
+        string jwt, string proyectoId, string fullName, string ruta,
+        CancellationToken ct = default)
+    {
+        if (Falla is not null) throw new UpstreamException(Falla);
+        Pedidos.Add(fullName);
+        return Task.FromResult<byte[]?>(
+            System.Text.Encoding.UTF8.GetBytes($"contenido de {ruta} en {fullName}"));
+    }
+}

@@ -192,6 +192,16 @@ builder.Services.AddSingleton(new AppDeGitHub(githubApp, githubAppSlug));
 // Supabase: otro host, otro timeout, y que se caiga uno no puede afectar al otro.
 builder.Services.AddHttpClient("github", c => c.Timeout = TimeSpan.FromSeconds(15));
 
+// Los archivos de un repo, para verlos desde el panel. Timeout mas largo que el
+// de "github": un arbol recursivo de un repo grande es un JSON de varios MB.
+builder.Services.AddHttpClient<IRepoArbolClient, RepoArbolClient>(
+        c => c.Timeout = TimeSpan.FromSeconds(30))
+    .AddTypedClient<IRepoArbolClient>((http, sp) => new RepoArbolClient(
+        http,
+        sp.GetRequiredService<AppDeGitHub>(),
+        sp.GetRequiredService<IInstalacionesClient>(),
+        sp.GetRequiredService<ILogger<RepoArbolClient>>()));
+
 builder.Services.AddHttpClient<INombresClient, NombresClient>(c =>
     {
         c.BaseAddress = new Uri(supabaseUrl);
@@ -1317,6 +1327,95 @@ api.MapPost("/proyectos/{proyectoId}/repos", async (
     catch (UpstreamException ex)
     {
         return Results.BadRequest(new { code = ex.Message, message = "no se pudo vincular el repo" });
+    }
+});
+
+/// Los archivos de un repo vinculado, para verlos desde el panel.
+///
+/// Salen de la API de GitHub y NO del worktree: el worktree es efimero —se
+/// recrea por turno— y vive en la maquina de los agentes, que este proceso no
+/// monta. Ademas un proyecto puede no tener ningun slot prendido.
+///
+/// SOLO LECTURA. Escribir en un repo es trabajo del agente, con aprobacion y
+/// commit; un boton de guardar aca seria un camino que se saltea todo eso.
+///
+/// El repo se pide por su NOMBRE corto y el `full_name` sale de la fila del
+/// proyecto. Eso NO es cosmetico: la instalacion de la App puede dar acceso a
+/// muchos repos —los de otros proyectos incluidos— asi que si el nombre no se
+/// valida contra los repos de ESTE proyecto, cualquier miembro lee cualquier
+/// repo de la instalacion.
+api.MapGet("/proyectos/{proyectoId}/repos/{nombre}/arbol", async (
+    string proyectoId, string nombre, HttpContext ctx, IProyectosClient proyectos,
+    IReposClient repos, IRepoArbolClient arbol, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var repo = (await repos.DeProyectoAsync(jwt, proyectoId, ct))
+        .FirstOrDefault(r => r.Nombre == nombre);
+    // 404 y no 403: desde aca adentro "ese repo no es de este proyecto" y "ese
+    // repo no existe" son lo mismo, y distinguirlos diria si existe.
+    if (repo is null)
+    {
+        return Results.NotFound(new { code = "no_esta", message = "ese repo no es de este proyecto" });
+    }
+
+    try
+    {
+        return Results.Ok(await arbol.ArbolAsync(jwt, proyectoId, repo.GithubRepo, ct));
+    }
+    catch (UpstreamException ex)
+    {
+        // 409 y el motivo tal cual: "sin_app" y "sin_instalacion" son estados
+        // que se arreglan configurando algo, y un arbol vacio se leeria como
+        // "el repo no tiene archivos" — que es falso y no sugiere la accion.
+        return Results.Conflict(new { code = ex.Message, message = "no se pudieron leer los archivos del repo" });
+    }
+});
+
+/// Un archivo del repo, tal como esta en GitHub.
+///
+/// Para leer un `CLAUDE.md`, una especificacion o el codigo de un archivo desde
+/// el panel, sin clonar nada.
+api.MapGet("/proyectos/{proyectoId}/repos/{nombre}/archivo", async (
+    string proyectoId, string nombre, string? ruta, HttpContext ctx,
+    IProyectosClient proyectos, IReposClient repos, IRepoArbolClient arbol,
+    CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    // La ruta se valida ACA y ademas adentro del cliente: viene del navegador y
+    // entra en una URL de la API de GitHub. Es la misma politica de dos capas
+    // que los documentos, y por la misma razon.
+    if (!RepoArbolClient.RutaValida(ruta))
+    {
+        return Results.BadRequest(new { code = "ruta_invalida", message = "esa ruta no es valida" });
+    }
+
+    var repo = (await repos.DeProyectoAsync(jwt, proyectoId, ct))
+        .FirstOrDefault(r => r.Nombre == nombre);
+    if (repo is null)
+    {
+        return Results.NotFound(new { code = "no_esta", message = "ese repo no es de este proyecto" });
+    }
+
+    try
+    {
+        var datos = await arbol.ArchivoAsync(jwt, proyectoId, repo.GithubRepo, ruta!, ct);
+        return datos is null
+            ? Results.NotFound(new { code = "no_esta", message = "ese archivo no esta, o es muy grande" })
+            : Results.File(datos, "application/octet-stream", ruta!.Split('/')[^1]);
+    }
+    catch (UpstreamException ex)
+    {
+        return Results.Conflict(new { code = ex.Message, message = "no se pudo leer el archivo" });
     }
 });
 
