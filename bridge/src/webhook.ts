@@ -5,6 +5,7 @@ import { decidir, type DecidirDeps } from './decisiones.js';
 import { ejecutarTurnoConRelevo, type PipelineDeps } from './pipeline.js';
 import { z } from 'zod';
 import type { Store } from './store.js';
+import { FORMATOS_GENERABLES } from './documentos.js';
 
 /** Tope duro. Sin esto, un `?limit=` de la URL deja pedir la tabla entera. */
 const MAX_JOBS = 50;
@@ -25,7 +26,25 @@ export interface ApiDeps {
     | 'deleteSessions'
     | 'desvincularChat'
     | 'consumoPorAgente'
+    | 'contextoDeJob'
   >;
+  /**
+   * Como guardar un documento que ESCRIBIO el agente.
+   *
+   * Se inyecta —y no se llama a `guardarDocumentoGenerado` directo— por lo
+   * mismo que el resto de este archivo: asi el endpoint se testea sin un disco,
+   * sin una base y sin el conversor.
+   *
+   * Opcional: sin esto el endpoint contesta 503 y el agente lo dice. Es mejor
+   * que un 404, que le haria creer que la herramienta no existe.
+   */
+  guardarGenerado?: (entrada: {
+    proyectoId: string;
+    usuarioId: string;
+    nombre: string;
+    contenido: string;
+    formato: string;
+  }) => Promise<{ nombre: string; tipo: string; bytes: number }>;
   /**
    * Como decidir una aprobacion desde afuera de Telegram.
    *
@@ -289,6 +308,79 @@ export function buildWebhookServer(
         }
       });
     }
+
+    /**
+     * Un documento que escribio el agente.
+     *
+     * Vive en el bridge y no en el panel por una razon dura: el panel escribe
+     * SIEMPRE con el JWT del usuario, para que RLS sea la unica autoridad, y
+     * aca no hay ningun usuario conectado. Fabricarle un JWT tampoco se puede
+     * —se verifican contra el JWKS— y darle al panel la service_role es
+     * justo lo que el diseño le niega. El bridge ya escribe la tabla sin RLS.
+     *
+     * El proyecto y el usuario NO llegan en el cuerpo: se resuelven del
+     * `jobId`. Es lo que impide que quien llame elija en que proyecto escribir,
+     * y de paso ahorra hacerle llevar la identidad del usuario a un agente que
+     * no la necesita para nada mas.
+     *
+     * Ver `multicodigo-vm/docs/superpowers/specs/2026-09-04-documentos-generados-design.md`.
+     */
+    // El formato se valida con un enum y no con un string: es lo que arma la
+    // extension del archivo en disco, y la lista tiene que coincidir con
+    // `FORMATOS_GENERABLES`.
+    const CuerpoDocumentoGenerado = z.object({
+      jobId: z.string().uuid(),
+      nombre: z.string().min(1),
+      contenido: z.string().min(1),
+      formato: z.enum(FORMATOS_GENERABLES),
+    });
+
+    app.post('/interno/documentos/generado', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      if (!api.guardarGenerado) {
+        return reply
+          .code(503)
+          .send({ code: 'sin_documentos', message: 'este bridge no puede guardar documentos' });
+      }
+
+      const cuerpo = CuerpoDocumentoGenerado.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply
+          .code(400)
+          .send({ code: 'cuerpo_invalido', message: 'faltan datos del documento' });
+      }
+
+      const contexto = await api.store.contextoDeJob(cuerpo.data.jobId);
+      // Sin proyecto o sin usuario no hay fila posible: las dos columnas son
+      // obligatorias. Se dice aca en vez de fallar en el INSERT tres capas
+      // abajo con un error de Postgres que nadie puede leer.
+      if (!contexto?.proyectoId || !contexto.usuarioId) {
+        return reply.code(400).send({
+          code: 'sin_contexto',
+          message: 'ese turno no tiene proyecto y usuario, asi que no se puede guardar el documento',
+        });
+      }
+
+      try {
+        const doc = await api.guardarGenerado({
+          proyectoId: contexto.proyectoId,
+          usuarioId: contexto.usuarioId,
+          nombre: cuerpo.data.nombre,
+          contenido: cuerpo.data.contenido,
+          formato: cuerpo.data.formato,
+        });
+        // `output` con el nombre adentro: esto vuelve al MODELO, que con eso le
+        // dice a la persona como quedo el archivo.
+        return reply.code(200).send({ output: `guarde ${doc.nombre} (${doc.bytes} bytes)` });
+      } catch (e) {
+        // 422 y no 500: el mensaje del conversor esta escrito para una persona
+        // ("este servidor no puede generar un .pdf") y termina en su pantalla.
+        const message = e instanceof Error ? e.message : 'no se pudo guardar el documento';
+        return reply.code(422).send({ code: 'no_se_pudo_guardar', message });
+      }
+    });
 
     /**
      * Invalida las sesiones de un slot.

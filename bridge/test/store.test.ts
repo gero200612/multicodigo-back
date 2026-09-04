@@ -12,6 +12,35 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
       store = make();
     });
 
+    /**
+     * De quien y de que proyecto es un turno.
+     *
+     * Lo necesita el documento que ESCRIBE el agente: llega por el gateway, que
+     * solo conoce el slot, el nombre del proyecto y el `jobId`. La fila de
+     * `documentos` pide el UUID del proyecto y el del usuario, y el job es el
+     * unico lugar donde los dos ya estan juntos.
+     */
+    it('el contexto de un job trae el proyecto y el usuario', async () => {
+      const jobId = await store.createJob({
+        chatId,
+        agent: 'c1',
+        project: 'demo',
+        proyectoId: '11111111-1111-4111-8111-111111111111',
+        usuarioId: '22222222-2222-4222-8222-222222222222',
+        prompt: 'redacta la sentencia',
+        messageId: 1,
+      });
+
+      expect(await store.contextoDeJob(jobId)).toEqual({
+        proyectoId: '11111111-1111-4111-8111-111111111111',
+        usuarioId: '22222222-2222-4222-8222-222222222222',
+      });
+    });
+
+    it('un job que no existe no tiene contexto', async () => {
+      expect(await store.contextoDeJob('99999999-9999-4999-8999-999999999999')).toBeUndefined();
+    });
+
     it('sin estado previo no hay agente activo', async () => {
       expect(await store.getActiveAgent(chatId)).toBeUndefined();
     });

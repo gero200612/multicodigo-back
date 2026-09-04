@@ -199,3 +199,30 @@ alter table public.documentos
 -- de un documento comun por proyecto.
 create unique index if not exists documentos_instruccion_unica
   on public.documentos (proyecto_id) where es_instruccion;
+
+-- De donde salio cada documento.
+--
+-- Desde que el agente puede ESCRIBIR documentos, la lista de un proyecto mezcla
+-- cuatro procedencias: lo que se arrastro al panel, lo que se mando al bot, lo
+-- que se trajo de Drive y lo que redacto el agente. Sin esta columna los cuatro
+-- se ven identicos, y la pregunta que la persona hace primero —"esto lo escribi
+-- yo o lo escribio el bot?"— no tiene respuesta en ningun lado.
+--
+-- `default 'panel'` y no NULL para las filas que ya estan: cuando esta columna
+-- no existia, todo lo que habia venia del panel. Un default deja el dato
+-- verdadero en vez de un hueco que la pantalla tendria que interpretar.
+--
+-- Un CHECK y no un enum de Postgres: agregar un valor a un enum es una
+-- migracion con lock sobre el tipo, y esta lista va a crecer (una integracion
+-- mas, un origen mas). El CHECK se reemplaza sin tocar la tabla.
+alter table public.documentos
+  add column if not exists origen text not null default 'panel';
+
+do $$
+begin
+  alter table public.documentos
+    add constraint documentos_origen_valido
+    check (origen in ('panel', 'telegram', 'drive', 'agente'));
+exception
+  when duplicate_object then null;
+end $$;

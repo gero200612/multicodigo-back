@@ -530,3 +530,127 @@ describe('POST /vinculos/borrar', () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+
+/**
+ * El documento que ESCRIBE el agente.
+ *
+ * Llega por el gateway, que es lo unico que un slot puede alcanzar. Este
+ * endpoint existe en el bridge y no en el panel por una razon dura: el panel
+ * escribe SIEMPRE con el JWT del usuario para que RLS sea la unica autoridad, y
+ * aca no hay ningun usuario conectado — es un servicio hablandole a otro. Ver
+ * `multicodigo-vm/docs/superpowers/specs/2026-09-04-documentos-generados-design.md`.
+ */
+describe('POST /interno/documentos/generado', () => {
+  const USUARIO = '99999999-9999-4999-8999-999999999999';
+
+  async function conDocumentos(
+    guardar = vi.fn(async () => ({ nombre: 'sentencia.pdf', tipo: 'pdf', bytes: 1234 })),
+  ) {
+    const store = new InMemoryStore();
+    const jobId = await store.createJob({
+      chatId: 0,
+      agent: 'c1',
+      project: 'demo',
+      proyectoId: PROYECTO,
+      usuarioId: USUARIO,
+      prompt: 'redacta la sentencia',
+      messageId: 0,
+    });
+    const app = buildWebhookServer(bot, SECRET, {
+      store,
+      apiToken: API_TOKEN,
+      guardarGenerado: guardar as never,
+    });
+    return { app, store, jobId, guardar };
+  }
+
+  const cuerpo = (jobId: string) => ({
+    jobId,
+    nombre: 'sentencia',
+    contenido: '# Resolucion',
+    formato: 'pdf',
+  });
+
+  // Sin bearer, cualquiera que llegue a este puerto escribe documentos en el
+  // proyecto de cualquiera.
+  it('sin bearer no guarda nada', async () => {
+    const { app, jobId, guardar } = await conDocumentos();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/interno/documentos/generado',
+      payload: cuerpo(jobId),
+    });
+    expect(r.statusCode).toBe(401);
+    expect(guardar).not.toHaveBeenCalled();
+  });
+
+  it('guarda el documento con el proyecto y el usuario del job', async () => {
+    const { app, jobId, guardar } = await conDocumentos();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/interno/documentos/generado',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: cuerpo(jobId),
+    });
+
+    expect(r.statusCode).toBe(200);
+    // El proyecto y el usuario NO llegan en el cuerpo: se resuelven del job.
+    // Es lo que impide que quien llame elija en que proyecto escribir.
+    expect(guardar).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proyectoId: PROYECTO,
+        usuarioId: USUARIO,
+        nombre: 'sentencia',
+        formato: 'pdf',
+      }),
+    );
+    expect(r.json().output).toContain('sentencia.pdf');
+  });
+
+  // Un job sin proyecto o sin usuario no puede producir una fila: las dos
+  // columnas son obligatorias. Se dice cual falta en vez de fallar en el INSERT.
+  it('un job que no existe se rechaza sin escribir', async () => {
+    const { app, guardar } = await conDocumentos();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/interno/documentos/generado',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: cuerpo('77777777-7777-4777-8777-777777777777'),
+    });
+
+    expect(r.statusCode).toBe(400);
+    expect(guardar).not.toHaveBeenCalled();
+  });
+
+  it('un cuerpo incompleto se rechaza', async () => {
+    const { app, guardar } = await conDocumentos();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/interno/documentos/generado',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { jobId: 'x' },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(guardar).not.toHaveBeenCalled();
+  });
+
+  // El mensaje del conversor esta escrito para una persona ("este servidor no
+  // puede generar un .pdf") y termina en la pantalla de quien lo pidio: se
+  // propaga en vez de convertirse en un 500 mudo.
+  it('propaga el motivo cuando no se pudo generar', async () => {
+    const guardar = vi.fn(async () => {
+      throw new Error('este servidor no puede generar un .pdf');
+    });
+    const { app, jobId } = await conDocumentos(guardar as never);
+    const r = await app.inject({
+      method: 'POST',
+      url: '/interno/documentos/generado',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: cuerpo(jobId),
+    });
+
+    expect(r.statusCode).toBe(422);
+    expect(r.json().message).toContain('no puede generar');
+  });
+});

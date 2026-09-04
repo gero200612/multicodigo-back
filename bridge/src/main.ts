@@ -15,7 +15,11 @@ import { askAgent, listarAgentes } from './agents-client.js';
 import { firmarToken } from './panel-client.js';
 import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
-import { documentosDelTurno, guardarDocumento } from './documentos.js';
+import {
+  documentosDelTurno,
+  guardarDocumento,
+  guardarDocumentoGenerado,
+} from './documentos.js';
 import { buildBot } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
 import { startWatching } from './approvals.js';
@@ -199,6 +203,10 @@ await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start(
 export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   store,
   apiToken: env.BRIDGE_API_TOKEN,
+  // Los documentos que ESCRIBE el agente. Las mismas deps que los que llegan
+  // por Telegram: mismo disco, misma tabla, mismo conversor — solo cambia la
+  // direccion de la conversion.
+  guardarGenerado: (entrada) => guardarDocumentoGenerado(entrada, docsDeps),
   // El MISMO camino que usan los botones del chat. El panel no escribe la
   // tabla por su cuenta: decidir tambien es avisarle al gateway y editar el
   // mensaje de Telegram, y el bot es el unico que puede hacer lo ultimo.

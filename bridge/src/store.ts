@@ -141,6 +141,15 @@ export interface FilaDeDocumento {
    * documento, y sin vinculo tampoco hay turno.
    */
   subidoPor: string;
+  /**
+   * De donde salio el documento.
+   *
+   * Sin este dato, un documento que ESCRIBIO el agente y uno que subio la
+   * persona se ven identicos en la lista, y no hay forma de saber cual es cual.
+   * Opcional: las filas que ya estan quedan en el default de la columna
+   * (`panel`), que es de donde venia todo cuando no existia esta columna.
+   */
+  origen?: 'panel' | 'telegram' | 'drive' | 'agente';
 }
 
 /** Lo que consumio un turno, o la suma de varios. */
@@ -326,6 +335,19 @@ export interface Store {
    */
   setJobStatus(jobId: string, status: JobStatus): Promise<void>;
   getJobStatus(jobId: string): Promise<JobStatus | undefined>;
+  /**
+   * De que proyecto y de quien es un turno.
+   *
+   * Lo necesita el documento que ESCRIBE el agente. Ese pedido llega por el
+   * gateway, que conoce el slot, el NOMBRE del proyecto y el `jobId` — y la
+   * fila de `documentos` pide los UUID del proyecto y del usuario. El job es el
+   * unico lugar donde los dos ya estan juntos, asi que no hace falta hacerle
+   * llevar la identidad del usuario a un agente que no la necesita para nada
+   * mas.
+   */
+  contextoDeJob(
+    jobId: string,
+  ): Promise<{ proyectoId?: string; usuarioId?: string } | undefined>;
   getJobError(jobId: string): Promise<string | undefined>;
   /** Lo que contesto el agente, si el turno termino. */
   getJobRespuesta(jobId: string): Promise<string | undefined>;
@@ -521,6 +543,7 @@ export class InMemoryStore implements Store {
   }
   async createJob(job: NewJob) {
     const id = randomUUID();
+    this.contextos.set(id, { proyectoId: job.proyectoId, usuarioId: job.usuarioId });
     this.jobs.set(id, {
       status: 'running',
       resumen: {
@@ -554,6 +577,12 @@ export class InMemoryStore implements Store {
   }
 
   private documentos = new Map<string, DocumentoDeProyecto[]>();
+  /** De que proyecto y de quien es cada job. Ver `contextoDeJob`. */
+  private contextos = new Map<string, { proyectoId?: string; usuarioId?: string }>();
+
+  async contextoDeJob(jobId: string) {
+    return this.contextos.get(jobId);
+  }
 
   /** Solo para los tests: agrega un documento a un proyecto. */
   ponerDocumento(proyectoId: string, doc: DocumentoDeProyecto): void {
@@ -972,8 +1001,8 @@ export class PgStore implements Store {
   async guardarDocumento(fila: FilaDeDocumento): Promise<void> {
     await this.pool.query(
       `INSERT INTO documentos
-         (proyecto_id, nombre, nombre_original, ruta, ruta_texto, tipo, bytes, error, subido_por)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (proyecto_id, nombre, nombre_original, ruta, ruta_texto, tipo, bytes, error, subido_por, origen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, 'panel'))
        ON CONFLICT (proyecto_id, nombre) DO UPDATE SET
          nombre_original = EXCLUDED.nombre_original,
          ruta = EXCLUDED.ruta,
@@ -981,7 +1010,8 @@ export class PgStore implements Store {
          tipo = EXCLUDED.tipo,
          bytes = EXCLUDED.bytes,
          error = EXCLUDED.error,
-         subido_por = EXCLUDED.subido_por`,
+         subido_por = EXCLUDED.subido_por,
+         origen = EXCLUDED.origen`,
       [
         fila.proyectoId,
         fila.nombre,
@@ -992,6 +1022,7 @@ export class PgStore implements Store {
         fila.bytes,
         fila.error ?? null,
         fila.subidoPor,
+        fila.origen ?? null,
       ],
     );
   }
@@ -1067,6 +1098,23 @@ export class PgStore implements Store {
       jobId,
     ]);
     return r.rows[0]?.status;
+  }
+
+  async contextoDeJob(jobId: string) {
+    const r = await this.pool.query<{ proyecto_id: string | null; usuario_id: string | null }>(
+      'SELECT proyecto_id, usuario_id FROM jobs WHERE id = $1',
+      [jobId],
+    );
+    const fila = r.rows[0];
+    if (!fila) return undefined;
+    // Los NULL se omiten en vez de viajar como null: las dos columnas pueden
+    // estar vacias —un proyecto que solo vive en config/projects.json, un chat
+    // sin vincular— y quien llama tiene que decidir que hacer con la falta, no
+    // recibir un null que parece un id.
+    return {
+      ...(fila.proyecto_id ? { proyectoId: fila.proyecto_id } : {}),
+      ...(fila.usuario_id ? { usuarioId: fila.usuario_id } : {}),
+    };
   }
 
   async getJobError(jobId: string) {

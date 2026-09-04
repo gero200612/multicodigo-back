@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   documentosDelTurno,
   guardarDocumento,
+  guardarDocumentoGenerado,
   nombreDeArchivo,
   tipoDe,
   MAXIMO_BYTES,
@@ -356,5 +357,147 @@ describe('imagenes', () => {
       deps(f),
     );
     expect(f).toHaveBeenCalled();
+  });
+});
+
+
+/**
+ * Los documentos que ESCRIBE el agente.
+ *
+ * La direccion inversa de `guardarDocumento`: en vez de bytes que hay que
+ * convertir a texto, llega texto (Markdown) que hay que convertir a bytes. Ver
+ * `multicodigo-vm/docs/superpowers/specs/2026-09-04-documentos-generados-design.md`.
+ */
+describe('guardarDocumentoGenerado', () => {
+  const MD = ['# Resolucion', '', 'Se resuelve.'].join(String.fromCharCode(10));
+
+  /** Un conversor que devuelve bytes para `/generar`. */
+  function conversorOk(bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46])) {
+    return vi.fn(async (url: string) => {
+      if (String(url).includes('/generar')) {
+        return new Response(bytes as unknown as BodyInit, { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+  }
+
+  it('le pide los bytes al conversor con el formato pedido', async () => {
+    const f = conversorOk();
+    await guardarDocumentoGenerado(
+      { proyectoId: PROYECTO, usuarioId: USUARIO, nombre: 'sentencia', contenido: MD, formato: 'pdf' },
+      deps(f),
+    );
+
+    const [url, init] = f.mock.calls[0]!;
+    expect(String(url)).toContain('/generar?formato=pdf');
+    // El Markdown va como CUERPO: es la fuente del documento.
+    expect(String((init as RequestInit).body)).toBe(MD);
+  });
+
+  it('guarda el original con el nombre saneado y la extension del formato', async () => {
+    const escritos: string[] = [];
+    const out = await guardarDocumentoGenerado(
+      { proyectoId: PROYECTO, usuarioId: USUARIO, nombre: 'Sentencia Final', contenido: MD, formato: 'pdf' },
+      { ...deps(conversorOk()), escribir: async (r: string) => void escritos.push(r) } as never,
+    );
+
+    expect(out.nombre).toBe('Sentencia-Final.pdf');
+    expect(escritos).toContain(`/srv/docs/${PROYECTO}/Sentencia-Final.pdf`);
+  });
+
+  /**
+   * El `.md` es el Markdown que escribio el agente, NO una reconversion del
+   * binario.
+   *
+   * Es la propiedad que hace util este camino: el `.md` es la FUENTE. Pasar el
+   * PDF de vuelta por el conversor perderia los titulos y las tablas para
+   * recuperar un texto que ya estaba en la mano.
+   */
+  it('el .md es la fuente que escribio el agente, sin round-trip', async () => {
+    const escrituras: Array<{ ruta: string; datos: Uint8Array }> = [];
+    await guardarDocumentoGenerado(
+      { proyectoId: PROYECTO, usuarioId: USUARIO, nombre: 'nota', contenido: MD, formato: 'pdf' },
+      {
+        ...deps(conversorOk()),
+        escribir: async (ruta: string, datos: Uint8Array) => void escrituras.push({ ruta, datos }),
+      } as never,
+    );
+
+    const md = escrituras.find((e) => e.ruta.endsWith('.md'))!;
+    expect(new TextDecoder().decode(md.datos)).toBe(MD);
+  });
+
+  it('anota el origen y quien lo pidio', async () => {
+    const filas: Array<Record<string, unknown>> = [];
+    await guardarDocumentoGenerado(
+      { proyectoId: PROYECTO, usuarioId: USUARIO, nombre: 'nota', contenido: MD, formato: 'md' },
+      { ...deps(conversorOk()), guardarFila: async (f: never) => void filas.push(f) } as never,
+    );
+
+    // `agente` es lo que hace que en la pantalla se distinga un documento que
+    // escribio el bot de uno que subio la persona. Sin eso se ven identicos.
+    expect(filas[0]!.origen).toBe('agente');
+    // Y el usuario sigue siendo el de la persona cuyo turno lo produjo: la
+    // columna es NOT NULL, y "lo pidio esta persona" es el dato verdadero.
+    expect(filas[0]!.subidoPor).toBe(USUARIO);
+  });
+
+  /**
+   * `md` y `txt` no necesitan al conversor.
+   *
+   * Es la degradacion que pide el diseño: con el conversor caido, los formatos
+   * de texto se guardan igual. Perder una sentencia entera porque un
+   * contenedor no responde, cuando el contenido ES el texto, seria absurdo.
+   */
+  for (const formato of ['md', 'txt']) {
+    it(`${formato} se guarda sin pasar por el conversor`, async () => {
+      const f = vi.fn(async () => new Response('no deberia llamarse', { status: 500 }));
+      const out = await guardarDocumentoGenerado(
+        { proyectoId: PROYECTO, usuarioId: USUARIO, nombre: 'nota', contenido: MD, formato },
+        deps(f),
+      );
+
+      expect(f).not.toHaveBeenCalled();
+      expect(out.nombre).toBe(`nota.${formato}`);
+    });
+  }
+
+  it('un formato que el conversor no puede lo dice y NO escribe la fila', async () => {
+    const filas: unknown[] = [];
+    const f = vi.fn(async () =>
+      new Response(JSON.stringify({ message: 'este servidor no puede generar un .pdf' }), {
+        status: 422,
+      }),
+    );
+
+    await expect(
+      guardarDocumentoGenerado(
+        { proyectoId: PROYECTO, usuarioId: USUARIO, nombre: 'x', contenido: MD, formato: 'pdf' },
+        { ...deps(f), guardarFila: async (x: never) => void filas.push(x) } as never,
+      ),
+    ).rejects.toThrow(/no puede generar/);
+
+    // Sin fila: un documento que no se pudo generar no existe. Al reves que un
+    // documento SUBIDO, donde el original se guarda aunque la conversion falle
+    // —ahi hay un archivo de la persona que perder, y aca no hay nada.
+    expect(filas).toEqual([]);
+  });
+
+  it('un contenido vacio no se guarda', async () => {
+    await expect(
+      guardarDocumentoGenerado(
+        { proyectoId: PROYECTO, usuarioId: USUARIO, nombre: 'x', contenido: '   ', formato: 'md' },
+        deps(conversorOk()),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('un formato desconocido no se guarda', async () => {
+    await expect(
+      guardarDocumentoGenerado(
+        { proyectoId: PROYECTO, usuarioId: USUARIO, nombre: 'x', contenido: MD, formato: 'xlsx' },
+        deps(conversorOk()),
+      ),
+    ).rejects.toThrow();
   });
 });

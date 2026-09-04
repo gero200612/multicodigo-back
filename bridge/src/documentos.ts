@@ -284,6 +284,131 @@ export async function guardarDocumento(
   return { nombre, tipo, bytes: entrada.datos.byteLength, error };
 }
 
+/**
+ * Los formatos en los que el agente puede pedir un documento.
+ *
+ * Subconjunto de `TIPOS`: son los que el conversor sabe GENERAR (ver `FORMATOS`
+ * en `multicodigo-vm/src/conversor/generar.py`). `xlsx` esta afuera a proposito
+ * —se puede leer y no escribir— y las imagenes tambien: un modelo produce
+ * texto.
+ */
+export const FORMATOS_GENERABLES = ['md', 'txt', 'csv', 'docx', 'pdf'] as const;
+
+/**
+ * Los formatos que NO necesitan al conversor: el contenido ya ES el archivo.
+ *
+ * Es la degradacion que pide el diseño. Con el conversor caido, una sentencia
+ * en `.md` se guarda igual; perderla porque un contenedor no responde, cuando
+ * el contenido es el texto, no tendria sentido.
+ */
+const SIN_CONVERSOR: readonly string[] = ['md', 'txt'];
+
+/**
+ * Convierte el Markdown del agente en el archivo que la persona se lleva.
+ *
+ * Al reves que `convertir`, esta SI lanza. La diferencia no es un descuido: en
+ * un documento subido hay un original de la persona que se perderia si
+ * cortaramos, asi que se guarda con el error anotado. Aca no hay nada que
+ * perder todavia — y guardar un `.pdf` que no es un PDF seria peor que el
+ * error.
+ */
+async function generar(
+  contenido: string,
+  formato: string,
+  deps: DocumentosDeps,
+): Promise<Uint8Array> {
+  if (!deps.conversorUrl) throw new Error('el conversor no esta configurado');
+  const doFetch = deps.fetchImpl ?? fetch;
+  const res = await doFetch(
+    `${deps.conversorUrl.replace(/\/$/, '')}/generar?formato=${encodeURIComponent(formato)}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'text/markdown; charset=utf-8' },
+      body: contenido,
+      signal: AbortSignal.timeout(60_000),
+    },
+  );
+  if (!res.ok) {
+    // El 422 del conversor trae un mensaje escrito para una persona ("este
+    // servidor no puede generar un .pdf"): se propaga tal cual, porque termina
+    // en la pantalla de quien lo pidio.
+    const cuerpo = (await res.json().catch(() => ({}))) as { message?: string };
+    throw new Error(cuerpo.message ?? `el conversor respondio ${res.status}`);
+  }
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+/**
+ * Guarda un documento que ESCRIBIO el agente.
+ *
+ * Es la direccion inversa de `guardarDocumento`: en vez de bytes que hay que
+ * convertir a texto, llega texto que hay que convertir a bytes.
+ *
+ * La diferencia que importa es el `.md`: aca es la FUENTE, no una conversion.
+ * El agente escribio Markdown, asi que se guarda ese mismo Markdown como
+ * version de texto en vez de pasar el PDF de vuelta por el conversor — un
+ * round-trip que perderia los titulos y las tablas para recuperar un texto que
+ * ya estaba en la mano.
+ *
+ * Ver `multicodigo-vm/docs/superpowers/specs/2026-09-04-documentos-generados-design.md`.
+ */
+export async function guardarDocumentoGenerado(
+  entrada: {
+    proyectoId: string;
+    /** Quien pidio el turno que produjo el documento. */
+    usuarioId: string;
+    /** Como lo llamo el agente, sin extension. */
+    nombre: string;
+    /** El documento, en Markdown. */
+    contenido: string;
+    formato: string;
+  },
+  deps: DocumentosDeps,
+): Promise<DocumentoGuardado> {
+  const formato = entrada.formato.toLowerCase();
+  if (!(FORMATOS_GENERABLES as readonly string[]).includes(formato)) {
+    throw new Error('formato_desconocido');
+  }
+  if (entrada.contenido.trim() === '') throw new Error('documento_vacio');
+
+  // El nombre se DERIVA, igual que el de un archivo subido: es lo que arma la
+  // ruta en /srv/docs, y el agente produce texto libre.
+  const nombre = nombreDeArchivo(entrada.nombre, formato);
+  const ruta = `${entrada.proyectoId}/${nombre}`;
+
+  const datos = SIN_CONVERSOR.includes(formato)
+    ? new TextEncoder().encode(entrada.contenido)
+    : await generar(entrada.contenido, formato, deps);
+
+  if (datos.byteLength > MAXIMO_BYTES) throw new Error('muy_grande');
+
+  await subirArchivo(ruta, datos, deps);
+
+  // El `.md` SIEMPRE, y con la fuente adentro: es lo que el agente lee en el
+  // proximo turno. Para un `.md` seria el mismo archivo dos veces, asi que se
+  // apunta al original en vez de duplicarlo.
+  let rutaTexto: string | null = `${ruta}.md`;
+  if (formato === 'md') {
+    rutaTexto = ruta;
+  } else {
+    await subirArchivo(rutaTexto, new TextEncoder().encode(entrada.contenido), deps);
+  }
+
+  await deps.guardarFila({
+    proyectoId: entrada.proyectoId,
+    nombre,
+    nombreOriginal: nombre,
+    ruta,
+    rutaTexto,
+    tipo: formato,
+    bytes: datos.byteLength,
+    subidoPor: entrada.usuarioId,
+    origen: 'agente',
+  });
+
+  return { nombre, tipo: formato, bytes: datos.byteLength };
+}
+
 export interface DocumentoDelTurno {
   nombre: string;
   /** Donde esta el archivo, relativo a la raiz de documentos del servidor. */
