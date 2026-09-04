@@ -355,6 +355,20 @@ export interface Store {
   recordApproval(rec: ApprovalRecord): Promise<boolean>;
   getApproval(approvalId: string): Promise<ApprovalRecord | undefined>;
   /**
+   * Corrige el mensaje al que apunta una aprobacion.
+   *
+   * Existe porque los dos ids son distintos y llegan en momentos distintos. La
+   * aprobacion se registra ANTES de mandar el anuncio —ahi vive la
+   * deduplicacion, y sin ella un reinicio a mitad de turno la anuncia dos
+   * veces— asi que en ese momento el unico id que hay es el del placeholder de
+   * "trabajando". El mensaje con los BOTONES nace despues.
+   *
+   * Sin esto, decidir editaba el placeholder y el pedido quedaba intacto en el
+   * chat: se seguia leyendo "aprobas?" con los botones vivos despues de haber
+   * aprobado.
+   */
+  setApprovalMessage(approvalId: string, messageId: number): Promise<void>;
+  /**
    * Toma la decision de forma atomica. Solo el primer llamado gana.
    *
    * `quien` es opcional porque la decision desde Telegram no tiene un usuario
@@ -645,6 +659,14 @@ export class InMemoryStore implements Store {
 
   async getApproval(approvalId: string) {
     return this.approvals.get(approvalId)?.rec;
+  }
+
+  async setApprovalMessage(approvalId: string, messageId: number) {
+    const guardada = this.approvals.get(approvalId);
+    // Una aprobacion que no esta no es un error: la decision ya se pudo haber
+    // tomado y limpiado. Corregir el mensaje de algo que no existe no tiene
+    // nada que arreglar.
+    if (guardada) guardada.rec = { ...guardada.rec, messageId };
   }
 
   async claimApproval(
@@ -1165,6 +1187,13 @@ export class PgStore implements Store {
       tool: row.tool,
       summary: row.summary,
     };
+  }
+
+  async setApprovalMessage(approvalId: string, messageId: number): Promise<void> {
+    await this.pool.query(
+      'UPDATE approvals SET message_id = $2 WHERE approval_id = $1',
+      [approvalId, messageId],
+    );
   }
 
   async claimApproval(

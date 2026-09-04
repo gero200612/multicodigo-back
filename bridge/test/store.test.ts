@@ -41,6 +41,38 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
       expect(await store.contextoDeJob('99999999-9999-4999-8999-999999999999')).toBeUndefined();
     });
 
+    /**
+     * El mensaje que se edita al decidir es el que TIENE los botones.
+     *
+     * Se anota en dos pasos porque los dos ids son distintos: la aprobacion se
+     * registra ANTES de mandar el mensaje —ahi esta la deduplicacion, y sin
+     * ella un reinicio a mitad de turno lo anuncia dos veces— asi que en ese
+     * momento el unico id que existe es el del placeholder de "trabajando".
+     *
+     * Sin este segundo paso, decidir editaba el placeholder y el pedido con los
+     * botones quedaba intacto en el chat: se seguia viendo "aprobas?" con los
+     * botones vivos despues de haber aprobado.
+     */
+    it('el mensaje de una aprobacion se puede corregir al del anuncio', async () => {
+      await store.recordApproval({
+        approvalId: 'ap-1',
+        jobId: 'job-1',
+        chatId: 42,
+        messageId: 100,
+        agent: 'c1',
+        tool: 'mcp__multicodigo__git_commit',
+        summary: 'Quiere commitear.',
+      });
+
+      await store.setApprovalMessage('ap-1', 777);
+
+      expect((await store.getApproval('ap-1'))?.messageId).toBe(777);
+    });
+
+    it('corregir el mensaje de una aprobacion que no existe no explota', async () => {
+      await expect(store.setApprovalMessage('no-existe', 1)).resolves.toBeUndefined();
+    });
+
     it('sin estado previo no hay agente activo', async () => {
       expect(await store.getActiveAgent(chatId)).toBeUndefined();
     });

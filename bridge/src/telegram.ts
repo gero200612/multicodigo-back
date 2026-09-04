@@ -790,7 +790,18 @@ export function buildBot(deps: BridgeDeps): Bot {
                   // Mensaje NUEVO, no editando el de "trabajando…": ese tiene
                   // que seguir mostrando el progreso, y un mensaje con botones
                   // que se edita encima pierde los botones.
-                  await ctx.reply(text, { reply_markup: teclado });
+                  const anuncio = await ctx.reply(text, { reply_markup: teclado });
+
+                  // Y se apunta la aprobacion a ESTE mensaje, que es el que
+                  // tiene los botones.
+                  //
+                  // `recordApproval` de arriba guardo el id del placeholder,
+                  // porque es el unico que existe antes de mandar esto — y ese
+                  // orden es a proposito: ahi vive la deduplicacion. Sin esta
+                  // correccion, decidir editaba el placeholder y el pedido
+                  // quedaba intacto: se seguia leyendo "aprobas?" con los
+                  // botones vivos despues de haber aprobado.
+                  await deps.store.setApprovalMessage(a.approvalId, anuncio.message_id);
                 },
                 seen: new Set(),
               },
