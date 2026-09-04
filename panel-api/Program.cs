@@ -1198,6 +1198,64 @@ api.MapGet("/proyectos/{proyectoId}/documentos/{nombre}/descarga", async (
         : Results.File(datos, "application/octet-stream", nombre);
 });
 
+/// Todos los documentos del proyecto, en un ZIP.
+///
+/// Es la mitad de salida de la pagina de archivos. Bajar veinte documentos de a
+/// uno, cada uno con su clic, es la clase de tarea que hace que la persona no
+/// los baje — y desde que el agente los ESCRIBE, llevarselos es la razon de que
+/// existan.
+///
+/// Se arma con `DeProyectoAsync` + `DescargarAsync`, que ya estan, y no con un
+/// metodo nuevo del cliente: un ZIP es un ensamblado de dos cosas que el
+/// cliente ya sabe hacer, y meterlo alla obligaria a que el doble de los tests
+/// tambien sepa comprimir.
+///
+/// En memoria y no en un archivo temporal: el tope por documento son 20 MB y
+/// esto lo pide una persona a mano. Un temporal habria que limpiarlo, y el modo
+/// de falla de no limpiarlo es un disco lleno.
+///
+/// Ver el diseño en
+/// `multicodigo-vm/docs/superpowers/specs/2026-09-04-documentos-generados-design.md`.
+api.MapGet("/proyectos/{proyectoId}/documentos.zip", async (
+    string proyectoId, HttpContext ctx, IProyectosClient proyectos,
+    IDocumentosClient documentos, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    var nombreProyecto = await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct);
+    // La membresia PRIMERO y con el proyecto entero en juego: este endpoint
+    // junta varios documentos en una respuesta, asi que un error aca no filtra
+    // un archivo — filtra el proyecto.
+    if (nombreProyecto is null) return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+    // `DeProyectoAsync` ya excluye el instructivo, que tiene su propia seccion
+    // y su propio boton en la pantalla.
+    var lista = await documentos.DeProyectoAsync(jwt, proyectoId, ct);
+
+    var buffer = new MemoryStream();
+    // `leaveOpen: true`: sin esto el `using` cierra el MemoryStream al terminar
+    // de escribir el ZIP y `ToArray()` leeria un stream cerrado.
+    using (var zip = new System.IO.Compression.ZipArchive(
+        buffer, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+    {
+        foreach (var doc in lista)
+        {
+            var datos = await documentos.DescargarAsync(jwt, proyectoId, doc.Nombre, ct);
+            // Un documento cuya fila esta y cuyo archivo no se saltea en vez de
+            // voltear el ZIP: perder los otros diecinueve por uno roto seria
+            // peor, y quien lo abra va a ver que falta.
+            if (datos is null) continue;
+            var entrada = zip.CreateEntry(doc.NombreOriginal);
+            await using var salida = entrada.Open();
+            await salida.WriteAsync(datos, ct);
+        }
+    }
+
+    // El nombre del proyecto en el archivo: "documentos.zip" en la carpeta de
+    // descargas, tres proyectos despues, no dice de cual era.
+    var nombreZip = $"{Documentos.NombreDeArchivo(nombreProyecto, "zip")}";
+    return Results.File(buffer.ToArray(), "application/zip", nombreZip);
+});
+
 api.MapDelete("/proyectos/{proyectoId}/documentos/{nombre}", async (
     string proyectoId, string nombre, HttpContext ctx, IProyectosClient proyectos,
     IDocumentosClient documentos, CancellationToken ct) =>

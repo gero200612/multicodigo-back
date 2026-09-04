@@ -17,7 +17,17 @@ public sealed record Documento(
     [property: JsonPropertyName("bytes")] long Bytes,
     [property: JsonPropertyName("error")] string? Error = null,
     /// <summary>Si es EL instructivo del proyecto y no un documento más.</summary>
-    [property: JsonPropertyName("esInstruccion")] bool EsInstruccion = false);
+    [property: JsonPropertyName("esInstruccion")] bool EsInstruccion = false,
+    /// <summary>
+    /// De dónde salió: `panel`, `telegram`, `drive` o `agente`.
+    ///
+    /// Sin este dato, un documento que escribió el agente y uno que subió la
+    /// persona se ven idénticos en la lista, y la primera pregunta que se hace
+    /// —"esto lo escribí yo o lo escribió el bot?"— no tiene respuesta.
+    /// </summary>
+    [property: JsonPropertyName("origen")] string Origen = "panel",
+    /// <summary>Cuándo se guardó. Para ordenar por lo último primero.</summary>
+    [property: JsonPropertyName("creadoEn")] string? CreadoEn = null);
 
 /// <summary>Lo que viaja con el turno: el nombre y de dónde bajarlo.</summary>
 /// <summary>
@@ -109,7 +119,8 @@ public sealed class DocumentosClient(
 
     private sealed record Fila(
         string Id, string Nombre, string NombreOriginal, string Tipo, long Bytes,
-        string? Error, string Ruta, string? RutaTexto, bool EsInstruccion = false);
+        string? Error, string Ruta, string? RutaTexto, bool EsInstruccion = false,
+        string Origen = "panel", string? CreadoEn = null);
 
     private HttpRequestMessage Pedido(HttpMethod metodo, string url, string jwt)
     {
@@ -120,7 +131,8 @@ public sealed class DocumentosClient(
     }
 
     private const string Columnas =
-        "select=id,nombre,nombre_original,tipo,bytes,error,ruta,ruta_texto,es_instruccion&order=nombre";
+        "select=id,nombre,nombre_original,tipo,bytes,error,ruta,ruta_texto,es_instruccion," +
+        "origen,creado_en&order=nombre";
 
     private async Task<List<Fila>> FilasAsync(string jwt, string proyectoId, CancellationToken ct)
     {
@@ -145,7 +157,8 @@ public sealed class DocumentosClient(
             return [.. filas
                 .Where(f => !f.EsInstruccion)
                 .Select(f => new Documento(
-                    f.Id, f.Nombre, f.NombreOriginal, f.Tipo, f.Bytes, f.Error))];
+                    f.Id, f.Nombre, f.NombreOriginal, f.Tipo, f.Bytes, f.Error,
+                    EsInstruccion: false, Origen: f.Origen, CreadoEn: f.CreadoEn))];
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
