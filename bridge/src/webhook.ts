@@ -6,6 +6,7 @@ import { ejecutarTurnoConRelevo, type PipelineDeps } from './pipeline.js';
 import { z } from 'zod';
 import type { Store } from './store.js';
 import { FORMATOS_GENERABLES } from './documentos.js';
+import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 
 /** Tope duro. Sin esto, un `?limit=` de la URL deja pedir la tabla entera. */
 const MAX_JOBS = 50;
@@ -27,6 +28,12 @@ export interface ApiDeps {
     | 'desvincularChat'
     | 'consumoPorAgente'
     | 'contextoDeJob'
+    | 'googleCuenta'
+    | 'guardarGoogleCuenta'
+    | 'borrarGoogleCuenta'
+    | 'crearPedidoDeDrive'
+    | 'canjearPedidoDeDrive'
+    | 'archivoAutorizadoReciente'
   >;
   /**
    * Como guardar un documento que ESCRIBIO el agente.
@@ -61,6 +68,16 @@ export interface ApiDeps {
    * hilo en vez de tener cada uno el suyo.
    */
   pipeline?: PipelineDeps;
+  /**
+   * Con que hablarle a Drive.
+   *
+   * Opcional: sin `GOOGLE_CLIENT_SECRET` no hay refresh token que canjear, asi
+   * que las herramientas de Drive no se registran y el agente recibe el error
+   * de "esa herramienta no esta habilitada" — que es la verdad. Registrarlas
+   * igual y fallar adentro le haria creer al modelo que la cuenta esta mal
+   * conectada cuando lo que falta es una variable del servidor.
+   */
+  drive?: Omit<DriveApiDeps, 'store' | 'apiToken'>;
   /**
    * Credencial propia, distinta del secret del webhook.
    *
@@ -381,6 +398,17 @@ export function buildWebhookServer(
         return reply.code(422).send({ code: 'no_se_pudo_guardar', message });
       }
     });
+
+    /**
+     * Drive en vivo.
+     *
+     * Se registra solo si hay con que: sin el secret de Google no hay forma de
+     * canjear un refresh token, y una herramienta que existe pero nunca puede
+     * funcionar es peor que una que no esta.
+     */
+    if (api.drive) {
+      registrarDrive(app, { ...api.drive, store: api.store, apiToken: api.apiToken });
+    }
 
     /**
      * Invalida las sesiones de un slot.

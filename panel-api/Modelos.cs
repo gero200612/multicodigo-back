@@ -152,6 +152,21 @@ public sealed record NuevoNombre(
 public sealed record CuerpoVinculo(
     [property: JsonPropertyName("codigo")] string? Codigo);
 
+/// <summary>El código que devolvió Google, más el redirect con el que se pidió.</summary>
+/// <remarks>
+/// El `usuarioId` NO está acá a propósito: sale del JWT. Si viajara en el
+/// cuerpo, cualquiera con sesión conectaría una cuenta de Google a la cuenta de
+/// otro.
+/// </remarks>
+public sealed record CuerpoGoogle(
+    [property: JsonPropertyName("code")] string? Code,
+    [property: JsonPropertyName("redirectUri")] string? RedirectUri);
+
+/// <summary>El archivo que la persona eligió en el Picker, y el link que lo pedía.</summary>
+public sealed record CuerpoAutorizado(
+    [property: JsonPropertyName("codigo")] string? Codigo,
+    [property: JsonPropertyName("id")] string? Id);
+
 public sealed record CuerpoProyecto(
     [property: JsonPropertyName("nombre")] string? Nombre);
 

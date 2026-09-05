@@ -394,6 +394,51 @@ public sealed class BridgeFalso : IBridgeClient
         return Task.CompletedTask;
     }
 
+    // --- Drive en vivo ----------------------------------------------------
+
+    /// <summary>Con que cuenta esta conectado. Null = ninguna.</summary>
+    public string? EmailDeGoogle { get; set; }
+    /// <summary>Los canjes de codigo de OAuth que llegaron.</summary>
+    public List<(string UsuarioId, string Code, string RedirectUri)> ConexionesDeGoogle { get; } = [];
+    /// <summary>Google rechaza el canje: el bridge contesta con el motivo.</summary>
+    public string? ConectarFalla { get; set; }
+    /// <summary>Los links de "pedir acceso" que se quemaron.</summary>
+    public List<(string Codigo, string Id)> PedidosCanjeados { get; } = [];
+    /// <summary>El link no sirve: vencido, usado o desconocido.</summary>
+    public string? LinkNoSirve { get; set; }
+
+    public Task<string> ConectarGoogleAsync(
+        string usuarioId, string code, string redirectUri, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        if (ConectarFalla is not null) throw new UpstreamException(ConectarFalla);
+        ConexionesDeGoogle.Add((usuarioId, code, redirectUri));
+        EmailDeGoogle = "yo@ejemplo.com";
+        return Task.FromResult(EmailDeGoogle);
+    }
+
+    public Task<EstadoGoogle> EstadoGoogleAsync(string usuarioId, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        return Task.FromResult(new EstadoGoogle(EmailDeGoogle is not null, EmailDeGoogle));
+    }
+
+    public Task<bool> DesconectarGoogleAsync(string usuarioId, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        var habia = EmailDeGoogle is not null;
+        EmailDeGoogle = null;
+        return Task.FromResult(habia);
+    }
+
+    public Task<string> CanjearPedidoDriveAsync(string codigo, string id, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        if (LinkNoSirve is not null) throw new UpstreamException(LinkNoSirve);
+        PedidosCanjeados.Add((codigo, id));
+        return Task.FromResult("Balance 2026");
+    }
+
     /// <summary>Lo gastado por agente que devuelve el bridge. Vacio por default.</summary>
     public Dictionary<string, Consumo> Consumo { get; } = [];
 

@@ -83,6 +83,28 @@ const Env = z.object({
    * Antes iban a Supabase Storage, que entre dos procesos de la misma maquina
    * era mandar el archivo a internet para traerlo de vuelta.
    */
+  /**
+   * Drive en vivo: la app de Google con la que se habla.
+   *
+   * El `GOOGLE_CLIENT_ID` es PUBLICO —el navegador lo recibe en el config del
+   * panel— y el secret NO: es lo que canjea el codigo de OAuth por el refresh
+   * token, o sea la mitad de la credencial permanente de una cuenta personal.
+   *
+   * Los dos son opcionales JUNTOS: sin ellos las herramientas de Drive no se
+   * registran y todo lo demas anda igual. Ver
+   * `multicodigo-vm/docs/superpowers/specs/2026-09-04-drive-en-vivo-design.md`.
+   */
+  GOOGLE_CLIENT_ID: opcional(z.string().min(1)),
+  GOOGLE_CLIENT_SECRET: opcional(z.string().min(1)),
+  /**
+   * Por que dominio ven el panel las personas.
+   *
+   * Distinto de `PANEL_URL`, que es la direccion INTERNA del compose: un link
+   * que se manda a un chat lo abre alguien desde su telefono, y
+   * `http://panel:8091` ahi no resuelve. Sin esto no se pueden armar links de
+   * "pedir acceso".
+   */
+  PANEL_PUBLIC_URL: opcional(z.string().url()),
   DOCS_ROOT: z.string().min(1).default('/srv/docs'),
   PORT: z.coerce.number().int().positive().default(3000),
 });
@@ -114,6 +136,7 @@ const MIGRACIONES = [
   '019_modelo.sql',
   '020_cola.sql',
   '021_consumo.sql',
+  '022_google_drive.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 
@@ -154,6 +177,22 @@ if (!env.CONVERSOR_URL) {
   // se guarda pero el agente no lo puede LEER —solo citarlo—, porque lo que lee
   // es la version en Markdown.
   console.warn('[bridge] sin CONVERSOR_URL: los documentos se guardan sin convertir a texto');
+}
+
+// Un aviso al arrancar y no un error al usarlo: configurar dos de las tres es
+// un error de despliegue, y el sintoma sin esto seria un agente diciendo "esa
+// herramienta no esta habilitada" sin que nadie sepa por que.
+const faltanDeDrive = (
+  [
+    ['GOOGLE_CLIENT_ID', env.GOOGLE_CLIENT_ID],
+    ['GOOGLE_CLIENT_SECRET', env.GOOGLE_CLIENT_SECRET],
+    ['PANEL_PUBLIC_URL', env.PANEL_PUBLIC_URL],
+  ] as const
+).filter(([, v]) => !v);
+if (faltanDeDrive.length > 0 && faltanDeDrive.length < 3) {
+  console.warn(
+    `[bridge] Drive apagado: falta ${faltanDeDrive.map(([k]) => k).join(', ')}`,
+  );
 }
 
 /**
@@ -207,6 +246,28 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   // por Telegram: mismo disco, misma tabla, mismo conversor — solo cambia la
   // direccion de la conversion.
   guardarGenerado: (entrada) => guardarDocumentoGenerado(entrada, docsDeps),
+  /**
+   * Drive en vivo, o nada.
+   *
+   * Las tres variables van JUNTAS: sin el secret no se puede canjear el codigo
+   * de OAuth, y sin la URL publica del panel no se puede armar el link de
+   * "pedir acceso" — que es lo que convierte el limite de `drive.file` en algo
+   * que la persona puede resolver. Con dos de tres, la feature existiria a
+   * medias y fallaria recien cuando alguien la use.
+   */
+  drive:
+    env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.PANEL_PUBLIC_URL
+      ? {
+          drive: {
+            clientId: env.GOOGLE_CLIENT_ID,
+            clientSecret: env.GOOGLE_CLIENT_SECRET,
+            // El MISMO conversor que los documentos: un PDF de Drive y uno
+            // mandado por Telegram se leen igual, y fallan con el mismo motivo.
+            conversorUrl: env.CONVERSOR_URL,
+          },
+          panelUrl: env.PANEL_PUBLIC_URL,
+        }
+      : undefined,
   // El MISMO camino que usan los botones del chat. El panel no escribe la
   // tabla por su cuenta: decidir tambien es avisarle al gateway y editar el
   // mensaje de Telegram, y el bot es el unico que puede hacer lo ultimo.

@@ -187,6 +187,18 @@ function codigoLegible(): string {
   return [...bytes].map((b) => ALFABETO[b % ALFABETO.length]).join('');
 }
 
+/**
+ * Un codigo para meter en una URL, no para tipear.
+ *
+ * Es distinto de `codigoLegible` a proposito: aquel se lee de una pantalla y
+ * cambia seguridad por legibilidad, y esto viaja en un link que se toca. Sin la
+ * restriccion de leerlo a mano no hay razon para quedarse en 41 bits, y este
+ * autoriza algo mas grande —un archivo de Drive— asi que van 192.
+ */
+function codigoDeUrl(): string {
+  return randomBytes(24).toString('base64url');
+}
+
 /** Lo que se sabe de un slot sin tokens. */
 export interface Agotamiento {
   /** La hora cruda del cartel ("1:30am (UTC)"), si el aviso la traia. */
@@ -505,6 +517,68 @@ export interface Store {
     codigo: string,
     usuarioId: string,
   ): Promise<'ok' | 'vencido' | 'usado' | 'desconocido'>;
+
+  // --- Drive en vivo -------------------------------------------------------
+  //
+  // Ver `multicodigo-vm/docs/superpowers/specs/2026-09-04-drive-en-vivo-design.md`.
+
+  /**
+   * La cuenta de Google de un usuario, CON el refresh token.
+   *
+   * Es el unico lugar del sistema donde ese token sale de la base, y por eso
+   * este metodo esta en el store del bridge y no en el panel: el panel es el
+   * proceso expuesto a internet, y ademas tiene la columna negada por GRANT.
+   */
+  googleCuenta(usuarioId: string): Promise<{ email: string; refreshToken: string } | undefined>;
+  /**
+   * Guarda la cuenta conectada, pisando la anterior si habia.
+   *
+   * Pisa y no acumula: conectar de nuevo es lo que hace la persona cuando el
+   * token viejo dejo de servir, y dejar los dos vivos significaria que el
+   * proximo turno puede elegir el muerto.
+   */
+  guardarGoogleCuenta(usuarioId: string, email: string, refreshToken: string): Promise<void>;
+  /** Desconecta la cuenta. Devuelve si habia algo que desconectar. */
+  borrarGoogleCuenta(usuarioId: string): Promise<boolean>;
+  /**
+   * Un codigo de un solo uso para autorizar UN archivo con el Picker.
+   *
+   * Vence, igual que el de vinculacion y por lo mismo: es una autorizacion
+   * sobre la cuenta de Google de alguien y viaja por un chat, donde queda en el
+   * historial para siempre.
+   */
+  crearPedidoDeDrive(usuarioId: string, nombre: string, minutos: number): Promise<string>;
+  /**
+   * Canjea el pedido y devuelve de quien era y que archivo pedia.
+   *
+   * Distingue los modos de falla por lo mismo que `canjearCodigo`: "ese link ya
+   * lo usaste" y "ese link vencio" se arreglan distinto.
+   */
+  canjearPedidoDeDrive(
+    codigo: string,
+    archivoId: string,
+  ): Promise<
+    | { estado: 'ok'; usuarioId: string; nombre: string }
+    | { estado: 'vencido' | 'usado' | 'desconocido' }
+  >;
+  /**
+   * Un archivo que esta persona autorizo recien, buscado por nombre.
+   *
+   * Existe por el indice eventualmente consistente de Drive: entre que alguien
+   * elige un archivo en el Picker y que `files.list` lo encuentra por nombre
+   * pasan hasta un par de minutos, y el turno siguiente llega mucho antes.
+   * Sin esto, el agente contesta "no lo encuentro" justo despues de que la
+   * persona hizo lo que le pidieron — que es el peor momento posible.
+   *
+   * Mira solo los pedidos RECIENTES: es un puente sobre la ventana de
+   * propagacion, no un catalogo. Pasada esa ventana, la busqueda en vivo
+   * encuentra el archivo sola y esta fila deja de importar.
+   */
+  archivoAutorizadoReciente(
+    usuarioId: string,
+    nombre: string,
+    minutos: number,
+  ): Promise<{ id: string; nombre: string } | undefined>;
 }
 
 export class InMemoryStore implements Store {
@@ -885,6 +959,70 @@ export class InMemoryStore implements Store {
     c.usado = true;
     this.vinculos.set(c.chatId, usuarioId);
     return 'ok' as const;
+  }
+
+  // --- Drive en vivo -------------------------------------------------------
+
+  private googleCuentas = new Map<string, { email: string; refreshToken: string }>();
+  private pedidosDeDrive = new Map<
+    string,
+    {
+      usuarioId: string;
+      nombre: string;
+      expira: number;
+      usado: boolean;
+      archivoId?: string;
+      usadoEn?: number;
+    }
+  >();
+
+  async googleCuenta(usuarioId: string) {
+    return this.googleCuentas.get(usuarioId);
+  }
+
+  async guardarGoogleCuenta(usuarioId: string, email: string, refreshToken: string): Promise<void> {
+    this.googleCuentas.set(usuarioId, { email, refreshToken });
+  }
+
+  async borrarGoogleCuenta(usuarioId: string): Promise<boolean> {
+    return this.googleCuentas.delete(usuarioId);
+  }
+
+  async crearPedidoDeDrive(usuarioId: string, nombre: string, minutos: number): Promise<string> {
+    const codigo = codigoDeUrl();
+    this.pedidosDeDrive.set(codigo, {
+      usuarioId,
+      nombre,
+      expira: Date.now() + minutos * 60_000,
+      usado: false,
+    });
+    return codigo;
+  }
+
+  async canjearPedidoDeDrive(codigo: string, archivoId: string) {
+    const p = this.pedidosDeDrive.get(codigo);
+    if (!p) return { estado: 'desconocido' as const };
+    if (p.usado) return { estado: 'usado' as const };
+    if (p.expira <= Date.now()) return { estado: 'vencido' as const };
+    p.usado = true;
+    p.archivoId = archivoId;
+    p.usadoEn = Date.now();
+    return { estado: 'ok' as const, usuarioId: p.usuarioId, nombre: p.nombre };
+  }
+
+  async archivoAutorizadoReciente(usuarioId: string, nombre: string, minutos: number) {
+    const desde = Date.now() - minutos * 60_000;
+    for (const p of this.pedidosDeDrive.values()) {
+      if (p.usuarioId !== usuarioId || !p.archivoId) continue;
+      if ((p.usadoEn ?? 0) < desde) continue;
+      // Se compara sin distinguir mayusculas y en las dos direcciones: el
+      // agente puede buscar "Balance" habiendo pedido "Balance 2026", o al
+      // reves.
+      const a = p.nombre.toLowerCase();
+      const b = nombre.toLowerCase();
+      if (a.includes(b) || b.includes(a)) return { id: p.archivoId, nombre: p.nombre };
+    }
+    return undefined;
   }
 }
 
@@ -1651,5 +1789,89 @@ export class PgStore implements Store {
       [Number(r.rows[0]!.chat_id), usuarioId],
     );
     return 'ok' as const;
+  }
+
+  // --- Drive en vivo -------------------------------------------------------
+
+  async googleCuenta(usuarioId: string) {
+    const r = await this.pool.query<{ email: string; refresh_token: string }>(
+      'SELECT email, refresh_token FROM google_cuentas WHERE usuario_id = $1',
+      [usuarioId],
+    );
+    const fila = r.rows[0];
+    return fila ? { email: fila.email, refreshToken: fila.refresh_token } : undefined;
+  }
+
+  async guardarGoogleCuenta(usuarioId: string, email: string, refreshToken: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO google_cuentas (usuario_id, email, refresh_token) VALUES ($1, $2, $3)
+       ON CONFLICT (usuario_id)
+         DO UPDATE SET email = $2, refresh_token = $3, creado_en = now()`,
+      [usuarioId, email, refreshToken],
+    );
+  }
+
+  async borrarGoogleCuenta(usuarioId: string): Promise<boolean> {
+    const r = await this.pool.query('DELETE FROM google_cuentas WHERE usuario_id = $1', [
+      usuarioId,
+    ]);
+    return (r.rowCount ?? 0) > 0;
+  }
+
+  async crearPedidoDeDrive(usuarioId: string, nombre: string, minutos: number): Promise<string> {
+    const codigo = codigoDeUrl();
+    await this.pool.query(
+      `INSERT INTO google_pedidos (codigo, usuario_id, nombre, expira_en)
+       VALUES ($1, $2, $3, now() + ($4 || ' minutes')::interval)`,
+      [codigo, usuarioId, nombre, String(minutos)],
+    );
+    return codigo;
+  }
+
+  async canjearPedidoDeDrive(codigo: string, archivoId: string) {
+    // Marcar usado y leer de quien era en UNA sentencia, igual que
+    // `canjearCodigo`: si fueran dos, dos canjes simultaneos del mismo link
+    // pasarian los dos y autorizarian dos archivos con una sola autorizacion.
+    const r = await this.pool.query<{ usuario_id: string; nombre: string }>(
+      `UPDATE google_pedidos SET usado_en = now(), archivo_id = $2
+        WHERE codigo = $1 AND usado_en IS NULL AND expira_en > now()
+        RETURNING usuario_id, nombre`,
+      [codigo, archivoId],
+    );
+
+    if (r.rowCount === 0) {
+      const existe = await this.pool.query<{ usado_en: Date | null }>(
+        'SELECT usado_en FROM google_pedidos WHERE codigo = $1',
+        [codigo],
+      );
+      const fila = existe.rows[0];
+      if (!fila) return { estado: 'desconocido' as const };
+      return { estado: fila.usado_en ? ('usado' as const) : ('vencido' as const) };
+    }
+
+    return {
+      estado: 'ok' as const,
+      usuarioId: r.rows[0]!.usuario_id,
+      nombre: r.rows[0]!.nombre,
+    };
+  }
+
+  async archivoAutorizadoReciente(usuarioId: string, nombre: string, minutos: number) {
+    // `ILIKE` en las dos direcciones: el agente puede buscar "Balance" habiendo
+    // pedido "Balance 2026", o al reves. El `%` se escapa para que un nombre
+    // con uno adentro no matchee de mas.
+    const patron = nombre.replace(/[%_\\]/g, (c) => `\\${c}`);
+    const r = await this.pool.query<{ archivo_id: string; nombre: string }>(
+      `SELECT archivo_id, nombre FROM google_pedidos
+        WHERE usuario_id = $1
+          AND archivo_id IS NOT NULL
+          AND usado_en > now() - ($3 || ' minutes')::interval
+          AND (nombre ILIKE '%' || $2 || '%' OR $2 ILIKE '%' || nombre || '%')
+        ORDER BY usado_en DESC
+        LIMIT 1`,
+      [usuarioId, patron, String(minutos)],
+    );
+    const fila = r.rows[0];
+    return fila ? { id: fila.archivo_id, nombre: fila.nombre } : undefined;
   }
 }

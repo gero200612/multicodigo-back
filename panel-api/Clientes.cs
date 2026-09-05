@@ -113,6 +113,43 @@ public interface IBridgeClient
     /// borraria nada y fallaria en silencio.
     /// </remarks>
     Task<bool> DesvincularTelegramAsync(long chatId, string usuarioId, CancellationToken ct = default);
+
+    // --- Drive en vivo ----------------------------------------------------
+    //
+    // Ver `multicodigo-vm/docs/superpowers/specs/2026-09-04-drive-en-vivo-design.md`.
+
+    /// <summary>
+    /// Canjea el código de OAuth de Google y deja la cuenta conectada.
+    /// Devuelve con qué cuenta quedó.
+    /// </summary>
+    /// <remarks>
+    /// El canje lo hace el BRIDGE y no este proceso, aunque sea este el que
+    /// recibe el redirect de Google. Dos razones: el `GOOGLE_CLIENT_SECRET`
+    /// acá sería media credencial permanente en el único proceso expuesto a
+    /// internet, y este panel escribe siempre con el JWT del usuario mientras
+    /// que la columna `refresh_token` está fuera de su GRANT justamente para
+    /// que no la pueda tocar.
+    ///
+    /// El refresh token nunca vuelve por acá: lo único que sale es el email.
+    /// </remarks>
+    Task<string> ConectarGoogleAsync(
+        string usuarioId, string code, string redirectUri, CancellationToken ct = default);
+    /// <summary>Con qué cuenta de Google está conectado alguien, o ninguna.</summary>
+    Task<EstadoGoogle> EstadoGoogleAsync(string usuarioId, CancellationToken ct = default);
+    /// <summary>
+    /// Desconecta la cuenta: borra la fila y con ella el refresh token.
+    /// </summary>
+    /// <remarks>
+    /// NO revoca el permiso del lado de Google — eso se hace desde la cuenta de
+    /// Google. Decir que lo hacemos nosotros cuando no es así sería peor que no
+    /// ofrecerlo.
+    /// </remarks>
+    Task<bool> DesconectarGoogleAsync(string usuarioId, CancellationToken ct = default);
+    /// <summary>
+    /// Quema el link de "pedir acceso": la persona ya eligió el archivo en el
+    /// Picker. Devuelve qué archivo se había pedido.
+    /// </summary>
+    Task<string> CanjearPedidoDriveAsync(string codigo, string id, CancellationToken ct = default);
     /// <summary>
     /// Decide una aprobacion. Tira UpstreamException("ya_decidida") si alguien
     /// se adelanto.
@@ -529,7 +566,95 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaDesvinculo>(Json.Opciones, ct);
         return cuerpo?.Desvinculado ?? false;
     }
+
+    // --- Drive en vivo ----------------------------------------------------
+
+    private sealed record RespuestaConectar(string? Email);
+    private sealed record RespuestaEstado(bool Conectada, string? Email);
+    private sealed record RespuestaDesconectar(bool Desconectada);
+    private sealed record RespuestaCanje(string? Nombre);
+
+    public async Task<string> ConectarGoogleAsync(
+        string usuarioId, string code, string redirectUri, CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync(
+            "/interno/google/conectar",
+            new { usuarioId, code, redirectUri },
+            Json.Opciones,
+            ct);
+
+        if (!res.IsSuccessStatusCode)
+        {
+            // El mensaje del bridge está escrito para una persona ("Google no
+            // devolvió un permiso permanente"), así que se propaga tal cual:
+            // traducirlo a "el bridge respondió 502" le saca lo accionable.
+            ErrorConMensaje? e = null;
+            try { e = await res.Content.ReadFromJsonAsync<ErrorConMensaje>(Json.Opciones, ct); }
+            catch (JsonException) { /* sin cuerpo util; se usa el status */ }
+            throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
+        }
+
+        var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaConectar>(Json.Opciones, ct);
+        return cuerpo?.Email ?? "";
+    }
+
+    public async Task<EstadoGoogle> EstadoGoogleAsync(string usuarioId, CancellationToken ct = default)
+    {
+        var res = await http.GetAsync($"/interno/google/estado?usuarioId={Uri.EscapeDataString(usuarioId)}", ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
+        }
+        var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaEstado>(Json.Opciones, ct);
+        return new EstadoGoogle(cuerpo?.Conectada ?? false, cuerpo?.Email);
+    }
+
+    public async Task<bool> DesconectarGoogleAsync(string usuarioId, CancellationToken ct = default)
+    {
+        var res = await http.DeleteAsync(
+            $"/interno/google/conectar?usuarioId={Uri.EscapeDataString(usuarioId)}", ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
+        }
+        var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaDesconectar>(Json.Opciones, ct);
+        return cuerpo?.Desconectada ?? false;
+    }
+
+    public async Task<string> CanjearPedidoDriveAsync(
+        string codigo, string id, CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync(
+            "/interno/drive/canjear",
+            new { codigo, id },
+            Json.Opciones,
+            ct);
+
+        if (!res.IsSuccessStatusCode)
+        {
+            // "ese link ya se uso" y "ese link vencio" llevan a acciones
+            // distintas, así que el motivo del bridge llega tal cual.
+            ErrorConMensaje? e = null;
+            try { e = await res.Content.ReadFromJsonAsync<ErrorConMensaje>(Json.Opciones, ct); }
+            catch (JsonException) { /* sin cuerpo util; se usa el status */ }
+            throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
+        }
+
+        var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaCanje>(Json.Opciones, ct);
+        return cuerpo?.Nombre ?? "";
+    }
+
+    private sealed record ErrorConMensaje(string? Code, string? Message);
 }
+
+/// <summary>Con qué cuenta de Google está conectado alguien.</summary>
+/// <remarks>
+/// No lleva el refresh token, y no es un olvido: esa columna está fuera del
+/// GRANT del panel y nunca sale por la API. Lo único que se muestra es el email,
+/// que existe para poder ver que se autorizó la cuenta que se quería — conectar
+/// la personal en vez de la del trabajo no tiene síntoma sin eso.
+/// </remarks>
+public sealed record EstadoGoogle(bool Conectada, string? Email);
 
 // --- historial en Supabase ------------------------------------------------
 

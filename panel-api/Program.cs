@@ -1599,6 +1599,148 @@ api.MapPost("/aprobaciones/{id}/decision", async (
     }
 });
 
+// --- Drive en vivo --------------------------------------------------------
+//
+// Ver `multicodigo-vm/docs/superpowers/specs/2026-09-04-drive-en-vivo-design.md`.
+//
+// Los cuatro pasan por el bridge y no tocan Supabase directo, por lo mismo que
+// la vinculacion de Telegram: la tabla `google_cuentas` la escribe el bridge
+// como `postgres`, y la columna del refresh token esta fuera del GRANT de este
+// proceso a proposito.
+
+/// <remarks>
+/// Con que cuenta de Google esta conectado el usuario. Lo lee Configuracion.
+/// </remarks>
+api.MapGet("/google/estado", async (
+    HttpContext ctx,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+
+    try
+    {
+        var estado = await bridge.EstadoGoogleAsync(usuarioId, ct);
+        return Results.Ok(new { conectada = estado.Conectada, email = estado.Email });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        return Results.BadRequest(new { code = "google_fallo", message = ex.Message });
+    }
+});
+
+/// <remarks>
+/// Segundo paso del OAuth: Google devolvio un codigo al navegador y el front lo
+/// trae aca.
+///
+/// El `usuarioId` sale del JWT y NO del cuerpo: si viniera del cuerpo,
+/// cualquiera con sesion conectaria una cuenta de Google a la cuenta de otro.
+/// Es el mismo razonamiento que /telegram/vincular.
+///
+/// El `redirectUri` viaja porque Google lo exige identico al del primer paso, y
+/// quien lo eligio fue el front. Se valida que sea de este panel: sin eso, un
+/// pedido armado a mano canjearia el codigo contra un redirect ajeno.
+/// </remarks>
+api.MapPost("/google/conectar", async (
+    CuerpoGoogle cuerpo,
+    HttpContext ctx,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(cuerpo.Code))
+    {
+        return Results.BadRequest(new { code = "codigo_vacio", message = "falta el codigo de Google" });
+    }
+
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+
+    // El redirect tiene que ser de este mismo panel. Se compara contra el
+    // origen del pedido y no contra una lista escrita a mano, que se
+    // desactualiza en cuanto cambia el dominio.
+    var propio = $"{ctx.Request.Scheme}://{ctx.Request.Host}";
+    if (string.IsNullOrWhiteSpace(cuerpo.RedirectUri) ||
+        !cuerpo.RedirectUri.StartsWith(propio, StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest(new
+        {
+            code = "redirect_ajeno",
+            message = "ese redirect no es de este panel",
+        });
+    }
+
+    try
+    {
+        var email = await bridge.ConectarGoogleAsync(usuarioId, cuerpo.Code, cuerpo.RedirectUri, ct);
+        return Results.Ok(new { email });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        return Results.BadRequest(new { code = "google_fallo", message = ex.Message });
+    }
+});
+
+/// <remarks>
+/// Desconecta la cuenta de Google. Borra el refresh token del servidor; el
+/// permiso del lado de Google se saca desde la cuenta de Google.
+/// </remarks>
+api.MapDelete("/google/conectar", async (
+    HttpContext ctx,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+
+    try
+    {
+        var fue = await bridge.DesconectarGoogleAsync(usuarioId, ct);
+        // 404 y no 200 cuando no habia nada: contestar "listo" a algo que no
+        // se hizo haria creer que se desconecto una cuenta.
+        return fue
+            ? Results.Ok(new { estado = "ok" })
+            : Results.NotFound(new { code = "no_esta", message = "no tenes ninguna cuenta de Google conectada" });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        return Results.BadRequest(new { code = "google_fallo", message = ex.Message });
+    }
+});
+
+/// <remarks>
+/// La persona eligio un archivo en el Picker: se quema el link.
+///
+/// Para cuando esto llega, el permiso YA esta dado — lo dio el Picker sobre el
+/// `client_id` de la app, y por eso le sirve al servidor aunque lo haya
+/// autorizado el navegador. Lo unico que falta es que el link no valga una
+/// segunda vez.
+/// </remarks>
+api.MapPost("/drive/autorizado", async (
+    CuerpoAutorizado cuerpo,
+    HttpContext ctx,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(cuerpo.Codigo) || string.IsNullOrWhiteSpace(cuerpo.Id))
+    {
+        return Results.BadRequest(new { code = "cuerpo_invalido", message = "falta el codigo o el archivo" });
+    }
+
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+
+    try
+    {
+        var nombre = await bridge.CanjearPedidoDriveAsync(cuerpo.Codigo, cuerpo.Id, ct);
+        return Results.Ok(new { nombre });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        return Results.BadRequest(new { code = "link_invalido", message = ex.Message });
+    }
+});
+
 // --- vinculacion de telegram ----------------------------------------------
 
 api.MapPost("/telegram/vincular", async (
