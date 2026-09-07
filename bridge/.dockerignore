@@ -1,7 +1,13 @@
-# El Dockerfile hace `COPY . .` y despues `pnpm install`: sin esto se copian los
-# node_modules del host —Windows— y el install de adentro queda mezclado con
-# binarios nativos de otra plataforma.
+# `node_modules` fuera, por DOS razones ahora.
+#
+# La de siempre: son los del host —Windows— y mezclarlos con el install de
+# adentro trae binarios nativos de otra plataforma.
+#
+# Y la que agrega el orden de capas nuevo: el Dockerfile instala ANTES de copiar
+# el codigo, asi que si el `COPY . .` final trajera node_modules pisaria el
+# install que acaba de hacer y tiraria a la basura la capa cacheada.
 node_modules
+**/node_modules
 dist
 *.tsbuildinfo
 .git
