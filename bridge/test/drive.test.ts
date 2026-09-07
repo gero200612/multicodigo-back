@@ -184,6 +184,44 @@ describe('leer', () => {
     expect(urls.some((u) => u.includes('values:batchGet'))).toBe(true);
   });
 
+  // Paso en produccion el mismo dia que se escribio `leerPlanilla`: la API de
+  // Sheets se habilita POR SEPARADO en Google Cloud, y apagada contesta 403
+  // aunque el archivo se lea perfecto por Drive. O sea que el cambio que traia
+  // todas las hojas dejo de traer ninguna.
+  it('si la API de Sheets esta apagada, cae a la primera hoja y lo AVISA', async () => {
+    const urls: string[] = [];
+    let n = 0;
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
+      urls.push(url.toString());
+      n += 1;
+      if (n === 1) {
+        return new Response(
+          JSON.stringify({ id: 's1', name: 'P', mimeType: 'application/vnd.google-apps.spreadsheet' }),
+        );
+      }
+      if (n === 2) {
+        return new Response(
+          JSON.stringify({
+            error: { code: 403, message: 'Google Sheets API has not been used in project 123' },
+          }),
+          { status: 403 },
+        );
+      }
+      return new Response('item,estado\nlogin,ok');
+    });
+    const deps = { clientId: 'i', clientSecret: 's', fetchImpl: fetchImpl as unknown as typeof fetch };
+
+    const texto = await leer('t', 's1', deps);
+
+    // Las filas llegan: media planilla es muchisimo mejor que un error.
+    expect(texto).toContain('login,ok');
+    // Y el modelo se entera de que esta viendo una parte. Sin esto contesta
+    // "no hay nada de eso" sobre una pestaña que nunca miro.
+    expect(texto).toContain('PRIMERA HOJA');
+    // Cayo a la exportacion de Drive, que no necesita la API de Sheets.
+    expect(urls.some((u) => u.includes('text%2Fcsv') || u.includes('text/csv'))).toBe(true);
+  });
+
   it('pide los valores de cada hoja por su nombre, citado', async () => {
     let batch = '';
     let n = 0;

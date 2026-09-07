@@ -333,6 +333,40 @@ function celdaCsv(valor: unknown): string {
  * El scope alcanza: `drive.file` habilita la API de Sheets sobre los archivos
  * que la app puede ver, que es lo mismo que ya usa `editarPlanilla`.
  */
+/**
+ * El plan B de `leerPlanilla`: la primera hoja, por la API de Drive.
+ *
+ * `files.export` con `text/csv` no necesita que la API de Sheets este
+ * habilitada —es Drive, que ya se usa para todo lo demas— y devuelve la
+ * primera pestaña. Se usa solo cuando Sheets contesta 403 por estar apagada.
+ *
+ * El aviso de arriba NO es decorativo: sin el, el modelo cree que vio la
+ * planilla entera y contesta "no hay nada de debug" sobre una pestaña que ni
+ * siquiera miro. Con el aviso puede decir que le falta la mitad, que es lo
+ * unico honesto que se puede hacer sin la API prendida.
+ */
+async function primeraHojaComoCsv(
+  token: string,
+  id: string,
+  deps: DriveDeps,
+): Promise<string> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  const res = await doFetch(
+    `${API}/${encodeURIComponent(id)}/export?mimeType=${encodeURIComponent('text/csv')}`,
+    { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(60_000) },
+  );
+  if (!res.ok) await comoError(res, 'no pude exportar esa planilla');
+  const csv = await res.text();
+  return (
+    '[OJO: esta es SOLO LA PRIMERA HOJA de la planilla. Las demas pestañas no se ' +
+    'pudieron leer porque la API de Google Sheets no esta habilitada en este ' +
+    'servidor. Si lo que buscas no aparece aca, decile a la persona que puede ' +
+    'estar en otra pestaña y que hay que habilitar la API de Sheets en Google ' +
+    'Cloud.]\n\n' +
+    csv
+  );
+}
+
 async function leerPlanilla(token: string, id: string, deps: DriveDeps): Promise<string> {
   const doFetch = deps.fetchImpl ?? fetch;
   const auth = { authorization: `Bearer ${token}` };
@@ -341,6 +375,14 @@ async function leerPlanilla(token: string, id: string, deps: DriveDeps): Promise
     `${SHEETS}/${encodeURIComponent(id)}?fields=sheets.properties.title`,
     { headers: auth, signal: AbortSignal.timeout(30_000) },
   );
+  // La API de Sheets se habilita por separado en Google Cloud, y si no lo esta
+  // contesta 403 —no 404— aunque el archivo se lea perfecto por Drive.
+  //
+  // Se cae a la exportacion de Drive en vez de fallar: trae UNA sola hoja, que
+  // es peor, pero muchisimo mejor que no traer nada. Y se le dice al modelo que
+  // esta viendo una parte, porque si no contesta sobre media planilla con la
+  // misma confianza que sobre entera.
+  if (meta.status === 403) return await primeraHojaComoCsv(token, id, deps);
   if (!meta.ok) await comoError(meta, 'no pude abrir esa planilla');
   const hojas = ((await meta.json()) as { sheets?: Array<{ properties?: { title?: string } }> })
     .sheets;
