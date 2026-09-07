@@ -422,6 +422,26 @@ export interface Store {
   proyectosDeUsuario(usuarioId: string): Promise<Proyecto[]>;
   /** Crea el proyecto y deja a quien lo crea como dueño. Devuelve su id. */
   crearProyecto(nombre: string, dueñoId: string): Promise<string>;
+  /**
+   * La instalacion de GitHub que este usuario ya conecto para una cuenta.
+   *
+   * Existe para que un proyecto NUEVO pueda heredarla sin que la persona tenga
+   * que volver a pasar por GitHub. La instalacion es de la cuenta —una org, en
+   * la practica— y ya esta consentida: lo que se copia es a que proyecto
+   * aplica, no un permiso nuevo.
+   *
+   * Se filtra por los proyectos DEL USUARIO y no por la tabla entera: sin ese
+   * filtro, cualquiera podria heredar la instalacion de un desconocido
+   * nombrando su org.
+   */
+  instalacionDeCuenta(
+    usuarioId: string,
+    cuenta: string,
+  ): Promise<{ installationId: number; cuenta: string } | undefined>;
+  /** Ata una instalacion ya existente a otro proyecto del mismo usuario. */
+  guardarInstalacion(proyectoId: string, installationId: number, cuenta: string): Promise<void>;
+  /** Suma un repo a un proyecto. El `github` es `owner/nombre`. */
+  vincularRepo(proyectoId: string, nombre: string, github: string): Promise<void>;
   /** Los agentes del proyecto, por slot. */
   agentesDeProyecto(proyectoId: string): Promise<AgenteResumen[]>;
   /** Anota que el slot pertenece al proyecto. NO crea el contenedor. */
@@ -861,9 +881,32 @@ export class InMemoryStore implements Store {
     return undefined;
   }
 
-  /** Ni repos: los tests que los necesitan los inyectan por otro lado. */
-  async reposDeProyecto(): Promise<Array<{ nombre: string; github_repo: string }>> {
-    return [];
+  /** Las instalaciones, por proyecto. Ver `instalacionDeCuenta`. */
+  private instalaciones = new Map<string, { installationId: number; cuenta: string }>();
+
+  async instalacionDeCuenta(usuarioId: string, cuenta: string) {
+    const mios = await this.proyectosDeUsuario(usuarioId);
+    for (const p of mios) {
+      const i = this.instalaciones.get(p.id);
+      if (i && i.cuenta.toLowerCase() === cuenta.toLowerCase()) return i;
+    }
+    return undefined;
+  }
+
+  async guardarInstalacion(proyectoId: string, installationId: number, cuenta: string) {
+    this.instalaciones.set(proyectoId, { installationId, cuenta });
+  }
+
+  /** Los repos, por proyecto. `reposDeProyecto` los devuelve. */
+  private reposPorProyecto = new Map<string, Array<{ nombre: string; github_repo: string }>>();
+
+  async vincularRepo(proyectoId: string, nombre: string, github: string) {
+    const previos = (this.reposPorProyecto.get(proyectoId) ?? []).filter((r) => r.nombre !== nombre);
+    this.reposPorProyecto.set(proyectoId, [...previos, { nombre, github_repo: github }]);
+  }
+
+  async reposDeProyecto(proyectoId: string): Promise<Array<{ nombre: string; github_repo: string }>> {
+    return this.reposPorProyecto.get(proyectoId) ?? [];
   }
 
   async turnosRecientes(): Promise<Array<{ prompt: string; respuesta: string }>> {
@@ -1607,6 +1650,55 @@ export class PgStore implements Store {
     } catch {
       return undefined;
     }
+  }
+
+  async instalacionDeCuenta(
+    usuarioId: string,
+    cuenta: string,
+  ): Promise<{ installationId: number; cuenta: string } | undefined> {
+    // El JOIN contra `miembros` es la autorizacion, no un detalle de la
+    // consulta: sin el, nombrar la org de un desconocido alcanzaria para
+    // heredar su instalacion y crear repos ahi.
+    //
+    // ILIKE y no `=`: la cuenta la escribe una persona en Telegram, y
+    // "sincro-arg" es el mismo lugar que "Sincro-arg" para GitHub.
+    try {
+      const r = await this.pool.query<{ installation_id: string; cuenta: string }>(
+        `SELECT gi.installation_id, gi.cuenta
+           FROM github_instalaciones gi
+           JOIN miembros m ON m.proyecto_id = gi.proyecto_id
+          WHERE m.usuario_id = $1 AND gi.cuenta ILIKE $2
+          LIMIT 1`,
+        [usuarioId, cuenta],
+      );
+      const fila = r.rows[0];
+      // bigint viene como string en node-postgres. Mismo cuidado que en
+      // `instalacionDeProyecto`.
+      return fila ? { installationId: Number(fila.installation_id), cuenta: fila.cuenta } : undefined;
+    } catch {
+      // La tabla puede no existir todavia: se crea a mano en Supabase. Sin
+      // ella no hay herencia posible, que es distinto de un error.
+      return undefined;
+    }
+  }
+
+  async guardarInstalacion(proyectoId: string, installationId: number, cuenta: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO github_instalaciones (proyecto_id, installation_id, cuenta)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (proyecto_id) DO UPDATE SET installation_id = $2, cuenta = $3`,
+      [proyectoId, installationId, cuenta],
+    );
+  }
+
+  async vincularRepo(proyectoId: string, nombre: string, github: string): Promise<void> {
+    // ON CONFLICT porque el nombre es unico por proyecto y reintentar una
+    // corrida que fallo a la mitad no puede chocar contra lo que ya entro.
+    await this.pool.query(
+      `INSERT INTO repos (proyecto_id, nombre, github_repo) VALUES ($1, $2, $3)
+       ON CONFLICT (proyecto_id, nombre) DO UPDATE SET github_repo = $3`,
+      [proyectoId, nombre, github],
+    );
   }
 
   async crearProyecto(nombre: string, dueñoId: string): Promise<string> {

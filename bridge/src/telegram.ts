@@ -1,6 +1,6 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import type { AgentId, ApprovalDecision, ApprovalRequest } from '@multicodigo/shared';
-import type { PipelineDeps, PipelineOutcome } from './pipeline.js';
+import type { PipelineDeps, PipelineOutcome, LoCreado } from './pipeline.js';
 import { handleIncoming, armarMenu, armarMenuDeAgentes, correrCola } from './pipeline.js';
 import {
   parseMenuData,
@@ -53,7 +53,20 @@ export function renderOutcome(outcome: PipelineOutcome): string {
     case 'cola':
       return textoDeCola(outcome.tareas, outcome.encoladas, outcome.agente);
     case 'corrida':
-      return textoDeCorrida(outcome.corrida, outcome.recienAbierta, outcome.yaHabia);
+      return textoDeCorrida(
+        outcome.corrida,
+        outcome.recienAbierta,
+        outcome.yaHabia,
+        outcome.creado,
+      );
+    case 'corrida_sin_armar':
+      return [
+        `No pude arrancar la corrida: ${escaparHtml(outcome.motivo)}`,
+        '',
+        // Lo que NO paso es lo importante: sin esta linea queda la duda de si
+        // hay algo a medias esperando la noche.
+        'No abri ninguna corrida.',
+      ].join('\n');
     case 'cola_cancelada': {
       // La corrida se nombra APARTE de las tareas: cerrarla es lo que impide
       // que el ciclo vuelva a rellenar la cola, y quien cancela a las dos de la
@@ -278,6 +291,7 @@ export function textoDeCorrida(
   c: Corrida | undefined,
   recienAbierta: boolean,
   yaHabia: boolean,
+  creado?: LoCreado,
 ): string {
   if (!c) {
     // Antes esto abria con "No hay ninguna corrida abierta" y seguia
@@ -299,7 +313,14 @@ export function textoDeCorrida(
       'A la mañana te dejo un informe con lo que se hizo y por que pare.',
       '',
       `Los techos vienen en ${TECHO_RONDAS_POR_DEFECTO} rondas y hasta las ${TECHO_HORA_POR_DEFECTO}.`,
-      `Se cambian: <code>/corrida rondas=2 hasta=05:00</code>.`,
+      'Se cambian: <code>/corrida rondas=2 hasta=05:00</code>.',
+      '',
+      // El caso que este comando vino a resolver: un cliente nuevo, de cero,
+      // sin salir de Telegram. Va al final porque es lo menos frecuente, pero
+      // va: nadie adivina que existe.
+      'Y si es un cliente nuevo te armo todo:',
+      '<code>/corrida proyecto=acme org=Sincro-arg repos=acme-front,acme-back</code>',
+      'Creo el proyecto en el panel y los repos en GitHub, y arranco ahi.',
     ].join('\n');
   }
 
@@ -319,6 +340,19 @@ export function textoDeCorrida(
   const lineas = recienAbierta
     ? [`🌙 Corrida abierta en <b>${escaparHtml(c.proyecto)}</b>.`, '']
     : [`🌙 Corrida abierta en <b>${escaparHtml(c.proyecto)}</b>, ronda ${c.ronda}.`, ''];
+
+  // Lo que se creo de paso se DICE, y con el nombre completo: son cosas que
+  // quedan afuera de este chat —un proyecto en el panel, repos en GitHub— y si
+  // no se nombran, nadie sabe que existen ni donde buscarlas.
+  if (creado?.proyecto) lineas.push(`Cree el proyecto <b>${escaparHtml(creado.proyecto)}</b>.`);
+  if (creado?.repos.length) {
+    lineas.push(
+      `Cree ${creado.repos.length} repo(s) en GitHub:`,
+      ...creado.repos.map((r) => ` · <code>${escaparHtml(r)}</code>`),
+    );
+  }
+  if (creado?.proyecto || creado?.repos.length) lineas.push('');
+
   lineas.push(
     `Techos: ${c.techoRondas} ronda(s) · hasta las ${c.techoHora}.`,
     '',

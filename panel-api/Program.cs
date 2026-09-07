@@ -350,6 +350,74 @@ app.MapPost("/interno/github/token", async (
     }
 }).AllowAnonymous();
 
+/// <remarks>
+/// Crea un repo en GitHub para el bridge, que no puede firmar.
+///
+/// Mismo pliegue que `/interno/github/token` y por la misma razón: la clave
+/// privada de la App vive en UN solo lado. El bridge sabe qué instalación es
+/// —la lee de su propio Postgres, donde no pasa por RLS— y lo único que no
+/// puede hacer es firmar.
+///
+/// Y NO escribe en Supabase, a diferencia del endpoint de `/api`: la fila de
+/// `repos` la inserta el bridge en su propia conexión. Guardarla desde acá
+/// necesitaría la service_role key, que se le negó al panel a propósito.
+///
+/// La `org` NO viaja en el cuerpo: sale de preguntarle a GitHub de quién es la
+/// instalación. Si viniera de afuera, el bridge —o cualquiera con el bearer
+/// interno— podría pedir un repo en una org ajena donde la App esté instalada.
+/// </remarks>
+app.MapPost("/interno/github/repo", async (
+    CuerpoRepoInterno cuerpo, HttpContext ctx, AppDeGitHub gh,
+    IHttpClientFactory clientes, CancellationToken ct) =>
+{
+    var header = ctx.Request.Headers.Authorization.ToString();
+    var recibido = header.StartsWith("Bearer ", StringComparison.Ordinal)
+        ? header["Bearer ".Length..]
+        : "";
+    if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(recibido), Encoding.UTF8.GetBytes(bridgeToken)))
+    {
+        return Results.Unauthorized();
+    }
+
+    if (gh.App is null) return Results.BadRequest(new { code = "app_no_configurada" });
+    if (cuerpo.InstallationId <= 0) return Results.BadRequest(new { code = "instalacion_invalida" });
+
+    var nombre = (cuerpo.Nombre ?? "").Trim();
+    if (!NombreDeRepoValido(nombre))
+    {
+        return Results.BadRequest(new { code = "nombre_invalido" });
+    }
+
+    var http = clientes.CreateClient("github");
+    try
+    {
+        // La cuenta sale de GitHub, igual que en el endpoint de `/api`, y sirve
+        // de las dos cosas: dice dónde crear y verifica que la instalación sea
+        // de una org antes de intentarlo.
+        if (!await gh.App.EsOrganizacionAsync(cuerpo.InstallationId, http, ct))
+        {
+            return Results.BadRequest(new
+            {
+                code = "cuenta_no_es_org",
+                message = "esa instalación es de una cuenta personal, y ahí no se pueden crear repos",
+            });
+        }
+        var cuenta = await gh.App.CuentaDeInstalacionAsync(cuerpo.InstallationId, http, ct);
+        var creado = await gh.App.CrearRepoAsync(
+            cuerpo.InstallationId, cuenta, nombre, cuerpo.Descripcion, http, ct);
+
+        return Results.Ok(new { nombre = creado.Nombre, github_repo = creado.FullName });
+    }
+    catch (UpstreamException ex)
+    {
+        // El código se propaga tal cual: el bridge lo traduce a una frase de
+        // Telegram, y "repo_ya_existe" es lo único que la persona puede
+        // resolver sola.
+        return Results.BadRequest(new { code = ex.Message });
+    }
+}).AllowAnonymous();
+
 var api = app.MapGroup("/api").RequireAuthorization();
 
 /// El JWT crudo del usuario, ya verificado por el middleware. Se lo reenvia a
@@ -1327,6 +1395,115 @@ api.MapPost("/proyectos/{proyectoId}/repos", async (
     catch (UpstreamException ex)
     {
         return Results.BadRequest(new { code = ex.Message, message = "no se pudo vincular el repo" });
+    }
+});
+
+/// <remarks>
+/// Crea un repo NUEVO en GitHub y lo vincula al proyecto, en un solo paso.
+///
+/// Es el complemento del vincular de arriba: aquel ata un repo que ya existe,
+/// éste lo hace nacer. Nace de que armar un proyecto desde cero obligaba a
+/// salir del panel, crear el repo a mano en github.com, volver, y tipear
+/// `owner/nombre` — cuatro pasos para algo que el panel puede hacer solo.
+///
+/// **Sólo funciona si la instalación es de una organización.** No es una
+/// decisión de diseño: un token de instalación no puede crear repos en una
+/// cuenta de usuario, y la alternativa sería guardar un PAT del dueño, o sea
+/// una credencial personal con acceso a TODOS sus repos, para poder crear uno.
+/// Ver `CrearRepoAsync`.
+///
+/// El orden importa: primero GitHub, después la fila. Si se guardara primero,
+/// un fallo de GitHub dejaría el proyecto apuntando a un repo que no existe —el
+/// mismo estado roto que `/proyecto` sin validar— y el agente fallaría al
+/// clonar con un error que no explica nada. Al revés, un fallo al guardar deja
+/// un repo huérfano en GitHub, que se ve y se vincula a mano.
+/// </remarks>
+api.MapPost("/proyectos/{proyectoId}/github/repos", async (
+    string proyectoId, CuerpoRepoNuevo cuerpo, HttpContext ctx, AppDeGitHub gh,
+    IProyectosClient proyectos, IInstalacionesClient instalaciones, IReposClient repos,
+    IHttpClientFactory clientes, CancellationToken ct) =>
+{
+    if (gh.App is null) return Results.BadRequest(new { code = "app_no_configurada" });
+
+    var nombre = (cuerpo.Nombre ?? "").Trim();
+    // La MISMA validación que vincular, y por la misma razón: este nombre
+    // termina siendo una carpeta del worktree del lado del gateway. Que además
+    // GitHub tenga sus propias reglas no lo cubre — las de él son más
+    // permisivas que una ruta en disco.
+    if (!NombreDeRepoValido(nombre))
+    {
+        return Results.BadRequest(
+            new { code = "nombre_invalido", message = "el nombre no puede tener barras ni puntos suspensivos" });
+    }
+
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var inst = await instalaciones.DeProyectoAsync(jwt, proyectoId, ct);
+    if (inst is null)
+    {
+        return Results.BadRequest(new
+        {
+            code = "sin_instalacion",
+            message = "este proyecto todavía no tiene la App de GitHub conectada",
+        });
+    }
+
+    var http = clientes.CreateClient("github");
+    try
+    {
+        // Se pregunta ANTES de intentar crear: el 404 de GitHub sobre
+        // `/orgs/<usuario>` se lee como "esa organización no existe", que manda
+        // a buscar un problema que no está ahí.
+        if (!await gh.App.EsOrganizacionAsync(inst.InstallationId, http, ct))
+        {
+            return Results.BadRequest(new
+            {
+                code = "cuenta_no_es_org",
+                message =
+                    $"la App está instalada en {inst.Cuenta}, que es una cuenta personal. " +
+                    "Crear repos desde acá sólo funciona en una organización.",
+            });
+        }
+
+        var creado = await gh.App.CrearRepoAsync(
+            inst.InstallationId, inst.Cuenta, nombre, cuerpo.Descripcion, http, ct);
+
+        try
+        {
+            await repos.VincularAsync(jwt, proyectoId, new Repo(creado.Nombre, creado.FullName), ct);
+        }
+        catch (UpstreamException ex)
+        {
+            // El repo YA existe en GitHub y lo que falló es la fila. Se dice
+            // así, con el nombre completo: sin esto la persona reintenta, choca
+            // con "repo_ya_existe" y no entiende por qué el repo está en GitHub
+            // pero no en el panel.
+            return Results.BadRequest(new
+            {
+                code = ex.Message,
+                message =
+                    $"creé {creado.FullName} en GitHub pero no pude vincularlo al proyecto. " +
+                    "Vinculalo a mano desde Configuración.",
+            });
+        }
+
+        return Results.Ok(new { estado = "ok", nombre = creado.Nombre, github_repo = creado.FullName });
+    }
+    catch (UpstreamException ex)
+    {
+        var message = ex.Message switch
+        {
+            "repo_ya_existe" => $"ya existe un repo llamado {nombre} en {inst.Cuenta}",
+            // El permiso que hay que ir a dar, nombrado como se llama en la
+            // pantalla de GitHub. Un "403" pelado no dice dónde tocar.
+            "github_403" => "la App no tiene permiso para crear repos: dale Organization permissions → Administration: Read and write",
+            _ => "no se pudo crear el repo en GitHub",
+        };
+        return Results.BadRequest(new { code = ex.Message, message });
     }
 });
 

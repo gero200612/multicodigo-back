@@ -152,10 +152,41 @@ export interface OpcionesDeCorrida {
   md: string;
   techoRondas: number;
   techoHora: string;
+  /**
+   * Un proyecto NUEVO a crear para esta corrida.
+   *
+   * Ausente = se usa el proyecto activo del chat, que es el comportamiento de
+   * siempre. Con nombre, el bridge lo crea si no existe y lo deja activo: es lo
+   * que permite arrancar un cliente nuevo sin salir de Telegram.
+   */
+  proyecto?: string;
+  /**
+   * La organizacion de GitHub donde crear los repos.
+   *
+   * Tiene que ser una que la persona YA haya conectado desde el panel: lo que
+   * se hereda es a que proyecto aplica una instalacion consentida, no un
+   * permiso nuevo. Ver `instalacionDeCuenta` en el store.
+   */
+  org?: string;
+  /** Los repos a crear, en el orden en que se nombraron. */
+  repos: string[];
 }
 
-/** `rondas=3` o `hasta=07:00`, al principio de la primera linea. */
-const OPCION = /^(rondas|hasta)=(\S+)$/;
+/** `rondas=3`, `hasta=07:00`, `proyecto=x`, `org=y`, `repos=a,b`. */
+const OPCION = /^(rondas|hasta|proyecto|org|repos)=(\S+)$/;
+
+/**
+ * La misma forma que valida el CHECK de `repos` y el nombre de proyecto.
+ *
+ * Estos strings terminan siendo carpetas del worktree del lado del gateway, asi
+ * que la lista blanca no es cosmetica. Es el mismo criterio que
+ * `NombreDeRepoValido` del panel y que `esNombreValido` del router.
+ */
+const NOMBRE = /^[A-Za-z0-9._-]+$/;
+
+function nombreSano(n: string): boolean {
+  return NOMBRE.test(n) && n !== '.' && n !== '..' && n.length <= 100;
+}
 
 /**
  * Los tipos de archivo que sirven de pliego.
@@ -230,22 +261,43 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
 
   let techoRondas = TECHO_RONDAS_POR_DEFECTO;
   let techoHora = TECHO_HORA_POR_DEFECTO;
+  let proyecto: string | undefined;
+  let org: string | undefined;
+  let repos: string[] = [];
   let consumidos = 0;
   for (const t of tokens) {
     const m = OPCION.exec(t);
     if (!m) break;
     consumidos += 1;
+    const valor = m[2]!;
     if (m[1] === 'rondas') {
-      const n = Number(m[2]);
+      const n = Number(valor);
       if (Number.isInteger(n) && n >= 1 && n <= 20) techoRondas = n;
-    } else if (HORA.test(m[2]!)) {
-      techoHora = m[2]!;
+    } else if (m[1] === 'hasta') {
+      if (HORA.test(valor)) techoHora = valor;
+    } else if (m[1] === 'proyecto') {
+      if (nombreSano(valor)) proyecto = valor;
+    } else if (m[1] === 'org') {
+      if (nombreSano(valor)) org = valor;
+    } else {
+      // Los invalidos se descartan UNO POR UNO en vez de tirar la lista
+      // entera: un `repos=front,back,` con una coma de mas no puede costar los
+      // otros dos. El tope de 10 es para que un pegado accidental no dispare
+      // veinte llamadas a GitHub.
+      repos = [...new Set(valor.split(',').map((r) => r.trim()).filter(nombreSano))].slice(0, 10);
     }
   }
 
   const restoDePrimera = tokens.slice(consumidos).join(' ');
   const md = [restoDePrimera, ...lineas.slice(1)].join('\n').trim();
-  return { md, techoRondas, techoHora };
+  return {
+    md,
+    techoRondas,
+    techoHora,
+    ...(proyecto ? { proyecto } : {}),
+    ...(org ? { org } : {}),
+    repos,
+  };
 }
 
 /**

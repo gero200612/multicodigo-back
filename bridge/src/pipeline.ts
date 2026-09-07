@@ -22,6 +22,7 @@ import type { Store, Proyecto, ModoPermiso, ModoDeTurno, ClaveDeModelo } from '.
 import { partirEnTareas, type Tarea } from './cola.js';
 import {
   parseOpcionesDeCorrida,
+  type OpcionesDeCorrida,
   promptDeAnalisis,
   techoAlcanzado,
   textoDeInforme,
@@ -66,6 +67,19 @@ export interface PipelineDeps {
    * para por que la firma la hace el panel y no este servicio.
    */
   firmarToken?: (installationId: number) => Promise<string | undefined>;
+  /**
+   * Le pide al panel que cree un repo en GitHub.
+   *
+   * Opcional por lo mismo que `firmarToken`: la firma la tiene el panel. Pero
+   * a diferencia de aquella, sin esto NO hay degradacion posible — si no se
+   * puede crear el repo, no hay repo. Por eso devuelve el motivo en vez de
+   * `undefined`: la persona tiene que poder leer que falto.
+   */
+  crearRepo?: (
+    installationId: number,
+    nombre: string,
+    descripcion?: string,
+  ) => Promise<{ ok: true; nombre: string; github: string } | { ok: false; code: string }>;
   /**
    * De donde salen los documentos del proyecto.
    *
@@ -170,7 +184,18 @@ export type PipelineOutcome =
       recienAbierta: boolean;
       /** Habia una abierta y por eso no se abrio la nueva. */
       yaHabia: boolean;
+      /** Lo que se creo de paso: el proyecto y los repos. Ver `armarProyecto`. */
+      creado?: LoCreado;
     }
+  /**
+   * No se pudo armar el proyecto, asi que NO se abrio la corrida.
+   *
+   * Separado de `error` porque casi siempre es algo que la persona resuelve
+   * —falta un permiso, la org no esta conectada, el nombre esta repetido— y
+   * porque lo importante es lo que NO paso: no hay una corrida a medias
+   * esperando la noche.
+   */
+  | { kind: 'corrida_sin_armar'; motivo: string }
   | { kind: 'cola_cancelada'; cuantas: number; corridaCerrada: boolean }
   /**
    * Un `/proyecto <nombre>` que no es ninguno de los de la persona.
@@ -401,7 +426,8 @@ export async function handleIncoming(
   }
 
   if (command.kind === 'corrida') {
-    const { md, techoRondas, techoHora } = parseOpcionesDeCorrida(command.texto);
+    const opciones = parseOpcionesDeCorrida(command.texto);
+    const { md, techoRondas, techoHora } = opciones;
     const abierta = await deps.store.corridaAbierta(input.chatId);
 
     // Sin pliego es "mostrame como va".
@@ -414,10 +440,19 @@ export async function handleIncoming(
       return { kind: 'corrida', corrida: abierta, recienAbierta: false, yaHabia: true };
     }
 
-    const proyecto = (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
+    // El proyecto: el activo, o uno NUEVO si se pidio con `proyecto=`.
+    //
+    // El armado va antes de abrir la corrida y no despues, y eso decide como se
+    // ve un fallo: si el proyecto o los repos no se pueden crear, no queda una
+    // corrida abierta sobre un proyecto a medias — no queda nada, y el mensaje
+    // dice que falto. Al reves, la corrida arrancaria a la noche contra un
+    // worktree sin repos y el informe de la mañana no explicaria por que.
+    const armado = await armarProyecto(input.chatId, usuarioId, opciones, deps);
+    if (!armado.ok) return { kind: 'corrida_sin_armar', motivo: armado.motivo };
+
     const nueva = await deps.store.abrirCorrida({
       chatId: input.chatId,
-      proyecto,
+      proyecto: armado.proyecto,
       md,
       techoRondas,
       techoHora,
@@ -433,7 +468,13 @@ export async function handleIncoming(
         yaHabia: true,
       };
     }
-    return { kind: 'corrida', corrida: nueva, recienAbierta: true, yaHabia: false };
+    return {
+      kind: 'corrida',
+      corrida: nueva,
+      recienAbierta: true,
+      yaHabia: false,
+      creado: armado.creado,
+    };
   }
 
   if (command.kind === 'cola_cancelar') {
@@ -1110,6 +1151,156 @@ export async function armarMenuDeAgentes(
     botones: tecladoDeAgentes(conEstado),
   };
 }
+
+/** Lo que se creo al abrir una corrida, para poder contarlo. */
+export interface LoCreado {
+  /** El proyecto, si nacio con este comando. */
+  proyecto?: string;
+  /** Los repos creados en GitHub, como `owner/nombre`. */
+  repos: string[];
+}
+
+/**
+ * Arma el proyecto sobre el que va a correr una corrida.
+ *
+ * Tres cosas, todas opcionales, en este orden: crear el proyecto, heredarle la
+ * instalacion de GitHub, crear los repos. Sin ninguna opcion se usa el proyecto
+ * activo y esto no hace nada — que es el comportamiento de siempre.
+ *
+ * ## Por que la instalacion se HEREDA y no se pide de nuevo
+ *
+ * La instalacion de la App es de la CUENTA, no del proyecto: la fila
+ * `github_instalaciones` solo dice a que proyecto aplica una autorizacion que
+ * la persona ya dio desde el panel. Copiarla a un proyecto nuevo del MISMO
+ * usuario no otorga nada que no estuviera otorgado — y la alternativa es
+ * mandarla a GitHub y volver por el callback, o sea salir de Telegram justo
+ * cuando lo que se quiere es no salir.
+ *
+ * El filtro por usuario vive en `instalacionDeCuenta` y es la autorizacion: sin
+ * el, nombrar la org de un desconocido alcanzaria para crear repos ahi.
+ *
+ * ## Por que un fallo cancela todo
+ *
+ * Si los repos no se pueden crear, no se abre la corrida. Una corrida que
+ * arranca a la noche contra un worktree sin repos hace ocho horas de nada, y el
+ * informe de la mañana no tendria como explicarlo. Lo que SI queda es lo que ya
+ * se creo —el proyecto, los repos que entraron— porque borrarlos seria peor: un
+ * repo de GitHub que este proceso borra solo es un accidente esperando pasar.
+ */
+async function armarProyecto(
+  chatId: number,
+  usuarioId: string,
+  opciones: OpcionesDeCorrida,
+  deps: PipelineDeps,
+): Promise<{ ok: true; proyecto: string; creado: LoCreado } | { ok: false; motivo: string }> {
+  const creado: LoCreado = { repos: [] };
+
+  // 1. El proyecto.
+  let proyecto = (await deps.store.getActiveProject(chatId)) ?? deps.project;
+  let proyectoId: string | undefined;
+  const mios = await deps.store.proyectosDeUsuario(usuarioId);
+
+  if (opciones.proyecto) {
+    // Comparacion sin mayusculas, igual que en `/proyecto`: quien escribe
+    // `proyecto=stock` sobre un "Stock" existente quiere ESE, no un segundo
+    // proyecto con el mismo nombre en otra caja.
+    const ya = mios.find((p) => p.nombre.toLowerCase() === opciones.proyecto!.toLowerCase());
+    if (ya) {
+      proyecto = ya.nombre;
+      proyectoId = ya.id;
+    } else {
+      try {
+        proyectoId = await deps.store.crearProyecto(opciones.proyecto, usuarioId);
+        proyecto = opciones.proyecto;
+        creado.proyecto = opciones.proyecto;
+      } catch {
+        // El motivo mas probable es el nombre repetido de OTRO usuario: la
+        // tabla lo tiene unico y global. Se dice como se arregla en vez de
+        // mostrar el error de Postgres.
+        return {
+          ok: false,
+          motivo:
+            `no pude crear el proyecto "${opciones.proyecto}". ` +
+            'Puede que ya exista uno con ese nombre: proba con otro.',
+        };
+      }
+    }
+    await deps.store.setActiveProject(chatId, proyecto);
+  } else {
+    proyectoId = mios.find((p) => p.nombre === proyecto)?.id;
+  }
+
+  if (opciones.repos.length === 0) return { ok: true, proyecto, creado };
+
+  // 2. La instalacion de GitHub.
+  if (!proyectoId) {
+    return { ok: false, motivo: `el proyecto "${proyecto}" no esta en el panel, asi que no se donde crear los repos.` };
+  }
+  if (!deps.crearRepo) {
+    return { ok: false, motivo: 'este bridge no puede crear repos: no tiene con quien firmarlos.' };
+  }
+
+  let instalacion = await deps.store.instalacionDeProyecto(proyectoId);
+  if (!instalacion) {
+    if (!opciones.org) {
+      return {
+        ok: false,
+        motivo:
+          `el proyecto "${proyecto}" no tiene GitHub conectado. ` +
+          'Decime en que organizacion crear los repos con org=<nombre>, ' +
+          'o conectala desde el panel.',
+      };
+    }
+    const heredada = await deps.store.instalacionDeCuenta(usuarioId, opciones.org);
+    if (!heredada) {
+      // Se dice que hay que conectarla UNA vez desde el panel: es la unica
+      // parte de esto que no se puede hacer desde Telegram, porque instalar una
+      // App es una pantalla de GitHub donde decide la persona.
+      return {
+        ok: false,
+        motivo:
+          `no encontre la organizacion "${opciones.org}" entre las que conectaste. ` +
+          'Conectala una vez desde el panel, en Configuracion, y despues la reuso sola.',
+      };
+    }
+    await deps.store.guardarInstalacion(proyectoId, heredada.installationId, heredada.cuenta);
+    instalacion = heredada.installationId;
+  }
+
+  // 3. Los repos, uno por uno.
+  //
+  // En serie y no en paralelo: son pocos, y si el tercero falla por permisos
+  // los dos primeros ya existen y el mensaje puede decir exactamente cuales.
+  // En paralelo, un 403 llegaria tres veces y el estado seria mas dificil de
+  // contar que de arreglar.
+  for (const nombre of opciones.repos) {
+    const r = await deps.crearRepo(instalacion, nombre, `Creado desde una corrida de ${proyecto}`);
+    if (!r.ok) {
+      const explicacion = MOTIVO_DE_REPO[r.code] ?? `no se pudo crear "${nombre}" (${r.code})`;
+      // Lo que YA se creo se nombra: sin esto, reintentar choca contra
+      // "repo_ya_existe" y parece que nada funciona.
+      const hechos = creado.repos.length > 0 ? ` Ya habia creado: ${creado.repos.join(', ')}.` : '';
+      return { ok: false, motivo: `${explicacion}.${hechos}` };
+    }
+    await deps.store.vincularRepo(proyectoId, r.nombre, r.github);
+    creado.repos.push(r.github);
+  }
+
+  return { ok: true, proyecto, creado };
+}
+
+/** Los fallos de crear un repo, en castellano. */
+const MOTIVO_DE_REPO: Record<string, string> = {
+  repo_ya_existe: 'ya existe un repo con ese nombre en esa organizacion',
+  cuenta_no_es_org:
+    'esa instalacion es de una cuenta personal, y GitHub no deja crear repos ahi con una App. ' +
+    'Necesitas una organizacion',
+  github_403:
+    'la App no tiene permiso para crear repos. En GitHub, en los permisos de la App: ' +
+    'Organization permissions → Administration: Read and write',
+  panel_no_responde: 'no pude hablar con el panel para crear el repo',
+  nombre_invalido: 'ese nombre de repo no sirve: solo letras, numeros, punto, guion y guion bajo',
+};
 
 /**
  * Todo lo que un turno de la cola necesita saber del proyecto.

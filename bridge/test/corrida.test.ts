@@ -765,3 +765,199 @@ describe('textoDeInforme: escapado', () => {
     expect(t).not.toContain('&amp;lt;');
   });
 });
+
+// --- El proyecto y los repos ----------------------------------------------
+//
+// La otra mitad de `/corrida`: arrancar un cliente nuevo sin salir de Telegram.
+// Lo que se prueba aca es sobre todo lo que NO tiene que pasar — que un fallo
+// no deje una corrida abierta contra un proyecto a medias.
+
+describe('/corrida armando el proyecto', () => {
+  /** Un arnes con `crearRepo` controlable. */
+  function conRepos(
+    resultado: (nombre: string) =>
+      | { ok: true; nombre: string; github: string }
+      | { ok: false; code: string },
+  ) {
+    const d = arnes();
+    const crearRepo = vi.fn(async (_id: number, nombre: string) => resultado(nombre));
+    return Object.assign(d, { crearRepo }) as typeof d & { crearRepo: typeof crearRepo };
+  }
+
+  async function conOrgConectada(d: { store: InMemoryStore }) {
+    await vincular(d.store, 7);
+    // Una instalacion que la persona YA conecto desde el panel, en otro
+    // proyecto. Es lo que `/corrida` hereda.
+    const viejo = await d.store.crearProyecto('otro', USUARIO);
+    await d.store.guardarInstalacion(viejo, 159882934, 'Sincro-arg');
+  }
+
+  it('crea el proyecto nuevo y lo deja activo', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=stock-acme\n${PLIEGO}` },
+      d,
+    );
+    if (r.kind !== 'corrida') throw new Error(`no es corrida: ${r.kind}`);
+    expect(r.creado?.proyecto).toBe('stock-acme');
+    expect(r.corrida?.proyecto).toBe('stock-acme');
+    // Activo: lo que sigue —la cola, los turnos— tiene que caer ahi.
+    expect(await d.store.getActiveProject(7)).toBe('stock-acme');
+  });
+
+  // Un `proyecto=` que ya existe NO crea un segundo con el mismo nombre.
+  it('reusa un proyecto que ya existe, sin importar mayusculas', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await d.store.crearProyecto('Stock', USUARIO);
+
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=stock\n${PLIEGO}` },
+      d,
+    );
+    if (r.kind !== 'corrida') throw new Error('no es corrida');
+    // Sin `creado.proyecto`: no nacio nada.
+    expect(r.creado?.proyecto).toBeUndefined();
+    // Y con el nombre canonico, que es el que arma la ruta del worktree.
+    expect(await d.store.getActiveProject(7)).toBe('Stock');
+  });
+
+  it('crea los repos y los vincula al proyecto', async () => {
+    const d = conRepos((n) => ({ ok: true, nombre: n, github: `Sincro-arg/${n}` }));
+    await conOrgConectada(d);
+
+    const r = await handleIncoming(
+      {
+        chatId: 7,
+        messageId: 1,
+        text: `/corrida proyecto=acme org=Sincro-arg repos=acme-front,acme-back\n${PLIEGO}`,
+      },
+      d,
+    );
+    if (r.kind !== 'corrida') throw new Error(`no es corrida: ${r.kind}`);
+    expect(r.creado?.repos).toEqual(['Sincro-arg/acme-front', 'Sincro-arg/acme-back']);
+
+    const proyectos = await d.store.proyectosDeUsuario(USUARIO);
+    const acme = proyectos.find((p) => p.nombre === 'acme')!;
+    const repos = await d.store.reposDeProyecto(acme.id);
+    expect(repos.map((x) => x.github_repo)).toEqual([
+      'Sincro-arg/acme-front',
+      'Sincro-arg/acme-back',
+    ]);
+  });
+
+  // La instalacion se HEREDA: es de la cuenta, no del proyecto, y la persona ya
+  // la consintio una vez desde el panel.
+  it('hereda la instalacion de la org al proyecto nuevo', async () => {
+    const d = conRepos((n) => ({ ok: true, nombre: n, github: `Sincro-arg/${n}` }));
+    await conOrgConectada(d);
+
+    await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=acme org=Sincro-arg repos=uno\n${PLIEGO}` },
+      d,
+    );
+    const proyectos = await d.store.proyectosDeUsuario(USUARIO);
+    const acme = proyectos.find((p) => p.nombre === 'acme')!;
+    expect(await d.store.instalacionDeCuenta(USUARIO, 'Sincro-arg')).toMatchObject({
+      installationId: 159882934,
+    });
+    expect((await d.store.reposDeProyecto(acme.id)).length).toBe(1);
+  });
+
+  // El caso que motiva que el armado vaya ANTES de abrir la corrida: si los
+  // repos fallan, no puede quedar una corrida esperando la noche contra un
+  // worktree vacio.
+  it('si un repo falla NO abre la corrida y dice cual quedo', async () => {
+    const d = conRepos((n) =>
+      n === 'dos'
+        ? { ok: false, code: 'github_403' }
+        : { ok: true, nombre: n, github: `Sincro-arg/${n}` },
+    );
+    await conOrgConectada(d);
+
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=acme org=Sincro-arg repos=uno,dos\n${PLIEGO}` },
+      d,
+    );
+    if (r.kind !== 'corrida_sin_armar') throw new Error(`no es corrida_sin_armar: ${r.kind}`);
+    // El permiso, nombrado como se llama en la pantalla de GitHub.
+    expect(r.motivo).toContain('Administration');
+    // Y lo que YA se creo: sin esto, reintentar choca con "ya existe" y parece
+    // que nada funciono.
+    expect(r.motivo).toContain('Sincro-arg/uno');
+    expect(await d.store.corridaAbierta(7)).toBeUndefined();
+  });
+
+  it('una org que no se conecto se explica en vez de fallar', async () => {
+    const d = conRepos((n) => ({ ok: true, nombre: n, github: `x/${n}` }));
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=acme org=No-Existe repos=uno\n${PLIEGO}` },
+      d,
+    );
+    if (r.kind !== 'corrida_sin_armar') throw new Error('no es corrida_sin_armar');
+    expect(r.motivo).toContain('No-Existe');
+    // Nombra la unica parte que no se puede hacer desde Telegram.
+    expect(r.motivo).toContain('panel');
+    expect(d.crearRepo).not.toHaveBeenCalled();
+  });
+
+  it('pedir repos sin org ni instalacion no crea nada', async () => {
+    const d = conRepos((n) => ({ ok: true, nombre: n, github: `x/${n}` }));
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=acme repos=uno\n${PLIEGO}` },
+      d,
+    );
+    expect(r.kind).toBe('corrida_sin_armar');
+    expect(await d.store.corridaAbierta(7)).toBeUndefined();
+  });
+
+  // Sin opciones sigue funcionando como antes: es la condicion de que esto no
+  // rompa lo que ya andaba.
+  it('sin proyecto= ni repos= usa el proyecto activo y no crea nada', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await d.store.crearProyecto('stock', USUARIO);
+    await d.store.setActiveProject(7, 'stock');
+
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: `/corrida\n${PLIEGO}` }, d);
+    if (r.kind !== 'corrida') throw new Error('no es corrida');
+    expect(r.corrida?.proyecto).toBe('stock');
+    expect(r.creado?.proyecto).toBeUndefined();
+    expect(r.creado?.repos).toEqual([]);
+  });
+});
+
+describe('parseOpcionesDeCorrida: proyecto, org y repos', () => {
+  it('toma las tres y deja el pliego', () => {
+    const r = parseOpcionesDeCorrida('proyecto=acme org=Sincro-arg repos=front,back\n# Stock');
+    expect(r.proyecto).toBe('acme');
+    expect(r.org).toBe('Sincro-arg');
+    expect(r.repos).toEqual(['front', 'back']);
+    expect(r.md).toBe('# Stock');
+  });
+
+  // Estos nombres terminan siendo carpetas del worktree, asi que la lista
+  // blanca no es cosmetica.
+  it('descarta un nombre con barras sin perder los otros', () => {
+    const r = parseOpcionesDeCorrida('repos=front,../etc,back\nx');
+    expect(r.repos).toEqual(['front', 'back']);
+  });
+
+  it('no repite un repo nombrado dos veces', () => {
+    expect(parseOpcionesDeCorrida('repos=front,front,back\nx').repos).toEqual(['front', 'back']);
+  });
+
+  it('un proyecto con ruta adentro se ignora', () => {
+    expect(parseOpcionesDeCorrida('proyecto=../otro\nx').proyecto).toBeUndefined();
+  });
+
+  it('sin repos= la lista queda vacia y no undefined', () => {
+    expect(parseOpcionesDeCorrida('# Stock').repos).toEqual([]);
+  });
+});

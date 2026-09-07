@@ -60,3 +60,56 @@ export async function firmarToken(
     return undefined;
   }
 }
+
+/**
+ * Le pide al panel que cree un repo en GitHub.
+ *
+ * Mismo pliegue que `firmarToken` y por la misma razon: la clave privada de la
+ * App vive en un solo lado. El bridge sabe QUE instalacion es —la leyo de su
+ * propio Postgres— y lo unico que no puede hacer es firmar.
+ *
+ * A diferencia de `firmarToken`, esta SI devuelve el motivo del fallo. Aquella
+ * degrada en silencio porque sin token el turno corre igual por SSH; acá no hay
+ * degradacion posible: si el repo no se crea, no hay repo, y la persona tiene
+ * que leer por que.
+ *
+ * La `org` no viaja: el panel la saca de preguntarle a GitHub de quien es la
+ * instalacion. Mandarla desde acá seria dejar que un id equivocado apunte a la
+ * org de otro.
+ */
+export async function crearRepo(
+  installationId: number,
+  nombre: string,
+  descripcion: string | undefined,
+  deps: PanelDeps,
+): Promise<{ ok: true; nombre: string; github: string } | { ok: false; code: string }> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  try {
+    const res = await doFetch(`${deps.panelUrl.replace(/\/$/, '')}/interno/github/repo`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${deps.token}`,
+      },
+      body: JSON.stringify({ installation_id: installationId, nombre, descripcion }),
+      // Mas largo que el de firmar: crear un repo es una escritura en GitHub
+      // con `auto_init`, o sea que del otro lado se arma un commit inicial.
+      signal: AbortSignal.timeout(30_000),
+    });
+    const cuerpo = (await res.json().catch(() => ({}))) as {
+      nombre?: unknown;
+      github_repo?: unknown;
+      code?: unknown;
+    };
+    if (!res.ok) {
+      return { ok: false, code: typeof cuerpo.code === 'string' ? cuerpo.code : `http_${res.status}` };
+    }
+    return typeof cuerpo.nombre === 'string' && typeof cuerpo.github_repo === 'string'
+      ? { ok: true, nombre: cuerpo.nombre, github: cuerpo.github_repo }
+      : { ok: false, code: 'respuesta_incompleta' };
+  } catch {
+    // Sin el error crudo: puede traer parte de una URL con credenciales, y este
+    // texto termina en un chat.
+    return { ok: false, code: 'panel_no_responde' };
+  }
+}

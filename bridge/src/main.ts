@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
 import { PgStore, type FilaDeDocumento } from './store.js';
 import { askAgent, listarAgentes } from './agents-client.js';
-import { firmarToken } from './panel-client.js';
+import { firmarToken, crearRepo } from './panel-client.js';
 import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
 import {
@@ -214,6 +214,15 @@ const pipelineDeps = {
   firmarToken: env.PANEL_URL
     ? (id: number) =>
         firmarToken(id, { panelUrl: env.PANEL_URL!, token: env.BRIDGE_API_TOKEN })
+    : undefined,
+  // Igual que arriba: sin PANEL_URL no hay quien firme, y `/corrida` lo dice en
+  // vez de crear un proyecto sin los repos que se le pidieron.
+  crearRepo: env.PANEL_URL
+    ? (id: number, nombre: string, descripcion?: string) =>
+        crearRepo(id, nombre, descripcion, {
+          panelUrl: env.PANEL_URL!,
+          token: env.BRIDGE_API_TOKEN,
+        })
     : undefined,
   transcribe: (bytes: Uint8Array, mimeType: string) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),

@@ -137,3 +137,164 @@ public class GitHubAppTests
         Assert.ThrowsAny<Exception>(() => new GitHubApp(AppId, "no soy un PEM", () => DateTimeOffset.UtcNow));
     }
 }
+
+/// <summary>
+/// Crear un repo en la organización.
+///
+/// Lo que se prueba es lo que decide si el repo nace bien o nace inservible: a
+/// qué URL va, que salga PRIVADO, que traiga commit inicial, y que los errores
+/// de GitHub lleguen como algo que una persona puede resolver.
+///
+/// Se testea con un handler falso porque la alternativa es crear repos de
+/// verdad en una org de verdad, y esos no se pueden borrar con los permisos que
+/// la App tiene.
+/// </summary>
+public class CrearRepoTests
+{
+    private const string AppId = "123456";
+
+    /// <summary>Guarda lo que se pidió y contesta lo que se le diga.</summary>
+    private sealed class HandlerFalso(
+        System.Net.HttpStatusCode estado, string json) : HttpMessageHandler
+    {
+        public string? UltimaUrl { get; private set; }
+        public string? UltimoCuerpo { get; private set; }
+        public int Llamadas { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+        {
+            Llamadas++;
+            // El token de instalación se pide primero y no es lo que se está
+            // probando: se contesta uno cualquiera y se sigue.
+            if (request.RequestUri!.AbsolutePath.EndsWith("/access_tokens"))
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.Created)
+                {
+                    Content = new StringContent(
+                        """{"token":"ghs_falso","expires_at":"2099-01-01T00:00:00Z"}""",
+                        Encoding.UTF8, "application/json"),
+                };
+            }
+            UltimaUrl = request.RequestUri.ToString();
+            UltimoCuerpo = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);
+            return new HttpResponseMessage(estado)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+        }
+    }
+
+    private static (GitHubApp App, HandlerFalso H, HttpClient C) Armar(
+        System.Net.HttpStatusCode estado = System.Net.HttpStatusCode.Created,
+        string json = """{"full_name":"Sincro-arg/stock","name":"stock","private":true}""")
+    {
+        var rsa = RSA.Create(2048);
+        var app = new GitHubApp(AppId, rsa.ExportPkcs8PrivateKeyPem(), () => DateTimeOffset.UtcNow);
+        var h = new HandlerFalso(estado, json);
+        return (app, h, new HttpClient(h));
+    }
+
+    [Fact]
+    public async Task VaALaRutaDeLaOrganizacion()
+    {
+        var (app, h, c) = Armar();
+        await app.CrearRepoAsync(159882934, "Sincro-arg", "stock", null, c);
+
+        // `/orgs/...` y no `/user/repos`: es la única de las dos que un token de
+        // instalación puede usar.
+        Assert.Equal("https://api.github.com/orgs/Sincro-arg/repos", h.UltimaUrl);
+    }
+
+    [Fact]
+    public async Task NacePrivadoYConCommitInicial()
+    {
+        var (app, h, c) = Armar();
+        await app.CrearRepoAsync(159882934, "Sincro-arg", "stock", "el sistema de stock", c);
+
+        var cuerpo = JsonDocument.Parse(h.UltimoCuerpo!).RootElement;
+        // Privado: lo que se puede deshacer con un click. Un repo público que
+        // tenía que ser privado ya se indexó y se clonó.
+        Assert.True(cuerpo.GetProperty("private").GetBoolean());
+        // Con commit inicial: sin esto el repo nace sin ninguna rama, y un push
+        // a `claude/c1/algo` lo deja sin rama por defecto para siempre.
+        Assert.True(cuerpo.GetProperty("auto_init").GetBoolean());
+        Assert.Equal("stock", cuerpo.GetProperty("name").GetString());
+        Assert.Equal("el sistema de stock", cuerpo.GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public async Task DevuelveElNombreQueContestoGitHub()
+    {
+        var (app, _, c) = Armar();
+        var r = await app.CrearRepoAsync(159882934, "Sincro-arg", "stock", null, c);
+
+        // El full_name sale de GITHUB y no se arma acá: es lo que el gateway usa
+        // para clonar, y GitHub puede normalizar el nombre que se le pidió.
+        Assert.Equal("Sincro-arg/stock", r.FullName);
+        Assert.Equal("stock", r.Nombre);
+    }
+
+    [Fact]
+    public async Task UnNombreRepetidoSeDistingueDeLosDemasErrores()
+    {
+        var (app, _, c) = Armar(
+            System.Net.HttpStatusCode.UnprocessableEntity,
+            """{"message":"Repository creation failed."}""");
+
+        var ex = await Assert.ThrowsAsync<UpstreamException>(
+            () => app.CrearRepoAsync(159882934, "Sincro-arg", "stock", null, c));
+
+        // Es el único error que la persona puede resolver sola, así que no puede
+        // llegar como un `github_422` que manda a revisar permisos.
+        Assert.Equal("repo_ya_existe", ex.Message);
+    }
+
+    [Fact]
+    public async Task SinPermisoElErrorDiceElStatus()
+    {
+        var (app, _, c) = Armar(System.Net.HttpStatusCode.Forbidden, "{}");
+
+        var ex = await Assert.ThrowsAsync<UpstreamException>(
+            () => app.CrearRepoAsync(159882934, "Sincro-arg", "stock", null, c));
+        Assert.Equal("github_403", ex.Message);
+    }
+
+    /// <summary>
+    /// El token cacheado se tira después de crear.
+    ///
+    /// Con `repository_selection: selected`, un token firmado ANTES de que el
+    /// repo existiera no lo alcanza: su lista quedó fija al emitirlo, y el push
+    /// siguiente falla con un 404 que se lee como "el repo no existe".
+    /// </summary>
+    [Fact]
+    public async Task ElTokenSeRenuevaDespuesDeCrear()
+    {
+        var (app, h, c) = Armar();
+        await app.CrearRepoAsync(159882934, "Sincro-arg", "stock", null, c);
+        var antes = h.Llamadas;
+
+        // Un token pedido después tiene que volver a salir a la red.
+        await app.TokenDeInstalacionAsync(159882934, c);
+        Assert.True(h.Llamadas > antes, "el token se sirvió del caché viejo");
+    }
+
+    [Fact]
+    public async Task UnaOrganizacionSeReconoce()
+    {
+        var (app, _, c) = Armar(
+            System.Net.HttpStatusCode.OK,
+            """{"account":{"login":"Sincro-arg","type":"Organization"}}""");
+        Assert.True(await app.EsOrganizacionAsync(159882934, c));
+    }
+
+    [Fact]
+    public async Task UnaCuentaPersonalNoEsOrganizacion()
+    {
+        var (app, _, c) = Armar(
+            System.Net.HttpStatusCode.OK,
+            """{"account":{"login":"gero200612","type":"User"}}""");
+        // El caso real: `sincrosns` parece una org por el nombre y es un User.
+        Assert.False(await app.EsOrganizacionAsync(159882934, c));
+    }
+}

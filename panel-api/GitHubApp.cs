@@ -203,6 +203,101 @@ public sealed class GitHubApp
         return [.. salida.OrderBy(x => x.FullName, StringComparer.OrdinalIgnoreCase)];
     }
 
+    /// <summary>
+    /// Crea un repo en una ORGANIZACIÓN y devuelve su `full_name`.
+    ///
+    /// Sólo en una org, y no es una limitación de este código: un token de
+    /// instalación no puede crear repos en una cuenta de usuario. La API para
+    /// eso (`POST /user/repos`) exige un token de USUARIO, o sea un OAuth
+    /// user-to-server o un PAT — dos credenciales que este panel no guarda a
+    /// propósito. Por eso el llamador tiene que verificar que la cuenta de la
+    /// instalación sea una org antes de llegar acá.
+    ///
+    /// Se crea PRIVADO. Es lo que se puede deshacer: un repo privado que tenía
+    /// que ser público se abre con un click, y uno público que tenía que ser
+    /// privado ya se indexó, se clonó y quedó en cachés que nadie controla. Y
+    /// lo que se va a crear acá es el trabajo de un cliente.
+    ///
+    /// Con `auto_init: true`, o sea con un commit inicial y un README. Sin eso
+    /// el repo nace sin ninguna rama, y un `git push` a `claude/c1/algo` contra
+    /// un repo sin HEAD deja el repo sin rama por defecto: la web muestra la
+    /// pantalla de "quick setup" para siempre y ningún PR se puede abrir.
+    /// </summary>
+    public async Task<RepoDeGitHub> CrearRepoAsync(
+        long installationId, string org, string nombre, string? descripcion,
+        HttpClient http, CancellationToken ct = default)
+    {
+        var token = await TokenDeInstalacionAsync(installationId, http, ct);
+
+        using var pedido = new HttpRequestMessage(
+            HttpMethod.Post, $"https://api.github.com/orgs/{Uri.EscapeDataString(org)}/repos");
+        pedido.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        pedido.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        pedido.Headers.UserAgent.Add(new ProductInfoHeaderValue("multicodigo-panel", "1.0"));
+        pedido.Content = JsonContent.Create(new
+        {
+            name = nombre,
+            description = descripcion ?? "",
+            @private = true,
+            auto_init = true,
+        });
+
+        using var res = await http.SendAsync(pedido, ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            // El 422 se distingue del resto porque es el único que la persona
+            // puede resolver: GitHub lo usa para "ya existe un repo con ese
+            // nombre". Un `github_422` genérico mandaría a revisar permisos.
+            //
+            // El cuerpo NO se propaga —puede traer detalles de la App— así que
+            // el código es lo único que viaja, igual que en los otros métodos.
+            throw new UpstreamException(
+                res.StatusCode == System.Net.HttpStatusCode.UnprocessableEntity
+                    ? "repo_ya_existe"
+                    : $"github_{(int)res.StatusCode}");
+        }
+
+        var cuerpo = await res.Content.ReadFromJsonAsync<JsonElement>(ct);
+        var full = cuerpo.TryGetProperty("full_name", out var f) ? f.GetString() : null;
+        var corto = cuerpo.TryGetProperty("name", out var n) ? n.GetString() : null;
+        if (full is null || corto is null) throw new UpstreamException("github_sin_repo");
+
+        // Se olvida el token cacheado. Con `repository_selection: selected`, el
+        // token que se firmó ANTES de crear el repo no lo alcanza —su lista de
+        // repos quedó fija al emitirlo— y el push siguiente fallaría con un 404
+        // que parece "el repo no existe". Renovar es una llamada; el síntoma
+        // sin esto es un repo recién creado al que el agente no puede escribir.
+        Olvidar(installationId);
+
+        return new RepoDeGitHub(full, corto, true);
+    }
+
+    /// <summary>
+    /// Si la cuenta de una instalación es una organización.
+    ///
+    /// Existe porque crear repos sólo funciona en orgs, y el error de GitHub
+    /// cuando no lo es (un 404 sobre `/orgs/gero200612`) se lee como "la org no
+    /// existe" en vez de "eso no es una org". Preguntarlo antes convierte un
+    /// error desconcertante en una frase que dice qué hacer.
+    /// </summary>
+    public async Task<bool> EsOrganizacionAsync(
+        long installationId, HttpClient http, CancellationToken ct = default)
+    {
+        using var pedido = new HttpRequestMessage(
+            HttpMethod.Get, $"https://api.github.com/app/installations/{installationId}");
+        pedido.Headers.Authorization = new AuthenticationHeaderValue("Bearer", JwtDeLaApp());
+        pedido.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        pedido.Headers.UserAgent.Add(new ProductInfoHeaderValue("multicodigo-panel", "1.0"));
+
+        using var res = await http.SendAsync(pedido, ct);
+        if (!res.IsSuccessStatusCode) throw new UpstreamException($"github_{(int)res.StatusCode}");
+
+        var cuerpo = await res.Content.ReadFromJsonAsync<JsonElement>(ct);
+        return cuerpo.TryGetProperty("account", out var cuenta)
+               && cuenta.TryGetProperty("type", out var tipo)
+               && tipo.GetString() == "Organization";
+    }
+
     /// <summary>Olvida el token de una instalación. Para cuando GitHub contesta 401.</summary>
     public void Olvidar(long installationId) => _cache.TryRemove(installationId, out _);
 

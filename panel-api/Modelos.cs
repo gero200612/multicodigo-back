@@ -182,9 +182,32 @@ public sealed record CuerpoRepo(
     [property: JsonPropertyName("nombre")] string? Nombre,
     [property: JsonPropertyName("github_repo")] string? GithubRepo);
 
+/// <summary>
+/// Un repo a CREAR en GitHub, no a vincular.
+///
+/// Sin `github_repo`: el `owner` no lo elige quien pide — sale de la cuenta de
+/// la instalación del proyecto. Aceptarlo del cuerpo sería dejar que alguien
+/// intente crear un repo en una org ajena donde la App esté instalada.
+/// </summary>
+public sealed record CuerpoRepoNuevo(
+    [property: JsonPropertyName("nombre")] string? Nombre,
+    [property: JsonPropertyName("descripcion")] string? Descripcion);
+
 /// <summary>Lo que el bridge le manda al panel para que le firme un token.</summary>
 public sealed record CuerpoTokenInterno(
     [property: JsonPropertyName("installation_id")] long InstallationId);
+
+/// <summary>
+/// Lo que el bridge le manda al panel para que le cree un repo.
+///
+/// Sin la org: sale de preguntarle a GitHub de quién es la instalación. Si
+/// viniera acá, quien tenga el bearer interno podría pedir un repo en cualquier
+/// org donde la App esté instalada.
+/// </summary>
+public sealed record CuerpoRepoInterno(
+    [property: JsonPropertyName("installation_id")] long InstallationId,
+    [property: JsonPropertyName("nombre")] string? Nombre,
+    [property: JsonPropertyName("descripcion")] string? Descripcion);
 
 /// <summary>
 /// Lo que el front manda al volver de GitHub. Solo el id: la cuenta se le
