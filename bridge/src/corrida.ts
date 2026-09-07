@@ -342,6 +342,16 @@ export function promptDeAnalisis(md: string, ronda: number): string {
     'lo que quedo a medias, y lo que esta escrito pero sin ninguna prueba que lo',
     'respalde.',
     '',
+    // El analista es quien REDACTA las tareas, asi que es el que tiene que
+    // nombrar la referencia: si el hueco dice "falta el modulo de stock" a
+    // secas, el constructor arranca de cero. Si dice "falta el modulo de stock,
+    // mira StockController.cs en la referencia", copia una estructura que ya
+    // funciona.
+    'Si hay repos de REFERENCIA montados —los que no se pueden escribir—, leé su',
+    'INDICE.md antes de redactar los huecos. Cuando algo que falta ya exista ahi,',
+    'DECILO en la tarea: "falta X; en la referencia esta resuelto en <archivo>".',
+    'Eso es lo que hace que quien lo construya copie en vez de inventar.',
+    '',
     'No arregles nada. No escribas ni edites archivos. Solo mira y reporta.',
     '',
     'Cuando termines de revisar, llama a la herramienta reportar_huecos con la',
