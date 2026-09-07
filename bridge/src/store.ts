@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import type { AgentId, ApprovalDecision } from '@multicodigo/shared';
 import type { Encargo, Tarea } from './cola.js';
+import type { Corrida, MotivoDeCierre } from './corrida.js';
 
 /**
  * Los estados del spec 5.
@@ -94,6 +95,24 @@ export function recortar(texto: string): string {
  */
 export const MODOS_PERMISO = ['preguntar', 'ediciones', 'todo'] as const;
 export type ModoPermiso = (typeof MODOS_PERMISO)[number];
+
+/**
+ * El modo de una corrida desatendida.
+ *
+ * Fuera de `MODOS_PERMISO` a proposito, y eso no es un olvido: esa lista es la
+ * de los modos ELEGIBLES —los que `/permisos` ofrece y el CHECK de
+ * `telegram_modo` acepta— y `desatendido` no es elegible. Lo fija el ciclo de
+ * la corrida en cada turno y muere con ella.
+ *
+ * Si estuviera en `MODOS_PERMISO` existiria `/permisos desatendido`, o sea un
+ * modo con commit y push libres que queda prendido despues de que la corrida
+ * termino. Es la forma en que esto se vuelve un accidente en tres semanas.
+ *
+ * Espeja `MODOS` en `multicodigo-vm/src/agent/src/policy.ts`, que si lo tiene:
+ * el agente tiene que ENTENDERLO cuando le llega, aunque nadie pueda elegirlo.
+ */
+export const MODO_DESATENDIDO = 'desatendido';
+export type ModoDeTurno = ModoPermiso | typeof MODO_DESATENDIDO;
 
 /**
  * Las claves de modelo, espejadas de `MODELOS` en el agente
@@ -498,6 +517,60 @@ export interface Store {
   cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void>;
   /** Cancela lo PENDIENTE. Devuelve cuantas saco. */
   cancelarCola(chatId: number): Promise<number>;
+
+  // --- Corridas desatendidas ------------------------------------------------
+  //
+  // Ver `corrida.ts` y el spec
+  // `multicodigo-vm/docs/superpowers/specs/2026-09-07-corrida-desatendida-design.md`.
+
+  /**
+   * Abre una corrida, o `undefined` si el chat ya tiene una abierta.
+   *
+   * El "ya tiene una" lo decide la BASE, con el indice unico parcial de la
+   * migracion 023, y no un SELECT previo: dos `/corrida` mandados juntos pasan
+   * los dos por el chequeo y solo uno puede ganar el INSERT.
+   */
+  abrirCorrida(datos: {
+    chatId: number;
+    proyecto: string;
+    md: string;
+    techoRondas: number;
+    techoHora: string;
+  }): Promise<Corrida | undefined>;
+  /** La corrida abierta del chat, si hay. Es lo que consulta el ciclo. */
+  corridaAbierta(chatId: number): Promise<Corrida | undefined>;
+  /**
+   * La corrida abierta a la que pertenece un turno, por su job.
+   *
+   * Existe para el endpoint de `reportar_huecos`: lo que llega del gateway es
+   * un jobId, y de ahi hay que llegar al chat y a su corrida. Sin este salto el
+   * agente tendria que mandar el id de la corrida, o sea un dato que el modelo
+   * podria cambiar.
+   */
+  corridaDeJob(jobId: string): Promise<Corrida | undefined>;
+  /** Cierra la corrida con su motivo. Idempotente: cerrar dos veces no rompe. */
+  cerrarCorrida(id: string, motivo: MotivoDeCierre): Promise<void>;
+  /** Pasa a la ronda siguiente y devuelve el numero nuevo. */
+  avanzarRonda(id: string): Promise<number>;
+  /**
+   * Suma o resetea el contador de fallos seguidos. Devuelve como quedo.
+   *
+   * `seguidos` y no "total": veinte tareas que fallan por causas distintas a lo
+   * largo de la noche son ruido normal; tres seguidas son un problema que no se
+   * va a arreglar solo. Cada tarea que sale bien lo vuelve a cero.
+   */
+  contarFallo(id: string, fallo: boolean): Promise<number>;
+  /** Las tareas de una corrida, en orden. Para el informe. */
+  tareasDeCorrida(corridaId: string): Promise<Tarea[]>;
+  /**
+   * Anota que el analista de esta ronda SI llamo a `reportar_huecos`.
+   *
+   * Lo escribe el endpoint de la herramienta, no el ciclo: es la unica prueba
+   * de que la llamada existio. El ciclo despues compara contra la ronda que
+   * corrio, y si no coincide trata el analisis como fallido en vez de cerrar la
+   * corrida como completa.
+   */
+  marcarHuecos(corridaId: string, ronda: number): Promise<void>;
   /**
    * Desata un chat de una cuenta. Devuelve si habia algo que desatar.
    *
@@ -632,6 +705,11 @@ export class InMemoryStore implements Store {
   async createJob(job: NewJob) {
     const id = randomUUID();
     this.contextos.set(id, { proyectoId: job.proyectoId, usuarioId: job.usuarioId });
+    // De que chat es el turno. En Postgres es la columna `jobs.chat_id`; aca
+    // hacia falta un mapa porque `contextos` guarda proyecto y usuario y no el
+    // chat. Lo usa `corridaDeJob`, que es como `reportar_huecos` llega desde un
+    // jobId hasta la corrida abierta.
+    this.chatsDeJob.set(id, job.chatId);
     this.jobs.set(id, {
       status: 'running',
       resumen: {
@@ -667,6 +745,9 @@ export class InMemoryStore implements Store {
   private documentos = new Map<string, DocumentoDeProyecto[]>();
   /** De que proyecto y de quien es cada job. Ver `contextoDeJob`. */
   private contextos = new Map<string, { proyectoId?: string; usuarioId?: string }>();
+
+  /** De que chat es cada job. Ver `corridaDeJob`. */
+  private chatsDeJob = new Map<string, number>();
 
   async contextoDeJob(jobId: string) {
     return this.contextos.get(jobId);
@@ -913,6 +994,8 @@ export class InMemoryStore implements Store {
         texto,
         posicion: base + i,
         estado: 'pendiente',
+        ...(e.corridaId ? { corridaId: e.corridaId } : {}),
+        ...(e.ronda !== undefined ? { ronda: e.ronda } : {}),
       });
     });
     return e.textos.length;
@@ -943,6 +1026,84 @@ export class InMemoryStore implements Store {
     const pend = this.cola.filter((t) => t.chatId === chatId && t.estado === 'pendiente');
     for (const t of pend) t.estado = 'cancelada';
     return pend.length;
+  }
+
+  /** Las corridas, por id. Ver `corrida.ts`. */
+  private corridas = new Map<string, Corrida>();
+
+  async abrirCorrida(datos: {
+    chatId: number;
+    proyecto: string;
+    md: string;
+    techoRondas: number;
+    techoHora: string;
+  }): Promise<Corrida | undefined> {
+    // El equivalente en memoria del indice unico parcial de la migracion 023.
+    if (await this.corridaAbierta(datos.chatId)) return undefined;
+    const c: Corrida = {
+      id: randomUUID(),
+      chatId: datos.chatId,
+      proyecto: datos.proyecto,
+      md: datos.md,
+      ronda: 1,
+      techoRondas: datos.techoRondas,
+      techoHora: datos.techoHora,
+      fallosSeguidos: 0,
+      estado: 'abierta',
+      creadoEn: new Date(),
+    };
+    this.corridas.set(c.id, c);
+    return c;
+  }
+
+  async corridaAbierta(chatId: number): Promise<Corrida | undefined> {
+    return [...this.corridas.values()].find(
+      (c) => c.chatId === chatId && c.estado === 'abierta',
+    );
+  }
+
+  async corridaDeJob(jobId: string): Promise<Corrida | undefined> {
+    const chatId = this.chatsDeJob.get(jobId);
+    if (chatId === undefined) return undefined;
+    return this.corridaAbierta(chatId);
+  }
+
+  async cerrarCorrida(id: string, motivo: MotivoDeCierre): Promise<void> {
+    const c = this.corridas.get(id);
+    if (!c || c.estado === 'cerrada') return;
+    c.estado = 'cerrada';
+    c.motivoDeCierre = motivo;
+  }
+
+  async avanzarRonda(id: string): Promise<number> {
+    const c = this.corridas.get(id);
+    if (!c) return 0;
+    c.ronda += 1;
+    return c.ronda;
+  }
+
+  async contarFallo(id: string, fallo: boolean): Promise<number> {
+    const c = this.corridas.get(id);
+    if (!c) return 0;
+    c.fallosSeguidos = fallo ? c.fallosSeguidos + 1 : 0;
+    return c.fallosSeguidos;
+  }
+
+  async tareasDeCorrida(corridaId: string): Promise<Tarea[]> {
+    return this.cola
+      .filter((t) => t.corridaId === corridaId)
+      .sort((a, b) => a.posicion - b.posicion);
+  }
+
+  async marcarHuecos(corridaId: string, ronda: number): Promise<void> {
+    const c = this.corridas.get(corridaId);
+    if (c) c.huecosDeRonda = ronda;
+  }
+
+  /** Solo para los tests: mueve el arranque de una corrida en el tiempo. */
+  ponerCreadoEnDeCorrida(id: string, cuando: Date): void {
+    const c = this.corridas.get(id);
+    if (c) c.creadoEn = cuando;
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {
@@ -1667,16 +1828,16 @@ export class PgStore implements Store {
     // UNNEST y no un INSERT por tarea: una tanda entra en una sola ida a la
     // base, y o entran todas o no entra ninguna.
     await this.pool.query(
-      `INSERT INTO cola_tareas (chat_id, agente, proyecto, texto, posicion)
-       SELECT $1, $2, $3, t.texto, $4 + (t.i - 1)
+      `INSERT INTO cola_tareas (chat_id, agente, proyecto, texto, posicion, corrida_id, ronda)
+       SELECT $1, $2, $3, t.texto, $4 + (t.i - 1), $6::uuid, $7::int
        FROM unnest($5::text[]) WITH ORDINALITY AS t(texto, i)`,
-      [chatId, e.agente, e.proyecto, base, e.textos],
+      [chatId, e.agente, e.proyecto, base, e.textos, e.corridaId ?? null, e.ronda ?? null],
     );
     return e.textos.length;
   }
 
   private static readonly CAMPOS_TAREA =
-    'id, chat_id, agente, proyecto, texto, posicion, estado, resultado';
+    'id, chat_id, agente, proyecto, texto, posicion, estado, resultado, corrida_id, ronda';
 
   private aTarea(f: Record<string, unknown>): Tarea {
     return {
@@ -1688,6 +1849,11 @@ export class PgStore implements Store {
       posicion: f.posicion as number,
       estado: f.estado as Tarea['estado'],
       resultado: (f.resultado as string | null) ?? undefined,
+      // Los NULL se omiten en vez de viajar como null, igual que en
+      // `contextoDeJob`: una tarea dictada a mano no tiene corrida, y quien la
+      // lee tiene que ver la falta, no un null que parece un id.
+      ...(f.corrida_id ? { corridaId: f.corrida_id as string } : {}),
+      ...(f.ronda !== null && f.ronda !== undefined ? { ronda: Number(f.ronda) } : {}),
     };
   }
 
@@ -1751,6 +1917,139 @@ export class PgStore implements Store {
       [chatId],
     );
     return r.rowCount ?? 0;
+  }
+
+  // --- Corridas desatendidas ------------------------------------------------
+
+  private static readonly CAMPOS_CORRIDA =
+    'id, chat_id, proyecto, md, ronda, techo_rondas, techo_hora, ' +
+    'fallos_seguidos, huecos_de_ronda, estado, motivo_de_cierre, creado_en';
+
+  private aCorrida(f: Record<string, unknown>): Corrida {
+    return {
+      id: f.id as string,
+      chatId: Number(f.chat_id),
+      proyecto: f.proyecto as string,
+      md: f.md as string,
+      ronda: Number(f.ronda),
+      techoRondas: Number(f.techo_rondas),
+      techoHora: f.techo_hora as string,
+      fallosSeguidos: Number(f.fallos_seguidos),
+      ...(f.huecos_de_ronda !== null && f.huecos_de_ronda !== undefined
+        ? { huecosDeRonda: Number(f.huecos_de_ronda) }
+        : {}),
+      estado: f.estado as Corrida['estado'],
+      ...(f.motivo_de_cierre
+        ? { motivoDeCierre: f.motivo_de_cierre as MotivoDeCierre }
+        : {}),
+      creadoEn: new Date(f.creado_en as string),
+    };
+  }
+
+  /**
+   * Abre una corrida, o `undefined` si el chat ya tiene una.
+   *
+   * `ON CONFLICT DO NOTHING` contra el indice unico parcial de la migracion
+   * 023, y no un SELECT previo: dos `/corrida` mandados juntos pasarian los dos
+   * por el chequeo, y la unica forma de que solo uno gane es que lo decida la
+   * base. El `undefined` que vuelve es lo que el comando traduce a "ya tenes
+   * una corriendo".
+   */
+  async abrirCorrida(datos: {
+    chatId: number;
+    proyecto: string;
+    md: string;
+    techoRondas: number;
+    techoHora: string;
+  }): Promise<Corrida | undefined> {
+    const r = await this.pool.query(
+      `INSERT INTO corridas (chat_id, proyecto, md, techo_rondas, techo_hora)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT DO NOTHING
+       RETURNING ${PgStore.CAMPOS_CORRIDA}`,
+      [datos.chatId, datos.proyecto, datos.md, datos.techoRondas, datos.techoHora],
+    );
+    return r.rows[0] ? this.aCorrida(r.rows[0]) : undefined;
+  }
+
+  async corridaAbierta(chatId: number): Promise<Corrida | undefined> {
+    const r = await this.pool.query(
+      `SELECT ${PgStore.CAMPOS_CORRIDA} FROM corridas
+       WHERE chat_id = $1 AND estado = 'abierta'`,
+      [chatId],
+    );
+    return r.rows[0] ? this.aCorrida(r.rows[0]) : undefined;
+  }
+
+  async corridaDeJob(jobId: string): Promise<Corrida | undefined> {
+    const r = await this.pool.query(
+      // Un subselect y no un JOIN: asi la lista de columnas es la MISMA
+      // constante que usan las otras dos consultas. Con un JOIN habria que
+      // prefijarla, o sea mantener dos versiones del mismo listado.
+      `SELECT ${PgStore.CAMPOS_CORRIDA} FROM corridas
+       WHERE estado = 'abierta'
+         AND chat_id = (SELECT chat_id FROM jobs WHERE id = $1)`,
+      [jobId],
+    );
+    return r.rows[0] ? this.aCorrida(r.rows[0]) : undefined;
+  }
+
+  /**
+   * Cierra la corrida, una sola vez.
+   *
+   * El `AND estado = 'abierta'` la hace idempotente, y hace falta: el ciclo
+   * puede llegar al cierre por dos caminos —un techo y un analisis sin
+   * huecos— y el CHECK `corridas_cierre_completo` rechazaria el segundo
+   * intento por tener `cerrado_en` ya puesto. Con esto el segundo no toca nada
+   * en vez de tirar.
+   */
+  async cerrarCorrida(id: string, motivo: MotivoDeCierre): Promise<void> {
+    await this.pool.query(
+      `UPDATE corridas SET estado = 'cerrada', motivo_de_cierre = $2, cerrado_en = now()
+       WHERE id = $1 AND estado = 'abierta'`,
+      [id, motivo],
+    );
+  }
+
+  async avanzarRonda(id: string): Promise<number> {
+    const r = await this.pool.query<{ ronda: number }>(
+      'UPDATE corridas SET ronda = ronda + 1 WHERE id = $1 RETURNING ronda',
+      [id],
+    );
+    return Number(r.rows[0]?.ronda ?? 0);
+  }
+
+  /**
+   * Suma o resetea los fallos seguidos, en una sentencia.
+   *
+   * La suma se hace en SQL —`fallos_seguidos + 1`— y no leyendo el valor para
+   * despues escribirlo: el bucle de la cola es uno solo, pero un reinicio a
+   * mitad de camino con dos procesos vivos perderia una cuenta, y esa cuenta es
+   * justo el techo que evita quemar la noche.
+   */
+  async contarFallo(id: string, fallo: boolean): Promise<number> {
+    const r = await this.pool.query<{ fallos_seguidos: number }>(
+      `UPDATE corridas SET fallos_seguidos = ${fallo ? 'fallos_seguidos + 1' : '0'}
+       WHERE id = $1 RETURNING fallos_seguidos`,
+      [id],
+    );
+    return Number(r.rows[0]?.fallos_seguidos ?? 0);
+  }
+
+  async tareasDeCorrida(corridaId: string): Promise<Tarea[]> {
+    const r = await this.pool.query(
+      `SELECT ${PgStore.CAMPOS_TAREA} FROM cola_tareas
+       WHERE corrida_id = $1 ORDER BY posicion`,
+      [corridaId],
+    );
+    return r.rows.map((f) => this.aTarea(f));
+  }
+
+  async marcarHuecos(corridaId: string, ronda: number): Promise<void> {
+    await this.pool.query('UPDATE corridas SET huecos_de_ronda = $2 WHERE id = $1', [
+      corridaId,
+      ronda,
+    ]);
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {

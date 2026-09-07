@@ -1393,7 +1393,9 @@ describe('/cola: dictar todo lo que hay que hacer', () => {
 
     await handleIncoming({ chatId: 7, messageId: 1, text: '/cola uno\ndos' }, d);
     const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/cancelar' }, d);
-    expect(r).toEqual({ kind: 'cola_cancelada', cuantas: 2 });
+    // `corridaCerrada` en false: no habia ninguna corrida desatendida abierta.
+    // El caso con corrida se prueba en corrida.test.ts.
+    expect(r).toEqual({ kind: 'cola_cancelada', cuantas: 2, corridaCerrada: false });
   });
 });
 

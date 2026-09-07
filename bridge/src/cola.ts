@@ -14,6 +14,11 @@
  * Tampoco reintenta. Si una falla, la cola se detiene y avisa: seguir con la
  * siguiente cuando la anterior no salio es hacer trabajo sobre una base que
  * nadie miro.
+ *
+ * Con UNA excepcion, que llego con las corridas: adentro de una corrida
+ * desatendida un fallo NO para la cola —se marca, se sigue, y el informe lo
+ * lista—. Ahi no hay nadie mirando, y parar significa perder la noche entera
+ * por una tarea. Ver `corrida.ts`.
  */
 
 /** Lo que se le saca al principio de una linea: viñetas y numeracion. */
@@ -44,6 +49,16 @@ export interface Tarea {
   posicion: number;
   estado: 'pendiente' | 'corriendo' | 'lista' | 'fallida' | 'cancelada';
   resultado?: string;
+  /**
+   * De que corrida desatendida salio, si salio de una.
+   *
+   * Opcional a proposito: una cola dictada a mano —lo que funciona desde la
+   * migracion 020— no pertenece a ninguna corrida, y es lo que hace que las
+   * corridas no cambien el comportamiento que ya andaba.
+   */
+  corridaId?: string;
+  /** En que ronda del ciclo se detecto. Para el informe. */
+  ronda?: number;
 }
 
 /** Lo que hace falta para encolar una tanda. */
@@ -51,4 +66,7 @@ export interface Encargo {
   agente: string;
   proyecto: string;
   textos: string[];
+  /** Ver `Tarea.corridaId`. Sin esto la tanda es una cola comun. */
+  corridaId?: string;
+  ronda?: number;
 }

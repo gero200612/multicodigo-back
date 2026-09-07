@@ -33,7 +33,18 @@ export type ParsedCommand =
    * router decide que comando es, no que hay adentro.
    */
   | { kind: 'cola'; texto: string }
-  /** Corta lo que queda por hacer. */
+  /**
+   * Abrir una corrida desatendida: el pliego contra el que trabajar de noche.
+   *
+   * El texto se guarda CRUDO, igual que en /cola: un MD trae saltos, tildes y
+   * lo que sea, y el router decide QUE comando es, no que hay adentro. Los
+   * techos y el pliego los separa `parseOpcionesDeCorrida` en `corrida.ts`.
+   *
+   * Sin texto muestra la corrida abierta, si hay: es lo que quiere quien
+   * escribe `/corrida` a secas a la mañana.
+   */
+  | { kind: 'corrida'; texto: string }
+  /** Corta lo que queda por hacer, y la corrida si habia una abierta. */
   | { kind: 'cola_cancelar' }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
   | { kind: 'vincular' }
@@ -81,6 +92,11 @@ export function parseCommand(raw: string): ParsedCommand {
   }
 
   if (command === 'cancelar') return { kind: 'cola_cancelar' };
+
+  // Mismo `[\s\S]*` que /cola, y por lo mismo pero peor: lo que viene atras de
+  // /corrida es un MD entero. Con `.*` llegaria solo la primera linea, o sea el
+  // titulo, y el analista compararia el repo contra un pliego de un renglon.
+  if (command === 'corrida') return { kind: 'corrida', texto: rest };
 
   if (command === 'modelo' || command === 'modelos') {
     if (rest === '') return { kind: 'modelo', modelo: undefined };

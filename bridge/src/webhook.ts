@@ -34,6 +34,10 @@ export interface ApiDeps {
     | 'crearPedidoDeDrive'
     | 'canjearPedidoDeDrive'
     | 'archivoAutorizadoReciente'
+    | 'corridaDeJob'
+    | 'marcarHuecos'
+    | 'encolar'
+    | 'getActiveAgent'
   >;
   /**
    * Como guardar un documento que ESCRIBIO el agente.
@@ -397,6 +401,90 @@ export function buildWebhookServer(
         const message = e instanceof Error ? e.message : 'no se pudo guardar el documento';
         return reply.code(422).send({ code: 'no_se_pudo_guardar', message });
       }
+    });
+
+    /**
+     * Los huecos que encontro el analista de una corrida.
+     *
+     * Ver `multicodigo-vm/docs/superpowers/specs/2026-09-07-corrida-desatendida-design.md`.
+     *
+     * Entra por una HERRAMIENTA y no parseando la respuesta del turno, y esa es
+     * la decision central del ciclo: un analista que escribe "parece que falta
+     * el modulo de stock" en prosa se traduciria en cero tareas encoladas y una
+     * corrida que cierra diciendo que esta completa. Con una tool, o llamo o no
+     * llamo, y eso es verificable — es justo lo que mira `rondaDeAnalisis`.
+     *
+     * La corrida se resuelve del jobId y NO llega en el cuerpo: el id de la
+     * corrida seria un dato que el modelo puede cambiar, y con el podria
+     * encolarle trabajo a la corrida de otro chat. El jobId ya lo pone el
+     * gateway.
+     */
+    const CuerpoHuecos = z.object({
+      jobId: z.string().uuid(),
+      /**
+       * La ronda que el analista cree que esta corriendo.
+       *
+       * Se compara contra la de la base en vez de confiar en ella: un turno que
+       * quedo colgado y contesta tarde reportaria contra una ronda que ya paso,
+       * y esas tareas entrarian a una ronda a la que no pertenecen.
+       */
+      ronda: z.number().int().min(1).max(100),
+      // Vacia es un valor VALIDO y significativo: es como el analista dice "no
+      // falta nada", y es el unico camino a que la corrida cierre como
+      // completa. Un `.min(1)` aca haria que la unica forma de terminar bien
+      // fuera no llamar la herramienta, o sea lo mismo que fallar.
+      huecos: z.array(z.string().min(1).max(2000)).max(50),
+    });
+
+    app.post('/interno/corrida/huecos', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      const cuerpo = CuerpoHuecos.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply
+          .code(400)
+          .send({ code: 'cuerpo_invalido', message: 'faltan datos del reporte' });
+      }
+
+      const corrida = await api.store.corridaDeJob(cuerpo.data.jobId);
+      if (!corrida) {
+        // El mensaje lo REPITE el modelo, asi que dice que hacer y no solo que
+        // fallo: sin esto el analista reintenta la herramienta en loop.
+        return reply.code(400).send({
+          code: 'sin_corrida',
+          message:
+            'este turno no pertenece a ninguna corrida abierta, asi que no hay donde anotar los ' +
+            'huecos. No reintentes: contale a la persona lo que encontraste en tu respuesta.',
+        });
+      }
+      if (cuerpo.data.ronda !== corrida.ronda) {
+        return reply.code(409).send({
+          code: 'otra_ronda',
+          message:
+            `la corrida ya esta en la ronda ${corrida.ronda} y estas reportando la ` +
+            `${cuerpo.data.ronda}. No reintentes: lo que encontraste ya no corresponde a esta ronda.`,
+        });
+      }
+
+      // Se marca SIEMPRE, incluso con la lista vacia. La marca no dice "hay
+      // huecos": dice "el analista llamo la herramienta", que es lo que separa
+      // "reviso y no falta nada" de "contesto en prosa y nadie recibio nada".
+      await api.store.marcarHuecos(corrida.id, corrida.ronda);
+
+      if (cuerpo.data.huecos.length === 0) {
+        return reply.code(200).send({ output: 'anotado: no quedan huecos. Cierro la corrida.' });
+      }
+
+      const agente = (await api.store.getActiveAgent(corrida.chatId)) ?? 'c1';
+      const n = await api.store.encolar(corrida.chatId, {
+        agente,
+        proyecto: corrida.proyecto,
+        textos: cuerpo.data.huecos,
+        corridaId: corrida.id,
+        ronda: corrida.ronda,
+      });
+      return reply.code(200).send({ output: `anote ${n} tarea(s) para la ronda que sigue` });
     });
 
     /**

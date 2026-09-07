@@ -1,0 +1,297 @@
+/**
+ * La corrida desatendida: dejar el bot trabajando de noche.
+ *
+ * Ver `multicodigo-vm/docs/superpowers/specs/2026-09-07-corrida-desatendida-design.md`.
+ *
+ * Este archivo es SOLO decisiones puras: cuando se corta, que prompt lee el
+ * analista, como se cuenta lo que paso. Nada de base ni de red — eso es
+ * `store.ts` y `pipeline.ts`. La separacion es lo que hace que los techos se
+ * puedan testear con un reloj de mentira en vez de esperando hasta las siete.
+ */
+
+import { HORAS_DE_DIFERENCIA } from './horas.js';
+
+/**
+ * Por que termino una corrida.
+ *
+ * Es el campo que se lee PRIMERO a la mañana, y por eso son seis y no dos: la
+ * diferencia entre "el analista no encontro nada mas" y "se corto en la ronda
+ * 3" es la diferencia entre confiar en el resultado y tener que revisarlo. Un
+ * unico "termino" convertiria las dos cosas en la misma linea.
+ *
+ * Espeja el CHECK de la migracion 023.
+ */
+export const MOTIVOS_DE_CIERRE = [
+  'completo',
+  'techo_rondas',
+  'techo_hora',
+  'cuentas_agotadas',
+  'demasiados_fallos',
+  'cancelada',
+] as const;
+export type MotivoDeCierre = (typeof MOTIVOS_DE_CIERRE)[number];
+
+/** Una corrida, como la devuelve el store. */
+export interface Corrida {
+  id: string;
+  chatId: number;
+  proyecto: string;
+  md: string;
+  ronda: number;
+  techoRondas: number;
+  /** Hora de reloj de Argentina, `HH:MM`. */
+  techoHora: string;
+  fallosSeguidos: number;
+  /**
+   * La ultima ronda en que el analista llamo a `reportar_huecos`.
+   *
+   * Separa "reviso y no falta nada" de "escribio prosa y no llamo la
+   * herramienta". Sin esto las dos cierran la corrida diciendo `completo`, y la
+   * segunda seria una mentira. Ver el comentario de la columna en la migracion
+   * 023.
+   */
+  huecosDeRonda?: number;
+  estado: 'abierta' | 'cerrada';
+  motivoDeCierre?: MotivoDeCierre;
+  creadoEn: Date;
+}
+
+/**
+ * Los defaults de los techos.
+ *
+ * Tres rondas porque el analista y el constructor pueden pasarse la noche
+ * agregando y quitando lo mismo, y la tercera vuelta ya no aporta: si algo
+ * quedo sin resolver en dos rondas, lo que falta es una decision humana.
+ *
+ * Las siete porque es la hora en que se lee el informe. Una ronda que sigue
+ * despues de eso trabaja sobre algo que ya nadie va a revisar antes de usarlo.
+ */
+export const TECHO_RONDAS_POR_DEFECTO = 3;
+export const TECHO_HORA_POR_DEFECTO = '07:00';
+
+/**
+ * Cuantas tareas seguidas pueden fallar antes de cortar.
+ *
+ * Es el techo que hace que "seguir con la siguiente" no sea una forma elegante
+ * de quemar la noche entera contra el mismo error: veinte tareas que dependen
+ * de un `pnpm install` roto fallan las veinte, una por una, gastando un turno
+ * completo cada vez.
+ */
+export const TOPE_DE_FALLOS = 3;
+
+const HORA = /^([01][0-9]|2[0-3]):([0-5][0-9])$/;
+
+const UN_DIA = 24 * 60 * 60 * 1000;
+
+/**
+ * El instante en que corta el techo de hora.
+ *
+ * `hasta=07:00` no es una fecha: es una hora de reloj, y una corrida que
+ * arranca a las 23 tiene que cortar a las 7 del dia SIGUIENTE. Se resuelve
+ * contra `creadoEn` y no se guarda calculado al abrir porque asi el numero que
+ * quedo en la base sigue siendo el que se dicto.
+ *
+ * La cuenta se hace corriendo el instante tres horas para atras, para que los
+ * campos UTC del Date sean el reloj de Argentina; despues se vuelve. Es la
+ * misma razon por la que `horas.ts` hace una resta en vez de usar `Intl`: lo
+ * que hay es una hora suelta, no un instante que convertir.
+ */
+export function limiteDeHora(creadoEn: Date, techoHora: string): Date {
+  const m = HORA.exec(techoHora);
+  // Una hora que no matchea no puede pasar por el CHECK de la base, asi que
+  // llegar aca significa que alguien la construyo a mano. Se elige no cortar
+  // nunca antes que cortar en un momento inventado: los otros dos techos siguen
+  // valiendo, y una corrida que dura de mas se ve; una que corta a la hora
+  // equivocada parece un bug del ciclo.
+  if (!m) return new Date(creadoEn.getTime() + UN_DIA * 365);
+
+  const desfase = HORAS_DE_DIFERENCIA * 60 * 60 * 1000;
+  const local = new Date(creadoEn.getTime() - desfase);
+  const objetivo = Date.UTC(
+    local.getUTCFullYear(),
+    local.getUTCMonth(),
+    local.getUTCDate(),
+    Number(m[1]),
+    Number(m[2]),
+  );
+  // `<=` y no `<`: abrir una corrida a las 07:00 en punto con `hasta=07:00`
+  // significa "hasta las siete de mañana", no "corta ya".
+  const limite = objetivo <= local.getTime() ? objetivo + UN_DIA : objetivo;
+  return new Date(limite + desfase);
+}
+
+/**
+ * El techo que corta, o null si todavia se puede seguir.
+ *
+ * Se consulta ANTES de tomar cada tarea, no solo cuando la cola se vacia. La
+ * diferencia importa para dos de los tres: el de fallos tiene que cortar en
+ * medio de la cola —es justo lo que viene a evitar— y el de hora tambien, para
+ * que una ronda larga no siga cuando ya no sirve. El de rondas solo puede
+ * cambiar en el analisis, asi que da lo mismo donde se mire.
+ *
+ * El orden de los `if` es el orden en que se reportan cuando coinciden, y esta
+ * elegido por cual explica mejor lo que paso: que fallaron tres seguidas es
+ * mas informativo que la hora, y la hora es mas informativa que un contador de
+ * rondas que quedo alto de arrastre.
+ */
+export function techoAlcanzado(
+  c: Pick<Corrida, 'ronda' | 'techoRondas' | 'techoHora' | 'fallosSeguidos' | 'creadoEn'>,
+  ahora: Date,
+): MotivoDeCierre | null {
+  if (c.fallosSeguidos >= TOPE_DE_FALLOS) return 'demasiados_fallos';
+  if (ahora.getTime() >= limiteDeHora(c.creadoEn, c.techoHora).getTime()) return 'techo_hora';
+  // `>` y no `>=`: la ronda 3 con techo 3 es la ultima que se CORRE. El
+  // contador se pasa a 4 al final de esa ronda y ahi si corta.
+  if (c.ronda > c.techoRondas) return 'techo_rondas';
+  return null;
+}
+
+/** Lo que se le puede pasar a `/corrida` adelante del MD. */
+export interface OpcionesDeCorrida {
+  md: string;
+  techoRondas: number;
+  techoHora: string;
+}
+
+/** `rondas=3` o `hasta=07:00`, al principio de la primera linea. */
+const OPCION = /^(rondas|hasta)=(\S+)$/;
+
+/**
+ * Parte el argumento de `/corrida` en opciones y MD.
+ *
+ * Las opciones se consumen SOLO de la corrida inicial de tokens de la primera
+ * linea. Es lo que permite pegar un MD que empieza con un titulo sin que el
+ * parser se coma nada: el primer token que no es `rondas=` ni `hasta=` termina
+ * la zona de opciones, y de ahi en adelante todo es pliego.
+ *
+ * Un valor invalido cae al default en vez de rechazar el comando: quien pega un
+ * MD de doscientas lineas y escribe mal la hora no quiere que se le devuelva un
+ * error de sintaxis a las once de la noche. La respuesta del comando dice con
+ * que techos quedo, asi que un default silencioso igual se ve.
+ */
+export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
+  const lineas = rest.split('\n');
+  const primera = (lineas[0] ?? '').trim();
+  const tokens = primera === '' ? [] : primera.split(/\s+/);
+
+  let techoRondas = TECHO_RONDAS_POR_DEFECTO;
+  let techoHora = TECHO_HORA_POR_DEFECTO;
+  let consumidos = 0;
+  for (const t of tokens) {
+    const m = OPCION.exec(t);
+    if (!m) break;
+    consumidos += 1;
+    if (m[1] === 'rondas') {
+      const n = Number(m[2]);
+      if (Number.isInteger(n) && n >= 1 && n <= 20) techoRondas = n;
+    } else if (HORA.test(m[2]!)) {
+      techoHora = m[2]!;
+    }
+  }
+
+  const restoDePrimera = tokens.slice(consumidos).join(' ');
+  const md = [restoDePrimera, ...lineas.slice(1)].join('\n').trim();
+  return { md, techoRondas, techoHora };
+}
+
+/**
+ * El prompt del turno de analisis.
+ *
+ * Arranca en sesion LIMPIA —quien lo llama no pasa `sessionId`— y eso es la
+ * mitad del diseño: si heredara la conversacion del constructor heredaria
+ * tambien sus puntos ciegos y sus justificaciones. Un agente que paso la noche
+ * diciendo "listo, hecho" lee su propio trabajo con los mismos anteojos.
+ *
+ * Se le pide la lista por la HERRAMIENTA y no en prosa, y se lo repite: un
+ * analista que escribe "parece que falta el modulo de stock" en vez de llamar
+ * `reportar_huecos` se traduce en cero tareas encoladas y una corrida que
+ * cierra diciendo que esta completa. Con una tool, o llamo o no llamo, y eso es
+ * verificable.
+ */
+export function promptDeAnalisis(md: string, ronda: number): string {
+  return [
+    'Sos el analista de esta corrida. No construis nada: revisas.',
+    '',
+    `Esta es la ronda ${ronda}. Abajo esta el pliego completo de lo que hay que`,
+    'construir. En el worktree esta lo que se construyo hasta ahora.',
+    '',
+    'Tu trabajo: leer el codigo que hay y compararlo contra el pliego, punto por',
+    'punto. Buscas HUECOS: lo que el pliego pide y el codigo todavia no hace,',
+    'lo que quedo a medias, y lo que esta escrito pero sin ninguna prueba que lo',
+    'respalde.',
+    '',
+    'No arregles nada. No escribas ni edites archivos. Solo mira y reporta.',
+    '',
+    'Cuando termines de revisar, llama a la herramienta reportar_huecos con la',
+    'lista. Es OBLIGATORIO: si escribis los huecos en prosa y no llamas la',
+    'herramienta, nadie los recibe y la corrida cierra como si estuviera',
+    'completa. Cada hueco tiene que estar redactado como una TAREA que otro',
+    'agente pueda tomar sin volver a leer el pliego.',
+    '',
+    'Si revisaste todo y de verdad no falta nada, llama igual a reportar_huecos',
+    'con la lista vacia. Eso es lo que cierra la corrida como completa.',
+    '',
+    '--- PLIEGO ---',
+    md,
+  ].join('\n');
+}
+
+/** Lo que el informe necesita saber de las tareas de la corrida. */
+export interface ResumenDeTareas {
+  hechas: number;
+  fallidas: number;
+  pendientes: number;
+  /** Lo que no salio, con la ronda en que se detecto. Para nombrarlo. */
+  sinResolver: { texto: string; ronda?: number }[];
+}
+
+/** Como se cuenta cada motivo, en una linea. */
+const POR_QUE: Record<MotivoDeCierre, string> = {
+  completo: 'el analista no encontro huecos',
+  techo_rondas: 'se alcanzo el techo de rondas',
+  techo_hora: 'se alcanzo la hora de corte',
+  // No es un fallo y se dice asi: si se agotaron todas las cuentas no hay nada
+  // roto, hay que esperar. Contarlo como error mandaria a buscar un bug que no
+  // existe.
+  cuentas_agotadas: 'se agotaron los tokens de todas las cuentas',
+  demasiados_fallos: `fallaron ${TOPE_DE_FALLOS} tareas seguidas`,
+  cancelada: 'la cancelaste',
+};
+
+/**
+ * El informe de la mañana.
+ *
+ * La primera linea es el motivo, y ese orden no es estetico: si dice "se
+ * alcanzo el techo de rondas", el trabajo puede estar a medias aunque las 18
+ * tareas figuren hechas. Poner el conteo arriba invitaria a leer "18 hechas" y
+ * cerrar el chat.
+ */
+export function textoDeInforme(
+  c: Pick<Corrida, 'proyecto' | 'ronda' | 'techoRondas'>,
+  motivo: MotivoDeCierre,
+  t: ResumenDeTareas,
+  rama?: string,
+): string {
+  const lineas = [
+    `🌙 <b>Corrida terminada</b> — ${c.proyecto}`,
+    '',
+    `Termino porque: ${POR_QUE[motivo]}`,
+    // Las rondas CORRIDAS, no el contador: `ronda` se pasa uno de largo justo
+    // cuando corta el techo —es asi como el techo se detecta— y un informe que
+    // dice "rondas: 4" con techo 3 se lee como un bug del ciclo.
+    `Rondas: ${Math.min(c.ronda, c.techoRondas)}`,
+    `Tareas: ${t.hechas} hechas · ${t.fallidas} fallaron · ${t.pendientes} sin hacer`,
+  ];
+
+  if (t.sinResolver.length > 0) {
+    lineas.push('', '<b>Quedo sin resolver:</b>');
+    for (const s of t.sinResolver) {
+      lineas.push(` · ${s.texto}${s.ronda !== undefined ? ` (ronda ${s.ronda})` : ''}`);
+    }
+  }
+
+  // La rama es lo unico que hace accionable el informe: sin ella, "18 hechas"
+  // no dice donde mirar.
+  if (rama) lineas.push('', `El trabajo esta en <code>${rama}</code>`);
+  return lineas.join('\n');
+}

@@ -15,6 +15,7 @@ import { MAXIMO_BYTES, TIPOS, TIPOS_IMAGEN, esImagen, tipoDe } from './documento
 import type { Boton } from './render.js';
 import type { ModoPermiso, ClaveDeModelo } from './store.js';
 import type { Tarea } from './cola.js';
+import type { Corrida } from './corrida.js';
 import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
 import { decidir } from './decisiones.js';
@@ -44,10 +45,19 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return textoDeModelo(outcome.modelo, outcome.cambiado);
     case 'cola':
       return textoDeCola(outcome.tareas, outcome.encoladas, outcome.agente);
-    case 'cola_cancelada':
-      return outcome.cuantas === 0
-        ? 'No habia nada esperando en la cola.'
-        : `Listo, saque ${outcome.cuantas} tarea(s) de la cola. Lo que ya estaba corriendo sigue.`;
+    case 'corrida':
+      return textoDeCorrida(outcome.corrida, outcome.recienAbierta, outcome.yaHabia);
+    case 'cola_cancelada': {
+      // La corrida se nombra APARTE de las tareas: cerrarla es lo que impide
+      // que el ciclo vuelva a rellenar la cola, y quien cancela a las dos de la
+      // mañana necesita leer que eso paso. "Saque 4 tareas" a secas dejaria la
+      // duda de si el bot va a seguir solo.
+      const cola =
+        outcome.cuantas === 0
+          ? 'No habia nada esperando en la cola.'
+          : `Listo, saque ${outcome.cuantas} tarea(s) de la cola. Lo que ya estaba corriendo sigue.`;
+      return outcome.corridaCerrada ? `${cola}\n\nY cerre la corrida: no voy a seguir sola.` : cola;
+    }
     case 'menu':
       // `/start` se presenta; `/menu` no. Ver `identidad.ts`.
       return outcome.saluda ? saludo() : encabezadoDeMenu();
@@ -175,6 +185,11 @@ export function textoDeCola(tareas: Tarea[], encoladas: number, agente?: AgentId
       '',
       'Mandame <b>/cola</b> y abajo la lista de cosas que hay que hacer, una por linea.',
       'Las voy haciendo en orden y te aviso al terminar cada una.',
+      '',
+      // El punto de descubrimiento de /corrida: quien esta mirando la cola
+      // vacia es justo quien tiene trabajo para dictar.
+      'Si es un proyecto entero y lo queres dejar toda la noche, mandame <b>/corrida</b>',
+      'con el pliego: cuando la cola se vacie reviso contra el pliego y sigo sola.',
     ].join('\n');
   }
 
@@ -197,6 +212,56 @@ export function textoDeCola(tareas: Tarea[], encoladas: number, agente?: AgentId
     lineas.push('', `Hechas: ${hechas}${fallidas > 0 ? ` · fallaron: ${fallidas}` : ''}`);
   }
   if (pendientes.length > 0) lineas.push('', 'Con /cancelar corto lo que falta.');
+  return lineas.join('\n');
+}
+
+/**
+ * Una corrida desatendida.
+ *
+ * Los tres casos que contesta el mismo comando: recien abierta, ya habia una, y
+ * `/corrida` a secas. El de "ya habia una" dice CUAL, porque la pregunta que
+ * sigue siempre es esa.
+ */
+export function textoDeCorrida(
+  c: Corrida | undefined,
+  recienAbierta: boolean,
+  yaHabia: boolean,
+): string {
+  if (!c) {
+    return [
+      'No hay ninguna corrida abierta.',
+      '',
+      'Mandame <b>/corrida</b> y abajo el pliego completo de lo que hay que',
+      'construir. Voy a ir haciendo la cola, y cuando se vacie reviso el repo',
+      'contra el pliego y encolo lo que falte, hasta terminar o hasta un techo.',
+      '',
+      'Podes fijar los techos: <code>/corrida rondas=3 hasta=07:00</code>.',
+    ].join('\n');
+  }
+
+  if (yaHabia) {
+    return [
+      `Ya tenes una corrida abierta en <b>${c.proyecto}</b>, en la ronda ${c.ronda}.`,
+      '',
+      // Se explica POR QUE no se abre otra: sin esto se lee como un limite
+      // arbitrario y el reflejo es reintentar.
+      'No abro una segunda: las dos pelearian por los mismos agentes y ninguna',
+      'de las dos terminaria.',
+      '',
+      'Con /cancelar cierro esta y podes arrancar la nueva.',
+    ].join('\n');
+  }
+
+  const lineas = recienAbierta
+    ? [`🌙 Corrida abierta en <b>${c.proyecto}</b>.`, '']
+    : [`🌙 Corrida abierta en <b>${c.proyecto}</b>, ronda ${c.ronda}.`, ''];
+  lineas.push(
+    `Techos: ${c.techoRondas} ronda(s) · hasta las ${c.techoHora}.`,
+    '',
+    recienAbierta
+      ? 'Ahora mandame la cola con <b>/cola</b> y una tarea por linea. Cuando se vacie, reviso contra el pliego y sigo sola.'
+      : 'Con /cola ves lo que falta. Con /cancelar cierro la corrida.',
+  );
   return lineas.join('\n');
 }
 
@@ -444,6 +509,10 @@ async function bajarAudio(
 const COMANDOS = [
   { command: 'menu', description: 'Qué puedo hacer por vos' },
   { command: 'cola', description: 'Todo lo que hay que hacer, una tarea por línea' },
+  // Abajo de /cola a proposito: es la version larga de lo mismo, y quien no
+  // sabe que existe la cola no tiene por que empezar por una corrida de ocho
+  // horas.
+  { command: 'corrida', description: 'Dejarme trabajando toda la noche sobre un pliego' },
   { command: 'cancelar', description: 'Cortar lo que queda en la cola' },
   { command: 'agente', description: 'Elegir con qué agente hablar' },
   { command: 'proyecto', description: 'Ver o cambiar el proyecto activo' },

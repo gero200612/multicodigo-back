@@ -18,8 +18,17 @@ import {
   datosDeMenu,
 } from './menu.js';
 import type { Boton } from './render.js';
-import type { Store, Proyecto, ModoPermiso, ClaveDeModelo } from './store.js';
+import type { Store, Proyecto, ModoPermiso, ModoDeTurno, ClaveDeModelo } from './store.js';
 import { partirEnTareas, type Tarea } from './cola.js';
+import {
+  parseOpcionesDeCorrida,
+  promptDeAnalisis,
+  techoAlcanzado,
+  textoDeInforme,
+  type Corrida,
+  type MotivoDeCierre,
+  type ResumenDeTareas,
+} from './corrida.js';
 import { aHoraArgentina } from './horas.js';
 import { conCodigoParaTelegram } from './codigo.js';
 import type { Quien } from './agents-client.js';
@@ -149,7 +158,20 @@ export type PipelineOutcome =
    * a `/cola` y a `/cola <lista>`, y decir "sume 0 tareas" seria raro.
    */
   | { kind: 'cola'; tareas: Tarea[]; encoladas: number; agente?: AgentId }
-  | { kind: 'cola_cancelada'; cuantas: number }
+  /**
+   * Una corrida desatendida.
+   *
+   * `abierta` distingue los tres casos que contesta el mismo comando: recien
+   * abierta, ya habia una —y no se abre otra—, y `/corrida` a secas para mirar.
+   */
+  | {
+      kind: 'corrida';
+      corrida?: Corrida;
+      recienAbierta: boolean;
+      /** Habia una abierta y por eso no se abrio la nueva. */
+      yaHabia: boolean;
+    }
+  | { kind: 'cola_cancelada'; cuantas: number; corridaCerrada: boolean }
   | { kind: 'project'; project: string }
   /** El chat no esta atado a ninguna cuenta del panel. */
   | { kind: 'sin_vincular'; yaEstaba: boolean }
@@ -320,9 +342,50 @@ export async function handleIncoming(
     };
   }
 
+  if (command.kind === 'corrida') {
+    const { md, techoRondas, techoHora } = parseOpcionesDeCorrida(command.texto);
+    const abierta = await deps.store.corridaAbierta(input.chatId);
+
+    // Sin pliego es "mostrame como va".
+    if (md === '') {
+      return { kind: 'corrida', corrida: abierta, recienAbierta: false, yaHabia: false };
+    }
+    // Con pliego y una ya abierta: NO se abre otra. Dos corridas sobre el mismo
+    // chat competirian por los mismos slots y ninguna de las dos terminaria.
+    if (abierta) {
+      return { kind: 'corrida', corrida: abierta, recienAbierta: false, yaHabia: true };
+    }
+
+    const proyecto = (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
+    const nueva = await deps.store.abrirCorrida({
+      chatId: input.chatId,
+      proyecto,
+      md,
+      techoRondas,
+      techoHora,
+    });
+    // `undefined` = la base rechazo el INSERT por el indice unico, o sea que
+    // otro `/corrida` gano la carrera entre el SELECT de arriba y esto. Se
+    // contesta lo mismo que si el chequeo la hubiera visto.
+    if (!nueva) {
+      return {
+        kind: 'corrida',
+        corrida: await deps.store.corridaAbierta(input.chatId),
+        recienAbierta: false,
+        yaHabia: true,
+      };
+    }
+    return { kind: 'corrida', corrida: nueva, recienAbierta: true, yaHabia: false };
+  }
+
   if (command.kind === 'cola_cancelar') {
     const n = await deps.store.cancelarCola(input.chatId);
-    return { kind: 'cola_cancelada', cuantas: n };
+    // Y la corrida, si habia una. Sin esto la cola queda vacia, el ciclo la ve
+    // vacia con una corrida abierta, y arranca un analisis: cancelar
+    // resucitaria el trabajo que se acaba de cancelar.
+    const abierta = await deps.store.corridaAbierta(input.chatId);
+    if (abierta) await deps.store.cerrarCorrida(abierta.id, 'cancelada');
+    return { kind: 'cola_cancelada', cuantas: n, corridaCerrada: Boolean(abierta) };
   }
 
   if (command.kind === 'modelo') {
@@ -565,7 +628,7 @@ export type PromptConToken = PromptRequest & {
    * ande. El agente lo lee al lado de `PromptRequest`, y zod descarta lo que no
    * declara sin fallar.
    */
-  modo?: ModoPermiso;
+  modo?: ModoDeTurno;
   /**
    * La CLAVE del modelo (`sonnet`), no su id.
    *
@@ -605,8 +668,12 @@ export interface Turno {
    *
    * Del CHAT y no del proyecto: es una preferencia de quien lee las preguntas.
    * Ausente = el default del agente, que es el mas estricto.
+   *
+   * `ModoDeTurno` y no `ModoPermiso` porque adentro de una corrida el ciclo
+   * manda `desatendido`, que nadie puede elegir con /permisos. Ver
+   * `MODO_DESATENDIDO` en store.ts.
    */
-  modo?: ModoPermiso;
+  modo?: ModoDeTurno;
   /** Con que modelo corre. Ausente = el default del CLI de Claude. */
   modelo?: ClaveDeModelo;
   origen: 'telegram' | 'panel';
@@ -987,6 +1054,170 @@ export async function armarMenuDeAgentes(
 }
 
 /**
+ * Todo lo que un turno de la cola necesita saber del proyecto.
+ *
+ * Salio del bucle porque ahora hay DOS clases de turno —la tarea y el
+ * analisis— y las dos necesitan lo mismo. Duplicado eran seis lookups
+ * repetidos, con la garantia de que el dia que se agregue un septimo entre en
+ * uno solo.
+ */
+async function contextoDeCola(
+  chatId: number,
+  proyecto: string,
+  usuarioId: string,
+  deps: PipelineDeps,
+) {
+  const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
+  const proyectoId = proyectos.find((p) => p.nombre === proyecto)?.id;
+  return {
+    proyectoId,
+    repos: proyectoId ? await deps.store.reposDeProyecto(proyectoId) : undefined,
+    githubToken: await tokenDelProyecto(proyectoId, deps),
+    documentos: proyectoId
+      ? await deps.store.documentosDeProyecto(proyectoId).catch(() => undefined)
+      : undefined,
+    modelo: await deps.store.modeloDeChat(chatId).catch(() => undefined),
+  };
+}
+
+/**
+ * Cierra la corrida y manda el informe.
+ *
+ * El cierre va ANTES del aviso, y ese orden importa: si Telegram falla —o el
+ * proceso se cae mandando el mensaje— una corrida cerrada sin informe se
+ * arregla mirando la tabla, pero una corrida abierta que ya informo vuelve a
+ * arrancar un analisis la proxima vez que alguien encole algo.
+ */
+async function cerrarConInforme(
+  corrida: Corrida,
+  motivo: MotivoDeCierre,
+  deps: PipelineDeps,
+  avisar: (texto: string) => Promise<void>,
+): Promise<void> {
+  await deps.store.cerrarCorrida(corrida.id, motivo);
+
+  const tareas = await deps.store.tareasDeCorrida(corrida.id);
+  const resumen: ResumenDeTareas = {
+    hechas: tareas.filter((t) => t.estado === 'lista').length,
+    fallidas: tareas.filter((t) => t.estado === 'fallida').length,
+    pendientes: tareas.filter((t) => t.estado === 'pendiente').length,
+    // Lo que fallo y lo que quedo sin empezar, en la MISMA lista: a la mañana
+    // las dos cosas son "esto no esta", y separarlas en dos listas obliga a
+    // leer las dos para saber que falta.
+    sinResolver: tareas
+      .filter((t) => t.estado === 'fallida' || t.estado === 'pendiente')
+      .map((t) => ({ texto: t.texto, ...(t.ronda !== undefined ? { ronda: t.ronda } : {}) })),
+  };
+
+  // El PREFIJO de rama y no una rama concreta: el nombre exacto lo elige el
+  // agente al pushear y el bridge no lo ve. Decir el prefijo es cierto y
+  // alcanza para encontrarla; inventar un nombre completo seria mandar a
+  // alguien a una rama que no existe.
+  const agente = (await deps.store.getActiveAgent(corrida.chatId)) ?? deps.defaultAgent;
+  await avisar(textoDeInforme(corrida, motivo, resumen, `claude/${agente}/*`));
+}
+
+/**
+ * La ronda de analisis: un agente limpio compara el pliego contra el repo.
+ *
+ * Devuelve si el ciclo SIGUE. Cuando devuelve false la corrida ya quedo
+ * cerrada y el informe mandado, asi que quien llama solo tiene que volver.
+ *
+ * ## Sesion limpia, a proposito
+ *
+ * Si heredara la conversacion del constructor heredaria tambien sus puntos
+ * ciegos y sus justificaciones: un agente que paso la noche diciendo "listo,
+ * hecho" lee su propio trabajo con los mismos anteojos.
+ *
+ * ## Por que no se parsea la respuesta
+ *
+ * El analista encola llamando a `reportar_huecos`, que entra por
+ * `/interno/corrida/huecos` y escribe directo en la cola. Este codigo no lee su
+ * prosa: mira si aparecieron tareas. Parsear texto aca seria fragil de la peor
+ * manera — un "parece que falta el modulo de stock" se traduciria en cero
+ * tareas encoladas y una corrida que cierra diciendo que esta completa.
+ */
+async function rondaDeAnalisis(
+  corrida: Corrida,
+  usuarioId: string,
+  deps: PipelineDeps,
+  avisar: (texto: string) => Promise<void>,
+): Promise<boolean> {
+  const chatId = corrida.chatId;
+  const agente = (await deps.store.getActiveAgent(chatId)) ?? deps.defaultAgent;
+  const ctx = await contextoDeCola(chatId, corrida.proyecto, usuarioId, deps);
+
+  await avisar(`🔎 No queda nada pendiente. Reviso contra el pliego (ronda ${corrida.ronda}).`);
+
+  try {
+    await ejecutarTurnoConRelevo(deps, {
+      proyectoId: ctx.proyectoId,
+      proyecto: corrida.proyecto,
+      agente: agente as AgentId,
+      usuarioId,
+      prompt: promptDeAnalisis(corrida.md, corrida.ronda),
+      // El analista no escribe —el prompt se lo prohibe— pero el modo va igual:
+      // con `preguntar`, un intento de editar dejaria el turno colgado quince
+      // minutos esperando un OK que nadie va a dar a las tres de la mañana.
+      modo: 'desatendido',
+      modelo: ctx.modelo,
+      repos: ctx.repos,
+      githubToken: ctx.githubToken,
+      documentos: ctx.documentos,
+      origen: 'telegram',
+      chatId,
+    });
+  } catch (err) {
+    const codigo = err instanceof Error ? err.message : 'internal';
+    // Sin cuentas no hay analisis, y no hay nada roto: se cierra limpio.
+    if (codigo === 'usage_limit') {
+      await cerrarConInforme(corrida, 'cuentas_agotadas', deps, avisar);
+      return false;
+    }
+    const fallos = await deps.store.contarFallo(corrida.id, true);
+    if (techoAlcanzado({ ...corrida, fallosSeguidos: fallos }, new Date()) !== null) {
+      await cerrarConInforme(corrida, 'demasiados_fallos', deps, avisar);
+      return false;
+    }
+    // Se vuelve al bucle SIN avanzar la ronda: el analisis se reintenta, y el
+    // techo de fallos es lo que acota el reintento a tres.
+    return true;
+  }
+
+  // ¿Llamo a la herramienta? Se relee la corrida porque el endpoint de
+  // `reportar_huecos` la escribio despues de que este turno empezara.
+  const despues = await deps.store.corridaAbierta(chatId);
+  // La cancelaron mientras corria el analisis.
+  if (!despues) return false;
+
+  if (despues.huecosDeRonda !== corrida.ronda) {
+    // Reviso y contesto en prosa sin llamar la herramienta. Es un turno fallido
+    // y no una corrida completa: cerrar aca diciendo "completo" es exactamente
+    // la falla silenciosa que este ciclo no puede tener.
+    const fallos = await deps.store.contarFallo(corrida.id, true);
+    await avisar('El analista no reporto por la herramienta. Reintento la revision.');
+    if (techoAlcanzado({ ...despues, fallosSeguidos: fallos }, new Date()) !== null) {
+      await cerrarConInforme(despues, 'demasiados_fallos', deps, avisar);
+      return false;
+    }
+    return true;
+  }
+
+  await deps.store.contarFallo(corrida.id, false);
+
+  // Llamo, y no aparecio nada: la corrida esta completa. Es el UNICO camino a
+  // ese motivo, y por eso la marca de la herramienta es lo que lo habilita.
+  if (!(await deps.store.proximaTarea(chatId))) {
+    await cerrarConInforme(despues, 'completo', deps, avisar);
+    return false;
+  }
+
+  const ronda = await deps.store.avanzarRonda(corrida.id);
+  await avisar(`Encontre trabajo que falta. Arranco la ronda ${ronda}.`);
+  return true;
+}
+
+/**
  * Recorre la cola de un chat, una tarea por vez, hasta que no queda nada.
  *
  * ## Por que de a una y no en paralelo
@@ -997,17 +1228,23 @@ export async function armarMenuDeAgentes(
  * una persona a la vez: dos tareas del mismo chat contra el mismo agente
  * chocarian con el 409 de la tenencia.
  *
- * ## Por que se detiene ante un fallo
+ * ## Que cambia cuando hay una corrida abierta
  *
- * Seguir con la siguiente cuando la anterior no salio es hacer trabajo sobre
- * una base que nadie miro. Se avisa y se deja lo que queda como pendiente, para
- * que se pueda retomar o cancelar.
+ * Dos cosas, y las dos SOLO adentro de la corrida:
+ *
+ * 1. **La cola vacia no termina el bucle**: corre un turno de analisis que
+ *    compara el pliego contra el repo y rellena la cola. Ver `rondaDeAnalisis`.
+ * 2. **Un fallo no detiene la cola**: se marca, se sigue con la siguiente, y el
+ *    informe la lista. Afuera de una corrida se detiene igual que siempre — ahi
+ *    hay alguien mirando, y parar es lo correcto.
+ *
+ * Sin corrida abierta esta funcion se comporta EXACTAMENTE como antes. Es la
+ * condicion que hace que las corridas no puedan romper la cola que ya andaba.
  *
  * ## Por que no hay `await` afuera
  *
- * Quien la dispara no la espera: una cola de cinco tareas puede tardar media
- * hora, y el handler de Telegram tiene que contestar ya. El progreso llega por
- * `avisar`.
+ * Quien la dispara no la espera: una corrida puede tardar ocho horas, y el
+ * handler de Telegram tiene que contestar ya. El progreso llega por `avisar`.
  */
 export async function correrCola(
   chatId: number,
@@ -1018,53 +1255,93 @@ export async function correrCola(
   if (!usuarioId) return;
 
   for (;;) {
-    const tarea = await deps.store.tomarProxima(chatId);
-    if (!tarea) return;
+    // Se relee en CADA vuelta y no una sola vez al entrar: la corrida se puede
+    // cerrar desde afuera con /cancelar mientras el bucle corre, y un bucle que
+    // se la guardo al empezar seguiria rellenando la cola despues.
+    const corrida = await deps.store.corridaAbierta(chatId);
 
-    const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
-    const proyectoId = proyectos.find((p) => p.nombre === tarea.proyecto)?.id;
-    const repos = proyectoId ? await deps.store.reposDeProyecto(proyectoId) : undefined;
-    const githubToken = await tokenDelProyecto(proyectoId, deps);
-    const documentos =
-      proyectoId
-        ? await deps.store.documentosDeProyecto(proyectoId).catch(() => undefined)
-        : undefined;
-    const modo = await deps.store.modoDeChat(chatId).catch(() => undefined);
-    const modelo = await deps.store.modeloDeChat(chatId).catch(() => undefined);
+    // Los techos se miran ANTES de tomar la proxima, no solo cuando la cola se
+    // vacia. Es lo que hace que el de fallos y el de hora corten en MEDIO de
+    // una ronda, que es justo para lo que existen.
+    if (corrida) {
+      const motivo = techoAlcanzado(corrida, new Date());
+      if (motivo) {
+        await cerrarConInforme(corrida, motivo, deps, avisar);
+        return;
+      }
+    }
+
+    const tarea = await deps.store.tomarProxima(chatId);
+    if (!tarea) {
+      // Sin corrida, aca se terminaba la noche. Con corrida, empieza el ciclo.
+      if (!corrida) return;
+      if (!(await rondaDeAnalisis(corrida, usuarioId, deps, avisar))) return;
+      continue;
+    }
+
+    const ctx = await contextoDeCola(chatId, tarea.proyecto, usuarioId, deps);
+    // Adentro de una corrida el modo lo fija el CICLO y no se lee de la base: el
+    // punto de la corrida es que nadie tenga que aprobar nada a las tres de la
+    // mañana, y `preguntar` ahi es una noche perdida en la primera edicion.
+    //
+    // Muere con la corrida porque nunca se guardo. No existe
+    // `/permisos desatendido`, y esa ausencia es deliberada: un modo que se
+    // olvida prendido es la forma en que esto se vuelve un accidente en tres
+    // semanas.
+    const modo = corrida
+      ? 'desatendido'
+      : await deps.store.modoDeChat(chatId).catch(() => undefined);
 
     try {
       const r = await ejecutarTurnoConRelevo(deps, {
-        proyectoId,
+        proyectoId: ctx.proyectoId,
         proyecto: tarea.proyecto,
         agente: tarea.agente as AgentId,
         usuarioId,
         prompt: tarea.texto,
         modo,
-        modelo,
-        repos,
-        githubToken,
-        documentos,
+        modelo: ctx.modelo,
+        repos: ctx.repos,
+        githubToken: ctx.githubToken,
+        documentos: ctx.documentos,
         origen: 'telegram',
         chatId,
       });
       await deps.store.cerrarTarea(tarea.id, 'lista', r.texto);
-      await avisar(`✅ ${tarea.texto}
-
-${conCodigoParaTelegram(r.texto)}`);
+      // Una que sale bien vuelve el contador a cero: lo que corta la corrida
+      // son tres fallos SEGUIDOS, no tres en toda la noche.
+      if (corrida) await deps.store.contarFallo(corrida.id, false);
+      await avisar(`✅ ${tarea.texto}\n\n${conCodigoParaTelegram(r.texto)}`);
     } catch (err) {
       const codigo = err instanceof Error ? err.message : 'internal';
       await deps.store.cerrarTarea(tarea.id, 'fallida', codigo);
+
+      if (corrida) {
+        // Sin cuentas no se sigue, y NO cuenta como fallo: reintentar contra
+        // cuentas agotadas es esperar sin avisar.
+        if (codigo === 'usage_limit') {
+          await cerrarConInforme(corrida, 'cuentas_agotadas', deps, avisar);
+          return;
+        }
+        await deps.store.contarFallo(corrida.id, true);
+        // Y se SIGUE con la siguiente. El techo de fallos seguidos —que se mira
+        // arriba, en la proxima vuelta— es lo que evita que esto queme la noche
+        // entera contra el mismo error.
+        await avisar(
+          `⛔ Fallo: ${tarea.texto}\n\n${ERROR_TEXT[codigo] ?? codigo}\n\nSigo con la que viene.`,
+        );
+        continue;
+      }
+
+      // Afuera de una corrida, el comportamiento de siempre: se para.
+      //
       // Se cuenta lo que queda ANTES de avisar: el mensaje dice cuanto se
       // detuvo, que es lo que decide si se retoma o se cancela.
       const quedan = (await deps.store.tareasDeChat(chatId)).filter(
         (t) => t.estado === 'pendiente',
       ).length;
       await avisar(
-        `⛔ Fallo: ${tarea.texto}
-
-${ERROR_TEXT[codigo] ?? codigo}
-
-` +
+        `⛔ Fallo: ${tarea.texto}\n\n${ERROR_TEXT[codigo] ?? codigo}\n\n` +
           (quedan > 0
             ? `Pare la cola con ${quedan} tarea(s) sin hacer. Mandame /cola para verlas o /cancelar para descartarlas.`
             : 'Era la ultima de la cola.'),

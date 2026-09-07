@@ -18,8 +18,15 @@
  * que hay que revisar.
  */
 
-/** Cuanto se le resta a UTC para llegar a Argentina. */
-const HORAS_DE_DIFERENCIA = 3;
+/**
+ * Cuanto se le resta a UTC para llegar a Argentina.
+ *
+ * Exportada porque el techo de hora de una corrida la necesita: `hasta=07:00`
+ * es una hora de reloj de acá, y el servidor corre en UTC. Una segunda copia
+ * del numero en `corrida.ts` es una copia que se separa el dia que Argentina
+ * vuelva a tener horario de verano.
+ */
+export const HORAS_DE_DIFERENCIA = 3;
 
 /**
  * `1:30am (UTC)` o `1:30am UTC`, con o sin mayusculas.
