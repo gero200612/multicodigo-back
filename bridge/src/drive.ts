@@ -367,7 +367,12 @@ async function primeraHojaComoCsv(
   );
 }
 
-async function leerPlanilla(token: string, id: string, deps: DriveDeps): Promise<string> {
+async function leerPlanilla(
+  token: string,
+  id: string,
+  deps: DriveDeps,
+  hoja?: string,
+): Promise<string> {
   const doFetch = deps.fetchImpl ?? fetch;
   const auth = { authorization: `Bearer ${token}` };
 
@@ -386,10 +391,28 @@ async function leerPlanilla(token: string, id: string, deps: DriveDeps): Promise
   if (!meta.ok) await comoError(meta, 'no pude abrir esa planilla');
   const hojas = ((await meta.json()) as { sheets?: Array<{ properties?: { title?: string } }> })
     .sheets;
-  const titulos = (hojas ?? [])
+  const todos = (hojas ?? [])
     .map((h) => h.properties?.title)
     .filter((t): t is string => !!t);
-  if (titulos.length === 0) return '';
+  if (todos.length === 0) return '';
+
+  // Una hoja sola, si la pidieron.
+  //
+  // Se busca sin distinguir mayusculas y aceptando un pedazo del nombre: el
+  // modelo repite lo que dijo la persona —"la sheet de debug"— y no el titulo
+  // exacto de la pestaña. Si no existe, se contesta con la lista en vez de un
+  // error: lo que hace falta para volver a pedir bien es justamente esa lista.
+  let titulos = todos;
+  if (hoja) {
+    const buscado = hoja.trim().toLowerCase();
+    const elegida =
+      todos.find((t) => t.toLowerCase() === buscado) ??
+      todos.find((t) => t.toLowerCase().includes(buscado));
+    if (!elegida) {
+      return `no hay ninguna hoja que se llame "${hoja}". Las que tiene son: ${todos.join(', ')}.`;
+    }
+    titulos = [elegida];
+  }
 
   // Los nombres van como rango: una hoja entera es su propio nombre. Se citan
   // con comilla simple porque un titulo con espacios —"Menu online"— sin eso no
@@ -440,13 +463,18 @@ const AL_CONVERSOR: Record<string, string> = {
  * ADENTRO: "no se leer un application/zip" le permite a la persona entender que
  * pasa; "no pude leerlo" la deja sin nada que hacer.
  */
-export async function leer(token: string, id: string, deps: DriveDeps): Promise<string> {
+export async function leer(
+  token: string,
+  id: string,
+  deps: DriveDeps,
+  hoja?: string,
+): Promise<string> {
   const doFetch = deps.fetchImpl ?? fetch;
   const archivo = await metadatos(token, id, deps);
 
   // Antes que la exportacion: una planilla tiene pestañas y `files.export` solo
   // ve la primera. Ver `leerPlanilla`.
-  if (archivo.tipo === TIPO_PLANILLA) return await leerPlanilla(token, id, deps);
+  if (archivo.tipo === TIPO_PLANILLA) return await leerPlanilla(token, id, deps, hoja);
 
   const exportar = EXPORTA_COMO[archivo.tipo];
   if (exportar) {

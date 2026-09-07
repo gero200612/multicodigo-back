@@ -222,6 +222,92 @@ describe('leer', () => {
     expect(urls.some((u) => u.includes('text%2Fcsv') || u.includes('text/csv'))).toBe(true);
   });
 
+  // Lo que el agente pidio en produccion y no existia: "no tengo forma de
+  // pedirle a la herramienta solo la pestaña debug". Tenia razon.
+  it('trae UNA hoja cuando se la pide por nombre', async () => {
+    const rangos: string[] = [];
+    let n = 0;
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
+      n += 1;
+      if (n === 1) {
+        return new Response(
+          JSON.stringify({ id: 's1', name: 'P', mimeType: 'application/vnd.google-apps.spreadsheet' }),
+        );
+      }
+      if (n === 2) {
+        return new Response(
+          JSON.stringify({
+            sheets: [
+              { properties: { title: 'Funcionalidades' } },
+              { properties: { title: 'debug' } },
+              { properties: { title: 'Mails' } },
+            ],
+          }),
+        );
+      }
+      for (const r of new URL(url.toString()).searchParams.getAll('ranges')) rangos.push(r);
+      return new Response(JSON.stringify({ valueRanges: [{ values: [['bug', 'pend']] }] }));
+    });
+    const deps = { clientId: 'i', clientSecret: 's', fetchImpl: fetchImpl as unknown as typeof fetch };
+
+    const texto = await leer('t', 's1', deps, 'debug');
+
+    // Se pidio SOLO esa: traer las tres y filtrar despues gastaria el contexto
+    // en las dos que no se necesitan, que es justo el problema que esto arregla.
+    expect(rangos).toEqual(["'debug'"]);
+    expect(texto).toContain('## debug');
+    expect(texto).not.toContain('## Mails');
+  });
+
+  it('el nombre de la hoja no distingue mayusculas ni pide ser exacto', async () => {
+    const rangos: string[] = [];
+    let n = 0;
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
+      n += 1;
+      if (n === 1) {
+        return new Response(
+          JSON.stringify({ id: 's1', name: 'P', mimeType: 'application/vnd.google-apps.spreadsheet' }),
+        );
+      }
+      if (n === 2) {
+        return new Response(JSON.stringify({ sheets: [{ properties: { title: 'MARKETING 2026' } }] }));
+      }
+      for (const r of new URL(url.toString()).searchParams.getAll('ranges')) rangos.push(r);
+      return new Response(JSON.stringify({ valueRanges: [{ values: [['a']] }] }));
+    });
+    const deps = { clientId: 'i', clientSecret: 's', fetchImpl: fetchImpl as unknown as typeof fetch };
+
+    // El modelo repite lo que dijo la persona, no el titulo exacto de la pestaña.
+    await leer('t', 's1', deps, 'marketing');
+
+    expect(rangos).toEqual(["'MARKETING 2026'"]);
+  });
+
+  it('una hoja que no existe contesta con la lista, no con un error', async () => {
+    let n = 0;
+    const fetchImpl = vi.fn(async () => {
+      n += 1;
+      if (n === 1) {
+        return new Response(
+          JSON.stringify({ id: 's1', name: 'P', mimeType: 'application/vnd.google-apps.spreadsheet' }),
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          sheets: [{ properties: { title: 'Funcionalidades' } }, { properties: { title: 'debug' } }],
+        }),
+      );
+    });
+    const deps = { clientId: 'i', clientSecret: 's', fetchImpl: fetchImpl as unknown as typeof fetch };
+
+    const texto = await leer('t', 's1', deps, 'presupuesto');
+
+    // Lo que hace falta para volver a pedir bien es justamente la lista: un
+    // "no existe" pelado deja al agente adivinando nombres.
+    expect(texto).toContain('Funcionalidades');
+    expect(texto).toContain('debug');
+  });
+
   it('pide los valores de cada hoja por su nombre, citado', async () => {
     let batch = '';
     let n = 0;

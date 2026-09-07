@@ -183,6 +183,13 @@ async function conDrive<T>(
 const ConJob = { jobId: z.string().uuid() };
 const PorNombre = z.object({ ...ConJob, nombre: z.string().min(1) });
 const PorId = z.object({ ...ConJob, id: z.string().min(1) });
+const Leer = z.object({
+  ...ConJob,
+  id: z.string().min(1),
+  // Solo aplica a una planilla. Opcional: sin esto se lee el archivo entero,
+  // que es lo correcto para un documento y para una planilla chica.
+  hoja: z.string().min(1).optional(),
+});
 const Escribir = z.object({ ...ConJob, id: z.string().min(1), contenido: z.string() });
 const Crear = z.object({ ...ConJob, nombre: z.string().min(1), contenido: z.string() });
 const Planilla = z.object({
@@ -205,6 +212,16 @@ const Planilla = z.object({
  * mitad de un archivo creyendo que lo vio todo.
  */
 export const TOPE_DE_LECTURA = 200 * 1024;
+
+/**
+ * A partir de cuanto una planilla se contesta con su indice: 20 KB.
+ *
+ * Muy por debajo del tope de arriba, y no es una contradiccion: aquel evita que
+ * un archivo llene el contexto, este evita gastarlo cuando alcanza con una
+ * pestaña. 20 KB son unas 500 filas de CSV — mas que eso es una tabla para
+ * consultar, no para leer de corrido.
+ */
+export const TOPE_POR_HOJA = 20 * 1024;
 
 export function registrarDrive(app: FastifyInstance, deps: DriveApiDeps): void {
   /** El bearer del par gateway↔bridge, el mismo que el resto de `/interno`. */
@@ -276,8 +293,38 @@ export function registrarDrive(app: FastifyInstance, deps: DriveApiDeps): void {
     return archivos.map((a) => `${a.nombre} — id ${a.id} (${a.tipo})`).join('\n');
   });
 
-  endpoint('leer', PorId, async ({ id }, ctx) => {
-    const texto = await leer(ctx.token, id, deps.drive);
+  endpoint('leer', Leer, async ({ id, hoja }, ctx) => {
+    const texto = await leer(ctx.token, id, deps.drive, hoja);
+
+    // Una planilla grande se contesta con su INDICE, no con todo.
+    //
+    // El tope de abajo cuida los 200 KB que aguanta el contexto, y una planilla
+    // de 95 KB pasa por debajo — pero igual son ~25 mil tokens de CSV en una
+    // conversacion de telefono. Paso en produccion: la planilla entera entro,
+    // el agente se quedo sin lugar para pensar y contesto que no podia
+    // filtrarla. Lo que necesitaba era poder pedir UNA pestaña.
+    //
+    // Solo cuando NO se pidio una hoja: si la pidieron, eso ya es la porcion
+    // chica y hay que darla.
+    if (!hoja && texto.length > TOPE_POR_HOJA) {
+      const hojas = [...texto.matchAll(/^## (.+)$/gm)].map((m) => m[1]!);
+      if (hojas.length > 1) {
+        const lineas = texto.split('\n');
+        const cuenta = hojas.map((h) => {
+          const desde = lineas.indexOf('## ' + h);
+          const hasta = lineas.findIndex((l, i) => i > desde && l.startsWith('## '));
+          const largo = (hasta === -1 ? lineas.length : hasta) - desde - 1;
+          return `- ${h} (${largo} ${largo === 1 ? 'fila' : 'filas'})`;
+        });
+        return (
+          `esa planilla tiene ${hojas.length} hojas y juntas no entran de una ` +
+          `(${Math.ceil(texto.length / 1024)} KB):\n\n${cuenta.join('\n')}\n\n` +
+          'Volve a llamar a leer_de_drive pasando `hoja` con el nombre de la que ' +
+          'necesites. Si hacen falta varias, pedilas de a una.'
+        );
+      }
+    }
+
     if (texto.length <= TOPE_DE_LECTURA) return texto;
     return (
       `${texto.slice(0, TOPE_DE_LECTURA)}\n\n` +
