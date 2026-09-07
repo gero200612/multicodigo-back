@@ -97,6 +97,20 @@ const Env = z.object({
   GOOGLE_CLIENT_ID: opcional(z.string().min(1)),
   GOOGLE_CLIENT_SECRET: opcional(z.string().min(1)),
   /**
+   * Supabase, para que una corrida deje la base creada y migrada.
+   *
+   * `SUPABASE_ACCESS_TOKEN` es el token de ADMINISTRACION (el de
+   * supabase.com/dashboard/account/tokens), no la anon ni la service_role de un
+   * proyecto: con el se crean proyectos. Vive aca y en ningun otro lado — el
+   * agente no tiene salida a internet, asi que el pasamanos va agente ->
+   * gateway -> bridge y recien este proceso habla con Supabase.
+   *
+   * Los dos son opcionales JUNTOS: sin ellos las herramientas contestan que no
+   * hay Supabase configurado y todo lo demas anda igual.
+   */
+  SUPABASE_ACCESS_TOKEN: opcional(z.string().min(1)),
+  SUPABASE_ORG_ID: opcional(z.string().min(1)),
+  /**
    * Por que dominio ven el panel las personas.
    *
    * Distinto de `PANEL_URL`, que es la direccion INTERNA del compose: un link
@@ -138,6 +152,7 @@ const MIGRACIONES = [
   '021_consumo.sql',
   '022_google_drive.sql',
   '023_corridas.sql',
+  '024_repos_referencia.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 
@@ -278,6 +293,13 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
           panelUrl: env.PANEL_PUBLIC_URL,
         }
       : undefined,
+  // Los dos JUNTOS o ninguno, igual que Drive: con el token y sin la org no se
+  // puede crear un proyecto, y la feature existiria a medias hasta que alguien
+  // la use a las tres de la mañana.
+  supabase:
+    env.SUPABASE_ACCESS_TOKEN && env.SUPABASE_ORG_ID
+      ? { accessToken: env.SUPABASE_ACCESS_TOKEN, orgId: env.SUPABASE_ORG_ID }
+      : {},
   // El MISMO camino que usan los botones del chat. El panel no escribe la
   // tabla por su cuenta: decidir tambien es avisarle al gateway y editar el
   // mensaje de Telegram, y el bot es el unico que puede hacer lo ultimo.

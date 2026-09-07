@@ -387,6 +387,9 @@ export function textoDeCorrida(
       'Y si es un cliente nuevo te armo todo:',
       '<code>/corrida proyecto=acme org=Sincro-arg repos=acme-front,acme-back</code>',
       'Creo el proyecto en el panel y los repos en GitHub, y arranco ahi.',
+      '',
+      'Con <code>referencia=otro-repo</code> monto un repo que ya existe para',
+      'que lo mire y copie: se lee, no se toca.',
     ].join('\n');
   }
 
@@ -417,7 +420,16 @@ export function textoDeCorrida(
       ...creado.repos.map((r) => ` · <code>${escaparHtml(r)}</code>`),
     );
   }
-  if (creado?.proyecto || creado?.repos.length) lineas.push('');
+  // Los de referencia se nombran APARTE de los creados, y se dice que son de
+  // solo lectura: si aparecieran en la misma lista, se leeria como que tambien
+  // se crearon — y peor, como que el agente los va a modificar.
+  if (creado?.referencia.length) {
+    lineas.push(
+      'Y monte de referencia (solo lectura):',
+      ...creado.referencia.map((r) => ` · <code>${escaparHtml(r)}</code>`),
+    );
+  }
+  if (creado?.proyecto || creado?.repos.length || creado?.referencia.length) lineas.push('');
 
   lineas.push(
     `Techos: ${c.techoRondas} ronda(s) · hasta las ${c.techoHora}.`,

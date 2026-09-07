@@ -93,6 +93,22 @@ export function recortar(texto: string): string {
  * no entiende cae en su default en silencio, y nadie sabria por que el bot
  * sigue preguntando.
  */
+/**
+ * Un repo vinculado a un proyecto.
+ *
+ * `solo_lectura` viaja hasta el gateway, que es quien lo hace cumplir: un repo
+ * de REFERENCIA se monta en el worktree para que el agente lo lea, y no se
+ * commitea ni se pushea. Ver la migracion 024 y `reposDelTurno.ts` del gateway.
+ *
+ * En snake_case y no camelCase: estas filas viajan tal cual en el cuerpo del
+ * pedido al gateway, que las valida con el schema de `@multicodigo/shared`.
+ */
+export interface RepoDelProyecto {
+  nombre: string;
+  github_repo: string;
+  solo_lectura?: boolean;
+}
+
 export const MODOS_PERMISO = ['preguntar', 'ediciones', 'todo'] as const;
 export type ModoPermiso = (typeof MODOS_PERMISO)[number];
 
@@ -256,7 +272,7 @@ export interface Store {
    * `sincroresto`: cualquier proyecto creado desde el panel se quedaba sin
    * repos por el camino del chat.
    */
-  reposDeProyecto(proyectoId: string): Promise<Array<{ nombre: string; github_repo: string }>>;
+  reposDeProyecto(proyectoId: string): Promise<RepoDelProyecto[]>;
 
   /**
    * Los ultimos turnos de un agente en un proyecto, del mas viejo al mas nuevo.
@@ -438,10 +454,30 @@ export interface Store {
     usuarioId: string,
     cuenta: string,
   ): Promise<{ installationId: number; cuenta: string } | undefined>;
+  /**
+   * La instalacion de un proyecto CON su cuenta.
+   *
+   * Distinta de `instalacionDeProyecto`, que devuelve solo el id porque es lo
+   * unico que hace falta para firmar un token. Aca hace falta la cuenta: es el
+   * `owner` con el que se arma el `owner/nombre` de un repo de referencia.
+   */
+  instalacionConCuenta(
+    proyectoId: string,
+  ): Promise<{ installationId: number; cuenta: string } | undefined>;
   /** Ata una instalacion ya existente a otro proyecto del mismo usuario. */
   guardarInstalacion(proyectoId: string, installationId: number, cuenta: string): Promise<void>;
-  /** Suma un repo a un proyecto. El `github` es `owner/nombre`. */
-  vincularRepo(proyectoId: string, nombre: string, github: string): Promise<void>;
+  /**
+   * Suma un repo a un proyecto. El `github` es `owner/nombre`.
+   *
+   * `soloLectura` lo marca como REFERENCIA: se monta para leer y el gateway
+   * rechaza commitear y pushear ahi.
+   */
+  vincularRepo(
+    proyectoId: string,
+    nombre: string,
+    github: string,
+    soloLectura?: boolean,
+  ): Promise<void>;
   /** Los agentes del proyecto, por slot. */
   agentesDeProyecto(proyectoId: string): Promise<AgenteResumen[]>;
   /** Anota que el slot pertenece al proyecto. NO crea el contenedor. */
@@ -893,16 +929,23 @@ export class InMemoryStore implements Store {
     return undefined;
   }
 
+  async instalacionConCuenta(proyectoId: string) {
+    return this.instalaciones.get(proyectoId);
+  }
+
   async guardarInstalacion(proyectoId: string, installationId: number, cuenta: string) {
     this.instalaciones.set(proyectoId, { installationId, cuenta });
   }
 
   /** Los repos, por proyecto. `reposDeProyecto` los devuelve. */
-  private reposPorProyecto = new Map<string, Array<{ nombre: string; github_repo: string }>>();
+  private reposPorProyecto = new Map<string, RepoDelProyecto[]>();
 
-  async vincularRepo(proyectoId: string, nombre: string, github: string) {
+  async vincularRepo(proyectoId: string, nombre: string, github: string, soloLectura = false) {
     const previos = (this.reposPorProyecto.get(proyectoId) ?? []).filter((r) => r.nombre !== nombre);
-    this.reposPorProyecto.set(proyectoId, [...previos, { nombre, github_repo: github }]);
+    this.reposPorProyecto.set(proyectoId, [
+      ...previos,
+      { nombre, github_repo: github, ...(soloLectura ? { solo_lectura: true } : {}) },
+    ]);
   }
 
   async reposDeProyecto(proyectoId: string): Promise<Array<{ nombre: string; github_repo: string }>> {
@@ -1618,17 +1661,30 @@ export class PgStore implements Store {
     return r.rows.reverse();
   }
 
-  async reposDeProyecto(
-    proyectoId: string,
-  ): Promise<Array<{ nombre: string; github_repo: string }>> {
+  async reposDeProyecto(proyectoId: string): Promise<RepoDelProyecto[]> {
     // La tabla es del plan 2 y se crea a mano en Supabase; si no esta, el turno
     // sigue y el gateway usa su catalogo local. Por eso el catch.
     try {
-      const r = await this.pool.query<{ nombre: string; github_repo: string }>(
-        'SELECT nombre, github_repo FROM repos WHERE proyecto_id = $1 ORDER BY nombre',
+      const r = await this.pool.query<{
+        nombre: string;
+        github_repo: string;
+        solo_lectura: boolean;
+      }>(
+        // `COALESCE` porque la columna es de la migracion 024: contra una base
+        // que todavia no la corrio, el SELECT fallaria entero y el proyecto se
+        // quedaria sin repos — un fallo mucho mas grande que el que agrega.
+        `SELECT nombre, github_repo, COALESCE(solo_lectura, false) solo_lectura
+           FROM repos WHERE proyecto_id = $1 ORDER BY nombre`,
         [proyectoId],
       );
-      return r.rows;
+      // El flag se omite cuando es false en vez de viajar como `false`: el
+      // gateway lo lee como opcional, y asi el cuerpo del pedido de un proyecto
+      // sin referencias queda igual que antes de esta feature.
+      return r.rows.map((f) => ({
+        nombre: f.nombre,
+        github_repo: f.github_repo,
+        ...(f.solo_lectura ? { solo_lectura: true } : {}),
+      }));
     } catch {
       return [];
     }
@@ -1682,6 +1738,21 @@ export class PgStore implements Store {
     }
   }
 
+  async instalacionConCuenta(
+    proyectoId: string,
+  ): Promise<{ installationId: number; cuenta: string } | undefined> {
+    try {
+      const r = await this.pool.query<{ installation_id: string; cuenta: string }>(
+        'SELECT installation_id, cuenta FROM github_instalaciones WHERE proyecto_id = $1',
+        [proyectoId],
+      );
+      const f = r.rows[0];
+      return f ? { installationId: Number(f.installation_id), cuenta: f.cuenta } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async guardarInstalacion(proyectoId: string, installationId: number, cuenta: string): Promise<void> {
     await this.pool.query(
       `INSERT INTO github_instalaciones (proyecto_id, installation_id, cuenta)
@@ -1691,13 +1762,20 @@ export class PgStore implements Store {
     );
   }
 
-  async vincularRepo(proyectoId: string, nombre: string, github: string): Promise<void> {
+  async vincularRepo(
+    proyectoId: string,
+    nombre: string,
+    github: string,
+    soloLectura = false,
+  ): Promise<void> {
     // ON CONFLICT porque el nombre es unico por proyecto y reintentar una
     // corrida que fallo a la mitad no puede chocar contra lo que ya entro.
     await this.pool.query(
-      `INSERT INTO repos (proyecto_id, nombre, github_repo) VALUES ($1, $2, $3)
-       ON CONFLICT (proyecto_id, nombre) DO UPDATE SET github_repo = $3`,
-      [proyectoId, nombre, github],
+      `INSERT INTO repos (proyecto_id, nombre, github_repo, solo_lectura)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (proyecto_id, nombre)
+       DO UPDATE SET github_repo = $3, solo_lectura = $4`,
+      [proyectoId, nombre, github, soloLectura],
     );
   }
 

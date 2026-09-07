@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { Store } from './store.js';
 import { FORMATOS_GENERABLES } from './documentos.js';
 import { registrarDrive, type DriveApiDeps } from './drive-api.js';
+import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
 
 /** Tope duro. Sin esto, un `?limit=` de la URL deja pedir la tabla entera. */
 const MAX_JOBS = 50;
@@ -49,6 +50,8 @@ export interface ApiDeps {
    * Opcional: sin esto el endpoint contesta 503 y el agente lo dice. Es mejor
    * que un 404, que le haria creer que la herramienta no existe.
    */
+  /** El token de administracion de Supabase y su org. Ver `supabase-api.ts`. */
+  supabase?: Omit<SupabaseApiDeps, 'apiToken'>;
   guardarGenerado?: (entrada: {
     proyectoId: string;
     usuarioId: string;
@@ -497,6 +500,17 @@ export function buildWebhookServer(
     if (api.drive) {
       registrarDrive(app, { ...api.drive, store: api.store, apiToken: api.apiToken });
     }
+
+    /**
+     * Supabase, para que una corrida pueda dejar la base creada y migrada.
+     *
+     * Se registra SIEMPRE, tenga o no token: los endpoints contestan 503 con un
+     * mensaje que el agente puede repetir. Al reves que Drive —que no registra
+     * nada sin secret— porque aca la diferencia importa: sin las rutas, el
+     * gateway contestaria 404 y el modelo leeria "esa herramienta no existe",
+     * que lo manda a inventar otra forma de crear la base.
+     */
+    registrarSupabase(app, { ...(api.supabase ?? {}), apiToken: api.apiToken });
 
     /**
      * Invalida las sesiones de un slot.

@@ -170,10 +170,19 @@ export interface OpcionesDeCorrida {
   org?: string;
   /** Los repos a crear, en el orden en que se nombraron. */
   repos: string[];
+  /**
+   * Repos que ya existen y se montan de REFERENCIA: se leen, no se escriben.
+   *
+   * Es lo que permite construir mirando un proyecto que ya funciona en vez de
+   * arrancar de cero. Tienen que estar en la MISMA cuenta que los otros repos
+   * del proyecto: el gateway clona todo con un solo token de instalacion, y una
+   * instalacion es de una cuenta.
+   */
+  referencia: string[];
 }
 
 /** `rondas=3`, `hasta=07:00`, `proyecto=x`, `org=y`, `repos=a,b`. */
-const OPCION = /^(rondas|hasta|proyecto|org|repos)=(\S+)$/;
+const OPCION = /^(rondas|hasta|proyecto|org|repos|referencia)=(\S+)$/;
 
 /**
  * La misma forma que valida el CHECK de `repos` y el nombre de proyecto.
@@ -264,6 +273,7 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
   let proyecto: string | undefined;
   let org: string | undefined;
   let repos: string[] = [];
+  let referencia: string[] = [];
   let consumidos = 0;
   for (const t of tokens) {
     const m = OPCION.exec(t);
@@ -283,8 +293,13 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
       // Los invalidos se descartan UNO POR UNO en vez de tirar la lista
       // entera: un `repos=front,back,` con una coma de mas no puede costar los
       // otros dos. El tope de 10 es para que un pegado accidental no dispare
-      // veinte llamadas a GitHub.
-      repos = [...new Set(valor.split(',').map((r) => r.trim()).filter(nombreSano))].slice(0, 10);
+      // veinte llamadas a GitHub — y para `referencia`, para que no se claven
+      // veinte repos en el worktree de una noche.
+      const lista = [
+        ...new Set(valor.split(',').map((r) => r.trim()).filter(nombreSano)),
+      ].slice(0, 10);
+      if (m[1] === 'repos') repos = lista;
+      else referencia = lista;
     }
   }
 
@@ -297,6 +312,7 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
     ...(proyecto ? { proyecto } : {}),
     ...(org ? { org } : {}),
     repos,
+    referencia,
   };
 }
 
@@ -405,6 +421,15 @@ export function textoDeInforme(
 
   // La rama es lo unico que hace accionable el informe: sin ella, "18 hechas"
   // no dice donde mirar.
-  if (rama) lineas.push('', `El trabajo esta en <code>${escaparHtml(rama)}</code>`);
+  if (rama) {
+    lineas.push('', `El trabajo esta en <code>${escaparHtml(rama)}</code>`);
+    // Y donde VERLO andando, que es lo que uno quiere a la mañana.
+    //
+    // NO se arma una URL: el preview lo publica Vercel o Render cuando el push
+    // llega, con un nombre que este proceso no conoce y que depende de como se
+    // configuro el proyecto alla. Inventarlo seria mandar a alguien a un 404.
+    // Nombrar donde buscarlo es cierto y alcanza.
+    lineas.push('Si el repo esta conectado a Vercel o Render, el preview de esa rama sale ahi.');
+  }
   return lineas.join('\n');
 }

@@ -1198,6 +1198,8 @@ export interface LoCreado {
   proyecto?: string;
   /** Los repos creados en GitHub, como `owner/nombre`. */
   repos: string[];
+  /** Los repos de referencia que se montaron, como `owner/nombre`. */
+  referencia: string[];
 }
 
 /**
@@ -1233,7 +1235,7 @@ async function armarProyecto(
   opciones: OpcionesDeCorrida,
   deps: PipelineDeps,
 ): Promise<{ ok: true; proyecto: string; creado: LoCreado } | { ok: false; motivo: string }> {
-  const creado: LoCreado = { repos: [] };
+  const creado: LoCreado = { repos: [], referencia: [] };
 
   // 1. El proyecto.
   let proyecto = (await deps.store.getActiveProject(chatId)) ?? deps.project;
@@ -1270,7 +1272,9 @@ async function armarProyecto(
     proyectoId = mios.find((p) => p.nombre === proyecto)?.id;
   }
 
-  if (opciones.repos.length === 0) return { ok: true, proyecto, creado };
+  if (opciones.repos.length === 0 && opciones.referencia.length === 0) {
+    return { ok: true, proyecto, creado };
+  }
 
   // 2. La instalacion de GitHub.
   if (!proyectoId) {
@@ -1280,7 +1284,11 @@ async function armarProyecto(
     return { ok: false, motivo: 'este bridge no puede crear repos: no tiene con quien firmarlos.' };
   }
 
-  let instalacion = await deps.store.instalacionDeProyecto(proyectoId);
+  // Con la cuenta: es el `owner` de un repo de referencia, y lo que dice en
+  // que org se crean los nuevos.
+  const yaTiene = await deps.store.instalacionConCuenta(proyectoId);
+  let instalacion = yaTiene?.installationId;
+  let cuenta = yaTiene?.cuenta ?? opciones.org ?? '';
   if (!instalacion) {
     if (!opciones.org) {
       return {
@@ -1305,6 +1313,10 @@ async function armarProyecto(
     }
     await deps.store.guardarInstalacion(proyectoId, heredada.installationId, heredada.cuenta);
     instalacion = heredada.installationId;
+    // La cuenta CANONICA, la que devolvio la base: `org=sincro-arg` en
+    // minuscula tiene que terminar armando `Sincro-arg/repo`, porque ese string
+    // va a una URL de git y GitHub no siempre perdona el caso.
+    cuenta = heredada.cuenta;
   }
 
   // 3. Los repos, uno por uno.
@@ -1324,6 +1336,21 @@ async function armarProyecto(
     }
     await deps.store.vincularRepo(proyectoId, r.nombre, r.github);
     creado.repos.push(r.github);
+  }
+
+  // 4. Los de REFERENCIA: no se crean, se vinculan marcados de solo lectura.
+  //
+  // El `owner` sale de la cuenta de la instalacion y no se pregunta: el gateway
+  // clona todo el proyecto con UN token, y un token es de una instalacion, o
+  // sea de una cuenta. Un repo de referencia de otra cuenta no se podria clonar
+  // — fallaria con un 404 que se lee como "no existe".
+  //
+  // No se verifica que existan en GitHub. El worktree lo va a decir en el
+  // primer turno con un error de clone, y una verificacion aca seria una
+  // llamada mas por repo para adelantar un error que igual se ve.
+  for (const nombre of opciones.referencia) {
+    await deps.store.vincularRepo(proyectoId, nombre, `${cuenta}/${nombre}`, true);
+    creado.referencia.push(`${cuenta}/${nombre}`);
   }
 
   return { ok: true, proyecto, creado };
