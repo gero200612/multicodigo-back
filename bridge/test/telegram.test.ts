@@ -6,7 +6,9 @@ import {
   textoDePermisos,
   avisoDeRelevo,
   manejarMenu,
+  textoDeCola,
 } from '../src/telegram.js';
+import type { Tarea } from '../src/cola.js';
 import { LimitePorChat } from '../src/vinculacion.js';
 import { buildWebhookServer } from '../src/webhook.js';
 
@@ -484,5 +486,32 @@ describe('los pasos del menu se reemplazan', () => {
 
     expect(editados).toHaveLength(0);
     expect(respondidos).toHaveLength(1);
+  });
+});
+
+// El texto de una tarea es texto libre —lo dicta la persona o lo redacta el
+// analista— y `textoDeCola` va en un mensaje con parse_mode HTML. Sin escapar,
+// una tarea con un `<` hace que Telegram rechace el mensaje entero y el estado
+// de la cola no llegue.
+describe('textoDeCola: escapado', () => {
+  const tarea = (texto: string, estado: Tarea['estado']): Tarea => ({
+    id: 'x',
+    chatId: 1,
+    agente: 'c1',
+    proyecto: 'demo',
+    texto,
+    posicion: 0,
+    estado,
+  });
+
+  it('escapa una tarea pendiente', () => {
+    const t = textoDeCola([tarea('arreglar si a < b && c', 'pendiente')], 0);
+    expect(t).toContain('a &lt; b &amp;&amp; c');
+    expect(t).not.toContain('< b');
+  });
+
+  it('escapa la que esta corriendo', () => {
+    const t = textoDeCola([tarea('migrar <Component/>', 'corriendo')], 0);
+    expect(t).toContain('&lt;Component/&gt;');
   });
 });

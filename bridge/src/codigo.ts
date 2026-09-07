@@ -35,8 +35,14 @@ const TOPE_DE_LINEAS = 20;
  * Sin esto, un `if (a < b)` en el codigo abre una etiqueta que nunca cierra y
  * Telegram rechaza el mensaje ENTERO con "can't parse entities" — la respuesta
  * no llega, no llega a medias.
+ *
+ * Exportada porque no es solo del codigo: cualquier texto que no escribimos
+ * nosotros y termina en un mensaje con `parse_mode: 'HTML'` tiene que pasar por
+ * aca. El texto de una tarea de la cola, el de un hueco que redacto el
+ * analista, el mensaje de un error — los tres son texto libre, y los tres
+ * viajan en mensajes con formato.
  */
-function escapar(texto: string): string {
+export function escaparHtml(texto: string): string {
   return texto.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
@@ -45,7 +51,7 @@ function bloque(lineas: string[]): string {
   if (lineas.length === 0) return '';
   const visibles = lineas.slice(0, TOPE_DE_LINEAS);
   const sobran = lineas.length - visibles.length;
-  const cuerpo = escapar(visibles.join('\n'));
+  const cuerpo = escaparHtml(visibles.join('\n'));
   // El corte se DICE: un bloque que termina sin aviso parece la respuesta
   // completa, y quien la lee no sabe que le falta la mitad.
   const cola = sobran > 0 ? `\n… (${sobran} ${sobran === 1 ? 'linea' : 'lineas'} mas)` : '';
@@ -150,7 +156,7 @@ export function conCodigoParaTelegram(texto: string): string {
     }
 
     if (dentro) acumulado.push(linea);
-    else salida.push(conFormato(escapar(linea)));
+    else salida.push(conFormato(escaparHtml(linea)));
   }
 
   // Un bloque sin cerrar se muestra igual: pasa cuando el agente se queda sin

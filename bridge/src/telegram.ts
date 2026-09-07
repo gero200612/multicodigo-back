@@ -13,9 +13,16 @@ import {
 import { saludo, encabezadoDeMenu, NOMBRE } from './identidad.js';
 import { MAXIMO_BYTES, TIPOS, TIPOS_IMAGEN, esImagen, tipoDe } from './documentos.js';
 import type { Boton } from './render.js';
-import type { ModoPermiso, ClaveDeModelo } from './store.js';
+import type { ModoPermiso, ClaveDeModelo, Proyecto } from './store.js';
 import type { Tarea } from './cola.js';
-import type { Corrida } from './corrida.js';
+import {
+  pliegoDeArchivo,
+  TECHO_HORA_POR_DEFECTO,
+  TECHO_RONDAS_POR_DEFECTO,
+  TOPE_DE_PLIEGO,
+  type Corrida,
+} from './corrida.js';
+import { escaparHtml } from './codigo.js';
 import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
 import { decidir } from './decisiones.js';
@@ -62,7 +69,19 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       // `/start` se presenta; `/menu` no. Ver `identidad.ts`.
       return outcome.saluda ? saludo() : encabezadoDeMenu();
     case 'project':
-      return `Proyecto activo: ${outcome.project}.`;
+      return textoDeProyecto(outcome.project, outcome.mios ?? [], outcome.cambiado ?? false);
+    case 'project_desconocido':
+      return [
+        `No tenes ningun proyecto que se llame <b>${escaparHtml(outcome.pedido)}</b>.`,
+        '',
+        // Se dice que NO se cambio nada. Sin esta linea queda la duda de si el
+        // chat quedo apuntando a algo raro, que es justo lo que pasaba antes.
+        'No cambie nada: seguis donde estabas.',
+        '',
+        outcome.mios.length > 0
+          ? 'Elegi uno de estos:'
+          : 'Todavia no perteneces a ningun proyecto. Crealo desde el panel.',
+      ].join('\n');
     case 'ocupado':
       return textoDeOcupado(outcome.agent, outcome.quien, outcome.desde, outcome.esperandoOk);
     case 'error':
@@ -82,7 +101,7 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return 'Elegi un proyecto:';
     case 'menu_agentes':
       return (
-        `Agentes de <b>${outcome.proyecto}</b>:\n\n` +
+        `Agentes de <b>${escaparHtml(outcome.proyecto)}</b>:\n\n` +
         '● listo · ○ apagado · ⚠ sin cuenta · ⛔ sin tokens'
       );
     case 'sin_proyectos':
@@ -93,7 +112,9 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       // hablando", y eso tiene que leerse de un vistazo.
       return (
         `✅ <b>${outcome.agente.toUpperCase()} conectado</b>\n` +
-        `${outcome.nombre} · <i>${outcome.proyecto}</i>\n\n` +
+        // El nombre del agente lo escribe la persona en el panel, asi que es
+        // texto libre que termina en un mensaje con formato.
+        `${escaparHtml(outcome.nombre)} · <i>${escaparHtml(outcome.proyecto)}</i>\n\n` +
         'Escribime lo que querés que haga.'
       );
   }
@@ -200,11 +221,11 @@ export function textoDeCola(tareas: Tarea[], encoladas: number, agente?: AgentId
       '',
     );
   }
-  if (corriendo) lineas.push(`▶ Haciendo: ${corriendo.texto}`, '');
+  if (corriendo) lineas.push(`▶ Haciendo: ${escaparHtml(corriendo.texto)}`, '');
   if (pendientes.length > 0) {
     lineas.push('<b>Falta:</b>');
     // Numeradas porque ACA el orden es real: se hacen en esta secuencia.
-    pendientes.forEach((t, i) => lineas.push(`${i + 1}. ${t.texto}`));
+    pendientes.forEach((t, i) => lineas.push(`${i + 1}. ${escaparHtml(t.texto)}`));
   } else if (!corriendo) {
     lineas.push('No queda nada pendiente.');
   }
@@ -212,6 +233,37 @@ export function textoDeCola(tareas: Tarea[], encoladas: number, agente?: AgentId
     lineas.push('', `Hechas: ${hechas}${fallidas > 0 ? ` · fallaron: ${fallidas}` : ''}`);
   }
   if (pendientes.length > 0) lineas.push('', 'Con /cancelar corto lo que falta.');
+  return lineas.join('\n');
+}
+
+/**
+ * El proyecto activo del chat, y a que otro se puede pasar.
+ *
+ * La lista va SIEMPRE, tambien cuando se acaba de cambiar: el mensaje que dice
+ * "estas en X" es el mismo momento en que uno se pregunta "¿y los otros?".
+ * Antes esto era un `Proyecto activo: X.` pelado, y para cambiar habia que
+ * saber de memoria el nombre exacto —con sus mayusculas— de un proyecto que no
+ * se ve en ningun lado del chat.
+ */
+export function textoDeProyecto(
+  activo: string,
+  mios: Proyecto[],
+  cambiado: boolean,
+): string {
+  const lineas = [
+    cambiado
+      ? `Listo, estas trabajando en <b>${escaparHtml(activo)}</b>.`
+      : `Estas trabajando en <b>${escaparHtml(activo)}</b>.`,
+  ];
+
+  const otros = mios.filter((p) => p.nombre !== activo);
+  if (otros.length > 0) {
+    lineas.push('', 'Podes pasarte a:');
+  } else if (mios.length <= 1) {
+    // Con un solo proyecto no hay nada que elegir, y ofrecer una lista de uno
+    // seria ruido. Se dice que es el unico para que no parezca que falta algo.
+    lineas.push('', 'Es el unico que tenes.');
+  }
   return lineas.join('\n');
 }
 
@@ -228,20 +280,32 @@ export function textoDeCorrida(
   yaHabia: boolean,
 ): string {
   if (!c) {
+    // Antes esto abria con "No hay ninguna corrida abierta" y seguia
+    // explicando el ciclo. Estaba mal por donde arrancaba: quien escribe
+    // /corrida ya sabe que no hay ninguna —por eso la esta pidiendo— y lo que
+    // necesita es saber QUE tiene que mandar. La ausencia como titular convertia
+    // una invitacion en un informe de estado.
     return [
-      'No hay ninguna corrida abierta.',
+      '🌙 <b>¿Arrancamos una corrida?</b>',
       '',
-      'Mandame <b>/corrida</b> y abajo el pliego completo de lo que hay que',
-      'construir. Voy a ir haciendo la cola, y cuando se vacie reviso el repo',
-      'contra el pliego y encolo lo que falte, hasta terminar o hasta un techo.',
+      'Mandame el instructivo de lo que hay que construir. Puede ser:',
       '',
-      'Podes fijar los techos: <code>/corrida rondas=3 hasta=07:00</code>.',
+      ' · un <b>.md</b> o <b>.txt</b> adjunto, con <code>/corrida</code> en el texto del archivo',
+      ' · o un <code>/corrida</code> y abajo el texto, aunque sea un parrafo',
+      '',
+      'Despues me dictas las primeras tareas con /cola y me podes dejar: cuando',
+      'se vacie, releo tu instructivo, comparo contra lo que hay y sigo sola.',
+      '',
+      'A la mañana te dejo un informe con lo que se hizo y por que pare.',
+      '',
+      `Los techos vienen en ${TECHO_RONDAS_POR_DEFECTO} rondas y hasta las ${TECHO_HORA_POR_DEFECTO}.`,
+      `Se cambian: <code>/corrida rondas=2 hasta=05:00</code>.`,
     ].join('\n');
   }
 
   if (yaHabia) {
     return [
-      `Ya tenes una corrida abierta en <b>${c.proyecto}</b>, en la ronda ${c.ronda}.`,
+      `Ya tenes una corrida abierta en <b>${escaparHtml(c.proyecto)}</b>, en la ronda ${c.ronda}.`,
       '',
       // Se explica POR QUE no se abre otra: sin esto se lee como un limite
       // arbitrario y el reflejo es reintentar.
@@ -253,8 +317,8 @@ export function textoDeCorrida(
   }
 
   const lineas = recienAbierta
-    ? [`🌙 Corrida abierta en <b>${c.proyecto}</b>.`, '']
-    : [`🌙 Corrida abierta en <b>${c.proyecto}</b>, ronda ${c.ronda}.`, ''];
+    ? [`🌙 Corrida abierta en <b>${escaparHtml(c.proyecto)}</b>.`, '']
+    : [`🌙 Corrida abierta en <b>${escaparHtml(c.proyecto)}</b>, ronda ${c.ronda}.`, ''];
   lineas.push(
     `Techos: ${c.techoRondas} ronda(s) · hasta las ${c.techoHora}.`,
     '',
@@ -354,7 +418,13 @@ function usaHtml(outcome: PipelineOutcome): boolean {
     outcome.kind === 'menu' ||
     outcome.kind === 'permisos' ||
     outcome.kind === 'modelo' ||
-    outcome.kind === 'cola'
+    outcome.kind === 'cola' ||
+    outcome.kind === 'corrida' ||
+    // Los dos llevan el nombre del proyecto en negrita: es el dato de la
+    // frase, y en una lista de seis nombres parecidos es lo que se busca con
+    // la vista.
+    outcome.kind === 'project' ||
+    outcome.kind === 'project_desconocido'
   );
 }
 
@@ -384,7 +454,13 @@ function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
     outcome.kind === 'error' ||
     // Y ocupado SIEMPRE los trae: sin otro agente que ofrecer, el aviso seria
     // un "no" sin salida.
-    outcome.kind === 'ocupado'
+    outcome.kind === 'ocupado' ||
+    // El de proyecto los trae para poder cambiarse de una lista real en vez de
+    // escribir el nombre exacto. Los reusa del menu —son los MISMOS botones,
+    // con el mismo callback— asi que elegir por /proyecto y elegir por /menu
+    // terminan en el mismo lugar.
+    outcome.kind === 'project' ||
+    outcome.kind === 'project_desconocido'
       ? outcome.botones
       : undefined;
   if (!botones || botones.length === 0) return undefined;
@@ -714,13 +790,77 @@ export function buildBot(deps: BridgeDeps): Bot {
    * Va ANTES del handler general de mensajes porque un documento no es un
    * prompt: no arranca un turno, se guarda.
    */
+  /**
+   * Un archivo adjunto con `/corrida` en el texto: el instructivo de una
+   * corrida.
+   *
+   * Devuelve si LO manejo. Va antes de guardarlo como documento comun porque
+   * es un pedido distinto: no es "guardame esto", es "arranca con esto".
+   *
+   * El archivo se guarda TAMBIEN como documento del proyecto, y no es
+   * redundante: el pliego que se guarda en la corrida es el texto contra el que
+   * compara el analista, y el documento es el archivo que la persona puede
+   * volver a bajar del panel. Uno es para el ciclo y el otro es para ella.
+   */
+  const corridaConArchivo = async (
+    ctx: {
+      chat: { id: number };
+      message: { caption?: string };
+      api: { getFile: (id: string) => Promise<{ file_path?: string }> };
+      reply: (t: string, o?: { parse_mode?: 'HTML' }) => Promise<{ message_id: number }>;
+    },
+    archivo: { fileId: string; nombreOriginal: string; bytes?: number },
+  ): Promise<boolean> => {
+    const caption = (ctx.message.caption ?? '').trim();
+    if (!/^\/corrida(?:@[\w_]+)?\b/i.test(caption)) return false;
+
+    if (archivo.bytes !== undefined && archivo.bytes > TOPE_DE_PLIEGO) {
+      await ctx.reply(`Ese instructivo pasa los ${TOPE_DE_PLIEGO / 1024} KB.`);
+      return true;
+    }
+
+    let datos: Uint8Array;
+    try {
+      datos = await bajarArchivo(ctx.api as never, archivo.fileId, deps.botToken);
+    } catch (err) {
+      await ctx.reply(
+        `No pude bajar el archivo: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return true;
+    }
+
+    const pliego = pliegoDeArchivo(archivo.nombreOriginal, datos);
+    if (!pliego.ok) {
+      await ctx.reply(pliego.motivo);
+      return true;
+    }
+
+    // Se reconstruye el comando con el texto del archivo como pliego: asi las
+    // opciones del caption (`/corrida rondas=2`) siguen valiendo y el comando
+    // no tiene dos formas de entrar. Ver `parseOpcionesDeCorrida`.
+    const opciones = caption.replace(/^\/corrida(?:@[\w_]+)?\s*/i, '');
+    const out = await handleIncoming(
+      { chatId: ctx.chat.id, messageId: 0, text: `/corrida ${opciones}\n${pliego.md}` },
+      deps,
+    );
+    await ctx.reply(renderOutcome(out), { parse_mode: 'HTML' });
+    return true;
+  };
+
   bot.on('message:document', async (ctx) => {
     const doc = ctx.message.document;
-    await guardarDelChat(ctx as never, {
+    const archivo = {
       fileId: doc.file_id,
       nombreOriginal: doc.file_name ?? 'documento',
       bytes: doc.file_size,
-    });
+    };
+    // Con /corrida en el texto del archivo abre la corrida; sin eso no hace
+    // nada. En los dos casos el archivo se guarda como documento del proyecto,
+    // y no es redundante: el pliego de la corrida es el texto contra el que
+    // compara el analista, y el documento es el archivo que la persona puede
+    // volver a bajar del panel.
+    await corridaConArchivo(ctx as never, archivo);
+    await guardarDelChat(ctx as never, archivo);
   });
 
   /**
@@ -894,7 +1034,17 @@ export function buildBot(deps: BridgeDeps): Bot {
       // hora y este handler tiene que devolver el control ya. El progreso
       // llega por mensajes sueltos, uno por tarea terminada.
       if (outcome.kind === 'cola' && outcome.encoladas > 0) {
-        void arrancarCola(ctx.chat.id, deps, (t) => ctx.reply(t).then(() => undefined));
+        // Con parse_mode HTML, y hacia falta: lo que manda `correrCola` ya
+        // venia con formato —`conCodigoParaTelegram` arma `<pre>`, y el informe
+        // de una corrida usa `<b>`— y sin esto se leia CRUDO en el chat, con
+        // las etiquetas a la vista y los `&lt;` sin resolver.
+        //
+        // El precio es que todo lo que viaje por aca tiene que estar escapado.
+        // Lo esta: ver `escaparHtml` en los mensajes de `correrCola` y de
+        // `textoDeInforme`.
+        void arrancarCola(ctx.chat.id, deps, (t) =>
+          ctx.reply(t, { parse_mode: 'HTML' }).then(() => undefined),
+        );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

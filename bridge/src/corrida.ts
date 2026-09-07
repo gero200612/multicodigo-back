@@ -9,6 +9,7 @@
  * puedan testear con un reloj de mentira en vez de esperando hasta las siete.
  */
 
+import { escaparHtml } from './codigo.js';
 import { HORAS_DE_DIFERENCIA } from './horas.js';
 
 /**
@@ -157,6 +158,59 @@ export interface OpcionesDeCorrida {
 const OPCION = /^(rondas|hasta)=(\S+)$/;
 
 /**
+ * Los tipos de archivo que sirven de pliego.
+ *
+ * Subconjunto de `TIPOS` de `documentos.ts`, y corto a proposito: son los que
+ * SON texto, asi que el pliego se saca decodificando los bytes y no pasando por
+ * el conversor. Un PDF o un xlsx se guardan igual como documento del proyecto
+ * —eso ya funcionaba— pero no se aceptan como pliego: el pliego lo lee el
+ * analista en cada ronda, y un pliego que salio de un OCR o de una tabla es un
+ * pliego contra el que no se puede comparar nada.
+ */
+export const TIPOS_DE_PLIEGO = ['md', 'txt'] as const;
+
+/** Cuanto puede pesar un pliego: 400 KB. */
+export const TOPE_DE_PLIEGO = 400 * 1024;
+
+/**
+ * Decodifica un archivo adjunto como pliego, o dice por que no.
+ *
+ * `fatal: true` en el decoder es lo que importa: un `.md` que en realidad es un
+ * binario mal nombrado se convertiria en un texto lleno de U+FFFD, y ese texto
+ * quedaria guardado como el pliego contra el que el analista compara TODAS las
+ * rondas. Es mejor rechazarlo cuando la persona esta mirando el chat.
+ */
+export function pliegoDeArchivo(
+  nombre: string,
+  datos: Uint8Array,
+): { ok: true; md: string } | { ok: false; motivo: string } {
+  const punto = nombre.lastIndexOf('.');
+  const tipo = punto === -1 ? '' : nombre.slice(punto + 1).toLowerCase();
+  if (!(TIPOS_DE_PLIEGO as readonly string[]).includes(tipo)) {
+    return {
+      ok: false,
+      motivo:
+        `no puedo usar un .${tipo || 'archivo sin extension'} como instructivo. ` +
+        `Mandame un ${TIPOS_DE_PLIEGO.join(' o un ')}, o pegame el texto en el mensaje.`,
+    };
+  }
+  if (datos.byteLength > TOPE_DE_PLIEGO) {
+    return {
+      ok: false,
+      motivo: `ese instructivo pasa los ${TOPE_DE_PLIEGO / 1024} KB. Es mas de lo que puedo releer en cada ronda.`,
+    };
+  }
+  let texto: string;
+  try {
+    texto = new TextDecoder('utf-8', { fatal: true }).decode(datos);
+  } catch {
+    return { ok: false, motivo: 'ese archivo no es texto que pueda leer (no es UTF-8).' };
+  }
+  if (texto.trim() === '') return { ok: false, motivo: 'ese archivo esta vacio.' };
+  return { ok: true, md: texto };
+}
+
+/**
  * Parte el argumento de `/corrida` en opciones y MD.
  *
  * Las opciones se consumen SOLO de la corrida inicial de tokens de la primera
@@ -272,8 +326,15 @@ export function textoDeInforme(
   t: ResumenDeTareas,
   rama?: string,
 ): string {
+  // Todo lo que no escribimos nosotros va escapado. El informe se manda con
+  // `parse_mode: 'HTML'`, y aca entran dos textos libres: el nombre del
+  // proyecto y —lo importante— el texto de cada hueco, que lo REDACTO el
+  // analista. Un hueco como "el chequeo de stock < 0 falta" tiene un `<` que
+  // Telegram lee como etiqueta y rechaza el mensaje ENTERO con "can't parse
+  // entities": el informe de la mañana no llegaria, y ese es el unico mensaje
+  // de toda la feature que no se puede perder.
   const lineas = [
-    `🌙 <b>Corrida terminada</b> — ${c.proyecto}`,
+    `🌙 <b>Corrida terminada</b> — ${escaparHtml(c.proyecto)}`,
     '',
     `Termino porque: ${POR_QUE[motivo]}`,
     // Las rondas CORRIDAS, no el contador: `ronda` se pasa uno de largo justo
@@ -286,12 +347,12 @@ export function textoDeInforme(
   if (t.sinResolver.length > 0) {
     lineas.push('', '<b>Quedo sin resolver:</b>');
     for (const s of t.sinResolver) {
-      lineas.push(` · ${s.texto}${s.ronda !== undefined ? ` (ronda ${s.ronda})` : ''}`);
+      lineas.push(` · ${escaparHtml(s.texto)}${s.ronda !== undefined ? ` (ronda ${s.ronda})` : ''}`);
     }
   }
 
   // La rama es lo unico que hace accionable el informe: sin ella, "18 hechas"
   // no dice donde mirar.
-  if (rama) lineas.push('', `El trabajo esta en <code>${rama}</code>`);
+  if (rama) lineas.push('', `El trabajo esta en <code>${escaparHtml(rama)}</code>`);
   return lineas.join('\n');
 }

@@ -30,7 +30,7 @@ import {
   type ResumenDeTareas,
 } from './corrida.js';
 import { aHoraArgentina } from './horas.js';
-import { conCodigoParaTelegram } from './codigo.js';
+import { conCodigoParaTelegram, escaparHtml } from './codigo.js';
 import type { Quien } from './agents-client.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
@@ -172,7 +172,36 @@ export type PipelineOutcome =
       yaHabia: boolean;
     }
   | { kind: 'cola_cancelada'; cuantas: number; corridaCerrada: boolean }
-  | { kind: 'project'; project: string }
+  /**
+   * Un `/proyecto <nombre>` que no es ninguno de los de la persona.
+   *
+   * Separado de `error` porque no es una falla del sistema: es un dedazo, y la
+   * salida es elegir de la lista. Existe porque antes NO existia — el nombre se
+   * guardaba igual y el chat quedaba apuntando a un proyecto inexistente, que
+   * es peor que un error: el agente pierde sesion, repos y documentos sin decir
+   * nada.
+   */
+  | {
+      kind: 'project_desconocido';
+      pedido: string;
+      mios: Proyecto[];
+      botones: Boton[][];
+    }
+  /**
+   * El proyecto activo del chat.
+   *
+   * `mios` y `botones` van SIEMPRE aunque el mensaje solo nombre uno: el
+   * mensaje de "cambiaste a X" tambien se lee para saber a que otro se puede
+   * cambiar, y sin la lista hay que acordarse los nombres de memoria.
+   * `cambiado` distingue "lo cambie" de "te digo cual es".
+   */
+  | {
+      kind: 'project';
+      project: string;
+      mios?: Proyecto[];
+      botones?: Boton[][];
+      cambiado?: boolean;
+    }
   /** El chat no esta atado a ninguna cuenta del panel. */
   | { kind: 'sin_vincular'; yaEstaba: boolean }
   | { kind: 'codigo'; codigo: string; minutos: number }
@@ -316,10 +345,39 @@ export async function handleIncoming(
   }
 
   if (command.kind === 'project') {
-    if (command.project) await deps.store.setActiveProject(input.chatId, command.project);
-    const activo =
-      command.project ?? (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
-    return { kind: 'project', project: activo };
+    const mios = await deps.store.proyectosDeUsuario(usuarioId);
+
+    // Sin nombre: la LISTA con botones, no solo el activo.
+    //
+    // Antes contestaba "Proyecto activo: X." y nada mas, que es un callejon:
+    // para cambiar hay que escribir el nombre exacto, y el nombre exacto es
+    // justo lo que no se ve en ningun lado. El boton lo elige de una lista
+    // real, asi que no se puede escribir mal.
+    if (!command.project) {
+      const activo = (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
+      return { kind: 'project', project: activo, mios, botones: tecladoDeProyectos(mios) };
+    }
+
+    // El nombre se VALIDA contra los proyectos de la persona, y esto es lo que
+    // faltaba: `setActiveProject` guarda el string que le den, asi que un
+    // `/proyecto punchii` con un dedazo dejaba el chat apuntando a un proyecto
+    // que no existe. Y no fallaba: `proyectoId` quedaba en undefined, o sea sin
+    // sesion (el agente arranca de cero en cada mensaje), sin repos y sin
+    // documentos, sin un solo error que lo explique. Se veia como un agente que
+    // de golpe se volvio tonto.
+    //
+    // La comparacion es SIN mayusculas y se guarda el nombre canonico: hay un
+    // proyecto que se llama "Punchi" con mayuscula, y `/proyecto punchi` es
+    // exactamente el dedazo que mas se va a escribir.
+    const elegido = mios.find(
+      (p) => p.nombre.toLowerCase() === command.project!.toLowerCase(),
+    );
+    if (!elegido) {
+      return { kind: 'project_desconocido', pedido: command.project, mios, botones: tecladoDeProyectos(mios) };
+    }
+
+    await deps.store.setActiveProject(input.chatId, elegido.nombre);
+    return { kind: 'project', project: elegido.nombre, mios, cambiado: true };
   }
 
   if (command.kind === 'cola') {
@@ -1311,7 +1369,10 @@ export async function correrCola(
       // Una que sale bien vuelve el contador a cero: lo que corta la corrida
       // son tres fallos SEGUIDOS, no tres en toda la noche.
       if (corrida) await deps.store.contarFallo(corrida.id, false);
-      await avisar(`✅ ${tarea.texto}\n\n${conCodigoParaTelegram(r.texto)}`);
+      // El texto de la tarea se escapa; la respuesta del agente NO, porque
+      // `conCodigoParaTelegram` ya la escapo entera antes de meterle sus
+      // `<pre>`. Escaparla de nuevo dejaria los `&amp;lt;` a la vista.
+      await avisar(`✅ ${escaparHtml(tarea.texto)}\n\n${conCodigoParaTelegram(r.texto)}`);
     } catch (err) {
       const codigo = err instanceof Error ? err.message : 'internal';
       await deps.store.cerrarTarea(tarea.id, 'fallida', codigo);
@@ -1328,7 +1389,10 @@ export async function correrCola(
         // arriba, en la proxima vuelta— es lo que evita que esto queme la noche
         // entera contra el mismo error.
         await avisar(
-          `⛔ Fallo: ${tarea.texto}\n\n${ERROR_TEXT[codigo] ?? codigo}\n\nSigo con la que viene.`,
+          // El codigo del error tambien se escapa: cuando no hay traduccion se
+          // manda crudo, y un `fetch failed <url>` cortaria el mensaje entero.
+          `⛔ Fallo: ${escaparHtml(tarea.texto)}\n\n` +
+            `${escaparHtml(ERROR_TEXT[codigo] ?? codigo)}\n\nSigo con la que viene.`,
         );
         continue;
       }
@@ -1341,7 +1405,7 @@ export async function correrCola(
         (t) => t.estado === 'pendiente',
       ).length;
       await avisar(
-        `⛔ Fallo: ${tarea.texto}\n\n${ERROR_TEXT[codigo] ?? codigo}\n\n` +
+        `⛔ Fallo: ${escaparHtml(tarea.texto)}\n\n${escaparHtml(ERROR_TEXT[codigo] ?? codigo)}\n\n` +
           (quedan > 0
             ? `Pare la cola con ${quedan} tarea(s) sin hacer. Mandame /cola para verlas o /cancelar para descartarlas.`
             : 'Era la ultima de la cola.'),

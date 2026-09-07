@@ -8,6 +8,8 @@ import {
   TECHO_RONDAS_POR_DEFECTO,
   TECHO_HORA_POR_DEFECTO,
   TOPE_DE_FALLOS,
+  pliegoDeArchivo,
+  TOPE_DE_PLIEGO,
   type Corrida,
 } from '../src/corrida.js';
 import { handleIncoming, correrCola, type PipelineDeps } from '../src/pipeline.js';
@@ -658,5 +660,108 @@ describe('POST /interno/corrida/huecos', () => {
       huecos: Array.from({ length: 51 }, (_, i) => `hueco ${i}`),
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('pliegoDeArchivo', () => {
+  const bytes = (s: string) => new TextEncoder().encode(s);
+
+  it('un .md se lee como pliego', () => {
+    const r = pliegoDeArchivo('instructivo.md', bytes('# Stock\nlotes y FIFO'));
+    expect(r).toEqual({ ok: true, md: '# Stock\nlotes y FIFO' });
+  });
+
+  it('un .txt tambien', () => {
+    expect(pliegoDeArchivo('pliego.txt', bytes('armar el stock')).ok).toBe(true);
+  });
+
+  // Se guardan igual como documento del proyecto —eso ya andaba— pero no
+  // sirven de pliego: el analista lo relee en CADA ronda, y un pliego que salio
+  // de un OCR o de una tabla es un pliego contra el que no se compara nada.
+  it('un .pdf no sirve de pliego, y lo dice', () => {
+    const r = pliegoDeArchivo('pliego.pdf', bytes('%PDF-1.4'));
+    if (r.ok) throw new Error('deberia rechazarlo');
+    expect(r.motivo).toContain('.pdf');
+    expect(r.motivo).toContain('pegame el texto');
+  });
+
+  it('sin extension se rechaza sin romperse', () => {
+    expect(pliegoDeArchivo('instructivo', bytes('hola')).ok).toBe(false);
+  });
+
+  // Un .md que en realidad es un binario mal nombrado se convertiria en un
+  // texto lleno de U+FFFD, y ESE texto quedaria guardado como el pliego contra
+  // el que se compara toda la noche.
+  it('un .md que no es UTF-8 se rechaza', () => {
+    const r = pliegoDeArchivo('x.md', new Uint8Array([0xff, 0xfe, 0x00, 0x80]));
+    if (r.ok) throw new Error('deberia rechazarlo');
+    expect(r.motivo).toContain('UTF-8');
+  });
+
+  it('un archivo vacio se rechaza', () => {
+    expect(pliegoDeArchivo('x.md', bytes('   \n')).ok).toBe(false);
+  });
+
+  it('un pliego mas grande que el tope se rechaza', () => {
+    const r = pliegoDeArchivo('x.md', bytes('a'.repeat(TOPE_DE_PLIEGO + 1)));
+    if (r.ok) throw new Error('deberia rechazarlo');
+    expect(r.motivo).toContain('KB');
+  });
+
+  // El caso completo: adjuntar un .md con `/corrida rondas=2` de caption. El
+  // handler reconstruye el comando, asi que las opciones del caption siguen
+  // valiendo y no hay dos formas de entrar al comando.
+  it('el texto del archivo entra como pliego y el caption como opciones', () => {
+    const pliego = pliegoDeArchivo('i.md', bytes('# Stock\nlotes'));
+    if (!pliego.ok) throw new Error('deberia aceptarlo');
+    const r = parseOpcionesDeCorrida(`rondas=2\n${pliego.md}`);
+    expect(r.techoRondas).toBe(2);
+    expect(r.md).toBe('# Stock\nlotes');
+  });
+});
+
+// El informe de la mañana es el UNICO mensaje de toda la feature que no se
+// puede perder, y se manda con parse_mode HTML. Un `<` sin escapar hace que
+// Telegram rechace el mensaje entero con "can't parse entities" — no llega mal,
+// no llega.
+describe('textoDeInforme: escapado', () => {
+  const c = { proyecto: 'stock', ronda: 1, techoRondas: 3 };
+
+  // El texto del hueco lo REDACTA el analista, o sea un modelo escribiendo
+  // prosa libre. "el chequeo de stock < 0 falta" es una frase perfectamente
+  // normal para el.
+  it('escapa el texto de un hueco con < adentro', () => {
+    const t = textoDeInforme(c, 'techo_rondas', {
+      hechas: 0,
+      fallidas: 1,
+      pendientes: 0,
+      sinResolver: [{ texto: 'falta el chequeo de stock < 0 & vencimiento', ronda: 1 }],
+    });
+    expect(t).toContain('stock &lt; 0 &amp; vencimiento');
+    // Y no queda ningun `<` crudo fuera de las etiquetas que ponemos nosotros.
+    expect(t).not.toContain('< 0');
+  });
+
+  it('escapa el nombre del proyecto', () => {
+    const t = textoDeInforme({ proyecto: 'a<b>c', ronda: 1, techoRondas: 3 }, 'completo', {
+      hechas: 0,
+      fallidas: 0,
+      pendientes: 0,
+      sinResolver: [],
+    });
+    expect(t).toContain('a&lt;b&gt;c');
+  });
+
+  // El `&` primero: si se escapara despues, volveria a escapar los `&` que
+  // acaban de introducir `&lt;` y saldria `&amp;lt;`.
+  it('no doble-escapa', () => {
+    const t = textoDeInforme(c, 'completo', {
+      hechas: 0,
+      fallidas: 0,
+      pendientes: 0,
+      sinResolver: [{ texto: '<script>' }],
+    });
+    expect(t).toContain('&lt;script&gt;');
+    expect(t).not.toContain('&amp;lt;');
   });
 });

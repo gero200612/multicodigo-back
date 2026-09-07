@@ -309,12 +309,66 @@ describe('multi-proyecto', () => {
   it('/proyecto <nombre> lo cambia y lo confirma', async () => {
     const store = new InMemoryStore();
     await vincular(store, 1);
+    // El proyecto tiene que EXISTIR. Antes este test pasaba sin esta linea, y
+    // eso era el bug: `/proyecto` guardaba cualquier string, asi que el chat
+    // podia quedar apuntando a un proyecto inexistente —sin sesion, sin repos
+    // y sin documentos— sin un solo error que lo dijera.
+    await store.crearProyecto('sincroresto', USUARIO_DE_PRUEBA);
     const out = await handleIncoming(
       { chatId: 1, messageId: 2, text: '/proyecto sincroresto' },
       deps({ store }),
     );
     expect(out.kind).toBe('project');
     expect(await store.getActiveProject(1)).toBe('sincroresto');
+  });
+
+  // El dedazo que antes se guardaba en silencio.
+  it('/proyecto con un nombre que no existe no cambia nada y lo dice', async () => {
+    const store = new InMemoryStore();
+    await vincular(store, 1);
+    await store.crearProyecto('sincroresto', USUARIO_DE_PRUEBA);
+    await store.setActiveProject(1, 'sincroresto');
+
+    const out = await handleIncoming(
+      { chatId: 1, messageId: 2, text: '/proyecto sincrorestoo' },
+      deps({ store }),
+    );
+    expect(out.kind).toBe('project_desconocido');
+    // Lo importante: NO se movio.
+    expect(await store.getActiveProject(1)).toBe('sincroresto');
+  });
+
+  // Hay un proyecto que se llama "Punchi" con mayuscula, asi que `/proyecto
+  // punchi` es el dedazo mas probable de todos. Se acepta y se guarda el nombre
+  // CANONICO: el nombre termina en una ruta de filesystem y en el `find` por
+  // nombre del pipeline, y "punchi" no matchea "Punchi" en ninguno de los dos.
+  it('/proyecto ignora mayusculas y guarda el nombre canonico', async () => {
+    const store = new InMemoryStore();
+    await vincular(store, 1);
+    await store.crearProyecto('Punchi', USUARIO_DE_PRUEBA);
+
+    const out = await handleIncoming(
+      { chatId: 1, messageId: 2, text: '/proyecto punchi' },
+      deps({ store }),
+    );
+    expect(out.kind).toBe('project');
+    expect(await store.getActiveProject(1)).toBe('Punchi');
+  });
+
+  it('/proyecto sin nombre trae la lista para elegir', async () => {
+    const store = new InMemoryStore();
+    await vincular(store, 1);
+    await store.crearProyecto('uno', USUARIO_DE_PRUEBA);
+    await store.crearProyecto('dos', USUARIO_DE_PRUEBA);
+    await store.setActiveProject(1, 'uno');
+
+    const out = await handleIncoming({ chatId: 1, messageId: 2, text: '/proyecto' }, deps({ store }));
+    if (out.kind !== 'project') throw new Error('no es project');
+    expect(out.project).toBe('uno');
+    // La lista con botones: sin esto hay que saber de memoria el nombre exacto
+    // de un proyecto que no se ve en ningun lado del chat.
+    expect(out.botones?.length).toBe(2);
+    expect(out.cambiado).toBeFalsy();
   });
 
   it('/proyecto sin nombre dice cual esta activo, sin cambiar nada', async () => {
