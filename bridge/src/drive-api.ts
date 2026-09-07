@@ -119,8 +119,23 @@ async function conDrive<T>(
       ok: false,
       status: 400,
       code: 'sin_cuenta',
+      // Este mensaje el modelo lo REPITE tal cual (ver `pedirADrive` en
+      // `multicodigo-vm/src/agent/src/drive-tools.ts`), asi que tiene que
+      // decirle que hacer y no solo que fallo.
+      //
+      // Antes decia solo "conectala en Configuracion", y eso salio mal en
+      // produccion de una forma concreta: alguien importo un Excel DESDE EL
+      // PANEL, lo pidio por Telegram, y el agente —que tenia el archivo
+      // convertido en `_docs/Sincro-Status.xlsx.md`, en su propio worktree—
+      // contesto que no habia Drive conectado y se quedo ahi. El callejon sin
+      // salida lo escribia este string.
       message:
-        'no tenes una cuenta de Google conectada. Conectala en Configuracion y volve a pedirmelo.',
+        'no hay una cuenta de Google conectada, asi que no puedo buscar en Drive. ' +
+        'OJO: si la persona dice que lo subio, lo importo o lo adjunto desde el panel, ' +
+        'ese archivo NO esta en Drive — esta en el directorio _docs de tu worktree, ' +
+        'al lado de los repos. Fijate ahi con Read (el .md, no el original) ANTES de ' +
+        'contestar. Solo si el archivo esta unicamente en su Drive hace falta conectar ' +
+        'la cuenta en Configuracion.',
     };
   }
 

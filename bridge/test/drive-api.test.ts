@@ -103,6 +103,18 @@ describe('sin cuenta conectada', () => {
     expect(res.json().message).toMatch(/Configuracion/);
   });
 
+  // La regresion que costo un turno entero en produccion: alguien importo un
+  // Excel desde el panel, lo pidio por Telegram, y el agente —que tenia el
+  // archivo convertido en `_docs` de su propio worktree— contesto "no tenes
+  // Drive conectado" y se quedo ahi. El modelo REPITE este mensaje tal cual,
+  // asi que si el mensaje no nombra `_docs`, el agente no lo mira.
+  it('manda a mirar _docs antes de pedir que conecten la cuenta', async () => {
+    const { app, jobId } = await servidor();
+    const res = await pedir(app, 'buscar', { jobId, nombre: 'Sincro Status' });
+    expect(res.json().message).toMatch(/_docs/);
+    expect(res.json().message).toMatch(/panel/i);
+  });
+
   it('vale para todas las herramientas, no solo para buscar', async () => {
     const { app, jobId } = await servidor();
     for (const [ruta, cuerpo] of [
