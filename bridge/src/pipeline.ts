@@ -22,6 +22,7 @@ import type { Store, Proyecto, ModoPermiso, ModoDeTurno, ClaveDeModelo } from '.
 import { partirEnTareas, type Tarea } from './cola.js';
 import {
   parseOpcionesDeCorrida,
+  limiteDeHora,
   type OpcionesDeCorrida,
   promptDeAnalisis,
   techoAlcanzado,
@@ -148,7 +149,25 @@ export type PipelineOutcome =
       relevos?: string[];
     }
   | { kind: 'switched'; agent: AgentId }
-  | { kind: 'status'; agent: AgentId; otros: AgentId[] }
+  /**
+   * Con quien hablas, y —si hay una corrida— como va.
+   *
+   * La corrida es opcional porque `/status` sirve para las dos cosas: sin
+   * corrida es lo de siempre. Con una abierta, lo que se pregunta a las tres de
+   * la mañana no es a que agente le hablas sino si todavia esta trabajando.
+   */
+  | {
+      kind: 'status';
+      agent: AgentId;
+      otros: AgentId[];
+      corrida?: Corrida;
+      /** Como viene la cola de esa corrida. Ver `ResumenDeTareas`. */
+      tareas?: ResumenDeTareas;
+      /** Lo que esta haciendo ahora, si hay una tarea tomada. */
+      haciendo?: string;
+      /** Cuando corta por hora. Se muestra el tiempo que falta. */
+      limite?: Date;
+    }
   | { kind: 'cowork'; primario: AgentId; otros: AgentId[] }
   /**
    * El modo de permisos del chat.
@@ -515,7 +534,28 @@ export async function handleIncoming(
   if (command.kind === 'status') {
     const primario = (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
     const otros = (await deps.store.agentesDeCowork(input.chatId)).filter((a) => a !== primario);
-    return { kind: 'status', agent: primario, otros };
+    const corrida = await deps.store.corridaAbierta(input.chatId);
+    if (!corrida) return { kind: 'status', agent: primario, otros };
+
+    // Las tareas de la CORRIDA y no las del chat: una cola dictada a mano antes
+    // de abrirla no es parte de esta noche, y contarla haria que el resumen no
+    // coincida con el informe de la mañana.
+    const tareas = await deps.store.tareasDeCorrida(corrida.id);
+    const corriendo = tareas.find((t) => t.estado === 'corriendo');
+    return {
+      kind: 'status',
+      agent: primario,
+      otros,
+      corrida,
+      tareas: {
+        hechas: tareas.filter((t) => t.estado === 'lista').length,
+        fallidas: tareas.filter((t) => t.estado === 'fallida').length,
+        pendientes: tareas.filter((t) => t.estado === 'pendiente').length,
+        sinResolver: [],
+      },
+      ...(corriendo ? { haciendo: corriendo.texto } : {}),
+      limite: limiteDeHora(corrida.creadoEn, corrida.techoHora),
+    };
   }
 
   const agent =
@@ -1295,9 +1335,12 @@ const MOTIVO_DE_REPO: Record<string, string> = {
   cuenta_no_es_org:
     'esa instalacion es de una cuenta personal, y GitHub no deja crear repos ahi con una App. ' +
     'Necesitas una organizacion',
+  // El permiso es el de REPOSITORIO y no el de organizacion, que es el error
+  // que costo un intento fallido: con `organization_administration: write`
+  // puesto, GitHub igual contesta "Resource not accessible by integration".
   github_403:
     'la App no tiene permiso para crear repos. En GitHub, en los permisos de la App: ' +
-    'Organization permissions → Administration: Read and write',
+    'Repository permissions → Administration: Read and write',
   panel_no_responde: 'no pude hablar con el panel para crear el repo',
   nombre_invalido: 'ese nombre de repo no sirve: solo letras, numeros, punto, guion y guion bajo',
 };

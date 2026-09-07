@@ -213,6 +213,14 @@ public sealed class GitHubApp
     /// propósito. Por eso el llamador tiene que verificar que la cuenta de la
     /// instalación sea una org antes de llegar acá.
     ///
+    /// El permiso que hace falta es <b>Repository permissions →
+    /// Administration: write</b>, y NO el de organización. Se anota porque es
+    /// contraintuitivo y costó un intento fallido: con
+    /// `organization_administration: write` puesto y el de repositorio ausente,
+    /// GitHub contesta 403 "Resource not accessible by integration", que no
+    /// nombra cuál de los dos falta. El de organización no hace falta para esto
+    /// — y otorga administrar la org entera, así que conviene no tenerlo.
+    ///
     /// Se crea PRIVADO. Es lo que se puede deshacer: un repo privado que tenía
     /// que ser público se abre con un click, y uno público que tenía que ser
     /// privado ya se indexó, se clonó y quedó en cachés que nadie controla. Y

@@ -16,6 +16,7 @@ import { handleIncoming, correrCola, type PipelineDeps } from '../src/pipeline.j
 import { InMemoryStore, type Store } from '../src/store.js';
 import { LimitePorChat } from '../src/vinculacion.js';
 import { buildWebhookServer } from '../src/webhook.js';
+import { textoDeCorridaEnCurso } from '../src/telegram.js';
 
 // --- Las decisiones puras -------------------------------------------------
 //
@@ -959,5 +960,170 @@ describe('parseOpcionesDeCorrida: proyecto, org y repos', () => {
 
   it('sin repos= la lista queda vacia y no undefined', () => {
     expect(parseOpcionesDeCorrida('# Stock').repos).toEqual([]);
+  });
+});
+
+// --- /status a mitad de la noche ------------------------------------------
+//
+// Sin esto, `/status` decia con que agente hablabas y nada mas, que a las tres
+// de la mañana no contesta la pregunta que uno tiene: ¿sigue trabajando?
+
+describe('/status con una corrida abierta', () => {
+  it('sin corrida sigue diciendo lo de siempre', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/status' }, d);
+    if (r.kind !== 'status') throw new Error('no es status');
+    // La condicion de que esto no rompa lo que ya andaba.
+    expect(r.corrida).toBeUndefined();
+    expect(r.tareas).toBeUndefined();
+  });
+
+  it('trae la ronda, el techo y el conteo', async () => {
+    const d = arnes();
+    await abrir(d, 'rondas=2');
+    const corrida = await d.store.corridaAbierta(7);
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: 'stock',
+      textos: ['uno', 'dos', 'tres'],
+      corridaId: corrida!.id,
+      ronda: 1,
+    });
+    const tareas = await d.store.tareasDeChat(7);
+    await d.store.cerrarTarea(tareas[0]!.id, 'lista');
+    await d.store.cerrarTarea(tareas[1]!.id, 'fallida');
+
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/status' }, d);
+    if (r.kind !== 'status') throw new Error('no es status');
+    expect(r.corrida?.ronda).toBe(1);
+    expect(r.corrida?.techoRondas).toBe(2);
+    expect(r.tareas).toMatchObject({ hechas: 1, fallidas: 1, pendientes: 1 });
+  });
+
+  // La linea que justifica el comando: distingue un bot trabajando de uno
+  // colgado hace dos horas.
+  it('dice que tarea esta haciendo', async () => {
+    const d = arnes();
+    await abrir(d);
+    const corrida = await d.store.corridaAbierta(7);
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: 'stock',
+      textos: ['armar el modulo de lotes'],
+      corridaId: corrida!.id,
+      ronda: 1,
+    });
+    await d.store.tomarProxima(7);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/status' }, d);
+    if (r.kind !== 'status') throw new Error('no es status');
+    expect(r.haciendo).toBe('armar el modulo de lotes');
+  });
+
+  // Sin tarea tomada y con la corrida abierta esta analizando, que dura varios
+  // minutos. Sin decirlo, el silencio se lee como que se colgo.
+  it('sin tarea tomada no dice que este haciendo una', async () => {
+    const d = arnes();
+    await abrir(d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/status' }, d);
+    if (r.kind !== 'status') throw new Error('no es status');
+    expect(r.haciendo).toBeUndefined();
+    expect(r.corrida).toBeDefined();
+  });
+
+  // Las tareas de la CORRIDA y no las del chat: una cola dictada a mano antes
+  // de abrirla no es parte de esta noche, y contarla haria que el resumen no
+  // coincida con el informe de la mañana.
+  it('no cuenta las tareas que no son de la corrida', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/cola vieja' }, d);
+    await handleIncoming({ chatId: 7, messageId: 2, text: `/corrida\n${PLIEGO}` }, d);
+
+    const r = await handleIncoming({ chatId: 7, messageId: 3, text: '/status' }, d);
+    if (r.kind !== 'status') throw new Error('no es status');
+    expect(r.tareas).toMatchObject({ hechas: 0, fallidas: 0, pendientes: 0 });
+  });
+
+  it('trae el limite de hora para poder decir cuanto falta', async () => {
+    const d = arnes();
+    await abrir(d, 'hasta=23:59');
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/status' }, d);
+    if (r.kind !== 'status') throw new Error('no es status');
+    expect(r.limite).toBeInstanceOf(Date);
+    expect(r.limite!.getTime()).toBeGreaterThan(Date.now());
+  });
+});
+
+describe('textoDeCorridaEnCurso', () => {
+  const base: Corrida = {
+    id: 'x',
+    chatId: 7,
+    proyecto: 'stock',
+    md: 'x',
+    ronda: 2,
+    techoRondas: 3,
+    techoHora: '07:00',
+    fallosSeguidos: 0,
+    estado: 'abierta',
+    creadoEn: new Date(),
+  };
+  const sinTareas = { hechas: 3, fallidas: 1, pendientes: 5, sinResolver: [] };
+
+  it('la ronda y el techo van arriba', () => {
+    const t = textoDeCorridaEnCurso(base, sinTareas, 'armar lotes', undefined);
+    expect(t).toContain('Ronda 2 de 3');
+    expect(t).toContain('armar lotes');
+    expect(t).toContain('3 hechas');
+  });
+
+  it('sin tarea dice que esta revisando', () => {
+    const t = textoDeCorridaEnCurso(base, sinTareas, undefined, undefined);
+    expect(t).toContain('Revisando el repo contra el pliego');
+  });
+
+  // En una noche normal el contador esta en cero y nombrarlo seria ruido.
+  it('no nombra los fallos seguidos cuando no hay', () => {
+    expect(textoDeCorridaEnCurso(base, sinTareas, undefined, undefined)).not.toContain('seguido');
+  });
+
+  it('avisa cuando falta poco para el techo de fallos', () => {
+    const t = textoDeCorridaEnCurso(
+      { ...base, fallosSeguidos: 2 },
+      sinTareas,
+      undefined,
+      undefined,
+    );
+    expect(t).toContain('2 fallo(s) seguido(s)');
+    expect(t).toContain(String(TOPE_DE_FALLOS));
+  });
+
+  it('dice cuanto falta para la hora de corte', () => {
+    const t = textoDeCorridaEnCurso(
+      base,
+      sinTareas,
+      undefined,
+      new Date(Date.now() + 90 * 60 * 1000),
+    );
+    expect(t).toContain('1h 30m');
+  });
+
+  it('con la hora ya pasada lo dice en vez de un numero negativo', () => {
+    const t = textoDeCorridaEnCurso(
+      base,
+      sinTareas,
+      undefined,
+      new Date(Date.now() - 60 * 1000),
+    );
+    expect(t).toContain('Ya paso la hora de corte');
+    expect(t).not.toContain('-');
+  });
+
+  // El texto de la tarea lo dicta una persona o lo redacta el analista, y este
+  // mensaje va con parse_mode HTML.
+  it('escapa el texto de la tarea', () => {
+    const t = textoDeCorridaEnCurso(base, sinTareas, 'chequear stock < 0', undefined);
+    expect(t).toContain('stock &lt; 0');
   });
 });

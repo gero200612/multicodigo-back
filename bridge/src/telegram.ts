@@ -20,7 +20,9 @@ import {
   TECHO_HORA_POR_DEFECTO,
   TECHO_RONDAS_POR_DEFECTO,
   TOPE_DE_PLIEGO,
+  TOPE_DE_FALLOS,
   type Corrida,
+  type ResumenDeTareas,
 } from './corrida.js';
 import { escaparHtml } from './codigo.js';
 import { startWatching } from './approvals.js';
@@ -43,7 +45,14 @@ export function renderOutcome(outcome: PipelineOutcome): string {
     case 'switched':
       return `Listo, ahora le hablás a ${outcome.agent.toUpperCase()}.`;
     case 'status':
-      return textoDeActivos(outcome.agent, outcome.otros);
+      return outcome.corrida
+        ? textoDeCorridaEnCurso(
+            outcome.corrida,
+            outcome.tareas!,
+            outcome.haciendo,
+            outcome.limite,
+          )
+        : textoDeActivos(outcome.agent, outcome.otros);
     case 'cowork':
       return textoDeActivos(outcome.primario, outcome.otros);
     case 'permisos':
@@ -281,6 +290,63 @@ export function textoDeProyecto(
 }
 
 /**
+ * Como va una corrida que esta corriendo AHORA.
+ *
+ * Es lo que contesta `/status` a mitad de la noche, y esta ordenado por lo que
+ * se pregunta primero: ¿sigue viva?, ¿en que anda?, ¿cuanto lleva hecho?,
+ * ¿cuando corta?
+ *
+ * La linea de "que esta haciendo" es la que justifica el comando: sin ella,
+ * "18 hechas" no distingue un bot trabajando de uno colgado hace dos horas.
+ * Cuando no hay ninguna tarea tomada y la corrida sigue abierta, esta
+ * revisando contra el pliego — que es un estado real y dura varios minutos.
+ */
+export function textoDeCorridaEnCurso(
+  c: Corrida,
+  t: ResumenDeTareas,
+  haciendo: string | undefined,
+  limite: Date | undefined,
+): string {
+  const lineas = [
+    `🌙 <b>Corrida en curso</b> — ${escaparHtml(c.proyecto)}`,
+    `Ronda ${c.ronda} de ${c.techoRondas}.`,
+    '',
+    haciendo
+      ? `▶ Haciendo: ${escaparHtml(haciendo)}`
+      : // Sin tarea tomada y con la corrida abierta: el analista esta leyendo
+        // el repo contra el pliego. Decirlo evita que un silencio de diez
+        // minutos se lea como que se colgo.
+        '🔎 Revisando el repo contra el pliego.',
+    '',
+    `Tareas: ${t.hechas} hechas · ${t.fallidas} fallaron · ${t.pendientes} sin hacer`,
+  ];
+
+  // Los fallos SEGUIDOS solo cuando ya hay alguno: en una noche normal el
+  // contador esta en cero y nombrarlo seria ruido. Cuando no lo esta, es lo mas
+  // urgente de la pantalla — falta poco para que corte.
+  if (c.fallosSeguidos > 0) {
+    lineas.push(
+      `⚠️ ${c.fallosSeguidos} fallo(s) seguido(s): a los ${TOPE_DE_FALLOS} corto.`,
+    );
+  }
+
+  if (limite) {
+    const faltan = Math.round((limite.getTime() - Date.now()) / 60000);
+    lineas.push(
+      '',
+      faltan > 60
+        ? `Corta a las ${c.techoHora} (faltan ${Math.floor(faltan / 60)}h ${faltan % 60}m).`
+        : faltan > 0
+          ? `Corta a las ${c.techoHora} (faltan ${faltan}m).`
+          : `Ya paso la hora de corte (${c.techoHora}): cierro en la proxima vuelta.`,
+    );
+  }
+
+  lineas.push('', 'Con /cola ves la lista. Con /cancelar corto la corrida.');
+  return lineas.join('\n');
+}
+
+/**
  * Una corrida desatendida.
  *
  * Los tres casos que contesta el mismo comando: recien abierta, ya habia una, y
@@ -454,6 +520,11 @@ function usaHtml(outcome: PipelineOutcome): boolean {
     outcome.kind === 'modelo' ||
     outcome.kind === 'cola' ||
     outcome.kind === 'corrida' ||
+    outcome.kind === 'corrida_sin_armar' ||
+    // `status` lleva HTML desde que muestra la corrida: el nombre del proyecto
+    // va en negrita y el texto de la tarea es libre. Sin declararlo, las
+    // etiquetas se leerian crudas — el mismo agujero que tenia el informe.
+    outcome.kind === 'status' ||
     // Los dos llevan el nombre del proyecto en negrita: es el dato de la
     // frase, y en una lista de seis nombres parecidos es lo que se busca con
     // la vista.

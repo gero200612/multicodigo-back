@@ -1500,7 +1500,9 @@ api.MapPost("/proyectos/{proyectoId}/github/repos", async (
             "repo_ya_existe" => $"ya existe un repo llamado {nombre} en {inst.Cuenta}",
             // El permiso que hay que ir a dar, nombrado como se llama en la
             // pantalla de GitHub. Un "403" pelado no dice dónde tocar.
-            "github_403" => "la App no tiene permiso para crear repos: dale Organization permissions → Administration: Read and write",
+            // REPOSITORY y no Organization: con el de organizacion puesto,
+            // GitHub igual contesta "Resource not accessible by integration".
+            "github_403" => "la App no tiene permiso para crear repos: dale Repository permissions → Administration: Read and write",
             _ => "no se pudo crear el repo en GitHub",
         };
         return Results.BadRequest(new { code = ex.Message, message });
