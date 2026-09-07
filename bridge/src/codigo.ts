@@ -53,14 +53,70 @@ function bloque(lineas: string[]): string {
 }
 
 /**
- * El codigo inline de un backtick, a `<code>`.
+ * El Markdown de una linea, al HTML que Telegram entiende.
  *
- * Se aplica sobre texto YA escapado, asi que el contenido no puede traer
- * etiquetas. Un backtick sin cerrar queda como esta: no es un delimitador, es
- * una comilla.
+ * El agente escribe Markdown —se lo pide el system prompt y es lo que sale
+ * naturalmente de un modelo— y hasta ahora lo unico que se traducia eran los
+ * backticks. Todo lo demas se ESCAPABA, asi que una lista llegaba al telefono
+ * con los guiones a la vista y un titulo con los numerales adelante:
+ *
+ *     **6 bugs pendientes**        en vez de   6 bugs pendientes (en negrita)
+ *     - Login: la sesion expira    en vez de   • Login: la sesion expira
+ *     ## Debug                     en vez de   Debug (en negrita)
+ *
+ * Telegram no tiene Markdown y HTML a la vez: o se manda `parse_mode: HTML` o
+ * `MarkdownV2`, y HTML ya es el que se usa —lo eligio el escapado, que es lo
+ * que evita que un `<` suelto tire el mensaje entero—. Asi que la traduccion
+ * se hace aca.
+ *
+ * Corre sobre texto YA ESCAPADO, y ese orden importa: despues del escapado no
+ * queda ningun `<` del agente, asi que las etiquetas que se agregan aca son
+ * las unicas del mensaje.
+ *
+ * Lo que NO se traduce, y a proposito:
+ *
+ * - El `_cursiva_` con guion bajo. `mi_variable_larga` es texto normal en este
+ *   producto y se volveria cursiva por la mitad. El `*cursiva*` con asterisco
+ *   si, que es inequivoco.
+ * - Las tablas. Telegram no tiene, y fingirlas con espacios se rompe en
+ *   cualquier pantalla angosta.
  */
-function inline(texto: string): string {
-  return texto.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+
+/**
+ * El separador de los huecos donde se guarda el codigo inline.
+ *
+ * Se arma con `fromCharCode` y no se escribe: es un caracter de control, no
+ * puede venir del texto del agente, y en el fuente seria invisible.
+ */
+const HUECO = String.fromCharCode(0);
+
+function conFormato(escapado: string): string {
+  // El codigo inline se aparta ANTES de tocar nada: un `**` adentro de un
+  // backtick es codigo, no negrita.
+  const codigos: string[] = [];
+  let t = escapado.replace(/`([^`\n]+)`/g, (_, c: string) => {
+    codigos.push(c);
+    return `${HUECO}${codigos.length - 1}${HUECO}`;
+  });
+
+  // Titulo: en negrita y sin los numerales. Telegram no tiene tamaños de
+  // texto, asi que la jerarquia es negrita o nada.
+  t = t.replace(/^\s{0,3}#{1,6}\s+(.*)$/, '<b>$1</b>');
+
+  // La vineta, antes que la cursiva: el `*` de una lista esta al principio de
+  // la linea y si no se lo toma como apertura de enfasis.
+  t = t.replace(/^(\s*)[-*+]\s+/, '$1• ');
+
+  t = t
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*/g, '<b>$1</b>')
+    .replace(/~~(?=\S)([^~\n]+?)(?<=\S)~~/g, '<s>$1</s>')
+    .replace(/(?<![*\w])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![*\w])/g, '<i>$1</i>');
+
+  // `\\d` y no `\d`: adentro de un template literal, `\d` se colapsa a `d` y el
+  // regex dejaria de buscar digitos.
+  const hueco = new RegExp(`${HUECO}(\\d+)${HUECO}`, 'g');
+  return t.replace(hueco, (_, i: string) => `<code>${codigos[Number(i)]}</code>`);
 }
 
 /**
@@ -94,7 +150,7 @@ export function conCodigoParaTelegram(texto: string): string {
     }
 
     if (dentro) acumulado.push(linea);
-    else salida.push(inline(escapar(linea)));
+    else salida.push(conFormato(escapar(linea)));
   }
 
   // Un bloque sin cerrar se muestra igual: pasa cuando el agente se queda sin

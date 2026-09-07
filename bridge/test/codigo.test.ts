@@ -71,3 +71,51 @@ describe('conCodigoParaTelegram', () => {
     );
   });
 });
+
+describe('el Markdown que escribe el agente', () => {
+  // El caso que lo motivo: la respuesta de un turno real llegaba al telefono
+  // con los asteriscos y los guiones a la vista.
+  it('la negrita se ve en negrita y no con asteriscos', () => {
+    expect(conCodigoParaTelegram('quedan **6 bugs pendientes** sin resolver')).toBe(
+      'quedan <b>6 bugs pendientes</b> sin resolver',
+    );
+  });
+
+  it('una lista se ve con vinetas y no con guiones', () => {
+    expect(conCodigoParaTelegram('- Login: la sesion expira\n- Stock: redirige mal')).toBe(
+      '• Login: la sesion expira\n• Stock: redirige mal',
+    );
+  });
+
+  it('un titulo va en negrita, sin los numerales', () => {
+    expect(conCodigoParaTelegram('## Debug')).toBe('<b>Debug</b>');
+  });
+
+  it('la cursiva con asterisco si, la del guion bajo no', () => {
+    expect(conCodigoParaTelegram('esto es *importante*')).toBe('esto es <i>importante</i>');
+    // `mi_variable_larga` es texto normal en este producto: convertirlo en
+    // cursiva por la mitad seria peor que no tener cursivas.
+    expect(conCodigoParaTelegram('mira mi_variable_larga')).toBe('mira mi_variable_larga');
+  });
+
+  it('un link se puede tocar', () => {
+    expect(conCodigoParaTelegram('[el panel](https://punchi.dev/archivos)')).toBe(
+      '<a href="https://punchi.dev/archivos">el panel</a>',
+    );
+  });
+
+  // Lo que ya andaba y no se puede romper.
+  it('el codigo inline sigue siendo codigo, y lo de adentro no se toca', () => {
+    expect(conCodigoParaTelegram('corre `npm **test**` ahora')).toBe(
+      'corre <code>npm **test**</code> ahora',
+    );
+  });
+
+  it('el escapado sigue primero: un tag mencionado no rompe el mensaje', () => {
+    expect(conCodigoParaTelegram('usa **<div>** ahi')).toBe('usa <b>&lt;div&gt;</b> ahi');
+  });
+
+  it('un asterisco suelto no abre nada', () => {
+    expect(conCodigoParaTelegram('2 * 3 = 6')).toBe('2 * 3 = 6');
+  });
+});

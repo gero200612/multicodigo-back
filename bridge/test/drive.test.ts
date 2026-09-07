@@ -131,26 +131,83 @@ describe('leer', () => {
     expect(await leer('t', 'd1', deps)).toBe('el contenido');
   });
 
-  it('exporta una planilla de Google como CSV', async () => {
-    let segundaUrl = '';
+  // La regresion que costo un turno: `files.export` con text/csv devuelve SOLO
+  // la primera hoja, y no avisa. El agente contesto "trae una sola hoja y no
+  // puedo indicarle cual" sobre una planilla que tenia una pestaña "Debug".
+  it('trae TODAS las hojas de una planilla, con el nombre de cada una', async () => {
+    const urls: string[] = [];
     let n = 0;
     const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
+      urls.push(url.toString());
       n += 1;
       if (n === 1) {
         return new Response(
           JSON.stringify({
             id: 's1',
-            name: 'Estado',
+            name: 'Sincro Status',
             mimeType: 'application/vnd.google-apps.spreadsheet',
           }),
         );
       }
-      segundaUrl = url.toString();
-      return new Response('a,b\n1,2');
+      if (n === 2) {
+        return new Response(
+          JSON.stringify({
+            sheets: [
+              { properties: { title: 'Funcionalidades' } },
+              { properties: { title: 'Debug' } },
+            ],
+          }),
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          valueRanges: [
+            { values: [['item', 'estado'], ['login', 'ok']] },
+            { values: [['bug', 'nota'], ['sesion, 24hs', 'se corta']] },
+          ],
+        }),
+      );
     });
     const deps = { clientId: 'i', clientSecret: 's', fetchImpl: fetchImpl as unknown as typeof fetch };
-    expect(await leer('t', 's1', deps)).toBe('a,b\n1,2');
-    expect(decodeURIComponent(segundaUrl)).toContain('text/csv');
+
+    const texto = await leer('t', 's1', deps);
+
+    // Las dos hojas, cada una con su titulo: sin el nombre el modelo no puede
+    // citar de donde saco un dato ni saber que hay otra pestaña.
+    expect(texto).toContain('## Funcionalidades');
+    expect(texto).toContain('## Debug');
+    expect(texto).toContain('login,ok');
+    // Una celda con coma se cita, o parte la fila en dos columnas.
+    expect(texto).toContain('"sesion, 24hs",se corta');
+    // Y NO se usa la exportacion de Drive, que es la que perdia las hojas.
+    expect(urls.join(' ')).not.toContain('text/csv');
+    expect(urls.some((u) => u.includes('values:batchGet'))).toBe(true);
+  });
+
+  it('pide los valores de cada hoja por su nombre, citado', async () => {
+    let batch = '';
+    let n = 0;
+    const fetchImpl = vi.fn(async (url: URL | RequestInfo) => {
+      n += 1;
+      if (n === 1) {
+        return new Response(
+          JSON.stringify({ id: 's1', name: 'P', mimeType: 'application/vnd.google-apps.spreadsheet' }),
+        );
+      }
+      if (n === 2) {
+        return new Response(JSON.stringify({ sheets: [{ properties: { title: "Menu 'online'" } }] }));
+      }
+      batch = url.toString();
+      return new Response(JSON.stringify({ valueRanges: [{ values: [['a']] }] }));
+    });
+    const deps = { clientId: 'i', clientSecret: 's', fetchImpl: fetchImpl as unknown as typeof fetch };
+
+    await leer('t', 's1', deps);
+
+    // Un titulo con espacios necesita comillas para ser un rango valido, y la
+    // comilla de adentro se duplica. Se lee el parametro y no la URL cruda:
+    // URLSearchParams escribe el espacio como '+'.
+    expect(new URL(batch).searchParams.getAll('ranges')).toEqual(["'Menu ''online'''"]);
   });
 
   it('baja un archivo de texto tal cual', async () => {

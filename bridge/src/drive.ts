@@ -295,14 +295,82 @@ export async function metadatos(
  * Un Google Doc no tiene bytes propios —no hay un .docx adentro— asi que
  * `alt=media` sobre uno devuelve un 403 y no un archivo. Hay que pedirle a
  * Google que lo convierta al salir, y a que formato es una decision: un Doc a
- * texto plano se lee entero, y una planilla a CSV conserva las filas y las
- * columnas, que es lo que se le va a preguntar.
+ * texto plano se lee entero.
+ *
+ * La planilla NO esta en esta tabla, y es a proposito: ver `leerPlanilla`.
  */
 const EXPORTA_COMO: Record<string, string> = {
   'application/vnd.google-apps.document': 'text/plain',
-  'application/vnd.google-apps.spreadsheet': 'text/csv',
   'application/vnd.google-apps.presentation': 'text/plain',
 };
+
+const TIPO_PLANILLA = 'application/vnd.google-apps.spreadsheet';
+
+/** Una celda, como fila de CSV. Comillas solo cuando hacen falta. */
+function celdaCsv(valor: unknown): string {
+  const s = valor === null || valor === undefined ? '' : String(valor);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * Una planilla entera, hoja por hoja.
+ *
+ * **`files.export` con `text/csv` devuelve SOLO LA PRIMERA HOJA.** Es una
+ * limitacion de Drive y no avisa: contesta 200 con la primera pestaña y nada
+ * mas, asi que desde afuera se ve igual que una planilla de una sola hoja.
+ *
+ * Costo un turno entero en produccion: una planilla con una pestaña "Debug"
+ * devolvio la de funcionalidades, y el agente —que no tenia como saber que
+ * habia mas— contesto "leer_de_drive trae una sola hoja y no puedo indicarle
+ * cual". El modelo tenia razon sobre la herramienta; el que estaba mal era el
+ * formato de exportacion.
+ *
+ * Por eso se lee con la API de Sheets y no con la de Drive: es la unica que
+ * sabe que una planilla tiene pestañas. Primero los NOMBRES —que son los que
+ * el modelo necesita para hablar de "la hoja de debug"— y despues los valores
+ * de todas de una sola vez con `batchGet`, que es un pedido y no uno por hoja.
+ *
+ * El scope alcanza: `drive.file` habilita la API de Sheets sobre los archivos
+ * que la app puede ver, que es lo mismo que ya usa `editarPlanilla`.
+ */
+async function leerPlanilla(token: string, id: string, deps: DriveDeps): Promise<string> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  const auth = { authorization: `Bearer ${token}` };
+
+  const meta = await doFetch(
+    `${SHEETS}/${encodeURIComponent(id)}?fields=sheets.properties.title`,
+    { headers: auth, signal: AbortSignal.timeout(30_000) },
+  );
+  if (!meta.ok) await comoError(meta, 'no pude abrir esa planilla');
+  const hojas = ((await meta.json()) as { sheets?: Array<{ properties?: { title?: string } }> })
+    .sheets;
+  const titulos = (hojas ?? [])
+    .map((h) => h.properties?.title)
+    .filter((t): t is string => !!t);
+  if (titulos.length === 0) return '';
+
+  // Los nombres van como rango: una hoja entera es su propio nombre. Se citan
+  // con comilla simple porque un titulo con espacios —"Menu online"— sin eso no
+  // es un rango valido, y la comilla de adentro se duplica.
+  const url = new URL(`${SHEETS}/${encodeURIComponent(id)}/values:batchGet`);
+  for (const t of titulos) url.searchParams.append('ranges', `'${t.replace(/'/g, "''")}'`);
+  url.searchParams.set('majorDimension', 'ROWS');
+
+  const res = await doFetch(url, { headers: auth, signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) await comoError(res, 'no pude leer esa planilla');
+  const cuerpo = (await res.json()) as { valueRanges?: Array<{ values?: unknown[][] }> };
+  const rangos = cuerpo.valueRanges ?? [];
+
+  // Cada hoja con su nombre encima, aunque haya una sola: sin el titulo, el
+  // modelo no puede citar de donde saco un dato ni entender que hay otras.
+  return titulos
+    .map((titulo, i) => {
+      const filas = rangos[i]?.values ?? [];
+      const cuerpoCsv = filas.map((f) => f.map(celdaCsv).join(',')).join('\n');
+      return `## ${titulo}\n${cuerpoCsv || '(vacia)'}`;
+    })
+    .join('\n\n');
+}
 
 /**
  * Lo que ya es texto y se lee sin convertir nada.
@@ -333,6 +401,10 @@ const AL_CONVERSOR: Record<string, string> = {
 export async function leer(token: string, id: string, deps: DriveDeps): Promise<string> {
   const doFetch = deps.fetchImpl ?? fetch;
   const archivo = await metadatos(token, id, deps);
+
+  // Antes que la exportacion: una planilla tiene pestañas y `files.export` solo
+  // ve la primera. Ver `leerPlanilla`.
+  if (archivo.tipo === TIPO_PLANILLA) return await leerPlanilla(token, id, deps);
 
   const exportar = EXPORTA_COMO[archivo.tipo];
   if (exportar) {
