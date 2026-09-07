@@ -27,8 +27,15 @@ public class GoogleDriveTests(PanelFactory f) : IClassFixture<PanelFactory>
         return c;
     }
 
-    /// <summary>El redirect que el front usó en el primer paso del OAuth.</summary>
-    private const string Redirect = "http://localhost/configuracion/google";
+    /// <summary>
+    /// El redirect que el front usó en el primer paso del OAuth.
+    ///
+    /// Sale de <c>FRONT_URL</c> y NO del host de la API, que es el punto: el
+    /// front se sirve desde otro dominio y reescribe <c>/api/*</c> hacia el
+    /// panel, así que el <c>Request.Host</c> de este proceso nunca es el que vio
+    /// el navegador.
+    /// </summary>
+    private const string Redirect = "https://front.de-prueba.test/configuracion";
 
     // --- estado ---
 
@@ -116,6 +123,46 @@ public class GoogleDriveTests(PanelFactory f) : IClassFixture<PanelFactory>
         Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
         // Y no llegó al bridge: rechazar después de canjear no serviría de nada.
         Assert.Empty(f.Bridge.ConexionesDeGoogle);
+    }
+
+    /// <summary>
+    /// El redirect del host de la API se rechaza, aunque sea "de este proceso".
+    ///
+    /// Es la regresión que rompió conectar Drive en producción al revés: el
+    /// chequeo comparaba contra <c>Request.Host</c>, así que aceptaba justo el
+    /// origen que el navegador NUNCA usa y rechazaba el único que usa siempre.
+    /// </summary>
+    [Fact]
+    public async Task ElRedirectDelHostDeLaApiSeRechaza()
+    {
+        f.Bridge.ConexionesDeGoogle.Clear();
+
+        var res = await Cliente().PostAsJsonAsync(
+            "/api/google/conectar",
+            new { code = "codigo", redirectUri = "http://localhost/configuracion" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, res.StatusCode);
+        Assert.Empty(f.Bridge.ConexionesDeGoogle);
+    }
+
+    /// <summary>
+    /// El redirect del front SÍ se acepta, y llega al bridge.
+    ///
+    /// Es el caso que fallaba: `https://punchi.dev/configuracion` contra un
+    /// panel que se ve a sí mismo como `panel.punchi.dev`.
+    /// </summary>
+    [Fact]
+    public async Task ElRedirectDelFrontSeAcepta()
+    {
+        f.Bridge.ConexionesDeGoogle.Clear();
+        f.Bridge.EmailDeGoogle = "yo@ejemplo.com";
+
+        var res = await Cliente().PostAsJsonAsync(
+            "/api/google/conectar",
+            new { code = "codigo-de-google", redirectUri = Redirect });
+
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Single(f.Bridge.ConexionesDeGoogle);
     }
 
     [Fact]

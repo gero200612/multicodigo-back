@@ -1656,10 +1656,24 @@ api.MapPost("/google/conectar", async (
     var usuarioId = ctx.User.FindFirst("sub")?.Value;
     if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
 
-    // El redirect tiene que ser de este mismo panel. Se compara contra el
-    // origen del pedido y no contra una lista escrita a mano, que se
-    // desactualiza en cuanto cambia el dominio.
-    var propio = $"{ctx.Request.Scheme}://{ctx.Request.Host}";
+    // El redirect tiene que ser del panel por el que entro la persona.
+    //
+    // Se compara contra `FRONT_URL` y no contra `Request.Host`: el front vive
+    // en `punchi.dev` y reescribe `/api/*` hacia `panel.punchi.dev`, asi que el
+    // host que ve este proceso es el suyo y no el del navegador. Con la
+    // comparacion vieja, `https://punchi.dev/configuracion` no empezaba con
+    // `https://panel.punchi.dev` y conectar Drive daba 400 SIEMPRE — sin llegar
+    // nunca al bridge, que es lo que hacia dificil de ver el motivo.
+    //
+    // Es la misma variable que ya usa el callback de GitHub, y por la misma
+    // razon: es el unico lugar donde el panel sabe por que dominio entro la
+    // gente.
+    //
+    // Sin la variable se cae al origen del pedido, que es lo que corresponde
+    // cuando el front y la API comparten dominio.
+    var propio = string.IsNullOrEmpty(frontUrl)
+        ? $"{ctx.Request.Scheme}://{ctx.Request.Host}"
+        : frontUrl;
     if (string.IsNullOrWhiteSpace(cuerpo.RedirectUri) ||
         !cuerpo.RedirectUri.StartsWith(propio, StringComparison.OrdinalIgnoreCase))
     {
