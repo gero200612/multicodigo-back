@@ -103,6 +103,13 @@ export function recortar(texto: string): string {
  * En snake_case y no camelCase: estas filas viajan tal cual en el cuerpo del
  * pedido al gateway, que las valida con el schema de `@multicodigo/shared`.
  */
+/** Un `/corrida` a medias: en que paso quedo la conversacion. */
+export interface Borrador {
+  chatId: number;
+  paso: 'nombre' | 'pliego';
+  proyecto?: string;
+}
+
 export interface RepoDelProyecto {
   nombre: string;
   github_repo: string;
@@ -618,6 +625,34 @@ export interface Store {
   contarFallo(id: string, fallo: boolean): Promise<number>;
   /** Las tareas de una corrida, en orden. Para el informe. */
   tareasDeCorrida(corridaId: string): Promise<Tarea[]>;
+
+  // --- El borrador: el paso a paso antes de abrir la corrida ----------------
+
+  /** En que paso quedo el `/corrida` de este chat, si hay uno a medias. */
+  borradorDeChat(chatId: number): Promise<Borrador | undefined>;
+  /** Guarda el paso. Un borrador nuevo pisa al anterior. */
+  guardarBorrador(chatId: number, paso: Borrador['paso'], proyecto?: string): Promise<void>;
+  /** Lo borra. Se llama al abrir la corrida y al cancelar. */
+  borrarBorrador(chatId: number): Promise<void>;
+  /**
+   * Las organizaciones de GitHub que esta persona ya conecto.
+   *
+   * Para no tener que escribir `org=` cada vez: si hay una sola, es esa. Sale
+   * de las instalaciones de SUS proyectos, asi que nombrar la org de un
+   * desconocido no alcanza para nada.
+   *
+   * Devuelve las cuentas distintas, sin repetir: una instalacion puede estar
+   * atada a varios proyectos.
+   */
+  cuentasConectadas(usuarioId: string): Promise<Array<{ installationId: number; cuenta: string }>>;
+  /**
+   * Los repos de REFERENCIA que esta persona ya tiene en algun proyecto.
+   *
+   * Para no tener que escribir `referencia=` cada vez. Salen de las filas con
+   * `solo_lectura`, o sea de lo que ya se monto asi alguna vez — no hay una
+   * lista aparte que mantener.
+   */
+  referenciasConocidas(usuarioId: string): Promise<string[]>;
   /**
    * Anota que el analista de esta ronda SI llamo a `reportar_huecos`.
    *
@@ -1184,6 +1219,41 @@ export class InMemoryStore implements Store {
   async marcarHuecos(corridaId: string, ronda: number): Promise<void> {
     const c = this.corridas.get(corridaId);
     if (c) c.huecosDeRonda = ronda;
+  }
+
+  private borradores = new Map<number, Borrador>();
+
+  async borradorDeChat(chatId: number) {
+    return this.borradores.get(chatId);
+  }
+
+  async guardarBorrador(chatId: number, paso: Borrador['paso'], proyecto?: string) {
+    this.borradores.set(chatId, { chatId, paso, ...(proyecto ? { proyecto } : {}) });
+  }
+
+  async borrarBorrador(chatId: number) {
+    this.borradores.delete(chatId);
+  }
+
+  async cuentasConectadas(usuarioId: string) {
+    const mios = await this.proyectosDeUsuario(usuarioId);
+    const vistas = new Map<string, { installationId: number; cuenta: string }>();
+    for (const p of mios) {
+      const i = this.instalaciones.get(p.id);
+      if (i) vistas.set(i.cuenta.toLowerCase(), i);
+    }
+    return [...vistas.values()];
+  }
+
+  async referenciasConocidas(usuarioId: string) {
+    const mios = await this.proyectosDeUsuario(usuarioId);
+    const nombres = new Set<string>();
+    for (const p of mios) {
+      for (const r of this.reposPorProyecto.get(p.id) ?? []) {
+        if (r.solo_lectura) nombres.add(r.nombre);
+      }
+    }
+    return [...nombres].sort();
   }
 
   /** Solo para los tests: mueve el arranque de una corrida en el tiempo. */
@@ -2220,6 +2290,67 @@ export class PgStore implements Store {
       corridaId,
       ronda,
     ]);
+  }
+
+  async borradorDeChat(chatId: number): Promise<Borrador | undefined> {
+    const r = await this.pool.query<{ paso: string; proyecto: string | null }>(
+      'SELECT paso, proyecto FROM corrida_borrador WHERE chat_id = $1',
+      [chatId],
+    );
+    const f = r.rows[0];
+    return f
+      ? { chatId, paso: f.paso as Borrador['paso'], ...(f.proyecto ? { proyecto: f.proyecto } : {}) }
+      : undefined;
+  }
+
+  async guardarBorrador(chatId: number, paso: Borrador['paso'], proyecto?: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO corrida_borrador (chat_id, paso, proyecto) VALUES ($1, $2, $3)
+       ON CONFLICT (chat_id) DO UPDATE SET paso = $2, proyecto = $3, creado_en = now()`,
+      [chatId, paso, proyecto ?? null],
+    );
+  }
+
+  async borrarBorrador(chatId: number): Promise<void> {
+    await this.pool.query('DELETE FROM corrida_borrador WHERE chat_id = $1', [chatId]);
+  }
+
+  async cuentasConectadas(
+    usuarioId: string,
+  ): Promise<Array<{ installationId: number; cuenta: string }>> {
+    // El JOIN contra `miembros` es la autorizacion, igual que en
+    // `instalacionDeCuenta`: solo las instalaciones de SUS proyectos.
+    try {
+      const r = await this.pool.query<{ installation_id: string; cuenta: string }>(
+        `SELECT DISTINCT gi.installation_id, gi.cuenta
+           FROM github_instalaciones gi
+           JOIN miembros m ON m.proyecto_id = gi.proyecto_id
+          WHERE m.usuario_id = $1
+          ORDER BY gi.cuenta`,
+        [usuarioId],
+      );
+      return r.rows.map((f) => ({ installationId: Number(f.installation_id), cuenta: f.cuenta }));
+    } catch {
+      return [];
+    }
+  }
+
+  async referenciasConocidas(usuarioId: string): Promise<string[]> {
+    try {
+      const r = await this.pool.query<{ nombre: string }>(
+        `SELECT DISTINCT r.nombre
+           FROM repos r
+           JOIN miembros m ON m.proyecto_id = r.proyecto_id
+          WHERE m.usuario_id = $1 AND r.solo_lectura
+          ORDER BY r.nombre`,
+        [usuarioId],
+      );
+      return r.rows.map((f) => f.nombre);
+    } catch {
+      // La columna es de la migracion 024: contra una base que no la corrio,
+      // no hay referencias y eso no es un error.
+      return [];
+    }
   }
 
   async crearCodigoVinculacion(chatId: number, minutos: number): Promise<string> {

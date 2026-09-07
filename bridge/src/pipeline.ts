@@ -23,6 +23,9 @@ import { partirEnTareas, type Tarea } from './cola.js';
 import {
   parseOpcionesDeCorrida,
   limiteDeHora,
+  promptDePlan,
+  TECHO_RONDAS_POR_DEFECTO,
+  TECHO_HORA_POR_DEFECTO,
   type OpcionesDeCorrida,
   promptDeAnalisis,
   techoAlcanzado,
@@ -215,6 +218,26 @@ export type PipelineOutcome =
    * esperando la noche.
    */
   | { kind: 'corrida_sin_armar'; motivo: string }
+  /**
+   * Un paso del `/corrida` conversacional: lo que hay que contestar ahora.
+   *
+   * `error` cuando lo que llego no sirvio y se vuelve a preguntar lo mismo.
+   */
+  | {
+      kind: 'corrida_paso';
+      paso: 'nombre' | 'pliego';
+      error?: string;
+      /** Lo que se creo al pasar del nombre al pliego. */
+      creado?: LoCreado;
+    }
+  /**
+   * La corrida se abrio y hay que planificarla.
+   *
+   * Es un outcome propio porque quien lo recibe tiene TRABAJO que hacer: correr
+   * el turno de planificacion, que tarda minutos. El pipeline no lo corre solo
+   * —igual que la cola— porque el handler de Telegram tiene que contestar ya.
+   */
+  | { kind: 'corrida_planificando'; corrida: Corrida }
   | { kind: 'cola_cancelada'; cuantas: number; corridaCerrada: boolean }
   /**
    * Un `/proyecto <nombre>` que no es ninguno de los de la persona.
@@ -445,13 +468,28 @@ export async function handleIncoming(
   }
 
   if (command.kind === 'corrida') {
+    // El borrador se mira ANTES de parsear, y es lo que hace que el paso a paso
+    // funcione: con uno en curso, lo que venga atras de /corrida es la RESPUESTA
+    // al paso y no un pliego. Sin este orden, `acme` se parsea como el pliego
+    // —no es una opcion `x=y`, asi que cae en el MD— y el paso 1 abriria una
+    // corrida con una palabra de pliego.
+    if (await deps.store.borradorDeChat(input.chatId)) {
+      return await pasoDeCorrida({ chatId: input.chatId, texto: command.texto }, usuarioId, deps);
+    }
+
     const opciones = parseOpcionesDeCorrida(command.texto);
     const { md, techoRondas, techoHora } = opciones;
     const abierta = await deps.store.corridaAbierta(input.chatId);
 
-    // Sin pliego es "mostrame como va".
-    if (md === '') {
+    // Sin pliego y CON una corrida abierta: "mostrame como va".
+    if (md === '' && abierta) {
       return { kind: 'corrida', corrida: abierta, recienAbierta: false, yaHabia: false };
+    }
+    // Sin pliego y sin corrida: arranca el paso a paso. Es el camino nuevo, y
+    // el que toma quien escribe `/corrida` a secas — que antes recibia una
+    // explicacion de como armar un comando de cinco opciones.
+    if (md === '') {
+      return await pasoDeCorrida({ chatId: input.chatId, texto: '' }, usuarioId, deps);
     }
     // Con pliego y una ya abierta: NO se abre otra. Dos corridas sobre el mismo
     // chat competirian por los mismos slots y ninguna de las dos terminaria.
@@ -1192,6 +1230,155 @@ export async function armarMenuDeAgentes(
   };
 }
 
+/**
+ * Un paso del `/corrida` conversacional.
+ *
+ * El comando pedia cinco opciones bien escritas de una sola vez —nombre, org,
+ * dos repos, dos referencias— y un dedazo en el medio perdia el comando entero.
+ * Ahora se pregunta de a una cosa, y lo que se puede deducir no se pregunta.
+ *
+ * Lo que NO cambia: el comando largo sigue andando. Quien ya sabe que quiere lo
+ * escribe de una, y los tests de eso siguen verdes. Este camino es el que se
+ * toma cuando `/corrida` llega sin nada.
+ */
+export async function pasoDeCorrida(
+  input: { chatId: number; texto: string },
+  usuarioId: string,
+  deps: PipelineDeps,
+): Promise<PipelineOutcome> {
+  const borrador = await deps.store.borradorDeChat(input.chatId);
+  const texto = input.texto.trim();
+
+  // Paso 1: el nombre. Es lo unico que no se puede deducir.
+  if (!borrador) {
+    await deps.store.guardarBorrador(input.chatId, 'nombre');
+    return { kind: 'corrida_paso', paso: 'nombre' };
+  }
+
+  if (borrador.paso === 'nombre') {
+    if (!nombreDeProyectoValido(texto)) {
+      // No se avanza el paso: se vuelve a preguntar. Un nombre invalido no
+      // puede dejar el borrador en un estado del que no se sale.
+      return { kind: 'corrida_paso', paso: 'nombre', error: 'ese nombre no sirve' };
+    }
+
+    const armado = await armarDesdeElNombre(input.chatId, usuarioId, texto, deps);
+    if (!armado.ok) {
+      // El borrador se BORRA: el fallo es de configuracion —falta una org,
+      // falta un permiso— y no se arregla reintentando el mismo nombre. Dejarlo
+      // vivo haria que el proximo mensaje del chat se coma como si fuera una
+      // respuesta.
+      await deps.store.borrarBorrador(input.chatId);
+      return { kind: 'corrida_sin_armar', motivo: armado.motivo };
+    }
+
+    await deps.store.guardarBorrador(input.chatId, 'pliego', armado.proyecto);
+    return { kind: 'corrida_paso', paso: 'pliego', creado: armado.creado };
+  }
+
+  // Paso 2: el pliego. Puede llegar como texto o como archivo adjunto —eso lo
+  // resuelve el handler de Telegram, que convierte el .md en texto y lo manda
+  // por aca.
+  if (texto === '') {
+    return { kind: 'corrida_paso', paso: 'pliego', error: 'no me llego nada' };
+  }
+
+  const proyecto = borrador.proyecto ?? (await deps.store.getActiveProject(input.chatId));
+  if (!proyecto) {
+    await deps.store.borrarBorrador(input.chatId);
+    return { kind: 'corrida_sin_armar', motivo: 'perdi el nombre del proyecto. Empezá de nuevo con /corrida.' };
+  }
+
+  const nueva = await deps.store.abrirCorrida({
+    chatId: input.chatId,
+    proyecto,
+    md: texto,
+    techoRondas: TECHO_RONDAS_POR_DEFECTO,
+    techoHora: TECHO_HORA_POR_DEFECTO,
+  });
+  await deps.store.borrarBorrador(input.chatId);
+  if (!nueva) {
+    return {
+      kind: 'corrida',
+      corrida: await deps.store.corridaAbierta(input.chatId),
+      recienAbierta: false,
+      yaHabia: true,
+    };
+  }
+
+  // La corrida queda ABIERTA pero la cola no arranca: la dispara el boton de
+  // confirmar. Es lo que permite mostrar el plan antes de que empiece a
+  // trabajar, y lo que hace que "cancelar" no tenga que deshacer nada.
+  return { kind: 'corrida_planificando', corrida: nueva };
+}
+
+/** La misma forma que valida el router para `/proyecto`. */
+function nombreDeProyectoValido(n: string): boolean {
+  return /^[a-zA-Z0-9._-]+$/.test(n) && n !== '.' && n !== '..' && n.length <= 60;
+}
+
+/**
+ * Arma el proyecto entero a partir de UN nombre.
+ *
+ * `acme` se convierte en el proyecto `acme`, los repos `acme-front` y
+ * `acme-back`, y las referencias que la persona ya tenga montadas en otro lado.
+ *
+ * ## Por que la org y las referencias no se preguntan
+ *
+ * Las dos ya estan en la base. La org sale de las instalaciones de SUS
+ * proyectos —si conecto una sola, es esa— y las referencias de los repos que ya
+ * marco `solo_lectura` alguna vez. Preguntarlas seria pedir dos veces lo mismo,
+ * y escribirlas a mano en cada corrida es donde estaba el dedazo.
+ *
+ * Cuando hay MAS de una org no se adivina: se pide que la nombre. Elegir por el
+ * sistema cual de dos organizaciones recibe el codigo de un cliente es
+ * exactamente la clase de decision que no puede tomar un default.
+ */
+async function armarDesdeElNombre(
+  chatId: number,
+  usuarioId: string,
+  nombre: string,
+  deps: PipelineDeps,
+): Promise<{ ok: true; proyecto: string; creado: LoCreado } | { ok: false; motivo: string }> {
+  const cuentas = await deps.store.cuentasConectadas(usuarioId);
+  if (cuentas.length === 0) {
+    return {
+      ok: false,
+      motivo:
+        'no tenes ninguna cuenta de GitHub conectada. Conectala una vez desde el panel, ' +
+        'en Configuracion, y despues la reuso sola.',
+    };
+  }
+  if (cuentas.length > 1) {
+    const lista = cuentas.map((c) => c.cuenta).join(', ');
+    return {
+      ok: false,
+      motivo:
+        `tenes mas de una cuenta conectada (${lista}) y no se en cual crear los repos. ` +
+        `Decimelo asi: /corrida proyecto=${nombre} org=<cuenta>`,
+    };
+  }
+
+  const referencias = await deps.store.referenciasConocidas(usuarioId);
+  return armarProyecto(
+    chatId,
+    usuarioId,
+    {
+      md: '',
+      techoRondas: TECHO_RONDAS_POR_DEFECTO,
+      techoHora: TECHO_HORA_POR_DEFECTO,
+      proyecto: nombre,
+      org: cuentas[0]!.cuenta,
+      // La convencion de nombres. Dos repos y no uno: es como esta armado el
+      // proyecto de referencia, y lo que el pliego describe casi siempre tiene
+      // las dos mitades.
+      repos: [`${nombre}-front`, `${nombre}-back`],
+      referencia: referencias,
+    },
+    deps,
+  );
+}
+
 /** Lo que se creo al abrir una corrida, para poder contarlo. */
 export interface LoCreado {
   /** El proyecto, si nacio con este comando. */
@@ -1534,6 +1721,77 @@ async function rondaDeAnalisis(
   const ronda = await deps.store.avanzarRonda(corrida.id);
   await avisar(`Encontre trabajo que falta. Arranco la ronda ${ronda}.`);
   return true;
+}
+
+/**
+ * El turno de PLANIFICACION: arma la cola inicial de una corrida.
+ *
+ * Corre una sola vez, al abrir. Devuelve las tareas que quedaron encoladas,
+ * para poder mostrarlas antes de arrancar.
+ *
+ * Usa la MISMA herramienta que el analista —`reportar_huecos`— asi que las
+ * tareas entran por el endpoint de siempre y este codigo no parsea nada: mira
+ * la cola despues. Es la misma decision que en el analisis, y por lo mismo — un
+ * modelo que escribe la lista en prosa se traduce en cero tareas, y eso se ve.
+ *
+ * La corrida ya esta ABIERTA cuando esto corre, y hace falta: `reportar_huecos`
+ * resuelve la corrida del jobId, asi que sin una abierta el modelo llamaria la
+ * herramienta y le contestarian que no hay donde anotar.
+ */
+export async function planificarCorrida(
+  corrida: Corrida,
+  usuarioId: string,
+  deps: PipelineDeps,
+): Promise<{ ok: true; tareas: Tarea[] } | { ok: false; motivo: string }> {
+  const chatId = corrida.chatId;
+  const agente = (await deps.store.getActiveAgent(chatId)) ?? deps.defaultAgent;
+  const ctx = await contextoDeCola(chatId, corrida.proyecto, usuarioId, deps);
+
+  // Las referencias que hay montadas, para nombrarlas en el prompt: sin esto el
+  // modelo no sabe que existen y no las va a mirar.
+  const referencias = (ctx.repos ?? [])
+    .filter((r) => (r as { solo_lectura?: boolean }).solo_lectura)
+    .map((r) => r.nombre);
+
+  try {
+    await ejecutarTurnoConRelevo(deps, {
+      proyectoId: ctx.proyectoId,
+      proyecto: corrida.proyecto,
+      agente: agente as AgentId,
+      usuarioId,
+      prompt: promptDePlan(corrida.md, referencias),
+      // El planificador no escribe: solo lee y llama la herramienta. El modo va
+      // igual porque con `preguntar` un intento de editar colgaria el turno
+      // quince minutos esperando un OK.
+      modo: 'desatendido',
+      modelo: ctx.modelo,
+      repos: ctx.repos,
+      githubToken: ctx.githubToken,
+      documentos: ctx.documentos,
+      origen: 'telegram',
+      chatId,
+    });
+  } catch (err) {
+    const codigo = err instanceof Error ? err.message : 'internal';
+    return {
+      ok: false,
+      motivo: codigo === 'usage_limit'
+        ? 'se agotaron los tokens de todas las cuentas antes de poder planificar'
+        : ERROR_TEXT[codigo] ?? codigo,
+    };
+  }
+
+  const tareas = await deps.store.tareasDeCorrida(corrida.id);
+  if (tareas.length === 0) {
+    // Llamo la herramienta con la lista vacia, o no la llamo. En los dos casos
+    // no hay con que arrancar, y se dice asi en vez de abrir una corrida que va
+    // a hacer un analisis sobre un repo vacio.
+    return {
+      ok: false,
+      motivo: 'no pude sacar ninguna tarea de ese pliego. Proba con uno mas concreto.',
+    };
+  }
+  return { ok: true, tareas };
 }
 
 /**

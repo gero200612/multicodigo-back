@@ -368,6 +368,60 @@ export function promptDeAnalisis(md: string, ronda: number): string {
   ].join('\n');
 }
 
+/**
+ * El prompt del turno de PLANIFICACION: el que arma la cola inicial.
+ *
+ * Ver `multicodigo-vm/docs/superpowers/specs/2026-09-07-corrida-desatendida-design.md`.
+ *
+ * Corre UNA vez, al abrir la corrida, y es lo que reemplaza a dictar las tareas
+ * a mano. Usa la MISMA herramienta que el analista —`reportar_huecos`— y no una
+ * nueva: en los dos casos la salida es "esta lista de cosas hay que hacer", y
+ * una segunda herramienta con la misma forma seria un segundo lugar donde
+ * arreglar el dia que algo falle.
+ *
+ * La diferencia con el analisis es contra QUE compara: el analista mira el repo
+ * ya construido, este mira un repo vacio. Por eso el prompt le pide que ordene
+ * por dependencias, cosa que el analista no necesita — cuando el analista corre,
+ * lo que falta ya no tiene un orden natural.
+ */
+export function promptDePlan(md: string, referencias: readonly string[]): string {
+  return [
+    'Vas a planificar un proyecto nuevo. Todavia no construis nada: armas la lista.',
+    '',
+    'Abajo esta el pliego de lo que hay que construir. En tu worktree estan los',
+    'repos del proyecto —vacios o casi— donde va a ir el trabajo.',
+    ...(referencias.length > 0
+      ? [
+          '',
+          `Y estan montados de REFERENCIA: ${referencias.join(', ')}.`,
+          'Son proyectos que YA funcionan y estan ahi para que copies como estan hechos.',
+          'Son de solo lectura: no los edites ni intentes commitearlos.',
+          '',
+          'ANTES de armar la lista, leé el INDICE.md de esos repos. Dice que existe y',
+          'donde, sin que tengas que recorrerlos enteros. Para cada cosa del pliego,',
+          'fijate si ahi ya esta resuelta.',
+        ]
+      : []),
+    '',
+    'Despues llama a la herramienta reportar_huecos con las tareas, en el ORDEN en',
+    'que hay que hacerlas: lo que otras cosas necesitan va primero.',
+    '',
+    'Cada tarea tiene que poder tomarla otro agente sin volver a leer el pliego:',
+    'decí que hay que hacer y donde. Cuando algo ya exista en la referencia,',
+    'NOMBRALO en la tarea ("...; en la referencia esta en <archivo>"): es lo que',
+    'hace que se copie una estructura que anda en vez de inventar una nueva.',
+    '',
+    'Entre 5 y 25 tareas. Menos es que te falto abrir el pliego; mas es que estas',
+    'partiendo en pedazos que no se pueden entregar solos.',
+    '',
+    'Es OBLIGATORIO llamar la herramienta: si escribis la lista en prosa, nadie la',
+    'recibe y no hay con que arrancar.',
+    '',
+    '--- PLIEGO ---',
+    md,
+  ].join('\n');
+}
+
 /** Lo que el informe necesita saber de las tareas de la corrida. */
 export interface ResumenDeTareas {
   hechas: number;

@@ -1,13 +1,20 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import type { AgentId, ApprovalDecision, ApprovalRequest } from '@multicodigo/shared';
 import type { PipelineDeps, PipelineOutcome, LoCreado } from './pipeline.js';
-import { handleIncoming, armarMenu, armarMenuDeAgentes, correrCola } from './pipeline.js';
+import {
+  handleIncoming,
+  armarMenu,
+  armarMenuDeAgentes,
+  correrCola,
+  planificarCorrida,
+} from './pipeline.js';
 import {
   parseMenuData,
   tecladoDePermisos,
   tecladoDeModelos,
   NOMBRE_DE_MODO,
   NOMBRE_DE_MODELO,
+  tecladoDePlan,
   type MenuData,
 } from './menu.js';
 import { saludo, encabezadoDeMenu, NOMBRE } from './identidad.js';
@@ -68,6 +75,17 @@ export function renderOutcome(outcome: PipelineOutcome): string {
         outcome.yaHabia,
         outcome.creado,
       );
+    case 'corrida_paso':
+      return textoDePaso(outcome.paso, outcome.error, outcome.creado);
+    case 'corrida_planificando':
+      // Un placeholder: el plan de verdad llega cuando el turno termina, y eso
+      // tarda minutos. Sin este mensaje, el chat queda mudo justo despues de
+      // mandar el pliego y parece que se colgo.
+      return [
+        `🌙 Corrida abierta en <b>${escaparHtml(outcome.corrida.proyecto)}</b>.`,
+        '',
+        'Estoy leyendo el pliego y armando el plan. Tarda unos minutos.',
+      ].join('\n');
     case 'corrida_sin_armar':
       return [
         `No pude arrancar la corrida: ${escaparHtml(outcome.motivo)}`,
@@ -287,6 +305,76 @@ export function textoDeProyecto(
     lineas.push('', 'Es el unico que tenes.');
   }
   return lineas.join('\n');
+}
+
+/**
+ * Lo que hay que contestar en cada paso del `/corrida` conversacional.
+ *
+ * Cada mensaje pide UNA cosa. Es lo que reemplaza a explicar como se arma un
+ * comando de cinco opciones: quien lo lee no tiene que entender la sintaxis,
+ * solo contestar lo que se le pregunta.
+ */
+export function textoDePaso(
+  paso: 'nombre' | 'pliego',
+  error?: string,
+  creado?: LoCreado,
+): string {
+  if (paso === 'nombre') {
+    return [
+      ...(error ? [`⚠️ ${escaparHtml(error)}.`, ''] : ['🌙 <b>Arrancamos una corrida.</b>', '']),
+      '¿Como se llama el proyecto?',
+      '',
+      // Se dice QUE se va a hacer con el nombre: sin esto, "acme" parece una
+      // etiqueta y no la raiz de dos repos que van a existir de verdad.
+      'Con ese nombre creo el proyecto y dos repos: <code>&lt;nombre&gt;-front</code> y',
+      '<code>&lt;nombre&gt;-back</code>. Escribilo sin espacios ni acentos.',
+    ].join('\n');
+  }
+
+  const lineas: string[] = [];
+  if (creado?.proyecto) lineas.push(`✅ Cree el proyecto <b>${escaparHtml(creado.proyecto)}</b>.`);
+  if (creado?.repos.length) {
+    lineas.push(
+      'Y los repos:',
+      ...creado.repos.map((r) => ` · <code>${escaparHtml(r)}</code>`),
+    );
+  }
+  if (creado?.referencia.length) {
+    // Se nombra que son AUTOMATICAS: sin esto parece que aparecieron solas por
+    // un error, y lo que hicieron fue ahorrarle escribirlas.
+    lineas.push(
+      `Monte de referencia lo que ya tenias (${creado.referencia.length}), para copiar de ahi.`,
+    );
+  }
+  if (lineas.length > 0) lineas.push('');
+
+  if (error) lineas.push(`⚠️ ${escaparHtml(error)}.`, '');
+  lineas.push(
+    '<b>Ahora mandame el pliego</b>: que hay que construir.',
+    '',
+    'Puede ser un <b>.md</b> o <b>.txt</b> adjunto, o el texto pegado en el chat.',
+    'Aunque sea un parrafo — con eso armo el plan y te lo muestro antes de empezar.',
+  );
+  return lineas.join('\n');
+}
+
+/**
+ * El plan que armo el planificador, para confirmarlo.
+ *
+ * Se muestra ANTES de arrancar y no despues, que es el punto entero del paso:
+ * una cola de veinte tareas que salio mal se ve en treinta segundos leyendola, y
+ * en ocho horas dejandola correr.
+ */
+export function textoDePlan(proyecto: string, tareas: Tarea[]): string {
+  return [
+    `📋 <b>El plan para ${escaparHtml(proyecto)}</b>`,
+    '',
+    `${tareas.length} tarea(s), en este orden:`,
+    '',
+    ...tareas.map((t, i) => `${i + 1}. ${escaparHtml(t.texto)}`),
+    '',
+    '¿Arranco?',
+  ].join('\n');
 }
 
 /**
@@ -753,6 +841,66 @@ async function arrancarCola(
   }
 }
 
+/**
+ * Contesta un paso del `/corrida` conversacional.
+ *
+ * Vive aca y no en el pipeline porque el paso del pliego dispara un turno que
+ * tarda minutos, y despues manda OTRO mensaje con el plan. El pipeline devuelve
+ * un outcome y termina; esto necesita hablar dos veces.
+ */
+async function responderPaso(
+  ctx: {
+    chat: { id: number };
+    reply: (t: string, o?: { parse_mode?: 'HTML'; reply_markup?: InlineKeyboard }) => Promise<unknown>;
+  },
+  texto: string,
+  deps: BridgeDeps,
+): Promise<void> {
+  const out = await handleIncoming(
+    { chatId: ctx.chat.id, messageId: 0, text: `/corrida ${texto}` },
+    deps,
+  );
+
+  // El paso del pliego devuelve `corrida_planificando`: hay que correr el turno
+  // y despues mostrar el plan. Los demas outcomes se contestan y listo.
+  if (out.kind !== 'corrida_planificando') {
+    await ctx.reply(renderOutcome(out), {
+      ...(usaHtml(out) ? { parse_mode: 'HTML' as const } : {}),
+    });
+    return;
+  }
+
+  await ctx.reply(renderOutcome(out), { parse_mode: 'HTML' });
+
+  const usuarioId = await deps.store.usuarioDeChat(ctx.chat.id);
+  if (!usuarioId) return;
+
+  const plan = await planificarCorrida(out.corrida, usuarioId, deps);
+  if (!plan.ok) {
+    // La corrida se CIERRA: sin plan no hay con que arrancar, y dejarla abierta
+    // haria que el ciclo corra un analisis sobre un repo vacio esta misma
+    // noche.
+    await deps.store.cerrarCorrida(out.corrida.id, 'cancelada');
+    await ctx.reply(
+      `No pude armar el plan: ${escaparHtml(plan.motivo)}
+
+Cerre la corrida. Proba de nuevo con /corrida.`,
+      { parse_mode: 'HTML' },
+    );
+    return;
+  }
+
+  const teclado = new InlineKeyboard();
+  for (const fila of tecladoDePlan()) {
+    for (const b of fila) teclado.text(b.label, b.data);
+    teclado.row();
+  }
+  await ctx.reply(textoDePlan(out.corrida.proyecto, plan.tareas), {
+    parse_mode: 'HTML',
+    reply_markup: teclado,
+  });
+}
+
 export function buildBot(deps: BridgeDeps): Bot {
   const bot = new Bot(deps.botToken);
 
@@ -919,6 +1067,42 @@ export function buildBot(deps: BridgeDeps): Bot {
    * compara el analista, y el documento es el archivo que la persona puede
    * volver a bajar del panel. Uno es para el ciclo y el otro es para ella.
    */
+  /**
+   * Baja un adjunto y lo devuelve como texto de pliego, o `undefined`.
+   *
+   * Salio de `corridaConArchivo` cuando el paso a paso necesito lo mismo: bajar,
+   * validar que sea texto, y decir POR QUE no si no lo es. Duplicarlo dejaba dos
+   * lugares donde acordarse de que un .pdf no sirve de pliego.
+   */
+  const pliegoDelAdjunto = async (
+    ctx: {
+      chat: { id: number };
+      api: { getFile: (id: string) => Promise<{ file_path?: string }> };
+      reply: (t: string, o?: { parse_mode?: 'HTML' }) => Promise<{ message_id: number }>;
+    },
+    archivo: { fileId: string; nombreOriginal: string; bytes?: number },
+  ): Promise<string | undefined> => {
+    if (archivo.bytes !== undefined && archivo.bytes > TOPE_DE_PLIEGO) {
+      await ctx.reply(`Ese instructivo pasa los ${TOPE_DE_PLIEGO / 1024} KB.`);
+      return undefined;
+    }
+    let datos: Uint8Array;
+    try {
+      datos = await bajarArchivo(ctx.api as never, archivo.fileId, deps.botToken);
+    } catch (err) {
+      await ctx.reply(
+        `No pude bajar el archivo: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+    const pliego = pliegoDeArchivo(archivo.nombreOriginal, datos);
+    if (!pliego.ok) {
+      await ctx.reply(pliego.motivo);
+      return undefined;
+    }
+    return pliego.md;
+  };
+
   const corridaConArchivo = async (
     ctx: {
       chat: { id: number };
@@ -971,6 +1155,21 @@ export function buildBot(deps: BridgeDeps): Bot {
       nombreOriginal: doc.file_name ?? 'documento',
       bytes: doc.file_size,
     };
+    // Un archivo con un `/corrida` A MEDIAS es el pliego del paso 2: no hace
+    // falta que le escriba /corrida en el texto del archivo, porque el chat ya
+    // sabe que lo estaba esperando.
+    const borrador = await deps.store.borradorDeChat(ctx.chat.id);
+    if (borrador?.paso === 'pliego') {
+      const pliego = await pliegoDelAdjunto(ctx as never, archivo);
+      if (pliego) {
+        await responderPaso(ctx as never, pliego, deps);
+        await guardarDelChat(ctx as never, archivo);
+        return;
+      }
+      // Si no se pudo leer, `pliegoDelAdjunto` ya lo dijo. Se guarda igual como
+      // documento —el archivo no se pierde— y el paso sigue esperando.
+    }
+
     // Con /corrida en el texto del archivo abre la corrida; sin eso no hace
     // nada. En los dos casos el archivo se guarda como documento del proyecto,
     // y no es redundante: el pliego de la corrida es el texto contra el que
@@ -1014,6 +1213,21 @@ export function buildBot(deps: BridgeDeps): Bot {
     // como documento. El agente las VE con `Read`.
 
     if (!voice && !ctx.message.text) return;
+
+    // Si hay un `/corrida` a medias, este mensaje ES la respuesta al paso y no
+    // un prompt nuevo. Mismo criterio —y mismo lugar— que el motivo de una
+    // aprobacion: va antes que todo lo demas.
+    //
+    // Un comando NO se secuestra: `/cancelar` tiene que poder sacarte de acá, y
+    // sin esta excepcion un borrador olvidado deja el chat atrapado.
+    const textoDelMensaje = ctx.message.text ?? '';
+    if (!textoDelMensaje.startsWith('/')) {
+      const borrador = await deps.store.borradorDeChat(ctx.chat.id);
+      if (borrador) {
+        await responderPaso(ctx, textoDelMensaje, deps);
+        return;
+      }
+    }
 
     // Si el chat quedo esperando un motivo, este mensaje ES el motivo y no un
     // prompt nuevo. Va antes que todo lo demas por eso.
@@ -1293,6 +1507,36 @@ export async function manejarMenu(
       parse_mode: 'HTML',
       reply_markup: tecladoDe(out),
     });
+    return;
+  }
+
+  if (menu.kind === 'plan') {
+    const corrida = await deps.store.corridaAbierta(chatId);
+    if (!corrida) {
+      // El boton quedo de una corrida que ya se cerro. Se dice en vez de
+      // ignorar: un boton que no hace nada se toca tres veces.
+      await mostrar('Esa corrida ya no esta abierta.', {});
+      return;
+    }
+
+    if (!menu.arrancar) {
+      // Descartar CIERRA la corrida y cancela lo que el planificador encolo.
+      // Sin lo segundo, las tareas quedan pendientes y el proximo /cola las
+      // haria — o sea que "descartar" no descartaria nada.
+      await deps.store.cancelarCola(chatId);
+      await deps.store.cerrarCorrida(corrida.id, 'cancelada');
+      await mostrar('Listo, descarte el plan y cerre la corrida.', {});
+      return;
+    }
+
+    await mostrar(`▶ Arranco con <b>${escaparHtml(corrida.proyecto)}</b>. Te aviso al terminar cada tarea.`, {
+      parse_mode: 'HTML',
+    });
+    // Sin await: la cola puede tardar ocho horas y este handler tiene que
+    // contestarle a Telegram ya. El progreso llega por los avisos.
+    void arrancarCola(chatId, deps, (t) =>
+      ctx.reply(t, { parse_mode: 'HTML' }).then(() => undefined),
+    );
     return;
   }
 

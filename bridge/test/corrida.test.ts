@@ -10,9 +10,15 @@ import {
   TOPE_DE_FALLOS,
   pliegoDeArchivo,
   TOPE_DE_PLIEGO,
+  promptDePlan,
   type Corrida,
 } from '../src/corrida.js';
-import { handleIncoming, correrCola, type PipelineDeps } from '../src/pipeline.js';
+import {
+  handleIncoming,
+  correrCola,
+  planificarCorrida,
+  type PipelineDeps,
+} from '../src/pipeline.js';
 import { InMemoryStore, type Store } from '../src/store.js';
 import { LimitePorChat } from '../src/vinculacion.js';
 import { buildWebhookServer } from '../src/webhook.js';
@@ -526,12 +532,16 @@ describe('/corrida', () => {
     expect(r.corrida?.ronda).toBe(1);
   });
 
-  it('sin pliego y sin corrida no inventa nada', async () => {
+  // `/corrida` a secas ya NO explica como armar un comando: arranca el paso a
+  // paso preguntando el nombre. Es el cambio que motivo todo lo de abajo.
+  it('sin pliego y sin corrida arranca preguntando el nombre', async () => {
     const d = arnes();
     await vincular(d.store, 7);
     const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
-    if (r.kind !== 'corrida') throw new Error('no es corrida');
-    expect(r.corrida).toBeUndefined();
+    if (r.kind !== 'corrida_paso') throw new Error(`no es corrida_paso: ${r.kind}`);
+    expect(r.paso).toBe('nombre');
+    // Y queda anotado, para que el proximo mensaje se lea como la respuesta.
+    expect((await d.store.borradorDeChat(7))?.paso).toBe('nombre');
   });
 
   // Sin esto la cola queda vacia, el ciclo la ve vacia con una corrida abierta,
@@ -1125,5 +1135,197 @@ describe('textoDeCorridaEnCurso', () => {
   it('escapa el texto de la tarea', () => {
     const t = textoDeCorridaEnCurso(base, sinTareas, 'chequear stock < 0', undefined);
     expect(t).toContain('stock &lt; 0');
+  });
+});
+
+// --- El /corrida conversacional -------------------------------------------
+//
+// El comando pedia cinco opciones bien escritas de una sola vez, y un dedazo en
+// el medio perdia el comando entero. Lo que se prueba aca es que se pregunte de
+// a una cosa, que lo deducible no se pregunte, y que un fallo no deje el chat
+// atrapado.
+
+describe('/corrida paso a paso', () => {
+  /** Un arnes con una org conectada y un repo de referencia ya montado. */
+  async function conTodoConectado() {
+    const d = arnes();
+    const crearRepo = vi.fn(async (_id: number, nombre: string) => ({
+      ok: true as const,
+      nombre,
+      github: `Sincro-arg/${nombre}`,
+    }));
+    Object.assign(d, { crearRepo });
+    await vincular(d.store, 7);
+    const viejo = await d.store.crearProyecto('anterior', USUARIO);
+    await d.store.guardarInstalacion(viejo, 159882934, 'Sincro-arg');
+    // Una referencia que ya se monto en otro proyecto: es de donde salen las
+    // "referencias automaticas".
+    await d.store.vincularRepo(viejo, 'referencia-sincroresto-front', 'Sincro-arg/x', true);
+    return d as typeof d & { crearRepo: typeof crearRepo };
+  }
+
+  it('pregunta el nombre primero', async () => {
+    const d = await conTodoConectado();
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    if (r.kind !== 'corrida_paso') throw new Error('no es corrida_paso');
+    expect(r.paso).toBe('nombre');
+  });
+
+  it('con el nombre crea el proyecto y los dos repos', async () => {
+    const d = await conTodoConectado();
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+
+    if (r.kind !== 'corrida_paso') throw new Error(`no es corrida_paso: ${r.kind}`);
+    expect(r.paso).toBe('pliego');
+    expect(r.creado?.proyecto).toBe('acme');
+    // La convencion: <nombre>-front y <nombre>-back, sin preguntar.
+    expect(r.creado?.repos).toEqual(['Sincro-arg/acme-front', 'Sincro-arg/acme-back']);
+  });
+
+  // Las dos cosas que ya estan en la base y no se preguntan.
+  it('la org y las referencias salen solas', async () => {
+    const d = await conTodoConectado();
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+
+    if (r.kind !== 'corrida_paso') throw new Error('no es corrida_paso');
+    // La referencia se monto sin que nadie la nombre.
+    expect(r.creado?.referencia).toEqual(['Sincro-arg/referencia-sincroresto-front']);
+  });
+
+  it('un nombre invalido vuelve a preguntar sin romper el borrador', async () => {
+    const d = await conTodoConectado();
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida ../otro' }, d);
+
+    if (r.kind !== 'corrida_paso') throw new Error('no es corrida_paso');
+    expect(r.paso).toBe('nombre');
+    expect(r.error).toBeDefined();
+    // Sigue en el mismo paso: no quedo atrapado ni avanzo con basura.
+    expect((await d.store.borradorDeChat(7))?.paso).toBe('nombre');
+  });
+
+  it('con el pliego abre la corrida y pide planificar', async () => {
+    const d = await conTodoConectado();
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 3, text: `/corrida ${PLIEGO}` }, d);
+
+    if (r.kind !== 'corrida_planificando') throw new Error(`no es planificando: ${r.kind}`);
+    expect(r.corrida.proyecto).toBe('acme');
+    expect(r.corrida.md).toBe(PLIEGO);
+    // El borrador muere al abrir: si no, el proximo mensaje del chat se comeria
+    // como si fuera otra respuesta.
+    expect(await d.store.borradorDeChat(7)).toBeUndefined();
+  });
+
+  // Sin cuenta conectada no se puede crear nada, y el borrador se BORRA: el
+  // fallo es de configuracion y no se arregla reintentando el nombre.
+  it('sin cuenta conectada lo dice y no deja el chat atrapado', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+
+    if (r.kind !== 'corrida_sin_armar') throw new Error(`no es sin_armar: ${r.kind}`);
+    expect(r.motivo).toContain('panel');
+    expect(await d.store.borradorDeChat(7)).toBeUndefined();
+  });
+
+  // Elegir por el sistema cual de dos organizaciones recibe el codigo de un
+  // cliente no puede ser un default.
+  it('con dos orgs pide que se nombre una', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    const a = await d.store.crearProyecto('a', USUARIO);
+    const b = await d.store.crearProyecto('b', USUARIO);
+    await d.store.guardarInstalacion(a, 1, 'Org-Uno');
+    await d.store.guardarInstalacion(b, 2, 'Org-Dos');
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+
+    if (r.kind !== 'corrida_sin_armar') throw new Error('no es sin_armar');
+    expect(r.motivo).toContain('Org-Uno');
+    // Y dice como resolverlo con el comando largo.
+    expect(r.motivo).toContain('org=');
+  });
+
+  // El comando largo sigue andando: quien ya sabe lo que quiere no pasa por los
+  // pasos. Es la condicion de que esto no rompa lo que ya andaba.
+  it('el comando largo no pasa por los pasos', async () => {
+    const d = await conTodoConectado();
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=directo\n${PLIEGO}` },
+      d,
+    );
+    expect(r.kind).toBe('corrida');
+    expect(await d.store.borradorDeChat(7)).toBeUndefined();
+  });
+});
+
+describe('planificarCorrida', () => {
+  it('encola lo que el planificador reporto', async () => {
+    const d = arnes({ analista: () => ['armar el login', 'armar el stock'] });
+    await abrir(d);
+    const corrida = (await d.store.corridaAbierta(7))!;
+
+    const r = await planificarCorrida(corrida, USUARIO, d);
+    if (!r.ok) throw new Error(`fallo: ${r.motivo}`);
+    expect(r.tareas.map((t) => t.texto)).toEqual(['armar el login', 'armar el stock']);
+  });
+
+  // Sin tareas no hay con que arrancar, y se dice en vez de abrir una corrida
+  // que va a analizar un repo vacio toda la noche.
+  it('un plan vacio se rechaza', async () => {
+    const d = arnes({ analista: () => [] });
+    await abrir(d);
+    const corrida = (await d.store.corridaAbierta(7))!;
+
+    const r = await planificarCorrida(corrida, USUARIO, d);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.motivo).toContain('mas concreto');
+  });
+
+  it('si el turno falla lo dice', async () => {
+    const d = arnes({ analista: () => [] });
+    await abrir(d);
+    const corrida = (await d.store.corridaAbierta(7))!;
+    // El turno de planificacion lleva el pliego, asi que se lo hace fallar por
+    // ahi.
+    d.ask.mockImplementationOnce(async () => {
+      throw new Error('usage_limit');
+    });
+
+    const r = await planificarCorrida(corrida, USUARIO, d);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.motivo).toContain('tokens');
+  });
+});
+
+describe('promptDePlan', () => {
+  it('lleva el pliego y exige la herramienta', () => {
+    const p = promptDePlan('# Stock\nlotes', []);
+    expect(p).toContain('# Stock\nlotes');
+    expect(p).toContain('reportar_huecos');
+    expect(p).toContain('OBLIGATORIO');
+  });
+
+  // Sin nombrarlas, el modelo no sabe que las referencias existen y no las mira.
+  it('nombra las referencias cuando las hay', () => {
+    const p = promptDePlan('x', ['referencia-sincroresto-front']);
+    expect(p).toContain('referencia-sincroresto-front');
+    expect(p).toContain('INDICE.md');
+  });
+
+  it('sin referencias no habla de referencias', () => {
+    expect(promptDePlan('x', [])).not.toContain('INDICE.md');
+  });
+
+  // El orden es lo que distingue este prompt del analisis: cuando el analista
+  // corre, lo que falta ya no tiene un orden natural.
+  it('pide orden por dependencias', () => {
+    expect(promptDePlan('x', [])).toContain('ORDEN');
   });
 });

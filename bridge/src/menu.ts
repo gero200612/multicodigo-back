@@ -51,6 +51,14 @@ const ACCION = 'z';
 /** Elegir con que modelo escribe la IA. */
 const MODELO = 'q';
 
+/**
+ * El plan de una corrida: arrancar o descartar.
+ *
+ * Una letra sola como el resto: el `callback_data` de Telegram tiene 64 bytes y
+ * los prefijos largos se los comen para nada.
+ */
+const PLAN = 'p';
+
 const ES_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function datosDeProyecto(id: string): string {
@@ -146,7 +154,9 @@ export type MenuData =
   | { kind: 'menu' }
   | { kind: 'permiso'; modo: ModoPermiso }
   | { kind: 'accion'; accion: Accion }
-  | { kind: 'modelo'; modelo: ClaveDeModelo };
+  | { kind: 'modelo'; modelo: ClaveDeModelo }
+  /** El boton del plan de una corrida: `si` arranca, `no` la descarta. */
+  | { kind: 'plan'; arrancar: boolean };
 
 /**
  * Lee lo que trae un boton.
@@ -188,6 +198,14 @@ export function parseMenuData(data: string): MenuData | null {
     return (CLAVES_DE_MODELO as readonly string[]).includes(resto)
       ? { kind: 'modelo', modelo: resto as ClaveDeModelo }
       : null;
+  }
+
+  if (prefijo === PLAN) {
+    // Solo los dos valores exactos. Cualquier otra cosa es un boton viejo o
+    // algo que no salio de este teclado.
+    if (resto === 'si') return { kind: 'plan', arrancar: true };
+    if (resto === 'no') return { kind: 'plan', arrancar: false };
+    return null;
   }
 
   if (prefijo === PERMISO) {
@@ -245,6 +263,20 @@ export function tecladoDePermisos(actual: ModoPermiso): Boton[][] {
       data: m === actual ? INERTE : datosDePermiso(m),
     },
   ]);
+}
+
+/**
+ * Los dos botones del plan.
+ *
+ * Botones y no "escribi si": el plan se lee a la noche y se confirma con un
+ * toque. Y "Descartar" dice lo que hace —cierra la corrida— en vez de
+ * "Cancelar", que en un chat se lee como "no hagas nada".
+ */
+export function tecladoDePlan(): Boton[][] {
+  return [[
+    { label: '▶ Arrancar', data: `${PLAN}:si` },
+    { label: 'Descartar', data: `${PLAN}:no` },
+  ]];
 }
 
 export function tecladoDeProyectos(proyectos: Proyecto[]): Boton[][] {
