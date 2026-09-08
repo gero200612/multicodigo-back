@@ -1237,8 +1237,9 @@ describe('/corrida paso a paso', () => {
   });
 
   // Elegir por el sistema cual de dos organizaciones recibe el codigo de un
-  // cliente no puede ser un default.
-  it('con dos orgs pide que se nombre una', async () => {
+  // cliente no puede ser un default. Pero tampoco se pide ESCRIBIRLA: eso era
+  // hacer tipear a mano un dato que no cambia entre corridas.
+  it('con dos orgs las ofrece con botones', async () => {
     const d = arnes();
     await vincular(d.store, 7);
     const a = await d.store.crearProyecto('a', USUARIO);
@@ -1249,10 +1250,73 @@ describe('/corrida paso a paso', () => {
     await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
     const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
 
+    if (r.kind !== 'corrida_elegir_org') throw new Error(`no es elegir_org: ${r.kind}`);
+    expect(r.cuentas).toEqual(['Org-Dos', 'Org-Uno']);
+    expect(r.botones).toHaveLength(2);
+    // El borrador se DEJA VIVO con el nombre: al tocar el boton, el flujo sigue
+    // desde aca en vez de volver a pedirlo.
+    expect((await d.store.borradorDeChat(7))?.proyecto).toBe('acme');
+  });
+
+  // Y una vez elegida, no se vuelve a preguntar. Es el punto entero del cambio.
+  it('con la org ya guardada no pregunta', async () => {
+    const d = arnes();
+    const crearRepo = vi.fn(async (_id: number, nombre: string) => ({
+      ok: true as const,
+      nombre,
+      github: `Org-Uno/${nombre}`,
+    }));
+    Object.assign(d, { crearRepo });
+    await vincular(d.store, 7);
+    const a = await d.store.crearProyecto('a', USUARIO);
+    const b = await d.store.crearProyecto('b', USUARIO);
+    await d.store.guardarInstalacion(a, 1, 'Org-Uno');
+    await d.store.guardarInstalacion(b, 2, 'Org-Dos');
+    await d.store.setOrgDeCorridas(USUARIO, 'Org-Uno');
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+
+    if (r.kind !== 'corrida_paso') throw new Error(`no es corrida_paso: ${r.kind}`);
+    expect(r.paso).toBe('pliego');
+    expect(r.creado?.repos?.[0]).toContain('Org-Uno/');
+  });
+
+  // `org=` en el comando GUARDA la preferencia: quien lo escribe una vez no
+  // tiene que escribirlo de nuevo.
+  it('la org del comando queda guardada', async () => {
+    const d = arnes();
+    const crearRepo = vi.fn(async (_id: number, nombre: string) => ({
+      ok: true as const,
+      nombre,
+      github: `Org-Dos/${nombre}`,
+    }));
+    Object.assign(d, { crearRepo });
+    await vincular(d.store, 7);
+    const a = await d.store.crearProyecto('a', USUARIO);
+    const b = await d.store.crearProyecto('b', USUARIO);
+    await d.store.guardarInstalacion(a, 1, 'Org-Uno');
+    await d.store.guardarInstalacion(b, 2, 'Org-Dos');
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida proyecto=x org=Org-Dos' }, d);
+    expect(await d.store.orgDeCorridas(USUARIO)).toBe('Org-Dos');
+  });
+
+  // Una preferencia que apunta a una cuenta desconectada NO es un error de
+  // tipeo, y el mensaje lo distingue.
+  it('una org guardada que ya no esta conectada lo dice distinto', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    const a = await d.store.crearProyecto('a', USUARIO);
+    await d.store.guardarInstalacion(a, 1, 'Org-Uno');
+    await d.store.setOrgDeCorridas(USUARIO, 'La-Que-Se-Fue');
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+
     if (r.kind !== 'corrida_sin_armar') throw new Error('no es sin_armar');
+    expect(r.motivo).toContain('que tenias elegida');
     expect(r.motivo).toContain('Org-Uno');
-    // Y dice como resolverlo con el comando largo.
-    expect(r.motivo).toContain('org=');
   });
 
   // El comando largo sigue andando: quien ya sabe lo que quiere no pasa por los
@@ -1611,12 +1675,13 @@ describe('/corrida con varias cuentas conectadas', () => {
     return d as typeof d & { crearRepo: typeof crearRepo };
   }
 
-  it('sin decir la org, pide que la nombre', async () => {
+  it('sin org guardada, ofrece las tres con botones', async () => {
     const d = await conTresCuentas();
     await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
     const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
-    if (r.kind !== 'corrida_sin_armar') throw new Error(`no es sin_armar: ${r.kind}`);
-    expect(r.motivo).toContain('Sincro-arg');
+    if (r.kind !== 'corrida_elegir_org') throw new Error(`no es elegir_org: ${r.kind}`);
+    expect(r.cuentas).toContain('Sincro-arg');
+    expect(r.botones).toHaveLength(3);
   });
 
   // Lo que estaba roto: el comando con las opciones y SIN pliego.

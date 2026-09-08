@@ -69,6 +69,15 @@ const PLAN = 'p';
  */
 const DESVINCULAR = 'd';
 
+/**
+ * Elegir la organizacion donde nacen los repos de las corridas.
+ *
+ * Se toca UNA vez: despues queda guardada. Antes era una opcion del comando
+ * (`org=`), que es escribir a mano un dato que no cambia entre corridas — y por
+ * lo tanto un lugar mas donde equivocarse.
+ */
+const ORG = 'o';
+
 const ES_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function datosDeProyecto(id: string): string {
@@ -168,7 +177,9 @@ export type MenuData =
   /** El boton del plan de una corrida: `si` arranca, `no` la descarta. */
   | { kind: 'plan'; arrancar: boolean }
   /** Desatar el chat: `confirmado` false solo pregunta. */
-  | { kind: 'desvincular'; confirmado: boolean };
+  | { kind: 'desvincular'; confirmado: boolean }
+  /** La organizacion elegida para las corridas. */
+  | { kind: 'org'; cuenta: string };
 
 /**
  * Lee lo que trae un boton.
@@ -218,6 +229,13 @@ export function parseMenuData(data: string): MenuData | null {
     if (resto === 'si') return { kind: 'plan', arrancar: true };
     if (resto === 'no') return { kind: 'plan', arrancar: false };
     return null;
+  }
+
+  if (prefijo === ORG) {
+    // La forma de un nombre de cuenta de GitHub. Se valida aca ademas de
+    // contra la lista mas adelante: este string llega de la red y termina en
+    // una URL de git.
+    return /^[A-Za-z0-9._-]{1,60}$/.test(resto) ? { kind: 'org', cuenta: resto } : null;
   }
 
   if (prefijo === DESVINCULAR) {
@@ -295,6 +313,16 @@ export function tecladoDePlan(): Boton[][] {
     { label: '▶ Arrancar', data: `${PLAN}:si` },
     { label: 'Descartar', data: `${PLAN}:no` },
   ]];
+}
+
+/**
+ * Las cuentas conectadas, para elegir una.
+ *
+ * Una por fila: los nombres de organizacion son largos y dos por fila se cortan
+ * en la pantalla de un telefono. Mismo criterio que el teclado de proyectos.
+ */
+export function tecladoDeOrgs(cuentas: readonly string[]): Boton[][] {
+  return cuentas.map((c) => [{ label: c, data: `${ORG}:${c}` }]);
 }
 
 /** El boton que ofrece desatar. Va con el mensaje de "ya estas vinculado". */

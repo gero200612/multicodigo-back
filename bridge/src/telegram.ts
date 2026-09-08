@@ -93,6 +93,14 @@ export function renderOutcome(outcome: PipelineOutcome): string {
         '',
         'Estoy leyendo el pliego y armando el plan. Tarda unos minutos.',
       ].join('\n');
+    case 'corrida_elegir_org':
+      return [
+        '¿En que organizacion de GitHub creo los repos?',
+        '',
+        // Se dice que es UNA vez: sin eso, un botón parece algo que se va a
+        // repetir en cada corrida y da la sensacion de configuracion pendiente.
+        'Lo pregunto una sola vez: despues lo recuerdo.',
+      ].join(NL);
     case 'corrida_sin_armar':
       return [
         `No pude arrancar la corrida: ${escaparHtml(outcome.motivo)}`,
@@ -508,12 +516,8 @@ export function textoDeCorrida(
       // El caso que este comando vino a resolver: un cliente nuevo, de cero,
       // sin salir de Telegram. Va al final porque es lo menos frecuente, pero
       // va: nadie adivina que existe.
-      'Y si es un cliente nuevo te armo todo:',
-      '<code>/corrida proyecto=acme org=Sincro-arg repos=acme-front,acme-back</code>',
-      'Creo el proyecto en el panel y los repos en GitHub, y arranco ahi.',
-      '',
-      'Con <code>referencia=otro-repo</code> monto un repo que ya existe para',
-      'que lo mire y copie: se lee, no se toca.',
+      'Para un cliente nuevo no hace falta nada mas: mandame <b>/corrida</b> a secas',
+      'y te voy preguntando. El proyecto, los dos repos y las referencias los armo yo.',
     ].join('\n');
   }
 
@@ -723,7 +727,8 @@ function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
     outcome.kind === 'project' ||
     outcome.kind === 'project_desconocido' ||
     // Solo cuando YA estaba vinculado trae el boton de desvincular.
-    outcome.kind === 'sin_vincular'
+    outcome.kind === 'sin_vincular' ||
+    outcome.kind === 'corrida_elegir_org'
       ? outcome.botones
       : undefined;
   if (!botones || botones.length === 0) return undefined;
@@ -1689,6 +1694,33 @@ export async function manejarMenu(
       parse_mode: 'HTML',
       reply_markup: tecladoDe(out),
     });
+    return;
+  }
+
+  if (menu.kind === 'org') {
+    // Se valida contra las cuentas CONECTADAS y no se cree lo que vino en el
+    // boton: el `callback_data` llega de la red, y este nombre termina en una
+    // URL de git.
+    const cuentas = await deps.store.cuentasConectadas(usuarioId);
+    const elegida = cuentas.find((c) => c.cuenta === menu.cuenta);
+    if (!elegida) {
+      await mostrar('Esa cuenta ya no esta conectada. Volve a intentar con /corrida.', {});
+      return;
+    }
+
+    await deps.store.setOrgDeCorridas(usuarioId, elegida.cuenta);
+    await mostrar(
+      `Listo, los repos van a nacer en <b>${escaparHtml(elegida.cuenta)}</b>. No te lo vuelvo a preguntar.`,
+      { parse_mode: 'HTML' },
+    );
+
+    // Y se SIGUE desde donde estaba: el borrador tiene el nombre del proyecto,
+    // asi que armar es lo unico que faltaba. Sin esto, la persona tendria que
+    // volver a empezar despues de contestar algo que se le pregunto en el medio.
+    const borrador = await deps.store.borradorDeChat(chatId);
+    if (borrador?.proyecto) {
+      await responderPaso(ctx as never, borrador.proyecto, deps);
+    }
     return;
   }
 

@@ -15,6 +15,7 @@ import {
   tecladoDeAgentes,
   tecladoDeAcciones,
   tecladoDeDesvincular,
+  tecladoDeOrgs,
   datosDeAgente,
   datosDeMenu,
 } from './menu.js';
@@ -222,6 +223,14 @@ export type PipelineOutcome =
    * esperando la noche.
    */
   | { kind: 'corrida_sin_armar'; motivo: string }
+  /**
+   * Hay que elegir en que organizacion nacen los repos, y todavia no se eligio.
+   *
+   * Se pregunta con BOTONES y una sola vez: despues queda guardada. Antes esto
+   * era un mensaje que pedia escribir `org=<cuenta>` a mano, o sea un dato que
+   * no cambia entre corridas escrito de nuevo cada vez.
+   */
+  | { kind: 'corrida_elegir_org'; cuentas: string[]; botones: Boton[][] }
   /**
    * Un paso del `/corrida` conversacional: lo que hay que contestar ahora.
    *
@@ -1487,10 +1496,24 @@ async function armarYPedirPliego(
   deps: PipelineDeps,
 ): Promise<PipelineOutcome> {
   const armado = await armarDesdeElNombre(chatId, usuarioId, nombre, org, deps);
+
+  // Falta elegir la org. El borrador se DEJA VIVO —al contrario que en un
+  // fallo— porque el nombre ya se dio y no hay que volver a pedirlo: al tocar
+  // el boton, el flujo sigue desde acá con lo que ya sabe.
+  if (!armado.ok && 'elegirOrg' in armado) {
+    await deps.store.guardarBorrador(chatId, 'nombre', nombre);
+    return {
+      kind: 'corrida_elegir_org',
+      cuentas: armado.elegirOrg,
+      botones: tecladoDeOrgs(armado.elegirOrg),
+    };
+  }
+
   if (!armado.ok) {
-    // El borrador se BORRA: el fallo es de configuracion —falta una org, falta
-    // un permiso— y no se arregla reintentando el mismo nombre. Dejarlo vivo
-    // haria que el proximo mensaje del chat se coma como si fuera una respuesta.
+    // El borrador se BORRA: el fallo es de configuracion —una cuenta que ya no
+    // esta, un permiso que falta— y no se arregla reintentando el mismo
+    // nombre. Dejarlo vivo haria que el proximo mensaje del chat se coma como
+    // si fuera una respuesta.
     await deps.store.borrarBorrador(chatId);
     return { kind: 'corrida_sin_armar', motivo: armado.motivo };
   }
@@ -1526,7 +1549,11 @@ async function armarDesdeElNombre(
   nombre: string,
   orgPedida: string | undefined,
   deps: PipelineDeps,
-): Promise<{ ok: true; proyecto: string; creado: LoCreado } | { ok: false; motivo: string }> {
+): Promise<
+  | { ok: true; proyecto: string; creado: LoCreado }
+  | { ok: false; motivo: string }
+  | { ok: false; elegirOrg: string[] }
+> {
   const cuentas = await deps.store.cuentasConectadas(usuarioId);
   if (cuentas.length === 0) {
     return {
@@ -1537,31 +1564,47 @@ async function armarDesdeElNombre(
     };
   }
 
-  // La que se pidio, si se pidio y existe. Sin mayusculas, por lo mismo que en
-  // `/proyecto`: `org=sincro-arg` tiene que encontrar `Sincro-arg`.
-  const elegida = orgPedida
-    ? cuentas.find((c) => c.cuenta.toLowerCase() === orgPedida.toLowerCase())
-    : undefined;
+  // El orden de las tres fuentes, y cada una tiene su razon:
+  //
+  //  1. Lo que se pidio en el comando. Sigue andando para quien lo escribe, y
+  //     ADEMAS se guarda como preferencia — asi no hay que repetirlo.
+  //  2. La preferencia guardada. Es el camino normal despues de la primera vez.
+  //  3. La unica cuenta que hay, si hay una sola. Preguntar por una lista de
+  //     uno es un toque para nada.
+  //
+  // Si no hay ninguna de las tres, se PREGUNTA con botones. Antes se pedia
+  // escribir `org=<cuenta>` a mano y eso era el problema.
+  const guardada = await deps.store.orgDeCorridas(usuarioId).catch(() => undefined);
+  const pedida = orgPedida ?? guardada;
 
-  if (orgPedida && !elegida) {
+  // Sin mayusculas, por lo mismo que en `/proyecto`: `sincro-arg` tiene que
+  // encontrar `Sincro-arg`, porque ese string va a una URL de git.
+  const elegida = pedida
+    ? cuentas.find((c) => c.cuenta.toLowerCase() === pedida.toLowerCase())
+    : cuentas.length === 1
+      ? cuentas[0]
+      : undefined;
+
+  if (pedida && !elegida) {
     const lista = cuentas.map((c) => c.cuenta).join(', ');
     return {
       ok: false,
-      motivo: `no tenes conectada ninguna cuenta que se llame "${orgPedida}". Tenes: ${lista}`,
+      // Se distingue de donde vino el nombre: una preferencia que apunta a una
+      // cuenta que ya no esta conectada no es un error de tipeo, y decir "no
+      // tenes ninguna que se llame asi" sonaria a que uno la escribio mal.
+      motivo: orgPedida
+        ? `no tenes conectada ninguna cuenta que se llame "${orgPedida}". Tenes: ${lista}`
+        : `la organizacion que tenias elegida ("${pedida}") ya no esta conectada. Tenes: ${lista}`,
     };
   }
 
-  if (!elegida && cuentas.length > 1) {
-    const lista = cuentas.map((c) => c.cuenta).join(', ');
-    return {
-      ok: false,
-      motivo:
-        `tenes mas de una cuenta conectada (${lista}) y no se en cual crear los repos. ` +
-        // El comando COMPLETO, con el pliego incluido, porque sin el pliego
-        // volvia a caer en el paso a paso — que era el circulo. Ahora eso no
-        // pasa, pero decirlo completo ahorra un mensaje igual.
-        `Mandame: /corrida proyecto=${nombre} org=<cuenta> y abajo el pliego`,
-    };
+  if (!elegida) {
+    return { ok: false, elegirOrg: cuentas.map((c) => c.cuenta) };
+  }
+
+  // Se GUARDA, y es lo que hace que esto se pregunte una sola vez.
+  if (elegida.cuenta !== guardada) {
+    await deps.store.setOrgDeCorridas(usuarioId, elegida.cuenta).catch(() => undefined);
   }
 
   const referencias = await deps.store.referenciasConocidas(usuarioId);
@@ -1575,7 +1618,7 @@ async function armarDesdeElNombre(
       proyecto: nombre,
       // La elegida, o la unica que hay. El `!` es seguro: si no hay elegida,
       // los dos `if` de arriba garantizan que `cuentas` tiene exactamente una.
-      org: (elegida ?? cuentas[0]!).cuenta,
+      org: elegida.cuenta,
       // La convencion de nombres. Dos repos y no uno: es como esta armado el
       // proyecto de referencia, y lo que el pliego describe casi siempre tiene
       // las dos mitades.

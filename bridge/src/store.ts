@@ -692,6 +692,15 @@ export interface Store {
    */
   cuentasConectadas(usuarioId: string): Promise<Array<{ installationId: number; cuenta: string }>>;
   /**
+   * En que organizacion nacen los repos de las corridas de esta persona.
+   *
+   * Se pregunta UNA vez y queda. Antes era una opcion del comando, que es un
+   * lugar mas donde equivocarse por un dato que no cambia entre corridas. Ver
+   * la migracion 029.
+   */
+  orgDeCorridas(usuarioId: string): Promise<string | undefined>;
+  setOrgDeCorridas(usuarioId: string, cuenta: string): Promise<void>;
+  /**
    * Los repos de REFERENCIA que esta persona ya tiene en algun proyecto.
    *
    * Para no tener que escribir `referencia=` cada vez. Salen de las filas con
@@ -1365,7 +1374,25 @@ export class InMemoryStore implements Store {
       const i = this.instalaciones.get(p.id);
       if (i) vistas.set(i.cuenta.toLowerCase(), i);
     }
-    return [...vistas.values()];
+    // Ordenadas por cuenta, igual que el `ORDER BY gi.cuenta` de Postgres.
+    //
+    // Sin esto el doble devolvia en orden de proyecto, y de ahi sale el ORDEN DE
+    // LOS BOTONES: un test verde con otro orden en produccion es un boton que
+    // aparece en otro lugar del que se probo. Es la segunda vez que este doble
+    // se separa de la base y por eso vale la linea.
+    return [...vistas.values()].sort((a, b) =>
+      a.cuenta.localeCompare(b.cuenta, 'en', { sensitivity: 'base' }),
+    );
+  }
+
+  private orgs = new Map<string, string>();
+
+  async orgDeCorridas(usuarioId: string) {
+    return this.orgs.get(usuarioId);
+  }
+
+  async setOrgDeCorridas(usuarioId: string, cuenta: string) {
+    this.orgs.set(usuarioId, cuenta);
   }
 
   async referenciasConocidas(usuarioId: string) {
@@ -2539,6 +2566,30 @@ export class PgStore implements Store {
     } catch {
       return [];
     }
+  }
+
+  async orgDeCorridas(usuarioId: string): Promise<string | undefined> {
+    try {
+      const r = await this.pool.query<{ cuenta: string }>(
+        'SELECT cuenta FROM org_de_corridas WHERE usuario_id = $1',
+        [usuarioId],
+      );
+      return r.rows[0]?.cuenta;
+    } catch {
+      // La tabla es de la migracion 029: sin ella no hay preferencia, que es
+      // distinto de un error. El flujo vuelve a preguntar.
+      return undefined;
+    }
+  }
+
+  async setOrgDeCorridas(usuarioId: string, cuenta: string): Promise<void> {
+    await this.pool
+      .query(
+        `INSERT INTO org_de_corridas (usuario_id, cuenta) VALUES ($1, $2)
+         ON CONFLICT (usuario_id) DO UPDATE SET cuenta = $2, cambiado_en = now()`,
+        [usuarioId, cuenta],
+      )
+      .catch(() => undefined);
   }
 
   async referenciasConocidas(usuarioId: string): Promise<string[]> {
