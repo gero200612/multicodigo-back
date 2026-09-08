@@ -677,6 +677,15 @@ export interface Store {
    */
   referenciasConocidas(usuarioId: string): Promise<string[]>;
   /**
+   * Suma un cable suelto a la corrida: algo que falta configurar A MANO.
+   *
+   * Idempotente por TEXTO: la misma frase no entra dos veces. Hace falta porque
+   * el agente puede pedir lo mismo en dos tareas distintas —"pone las claves de
+   * Supabase" es lo primero que se le ocurre a cualquiera que toca la base— y un
+   * informe con la misma linea cuatro veces se lee como ruido.
+   */
+  anotarPendiente(corridaId: string, texto: string): Promise<void>;
+  /**
    * Anota que el analista de esta ronda SI llamo a `reportar_huecos`.
    *
    * Lo escribe el endpoint de la herramienta, no el ciclo: es la unica prueba
@@ -1242,6 +1251,13 @@ export class InMemoryStore implements Store {
   async marcarHuecos(corridaId: string, ronda: number): Promise<void> {
     const c = this.corridas.get(corridaId);
     if (c) c.huecosDeRonda = ronda;
+  }
+
+  async anotarPendiente(corridaId: string, texto: string): Promise<void> {
+    const c = this.corridas.get(corridaId);
+    if (!c) return;
+    const ya = c.pendientes ?? [];
+    if (!ya.includes(texto)) c.pendientes = [...ya, texto];
   }
 
   private borradores = new Map<number, Borrador>();
@@ -2201,7 +2217,7 @@ export class PgStore implements Store {
 
   private static readonly CAMPOS_CORRIDA =
     'id, chat_id, proyecto, md, ronda, techo_rondas, techo_hora, ' +
-    'fallos_seguidos, huecos_de_ronda, estado, motivo_de_cierre, creado_en';
+    'fallos_seguidos, huecos_de_ronda, pendientes, estado, motivo_de_cierre, creado_en';
 
   private aCorrida(f: Record<string, unknown>): Corrida {
     return {
@@ -2215,6 +2231,9 @@ export class PgStore implements Store {
       fallosSeguidos: Number(f.fallos_seguidos),
       ...(f.huecos_de_ronda !== null && f.huecos_de_ronda !== undefined
         ? { huecosDeRonda: Number(f.huecos_de_ronda) }
+        : {}),
+      ...(Array.isArray(f.pendientes) && f.pendientes.length > 0
+        ? { pendientes: f.pendientes as string[] }
         : {}),
       estado: f.estado as Corrida['estado'],
       ...(f.motivo_de_cierre
@@ -2328,6 +2347,21 @@ export class PgStore implements Store {
       corridaId,
       ronda,
     ]);
+  }
+
+  async anotarPendiente(corridaId: string, texto: string): Promise<void> {
+    // El `NOT (pendientes @> ARRAY[$2])` es la idempotencia, y va en el WHERE y
+    // no en el codigo: dos turnos en paralelo que anoten lo mismo pasarian los
+    // dos por un `if (!incluye)` de JavaScript.
+    await this.pool
+      .query(
+        `UPDATE corridas SET pendientes = array_append(pendientes, $2)
+          WHERE id = $1 AND NOT (pendientes @> ARRAY[$2]::text[])`,
+        [corridaId, texto],
+      )
+      // La columna es de la migracion 026: contra una base que no la corrio,
+      // perder un pendiente es mucho menos grave que voltear el turno.
+      .catch(() => undefined);
   }
 
   async borradorDeChat(chatId: number): Promise<Borrador | undefined> {

@@ -1391,3 +1391,93 @@ describe('salir de un /corrida a medias', () => {
     expect(r.error).toContain('letras, numeros');
   });
 });
+
+// Los cables sueltos del informe.
+//
+// El bot crea la base y le aplica el esquema, pero las claves las pone una
+// persona; y un repo recien creado no esta conectado a Vercel hasta que alguien
+// lo conecta. Sin esta lista el informe dice "18 tareas hechas" sobre algo que
+// no arranca, y averiguar por que es media hora mirando tres paneles.
+describe('pendientes en el informe', () => {
+  it('el informe los lista bajo "falta que hagas esto"', () => {
+    const t = textoDeInforme(
+      { proyecto: 'acme', ronda: 1, techoRondas: 3 },
+      'completo',
+      { hechas: 5, fallidas: 0, pendientes: 0, sinResolver: [] },
+      'claude/c1/*',
+      ['conectar Sincro-arg/acme-front a Vercel', 'copiar las claves de la base "acme"'],
+    );
+    expect(t).toContain('falta que hagas esto');
+    expect(t).toContain('a Vercel');
+    expect(t).toContain('las claves de la base');
+  });
+
+  // Van DESPUES del conteo y separados de los huecos: un hueco es trabajo que
+  // falta hacer, esto es un cable que falta conectar.
+  it('van despues del conteo y separados de los huecos', () => {
+    const t = textoDeInforme(
+      { proyecto: 'acme', ronda: 1, techoRondas: 3 },
+      'completo',
+      { hechas: 1, fallidas: 1, pendientes: 0, sinResolver: [{ texto: 'falta el stock' }] },
+      undefined,
+      ['poner MERCADOPAGO_TOKEN en el env'],
+    );
+    expect(t.indexOf('hechas')).toBeLessThan(t.indexOf('falta que hagas'));
+    expect(t.indexOf('falta el stock')).toBeLessThan(t.indexOf('MERCADOPAGO_TOKEN'));
+  });
+
+  it('sin pendientes no aparece la seccion', () => {
+    const t = textoDeInforme(
+      { proyecto: 'acme', ronda: 1, techoRondas: 3 },
+      'completo',
+      { hechas: 5, fallidas: 0, pendientes: 0, sinResolver: [] },
+      'claude/c1/*',
+      [],
+    );
+    expect(t).not.toContain('falta que hagas');
+  });
+
+  // El texto lo escribe el agente y el informe va con parse_mode HTML.
+  it('escapa el texto del pendiente', () => {
+    const t = textoDeInforme(
+      { proyecto: 'acme', ronda: 1, techoRondas: 3 },
+      'completo',
+      { hechas: 0, fallidas: 0, pendientes: 0, sinResolver: [] },
+      undefined,
+      ['poner API_URL=<tu-dominio> en el env'],
+    );
+    expect(t).toContain('&lt;tu-dominio&gt;');
+  });
+
+  // La misma frase dos veces se lee como ruido, y "pone las claves de Supabase"
+  // es lo primero que se le ocurre a cualquiera que toca la base.
+  it('no se repite el mismo pendiente', async () => {
+    const d = arnes();
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await d.store.anotarPendiente(c.id, 'poner API_URL');
+    await d.store.anotarPendiente(c.id, 'poner API_URL');
+    expect((await d.store.corridaAbierta(7))?.pendientes).toEqual(['poner API_URL']);
+  });
+
+  // El sistema anota lo que sabe con certeza, sin que el agente haga nada.
+  it('crear un repo anota que hay que conectarlo', async () => {
+    const d = arnes();
+    const crearRepo = vi.fn(async (_id: number, nombre: string) => ({
+      ok: true as const,
+      nombre,
+      github: `Sincro-arg/${nombre}`,
+    }));
+    Object.assign(d, { crearRepo });
+    await vincular(d.store, 7);
+    const viejo = await d.store.crearProyecto('anterior', USUARIO);
+    await d.store.guardarInstalacion(viejo, 159882934, 'Sincro-arg');
+
+    await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=acme org=Sincro-arg repos=acme-front\n${PLIEGO}` },
+      d,
+    );
+    const pend = (await d.store.corridaAbierta(7))?.pendientes ?? [];
+    expect(pend.some((p) => p.includes('acme-front') && p.includes('Vercel'))).toBe(true);
+  });
+});

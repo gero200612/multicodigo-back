@@ -55,6 +55,15 @@ export interface Corrida {
   estado: 'abierta' | 'cerrada';
   motivoDeCierre?: MotivoDeCierre;
   creadoEn: Date;
+  /**
+   * Los cables que quedan por conectar a mano.
+   *
+   * El bot crea la base y le aplica el esquema, pero las claves de esa base las
+   * pone una persona en el env de la app; y un repo recien creado no esta
+   * conectado a Vercel hasta que alguien lo conecta. Sin esta lista el informe
+   * dice "18 tareas hechas" sobre algo que no arranca.
+   */
+  pendientes?: string[];
 }
 
 /**
@@ -457,6 +466,7 @@ export function textoDeInforme(
   motivo: MotivoDeCierre,
   t: ResumenDeTareas,
   rama?: string,
+  pendientes?: readonly string[],
 ): string {
   // Todo lo que no escribimos nosotros va escapado. El informe se manda con
   // `parse_mode: 'HTML'`, y aca entran dos textos libres: el nombre del
@@ -481,6 +491,24 @@ export function textoDeInforme(
     for (const s of t.sinResolver) {
       lineas.push(` · ${escaparHtml(s.texto)}${s.ronda !== undefined ? ` (ronda ${s.ronda})` : ''}`);
     }
+  }
+
+  // Los cables sueltos, ANTES de la rama.
+  //
+  // Van al final del informe y no al principio porque el motivo de cierre sigue
+  // siendo lo primero que hay que leer. Pero van DESPUES del conteo y no
+  // mezclados con los huecos, porque son de otra clase: un hueco es trabajo que
+  // falta hacer, esto es un cable que falta conectar — y lo segundo lo tiene que
+  // hacer una persona, hoy, o el sistema no arranca.
+  //
+  // Sin esta seccion el informe dice "18 tareas hechas" sobre algo que no
+  // levanta, y averiguar por que es media hora mirando tres paneles.
+  if (pendientes && pendientes.length > 0) {
+    lineas.push(
+      '',
+      '<b>Para que ande, falta que hagas esto:</b>',
+      ...pendientes.map((p) => ` · ${escaparHtml(p)}`),
+    );
   }
 
   // La rama es lo unico que hace accionable el informe: sin ella, "18 hechas"

@@ -535,6 +535,11 @@ export async function handleIncoming(
         yaHabia: true,
       };
     }
+    // Los pendientes recien ahora: la corrida acaba de nacer, y antes no habia
+    // a que fila anotarlos.
+    for (const p of armado.creado.pendientes ?? []) {
+      await deps.store.anotarPendiente(nueva.id, p);
+    }
     return {
       kind: 'corrida',
       corrida: nueva,
@@ -1395,6 +1400,22 @@ export async function pasoDeCorrida(
     techoHora: TECHO_HORA_POR_DEFECTO,
   });
   await deps.store.borrarBorrador(input.chatId);
+  if (nueva) {
+    // Los mismos pendientes que en el comando largo. El paso a paso los junto
+    // al crear los repos, en el paso del nombre — y los guardo en el borrador
+    // no, porque el borrador no los tiene: se recalculan de los repos.
+    for (const r of await deps.store.reposDeProyecto(
+      (await deps.store.proyectosDeUsuario(usuarioId)).find(
+        (p) => p.nombre.toLowerCase() === proyecto.toLowerCase(),
+      )?.id ?? '',
+    )) {
+      if (r.solo_lectura) continue;
+      await deps.store.anotarPendiente(
+        nueva.id,
+        `conectar ${r.github_repo} a Vercel o a Render (la primera vez es a mano; despues cada push hace un preview solo)`,
+      );
+    }
+  }
   if (!nueva) {
     return {
       kind: 'corrida',
@@ -1479,6 +1500,14 @@ async function armarDesdeElNombre(
 
 /** Lo que se creo al abrir una corrida, para poder contarlo. */
 export interface LoCreado {
+  /**
+   * Los cables que quedaron sueltos por lo que se creo.
+   *
+   * Se juntan ACA y no se anotan directo porque `armarProyecto` corre ANTES de
+   * que exista la corrida —es lo que decidimos para que un fallo no deje una
+   * corrida a medias— asi que no hay a que fila anotarlos todavia.
+   */
+  pendientes?: string[];
   /** El proyecto, si nacio con este comando. */
   proyecto?: string;
   /** Los repos creados en GitHub, como `owner/nombre`. */
@@ -1520,7 +1549,7 @@ async function armarProyecto(
   opciones: OpcionesDeCorrida,
   deps: PipelineDeps,
 ): Promise<{ ok: true; proyecto: string; creado: LoCreado } | { ok: false; motivo: string }> {
-  const creado: LoCreado = { repos: [], referencia: [] };
+  const creado: LoCreado = { repos: [], referencia: [], pendientes: [] };
 
   // 1. El proyecto.
   let proyecto = await proyectoDelChat(chatId, usuarioId, deps);
@@ -1621,6 +1650,13 @@ async function armarProyecto(
     }
     await deps.store.vincularRepo(proyectoId, r.nombre, r.github);
     creado.repos.push(r.github);
+    // El cable que queda: un repo recien creado NO esta conectado a Vercel ni a
+    // Render, y hasta que alguien lo conecte el push del agente no despliega
+    // nada. Es el paso manual que este sistema no automatiza, y decirlo en el
+    // informe es la diferencia entre "18 tareas hechas" y "esto no levanta".
+    creado.pendientes!.push(
+      `conectar ${r.github} a Vercel o a Render (la primera vez es a mano; despues cada push hace un preview solo)`,
+    );
   }
 
   // 4. Los de REFERENCIA: no se crean, se vinculan marcados de solo lectura.
@@ -1720,7 +1756,18 @@ async function cerrarConInforme(
   // alcanza para encontrarla; inventar un nombre completo seria mandar a
   // alguien a una rama que no existe.
   const agente = (await deps.store.getActiveAgent(corrida.chatId)) ?? deps.defaultAgent;
-  await avisar(textoDeInforme(corrida, motivo, resumen, `claude/${agente}/*`));
+  // Se relee la corrida: los pendientes se anotaron DURANTE la noche, y la que
+  // recibio esta funcion es de cuando el ciclo la leyo por ultima vez.
+  const ahora = await deps.store.corridaAbierta(corrida.chatId);
+  await avisar(
+    textoDeInforme(
+      corrida,
+      motivo,
+      resumen,
+      `claude/${agente}/*`,
+      ahora?.pendientes ?? corrida.pendientes,
+    ),
+  );
 }
 
 /**

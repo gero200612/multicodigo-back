@@ -37,6 +37,7 @@ export interface ApiDeps {
     | 'archivoAutorizadoReciente'
     | 'corridaDeJob'
     | 'marcarHuecos'
+    | 'anotarPendiente'
     | 'encolar'
     | 'getActiveAgent'
   >;
@@ -491,6 +492,48 @@ export function buildWebhookServer(
     });
 
     /**
+     * Un cable suelto que anota el AGENTE.
+     *
+     * Los otros dos los anota el sistema —crear un repo, crear una base— porque
+     * los sabe con certeza. Este existe para lo que solo sabe quien escribio el
+     * codigo: que variables de entorno pide, que servicio externo hay que dar de
+     * alta, que dominio hay que apuntar.
+     *
+     * Sin esto, el informe de la mañana lista los dos cables que el sistema
+     * conoce y calla los cinco que el agente inventó al construir. Y esos son
+     * justo los que nadie mas puede adivinar.
+     */
+    const CuerpoPendiente = z.object({
+      jobId: z.string().uuid(),
+      // Corto a proposito: es una linea de un informe que se lee en un
+      // telefono, no una explicacion.
+      texto: z.string().min(1).max(300),
+    });
+
+    app.post('/interno/corrida/pendiente', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      const cuerpo = CuerpoPendiente.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el texto' });
+      }
+
+      const corrida = await api.store.corridaDeJob(cuerpo.data.jobId);
+      if (!corrida) {
+        // El mensaje lo repite el modelo: dice que hacer en vez de solo fallar.
+        return reply.code(400).send({
+          code: 'sin_corrida',
+          message:
+            'este turno no es de una corrida, asi que no hay informe donde anotarlo. ' +
+            'No reintentes: decilo en tu respuesta.',
+        });
+      }
+      await api.store.anotarPendiente(corrida.id, cuerpo.data.texto);
+      return reply.code(200).send({ output: 'anotado para el informe' });
+    });
+
+    /**
      * Drive en vivo.
      *
      * Se registra solo si hay con que: sin el secret de Google no hay forma de
@@ -510,7 +553,17 @@ export function buildWebhookServer(
      * gateway contestaria 404 y el modelo leeria "esa herramienta no existe",
      * que lo manda a inventar otra forma de crear la base.
      */
-    registrarSupabase(app, { ...(api.supabase ?? {}), apiToken: api.apiToken });
+    registrarSupabase(app, {
+      ...(api.supabase ?? {}),
+      apiToken: api.apiToken,
+      // Del jobId a la corrida: es el mismo salto que hace `reportar_huecos`, y
+      // por lo mismo — el id de la corrida en el cuerpo seria un dato que el
+      // modelo puede cambiar.
+      anotarPendiente: async (jobId: string, texto: string) => {
+        const corrida = await api.store.corridaDeJob(jobId);
+        if (corrida) await api.store.anotarPendiente(corrida.id, texto);
+      },
+    });
 
     /**
      * Invalida las sesiones de un slot.

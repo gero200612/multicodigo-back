@@ -29,6 +29,14 @@ import { isTokenValid } from '@multicodigo/shared';
 
 export interface SupabaseApiDeps {
   /**
+   * Como anotar un cable suelto en la corrida del turno, si hay una.
+   *
+   * Opcional: los endpoints funcionan sin esto —es lo que pasa cuando el turno
+   * no es de una corrida— y perder un pendiente no puede voltear la creacion de
+   * una base.
+   */
+  anotarPendiente?: (jobId: string, texto: string) => Promise<void>;
+  /**
    * El token de administracion de Supabase, o ausente.
    *
    * Opcional: sin el, los endpoints no se registran y las herramientas del
@@ -189,6 +197,24 @@ export function registrarSupabase(app: FastifyInstance, deps: SupabaseApiDeps): 
 
       const ref = r.ref ?? r.id;
       if (!ref) throw new ErrorDeSupabase('supabase_sin_ref', 'Supabase no devolvio la referencia');
+
+      // El cable que queda, anotado para el informe de la mañana.
+      //
+      // Es el limite exacto de lo que este sistema automatiza: la base queda
+      // creada y con su esquema, pero las CLAVES —la anon, la service_role, la
+      // URL— las pone una persona en el env de la app. Sin decirlo, el informe
+      // dice "18 tareas hechas" sobre algo que no se puede conectar a nada.
+      //
+      // El nombre y la ref van adentro del texto: a la mañana, con tres
+      // proyectos nuevos, "poner las claves" sin decir DE CUAL no alcanza.
+      await deps
+        .anotarPendiente?.(
+          cuerpo.data.jobId,
+          `copiar las claves de la base "${cuerpo.data.nombre}" (ref ${ref}) al env de la app: ` +
+            'la URL, la anon key y la service_role. Estan en supabase.com, en Project Settings > API',
+        )
+        .catch(() => undefined);
+
       return reply.code(200).send({
         output:
           `cree el proyecto de Supabase "${cuerpo.data.nombre}", ref ${ref}. ` +
