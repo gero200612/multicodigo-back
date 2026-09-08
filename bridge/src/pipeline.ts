@@ -1,3 +1,4 @@
+import type { Publicado } from './publicar.js';
 import { promptDeRelevo, proximoSlot } from './relevo.js';
 import {
   esAvisoDeLimite,
@@ -89,6 +90,20 @@ export interface PipelineDeps {
     nombre: string,
     descripcion?: string,
   ) => Promise<{ ok: true; nombre: string; github: string } | { ok: false; code: string }>;
+  /**
+   * Publica lo que la corrida construyo: mergea a main y crea el servicio.
+   *
+   * OPCIONAL: sin `RENDER_API_KEY` o sin `GATEWAY_ADMIN_TOKEN` no se cablea, el
+   * pipeline no la recibe, y el sistema queda exactamente como estaba.
+   *
+   * Recibe la corrida entera y el agente, no los cuatro datos sueltos que toma
+   * `publicar()`: `main.ts` es quien sabe traducir de uno al otro, y el
+   * pipeline no tiene por que aprenderlo.
+   */
+  publicar?: (
+    corrida: Corrida,
+    agente: string,
+  ) => Promise<{ publicados: Publicado[]; pendientes: string[] }>;
   /**
    * De donde salen los documentos del proyecto.
    *
@@ -1942,8 +1957,42 @@ async function cerrarConInforme(
   // alcanza para encontrarla; inventar un nombre completo seria mandar a
   // alguien a una rama que no existe.
   const agente = (await deps.store.getActiveAgent(corrida.chatId)) ?? deps.defaultAgent;
-  // Se relee la corrida: los pendientes se anotaron DURANTE la noche, y la que
-  // recibio esta funcion es de cuando el ciclo la leyo por ultima vez.
+
+  // Publicar va DESPUES del resumen y ANTES del informe: el informe necesita
+  // las URLs, y el resumen no puede depender de si Render contesto.
+  //
+  // Solo con `completo`: una corrida que murio por fallos no publica trabajo a
+  // medio hacer. Ojo con que hoy `completo` significa "el analista no encontro
+  // huecos" y NO "los tests pasaron" — ver §7 del spec. El deploy hereda esa
+  // definicion a proposito, y arreglarla es su propio trabajo.
+  let publicados: Publicado[] = [];
+  let pendientesDePublicar: string[] = [];
+  if (motivo === 'completo' && deps.publicar) {
+    try {
+      const r = await deps.publicar(corrida, agente);
+      publicados = r.publicados;
+      // Se guardan Y se juntan aparte, y las dos cosas hacen falta.
+      //
+      // `corridaAbierta` filtra por estado y `cerrarCorrida` ya corrio arriba,
+      // asi que la relectura de abajo NO los va a ver: si solo se guardaran, el
+      // informe saldria sin ellos. Guardarlos igual deja el registro completo
+      // en la fila para cuando alguien mire la corrida despues.
+      pendientesDePublicar = r.pendientes;
+      for (const p of r.pendientes) {
+        await deps.store.anotarPendiente(corrida.id, p).catch(() => undefined);
+      }
+    } catch (err) {
+      // Que no se haya podido publicar NO cambia el resultado de la corrida:
+      // diez tareas hechas siguen siendo diez. El piso es el estado de hoy, y
+      // una excepcion aca no puede comerse el informe entero — que es el unico
+      // mensaje de toda la feature que no se puede perder.
+      console.error('[bridge] publicar fallo:', err);
+    }
+  }
+
+  // Se relee la corrida: los pendientes se anotaron DURANTE la noche —y recien
+  // ahora, al publicar— y la que recibio esta funcion es de cuando el ciclo la
+  // leyo por ultima vez.
   const ahora = await deps.store.corridaAbierta(corrida.chatId);
   await avisar(
     textoDeInforme(
@@ -1951,7 +2000,8 @@ async function cerrarConInforme(
       motivo,
       resumen,
       `claude/${agente}/*`,
-      ahora?.pendientes ?? corrida.pendientes,
+      [...(ahora?.pendientes ?? corrida.pendientes ?? []), ...pendientesDePublicar],
+      publicados,
     ),
   );
 }

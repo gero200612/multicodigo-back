@@ -596,6 +596,7 @@ export function textoDeInforme(
   t: ResumenDeTareas,
   rama?: string,
   pendientes?: readonly string[],
+  publicados?: readonly { repo: string; url: string }[],
 ): string {
   // Todo lo que no escribimos nosotros va escapado. El informe se manda con
   // `parse_mode: 'HTML'`, y aca entran dos textos libres: el nombre del
@@ -632,6 +633,20 @@ export function textoDeInforme(
   //
   // Sin esta seccion el informe dice "18 tareas hechas" sobre algo que no
   // levanta, y averiguar por que es media hora mirando tres paneles.
+  // Lo que SI quedo andando, arriba de lo que falta.
+  //
+  // Solo si hay algo: una corrida que fallo no gana una seccion vacia que haya
+  // que interpretar. Y la URL va COMPLETA y sola en su linea porque es lo
+  // primero que se toca a la mañana — en un chat de telefono, un link adentro
+  // de un parrafo es un link que no se encuentra.
+  if (publicados && publicados.length > 0) {
+    lineas.push('', '<b>Publicado:</b>');
+    for (const p of publicados) {
+      lineas.push(` · ${escaparHtml(p.repo)} → ${escaparHtml(p.url)}`);
+      lineas.push('   (main, se actualiza solo en cada push)');
+    }
+  }
+
   if (pendientes && pendientes.length > 0) {
     lineas.push(
       '',

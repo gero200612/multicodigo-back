@@ -185,6 +185,34 @@ describe('textoDeInforme', () => {
     expect(t).toContain('techo de rondas');
   });
 
+  it('muestra la URL de lo publicado, completa y sola en su linea', () => {
+    const t = textoDeInforme(
+      c,
+      'completo',
+      { hechas: 10, fallidas: 0, pendientes: 0, sinResolver: [] },
+      'claude/c2/*',
+      [],
+      [{ repo: 'propinas-back', url: 'https://propinas-back.onrender.com' }],
+    );
+    expect(t).toContain('Publicado:');
+    // Sola en su linea: es lo primero que se toca a la mañana, y en un chat de
+    // telefono un link adentro de un parrafo es un link que no se encuentra.
+    expect(t).toMatch(/^ · propinas-back → https:\/\/propinas-back\.onrender\.com$/m);
+  });
+
+  // Una corrida que fallo no gana una seccion vacia que haya que interpretar.
+  it('sin nada publicado, no aparece el bloque', () => {
+    const t = textoDeInforme(
+      c,
+      'demasiados_fallos',
+      { hechas: 0, fallidas: 3, pendientes: 5, sinResolver: [] },
+      'claude/c2/*',
+      [],
+      [],
+    );
+    expect(t).not.toContain('Publicado:');
+  });
+
   it('nombra lo que quedo sin resolver con su ronda', () => {
     const t = textoDeInforme(c, 'completo', {
       hechas: 1,
@@ -234,6 +262,11 @@ function arnes(opciones: {
   analista?: (ronda: number) => string[] | null;
   /** Tareas cuyo turno tira. La clave es el texto de la tarea. */
   fallan?: Record<string, string>;
+  /** El publicar del cierre. Sin esto no se cablea, como en un server sin Render. */
+  publicar?: (
+    corrida: unknown,
+    agente: string,
+  ) => Promise<{ publicados: { repo: string; url: string }[]; pendientes: string[] }>;
 } = {}) {
   const store = new InMemoryStore();
   const ask = vi.fn(async (req: { prompt: string }) => {
@@ -270,6 +303,7 @@ function arnes(opciones: {
     project: 'stock',
     limite: new LimitePorChat(),
     ask,
+    ...(opciones.publicar ? { publicar: opciones.publicar } : {}),
     transcribe: vi.fn(async () => ''),
     listarAgentes: async () => [],
   } as unknown as PipelineDeps & { store: InMemoryStore; ask: typeof ask };
@@ -2089,5 +2123,90 @@ describe('una corrida no hereda las tareas de otra', () => {
     await handleIncoming({ chatId: 7, messageId: 1, text: '/cola uno\ndos' }, d);
     await correr(d);
     expect(d.ask.mock.calls.map((c) => c[0].prompt)).toEqual(['uno', 'dos']);
+  });
+});
+
+/**
+ * El cierre publica lo que la corrida construyo.
+ *
+ * Ver `multicodigo-vm/docs/superpowers/specs/2026-09-08-deploy-render-design.md`.
+ */
+describe('cerrarConInforme publica', () => {
+  it('una corrida completa publica', async () => {
+    let publico = false;
+    const d = arnes({
+      analista: () => [],
+      publicar: async () => {
+        publico = true;
+        return { publicados: [], pendientes: [] };
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    await correr(d);
+    expect(publico).toBe(true);
+  });
+
+  // Publicar trabajo a medio hacer es peor que no publicar.
+  it('una corrida que murio por fallos NO publica', async () => {
+    let publico = false;
+    const d = arnes({
+      analista: () => [],
+      fallan: { uno: 'internal', dos: 'internal', tres: 'internal' },
+      publicar: async () => {
+        publico = true;
+        return { publicados: [], pendientes: [] };
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    await correr(d);
+    expect(publico).toBe(false);
+  });
+
+  // El informe es el unico mensaje de toda la feature que no se puede perder.
+  it('si publicar explota, la corrida cierra igual y el informe sale', async () => {
+    const d = arnes({
+      analista: () => [],
+      publicar: async () => {
+        throw new Error('render caido');
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    const avisos = await correr(d);
+    expect(avisos[avisos.length - 1]).toContain('Corrida terminada');
+  });
+
+  // `corridaAbierta` filtra por estado y `cerrarCorrida` corre antes, asi que
+  // los pendientes nuevos NO vuelven por la relectura: si solo se guardaran, el
+  // informe saldria sin ellos.
+  it('los pendientes que salen de publicar llegan al informe', async () => {
+    const d = arnes({
+      analista: () => [],
+      publicar: async () => ({
+        publicados: [{ repo: 'propinas-back', url: 'https://x.onrender.com' }],
+        pendientes: ['cargar las env vars de propinas-back en Render (https://x.onrender.com)'],
+      }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    const avisos = await correr(d);
+    const informe = avisos[avisos.length - 1]!;
+    expect(informe).toContain('Publicado:');
+    expect(informe).toContain('https://x.onrender.com');
+    expect(informe).toContain('env vars');
+  });
+
+  // Sin RENDER_API_KEY el pipeline no recibe la dependencia: el sistema queda
+  // exactamente como estaba.
+  it('sin publicar cableado, el informe sale igual que antes', async () => {
+    const d = arnes({ analista: () => [] });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    const avisos = await correr(d);
+    const informe = avisos[avisos.length - 1]!;
+    expect(informe).toContain('Corrida terminada');
+    expect(informe).not.toContain('Publicado:');
   });
 });
