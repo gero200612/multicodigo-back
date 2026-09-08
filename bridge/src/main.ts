@@ -20,7 +20,7 @@ import {
   guardarDocumento,
   guardarDocumentoGenerado,
 } from './documentos.js';
-import { buildBot } from './telegram.js';
+import { buildBot, retomarCorridas } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
 import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
@@ -109,7 +109,24 @@ const Env = z.object({
    * hay Supabase configurado y todo lo demas anda igual.
    */
   SUPABASE_ACCESS_TOKEN: opcional(z.string().min(1)),
-  SUPABASE_ORG_ID: opcional(z.string().min(1)),
+  /**
+   * La organizacion de Supabase, por su id.
+   *
+   * Acepta la URL del panel y le saca el id, porque es lo que uno tiene en el
+   * portapapeles: la pantalla de la org es
+   * `supabase.com/dashboard/org/<id>/general`, y copiar de ahi es mas natural
+   * que buscar el id suelto.
+   *
+   * Sin esto, pegar la URL daba un 400 de Supabase —"Invalid organization
+   * slug"— recien al crear el primer proyecto, o sea a mitad de una corrida y
+   * varias horas despues de configurarlo. Paso exactamente eso.
+   */
+  SUPABASE_ORG_ID: opcional(
+    z.string().min(1).transform((v) => {
+      const m = /\/org\/([A-Za-z0-9_-]+)/.exec(v);
+      return m ? m[1]! : v.trim();
+    }),
+  ),
   /**
    * Por que dominio ven el panel las personas.
    *
@@ -253,16 +270,30 @@ const pipelineDeps = {
   pendientesDe: (agent: AgentId) => fetchPending(agent, gatewayDeps),
 };
 
-const bot = buildBot({
+/**
+ * Las dependencias del bot, en una constante.
+ *
+ * Salieron del llamado a `buildBot` porque `retomarCorridas` necesita LAS
+ * MISMAS: retomar una corrida corre el mismo bucle de cola que un mensaje, con
+ * los mismos agentes y el mismo store. Armarlas dos veces era la unica forma de
+ * que se separen.
+ */
+const botDeps = {
   ...pipelineDeps,
   botToken: env.TELEGRAM_BOT_TOKEN,
-  fetchPending: (agent) => fetchPending(agent, gatewayDeps),
-  sendDecision: (agent, approvalId, decision) =>
-    sendDecision(agent, approvalId, decision, gatewayDeps),
+  fetchPending: (agent: AgentId) => fetchPending(agent, gatewayDeps),
+  sendDecision: (
+    agent: AgentId,
+    approvalId: string,
+    decision: Parameters<typeof sendDecision>[2],
+  ) => sendDecision(agent, approvalId, decision, gatewayDeps),
   // Siempre, ya no condicionado a tener la service_role: el archivo va al
   // disco y la fila por el store.
-  guardarDocumento: (entrada) => guardarDocumento(entrada, docsDeps),
-});
+  guardarDocumento: (entrada: Parameters<typeof guardarDocumento>[0]) =>
+    guardarDocumento(entrada, docsDeps),
+};
+
+const bot = buildBot(botDeps);
 
 await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start()
 
@@ -346,3 +377,9 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   },
 });
 await app.listen({ port: env.PORT, host: '0.0.0.0' });
+
+// Las corridas que quedaron abiertas, retomadas.
+//
+// DESPUES del listen y sin await: el bucle de una corrida puede durar horas, y
+// esperarlo aca dejaria el webhook sin escuchar. Ver `retomarCorridas`.
+retomarCorridas(bot, botDeps);

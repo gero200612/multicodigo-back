@@ -21,8 +21,10 @@ import {
 import type { Boton } from './render.js';
 import type { Store, Proyecto, ModoPermiso, ModoDeTurno, ClaveDeModelo } from './store.js';
 import { partirEnTareas, type Tarea } from './cola.js';
+import { horaArgentinaDe } from './horas.js';
 import {
   parseOpcionesDeCorrida,
+  cuandoReintentar,
   limiteDeHora,
   promptDePlan,
   TECHO_RONDAS_POR_DEFECTO,
@@ -988,8 +990,19 @@ async function tokenDelProyecto(
   return deps.firmarToken(instalacion);
 }
 
-/** Cuantos slots se prueban antes de darse por vencido. */
-const TOPE_DE_RELEVOS = 3;
+/**
+ * Cuantos slots se prueban antes de darse por vencido.
+ *
+ * Subio de 3 a 10, que es mas que los slots que hay: el punto es probar TODOS.
+ * Con 3 y seis cuentas cargadas, una corrida se daba por vencida con la mitad
+ * de los tokens sin usar — y el informe decia "se agotaron los tokens de todas
+ * las cuentas", que no era cierto.
+ *
+ * El tope sigue existiendo porque `elegirRelevo` puede devolver algo raro y un
+ * bucle sin techo es un bucle infinito. Diez es "todos los que puede haber, mas
+ * margen".
+ */
+const TOPE_DE_RELEVOS = 10;
 
 /**
  * Corre el turno, y si el slot se queda sin tokens lo sigue otro.
@@ -1822,8 +1835,11 @@ async function rondaDeAnalisis(
     });
   } catch (err) {
     const codigo = err instanceof Error ? err.message : 'internal';
-    // Sin cuentas no hay analisis, y no hay nada roto: se cierra limpio.
+    // Sin cuentas: se espera si se sabe cuando vuelven, igual que en la cola.
+    // El analisis no se reencola porque no es una tarea — el `return true`
+    // vuelve al bucle, la cola sigue vacia, y se corre de nuevo.
     if (codigo === 'usage_limit') {
+      if (await esperarQueVuelvan(corrida, deps, avisar)) return true;
       await cerrarConInforme(corrida, 'cuentas_agotadas', deps, avisar);
       return false;
     }
@@ -1942,6 +1958,65 @@ export async function planificarCorrida(
 }
 
 /**
+ * Espera a que vuelva alguna cuenta, o dice que no vale la pena.
+ *
+ * Devuelve `true` si esperó y el ciclo puede seguir; `false` si hay que cerrar.
+ *
+ * ## Por que esperar y no cerrar
+ *
+ * Los limites de Anthropic se reponen cada ~5 horas, y el cartel TRAE la hora:
+ * el sistema ya la lee para decir "la cuenta vuelve 5:30am". Con las cuentas
+ * agotadas a las 2am, la primera de vuelta a las 5 y un techo a las 7, cerrar
+ * tira dos horas de trabajo posible.
+ *
+ * El spec decia "reintentar contra cuentas agotadas es esperar sin avisar", y
+ * eso sigue siendo cierto para un reintento INMEDIATO. Esto es distinto: se
+ * espera hasta un momento conocido, y se avisa.
+ *
+ * ## Lo que se rompe si el bridge se reinicia
+ *
+ * La espera vive en memoria. Un deploy a mitad de la noche la mata: la corrida
+ * queda abierta con sus tareas pendientes, y nadie la retoma hasta que alguien
+ * escriba al chat. Lo resuelve `retomarCorridas` al arrancar.
+ */
+async function esperarQueVuelvan(
+  corrida: Corrida,
+  deps: PipelineDeps,
+  avisar: (texto: string) => Promise<void>,
+): Promise<boolean> {
+  const ahora = new Date();
+  const limite = limiteDeHora(corrida.creadoEn, corrida.techoHora);
+
+  // Los slots agotados los anota `ejecutarTurno` con la hora que traia el
+  // cartel, ANTES de relevar. Asi que para cuando llegamos aca, la tabla ya
+  // tiene el reset de cada cuenta que se quedo sin tokens.
+  const agotados = await deps.store.slotsAgotados().catch(() => new Map());
+  const cuando = cuandoReintentar(agotados, limite, ahora);
+  if (!cuando) return false;
+
+  const minutos = Math.max(1, Math.round((cuando.getTime() - ahora.getTime()) / 60_000));
+  const cuanto = minutos > 60 ? `${Math.floor(minutos / 60)}h ${minutos % 60}m` : `${minutos}m`;
+  await avisar(
+    `⏸ Se agotaron los tokens de todas las cuentas. La primera vuelve a las ` +
+      `${horaArgentinaDe(cuando)} — espero ${cuanto} y sigo.`,
+  );
+
+  // El `+ 60_000` es un minuto de gracia sobre la hora del cartel: despertarse
+  // exactamente en el minuto del reset y encontrar la cuenta todavia agotada
+  // gastaria un turno para volver a esperar.
+  await new Promise((r) => setTimeout(r, cuando.getTime() - Date.now() + 60_000));
+
+  // Las marcas se limpian para que `elegirRelevo` vuelva a considerar esos
+  // slots: sin esto, el proximo turno los saltea por la marca vieja y el ciclo
+  // vuelve a "no hay cuentas" sin haber probado ninguna.
+  for (const slot of agotados.keys()) {
+    await deps.store.limpiarAgotado(slot as AgentId).catch(() => undefined);
+  }
+  await avisar('▶ Volvieron los tokens. Sigo con la cola.');
+  return true;
+}
+
+/**
  * Recorre la cola de un chat, una tarea por vez, hasta que no queda nada.
  *
  * ## Por que de a una y no en paralelo
@@ -2047,6 +2122,27 @@ export async function correrCola(
         // Sin cuentas no se sigue, y NO cuenta como fallo: reintentar contra
         // cuentas agotadas es esperar sin avisar.
         if (codigo === 'usage_limit') {
+          // Se ESPERA en vez de cerrar, si se sabe cuando vuelve alguna. La
+          // tarea queda pendiente —se cerro como fallida arriba, pero la cola
+          // sigue— y el ciclo la retoma cuando los tokens vuelven.
+          //
+          // Antes esto cerraba de una, y con seis cuentas eso significaba tirar
+          // las horas que quedaban hasta el techo.
+          if (await esperarQueVuelvan(corrida, deps, avisar)) {
+            // La tarea que fallo se reencola: fallo por falta de tokens, no
+            // porque estuviera mal. Sin esto se perderia justo la que se estaba
+            // haciendo cuando se agotaron las cuentas.
+            await deps.store
+              .encolar(chatId, {
+                agente: tarea.agente,
+                proyecto: tarea.proyecto,
+                textos: [tarea.texto],
+                ...(tarea.corridaId ? { corridaId: tarea.corridaId } : {}),
+                ...(tarea.ronda !== undefined ? { ronda: tarea.ronda } : {}),
+              })
+              .catch(() => undefined);
+            continue;
+          }
           await cerrarConInforme(corrida, 'cuentas_agotadas', deps, avisar);
           return;
         }

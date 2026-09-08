@@ -616,6 +616,16 @@ export interface Store {
   /** La corrida abierta del chat, si hay. Es lo que consulta el ciclo. */
   corridaAbierta(chatId: number): Promise<Corrida | undefined>;
   /**
+   * Todas las corridas abiertas, de todos los chats.
+   *
+   * Para retomarlas al arrancar el bridge. La espera por tokens y el bucle de
+   * la cola viven en MEMORIA: un deploy a mitad de la noche los mata, y la
+   * corrida queda abierta con sus tareas pendientes sin que nadie la retome
+   * —`correrCola` solo arranca cuando llega un mensaje—. Sin esto, un deploy a
+   * las 3am cuesta la noche entera.
+   */
+  corridasAbiertas(): Promise<Corrida[]>;
+  /**
    * La corrida abierta a la que pertenece un turno, por su job.
    *
    * Existe para el endpoint de `reportar_huecos`: lo que llega del gateway es
@@ -1213,6 +1223,10 @@ export class InMemoryStore implements Store {
     return [...this.corridas.values()].find(
       (c) => c.chatId === chatId && c.estado === 'abierta',
     );
+  }
+
+  async corridasAbiertas(): Promise<Corrida[]> {
+    return [...this.corridas.values()].filter((c) => c.estado === 'abierta');
   }
 
   async corridaDeJob(jobId: string): Promise<Corrida | undefined> {
@@ -2276,6 +2290,13 @@ export class PgStore implements Store {
       [chatId],
     );
     return r.rows[0] ? this.aCorrida(r.rows[0]) : undefined;
+  }
+
+  async corridasAbiertas(): Promise<Corrida[]> {
+    const r = await this.pool.query(
+      `SELECT ${PgStore.CAMPOS_CORRIDA} FROM corridas WHERE estado = 'abierta'`,
+    );
+    return r.rows.map((f) => this.aCorrida(f));
   }
 
   async corridaDeJob(jobId: string): Promise<Corrida | undefined> {

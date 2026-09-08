@@ -10,7 +10,7 @@
  */
 
 import { escaparHtml } from './codigo.js';
-import { HORAS_DE_DIFERENCIA } from './horas.js';
+import { HORAS_DE_DIFERENCIA, instanteDeReset } from './horas.js';
 
 /**
  * Por que termino una corrida.
@@ -154,6 +154,51 @@ export function techoAlcanzado(
   // contador se pasa a 4 al final de esa ronda y ahi si corta.
   if (c.ronda > c.techoRondas) return 'techo_rondas';
   return null;
+}
+
+/**
+ * Cuanto se espera como MAXIMO a que vuelva una cuenta: 6 horas.
+ *
+ * Los limites de Anthropic se reponen cada ~5 horas, asi que 6 cubre el caso
+ * normal con margen. El tope existe para el caso raro: un cartel con una hora
+ * que se leyo mal, o un reset que nunca llega. Sin el, el ciclo dormiria hasta
+ * mañana sin que nadie se entere.
+ */
+export const HORAS_DE_ESPERA = 6;
+
+/**
+ * Cuando conviene volver a intentar, si todas las cuentas estan agotadas.
+ *
+ * Devuelve el reset MAS CERCANO de los slots agotados, acotado por el techo de
+ * hora de la corrida: esperar hasta despues del corte es dormir para nada.
+ *
+ * `null` significa "no esperes, cerra". Los tres casos que lo devuelven:
+ *
+ *  - No se sabe cuando vuelve ninguna. El cartel de Anthropic no siempre trae
+ *    la hora, y esperar a ciegas seria dormir sin saber cuanto.
+ *  - El primer reset cae DESPUES del techo de la corrida. La noche ya termino:
+ *    lo correcto es cerrar y contarlo, no despertarse cuando ya no sirve.
+ *  - El reset esta a mas de `HORAS_DE_ESPERA`. Es la red para una hora mal
+ *    leida.
+ *
+ * Pura y con el reloj por parametro: es lo que permite probar los tres casos sin
+ * esperar seis horas.
+ */
+export function cuandoReintentar(
+  agotados: ReadonlyMap<string, { resets?: string }>,
+  limiteDeLaCorrida: Date,
+  ahora: Date,
+): Date | null {
+  const instantes = [...agotados.values()]
+    .map((a) => (a.resets ? instanteDeReset(a.resets, ahora) : undefined))
+    .filter((d): d is Date => d !== undefined);
+  if (instantes.length === 0) return null;
+
+  // El mas cercano: con seis cuentas, la primera que vuelve alcanza para seguir.
+  const primero = new Date(Math.min(...instantes.map((d) => d.getTime())));
+  if (primero.getTime() > limiteDeLaCorrida.getTime()) return null;
+  if (primero.getTime() - ahora.getTime() > HORAS_DE_ESPERA * 60 * 60 * 1000) return null;
+  return primero;
 }
 
 /** Lo que se le puede pasar a `/corrida` adelante del MD. */

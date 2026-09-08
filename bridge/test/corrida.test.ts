@@ -11,6 +11,7 @@ import {
   pliegoDeArchivo,
   TOPE_DE_PLIEGO,
   promptDePlan,
+  cuandoReintentar,
   type Corrida,
 } from '../src/corrida.js';
 import {
@@ -20,6 +21,7 @@ import {
   type PipelineDeps,
 } from '../src/pipeline.js';
 import { InMemoryStore, MINUTOS_DE_BORRADOR, type Store } from '../src/store.js';
+import { instanteDeReset, horaArgentinaDe } from '../src/horas.js';
 import { LimitePorChat } from '../src/vinculacion.js';
 import { buildWebhookServer } from '../src/webhook.js';
 import { textoDeCorridaEnCurso } from '../src/telegram.js';
@@ -1479,5 +1481,102 @@ describe('pendientes en el informe', () => {
     );
     const pend = (await d.store.corridaAbierta(7))?.pendientes ?? [];
     expect(pend.some((p) => p.includes('acme-front') && p.includes('Vercel'))).toBe(true);
+  });
+});
+
+// Esperar a que vuelvan los tokens en vez de cerrar.
+//
+// Los limites de Anthropic se reponen cada ~5 horas y el cartel trae la hora.
+// Con las cuentas agotadas a las 2am, la primera de vuelta a las 5 y un techo a
+// las 7, cerrar tira dos horas de trabajo posible.
+describe('cuandoReintentar', () => {
+  // 02:00 de Argentina = 05:00 UTC.
+  const ahora = new Date('2026-09-08T05:00:00Z');
+  // El techo: 07:00 ARG del mismo dia = 10:00 UTC.
+  const techo = new Date('2026-09-08T10:00:00Z');
+
+  it('devuelve el reset mas cercano de todos los slots', () => {
+    const r = cuandoReintentar(
+      new Map([
+        ['c1', { resets: '8:00am (UTC)' }],
+        ['c2', { resets: '6:30am (UTC)' }],
+        ['c3', { resets: '9:00am (UTC)' }],
+      ]),
+      techo,
+      ahora,
+    );
+    // El de c2: con seis cuentas, la primera que vuelve alcanza para seguir.
+    expect(r?.toISOString()).toBe('2026-09-08T06:30:00.000Z');
+  });
+
+  // Los tres casos que dicen "no esperes, cerra".
+  it('sin hora en ningun cartel no espera', () => {
+    expect(cuandoReintentar(new Map([['c1', {}]]), techo, ahora)).toBeNull();
+  });
+
+  it('si el reset cae despues del techo no espera', () => {
+    // 11:00 UTC pasa el techo de las 10:00 UTC: despertarse ahi es para nada.
+    expect(cuandoReintentar(new Map([['c1', { resets: '11:00am (UTC)' }]]), techo, ahora)).toBeNull();
+  });
+
+  it('si el reset esta demasiado lejos no espera', () => {
+    // La red para una hora mal leida: mas de HORAS_DE_ESPERA no se duerme.
+    const lejano = new Date('2026-09-09T23:00:00Z');
+    expect(
+      cuandoReintentar(new Map([['c1', { resets: '4:00pm (UTC)' }]]), lejano, ahora),
+    ).toBeNull();
+  });
+
+  it('un cartel que no se entiende se ignora, y los otros valen', () => {
+    const r = cuandoReintentar(
+      new Map([
+        ['c1', { resets: 'manana a la tarde' }],
+        ['c2', { resets: '6:00am (UTC)' }],
+      ]),
+      techo,
+      ahora,
+    );
+    expect(r?.toISOString()).toBe('2026-09-08T06:00:00.000Z');
+  });
+});
+
+describe('instanteDeReset', () => {
+  it('una hora que todavia no paso es de hoy', () => {
+    const r = instanteDeReset('6:30am (UTC)', new Date('2026-09-08T05:00:00Z'));
+    expect(r?.toISOString()).toBe('2026-09-08T06:30:00.000Z');
+  });
+
+  // El reset SIEMPRE esta en el futuro: si la hora ya paso, es la de mañana. Un
+  // reset "en el pasado" seria esperar cero y reintentar contra una cuenta
+  // agotada.
+  it('una hora que ya paso es de mañana', () => {
+    const r = instanteDeReset('3:00am (UTC)', new Date('2026-09-08T05:00:00Z'));
+    expect(r?.toISOString()).toBe('2026-09-09T03:00:00.000Z');
+  });
+
+  it('las 12am y 12pm no se confunden', () => {
+    const base = new Date('2026-09-08T13:00:00Z');
+    expect(instanteDeReset('12:00am (UTC)', base)?.getUTCHours()).toBe(0);
+    expect(instanteDeReset('12:00pm (UTC)', base)?.getUTCHours()).toBe(12);
+  });
+
+  it('un texto que no entiende devuelve undefined', () => {
+    expect(instanteDeReset('cuando se pueda', new Date())).toBeUndefined();
+    // Sin zona no se convierte: puede ser una hora que ya venia en otra.
+    expect(instanteDeReset('6:30am', new Date())).toBeUndefined();
+  });
+});
+
+describe('horaArgentinaDe', () => {
+  it('convierte un instante a hora de reloj de aca', () => {
+    // 06:30 UTC = 03:30 ARG.
+    expect(horaArgentinaDe(new Date('2026-09-08T06:30:00Z'))).toBe('3:30am');
+  });
+
+  it('el mediodia y la medianoche se leen bien', () => {
+    // 15:00 UTC = 12:00 ARG.
+    expect(horaArgentinaDe(new Date('2026-09-08T15:00:00Z'))).toBe('12:00pm');
+    // 03:00 UTC = 00:00 ARG.
+    expect(horaArgentinaDe(new Date('2026-09-08T03:00:00Z'))).toBe('12:00am');
   });
 });

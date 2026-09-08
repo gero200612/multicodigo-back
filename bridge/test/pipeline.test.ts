@@ -739,7 +739,14 @@ describe('el relevo cuando un slot se queda sin tokens', () => {
 
   // Sin tope, con seis slots agotados el turno gira seis veces y el usuario
   // espera el timeout de todos.
-  it('se rinde despues de unos pocos intentos', async () => {
+  // El tope subio de 3 a 10 y el criterio cambio: ahora se prueban TODOS los
+  // slots antes de rendirse.
+  //
+  // Con 3 y seis cuentas cargadas, una corrida se daba por vencida con la mitad
+  // de los tokens sin usar — y el informe decia "se agotaron los tokens de todas
+  // las cuentas", que era falso. El tope sigue existiendo para que un
+  // `elegirRelevo` raro no haga un bucle infinito, no para ahorrar intentos.
+  it('prueba TODOS los slots antes de rendirse', async () => {
     const { ask, pedidos } = agotados('c1', 'c2', 'c3', 'c4', 'c5');
     const todos = ['c1', 'c2', 'c3', 'c4', 'c5'].map((id) => ({
       id: id as 'c1',
@@ -750,8 +757,27 @@ describe('el relevo cuando un slot se queda sin tokens', () => {
     await expect(
       ejecutarTurnoConRelevo(deps({ ask, listarAgentes: async () => todos }), TURNO),
     ).rejects.toThrow('usage_limit');
-    // No los seis: el tope corta antes.
-    expect(pedidos.length).toBeLessThanOrEqual(4);
+    expect(pedidos.length).toBe(5);
+  });
+
+  // Y el techo sigue ahi: sin el, un `elegirRelevo` que devuelva siempre algo
+  // nuevo dejaria el bucle sin fin.
+  it('el tope corta aunque haya slots infinitos', async () => {
+    const { ask, pedidos } = agotados(...Array.from({ length: 30 }, (_, i) => `c${i + 1}`));
+    let n = 0;
+    await expect(
+      ejecutarTurnoConRelevo(
+        deps({
+          ask,
+          // Un candidato nuevo cada vez, para siempre.
+          listarAgentes: async () => [
+            { id: `c${(n += 1)}` as 'c1', arriba: false, cuenta: true },
+          ],
+        }),
+        TURNO,
+      ),
+    ).rejects.toThrow('usage_limit');
+    expect(pedidos.length).toBeLessThanOrEqual(11);
   });
 
   it('si el gateway no contesta no hay relevo, y el error original sube', async () => {
@@ -956,10 +982,14 @@ describe('quedarse sin tokens', () => {
     ]);
   });
 
-  it('ofrece el atajo al slot que el relevo no llego a probar', async () => {
-    // El relevo se rinde a los 3 intentos (TOPE_DE_RELEVOS), asi que con cinco
-    // cuentas queda una sin probar y sin marcar. Ese es el unico caso en que un
-    // atajo directo ahorra toques de verdad, y por eso existe.
+  // El atajo al slot sin probar dejo de aplicar cuando el relevo paso a probar
+  // TODOS, y eso es correcto: si no queda ninguno sin probar, no hay atajo que
+  // ofrecer. Lo que queda es el menu, que es la salida honesta — no hay una
+  // cuenta con tokens escondida.
+  //
+  // El atajo sigue en el codigo para el caso en que `listarAgentes` devuelva mas
+  // slots que el tope, que es lo unico que puede dejar uno sin probar.
+  it('con todos los slots agotados solo ofrece el menu', async () => {
     const d = deps({
       ask: askSinTokens('1:30am (UTC)'),
       listarAgentes: async () =>
@@ -970,8 +1000,8 @@ describe('quedarse sin tokens', () => {
     const out = await handleIncoming({ chatId: 1, messageId: 5, text: 'hola' }, d);
     const botones = out.kind === 'error' ? out.botones : undefined;
 
-    // c5 quedo sin probar: se ofrece derecho.
-    expect(botones?.[0]).toEqual([{ label: 'Seguir con C5', data: 'a:c5' }]);
+    // Ninguna cuenta que ofrecer: se probaron las cinco.
+    expect(botones?.some((f) => f.some((b) => b.data.startsWith('a:')))).toBe(false);
     // Y el menu siempre cierra la lista.
     expect(botones?.at(-1)).toEqual([{ label: '🔀 Elegir otro agente', data: 'm:' }]);
   });

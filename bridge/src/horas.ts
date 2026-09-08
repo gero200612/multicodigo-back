@@ -66,3 +66,62 @@ export function aHoraArgentina(texto: string): string {
   const mostrada = argentina % 12 === 0 ? 12 : argentina % 12;
   return `${mostrada}:${String(minutos).padStart(2, '0')}${sufijo}`;
 }
+
+/**
+ * El INSTANTE en que vuelve una cuenta, a partir del cartel de Anthropic.
+ *
+ * `aHoraArgentina` traduce el texto para mostrarlo; esto lo convierte en un
+ * momento para poder esperarlo. Son dos cosas distintas y por eso son dos
+ * funciones: una se lee, la otra se compara con un reloj.
+ *
+ * ## Por que adivinar el dia SI se puede aca
+ *
+ * El comentario de `aHoraArgentina` dice que armar un `Date` obliga a adivinar
+ * si la hora es hoy o mañana, y que adivinar mal muestra "vuelve ayer". Eso vale
+ * para MOSTRAR. Para esperar, la regla es clara y no es una adivinanza: el reset
+ * siempre esta en el futuro, asi que si la hora ya paso, es la de mañana. Es la
+ * misma cuenta que hace `limiteDeHora` con el techo de una corrida.
+ *
+ * Devuelve `undefined` cuando no entiende el texto, y quien llama tiene que
+ * tratar eso como "no se cuando vuelve" — nunca como "vuelve ya".
+ */
+export function instanteDeReset(texto: string, ahora: Date): Date | undefined {
+  const m = HORA_UTC.exec(texto.trim());
+  if (!m) return undefined;
+
+  const hora12 = Number(m[1]);
+  const minutos = Number(m[2]);
+  const esPm = m[3]!.toLowerCase() === 'pm';
+  if (hora12 < 1 || hora12 > 12 || minutos > 59) return undefined;
+
+  let h24 = hora12 % 12;
+  if (esPm) h24 += 12;
+
+  const objetivo = Date.UTC(
+    ahora.getUTCFullYear(),
+    ahora.getUTCMonth(),
+    ahora.getUTCDate(),
+    h24,
+    minutos,
+  );
+  // Si ya paso, es el de mañana. Un reset "en el pasado" seria un cartel que
+  // llego tarde, y esperar cero seria reintentar contra una cuenta agotada.
+  const UN_DIA = 24 * 60 * 60 * 1000;
+  return new Date(objetivo <= ahora.getTime() ? objetivo + UN_DIA : objetivo);
+}
+
+/**
+ * Un instante, como hora de reloj de Argentina: `5:30am`.
+ *
+ * Distinta de `aHoraArgentina`, que traduce el TEXTO del cartel de Anthropic.
+ * Esta parte de un `Date` — el que devolvio `instanteDeReset` — y existe porque
+ * reconstruir el texto del cartel para volver a traducirlo era dar dos vueltas
+ * sobre el mismo dato.
+ */
+export function horaArgentinaDe(cuando: Date): string {
+  const local = new Date(cuando.getTime() - HORAS_DE_DIFERENCIA * 60 * 60 * 1000);
+  const h = local.getUTCHours();
+  const m = local.getUTCMinutes();
+  const sufijo = h < 12 ? 'am' : 'pm';
+  return `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, '0')}${sufijo}`;
+}

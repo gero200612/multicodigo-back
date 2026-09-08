@@ -937,6 +937,50 @@ Cerre la corrida. Proba de nuevo con /corrida.`,
   });
 }
 
+/**
+ * Retoma las corridas que quedaron abiertas, al arrancar el bridge.
+ *
+ * El bucle de la cola y la espera por tokens viven en MEMORIA. Un deploy a
+ * mitad de la noche los mata: la corrida queda abierta con sus tareas
+ * pendientes y nadie la retoma, porque `correrCola` solo arranca cuando llega
+ * un mensaje. Sin esto, un deploy a las 3am cuesta la noche entera —y los
+ * deploys a esa hora son justo los que pasan cuando uno esta probando esto—.
+ *
+ * Se llama DESPUES de armar el bot, no antes: necesita poder avisar al chat.
+ *
+ * Los techos se siguen respetando solos: `correrCola` los mira en cada vuelta,
+ * asi que una corrida cuya hora ya paso se cierra en el primer paso y manda su
+ * informe. Retomar no es lo mismo que revivir.
+ */
+export function retomarCorridas(bot: Bot, deps: BridgeDeps): void {
+  void (async () => {
+    let abiertas;
+    try {
+      abiertas = await deps.store.corridasAbiertas();
+    } catch (err) {
+      // Un fallo aca no puede impedir que el bot arranque: sin retomar, el
+      // sistema se comporta como antes de esta funcion.
+      console.error('[bridge] no pude buscar corridas abiertas:', err);
+      return;
+    }
+    if (abiertas.length === 0) return;
+    console.log(`[bridge] retomando ${abiertas.length} corrida(s) abierta(s)`);
+
+    for (const c of abiertas) {
+      const avisar = async (texto: string) => {
+        await bot.api
+          .sendMessage(c.chatId, texto, { parse_mode: 'HTML' })
+          .then(() => undefined)
+          // Un chat al que no se puede escribir —bloqueado, borrado— no puede
+          // frenar el resto.
+          .catch(() => undefined);
+      };
+      await avisar('Me reinicie. Retomo la corrida donde habia quedado.');
+      void arrancarCola(c.chatId, deps, avisar);
+    }
+  })();
+}
+
 export function buildBot(deps: BridgeDeps): Bot {
   const bot = new Bot(deps.botToken);
 
