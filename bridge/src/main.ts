@@ -138,6 +138,9 @@ const Env = z.object({
   PANEL_PUBLIC_URL: opcional(z.string().url()),
   DOCS_ROOT: z.string().min(1).default('/srv/docs'),
   PORT: z.coerce.number().int().positive().default(3000),
+  RENDER_API_KEY: opcional(z.string().min(1)),
+  RENDER_OWNER_ID: opcional(z.string().min(1)),
+  GATEWAY_ADMIN_TOKEN: opcional(z.string().min(16)),
 });
 
 const env = Env.parse(process.env);
