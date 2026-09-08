@@ -2030,7 +2030,7 @@ async function rondaDeAnalisis(
 
   // Llamo, y no aparecio nada: la corrida esta completa. Es el UNICO camino a
   // ese motivo, y por eso la marca de la herramienta es lo que lo habilita.
-  if (!(await deps.store.proximaTarea(chatId))) {
+  if (!(await deps.store.proximaTarea(chatId, corrida.id))) {
     await cerrarConInforme(despues, 'completo', deps, avisar);
     return false;
   }
@@ -2261,7 +2261,15 @@ export async function correrCola(
       }
     }
 
-    const tarea = await deps.store.tomarProxima(chatId);
+    // La corrida ACOTA la cola, y esto es lo que evita que herede el trabajo de
+    // una corrida anterior del mismo chat.
+    //
+    // Visto en produccion: una corrida nueva ejecuto tres tareas que habian
+    // quedado pendientes de otra, fallaron porque nombraban un agente que ya no
+    // estaba, y el techo de tres fallos la cerro sin haber tocado ni una de las
+    // suyas. El informe decia "0 hechas, 8 sin hacer" y arriba mostraba tres
+    // fallos de tareas que no figuraban en la lista.
+    const tarea = await deps.store.tomarProxima(chatId, corrida?.id);
     if (!tarea) {
       // Sin corrida, aca se terminaba la noche. Con corrida, empieza el ciclo.
       if (!corrida) return;

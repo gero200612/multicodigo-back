@@ -284,6 +284,28 @@ async function abrir(d: ReturnType<typeof arnes>, argumentos = ''): Promise<void
   );
 }
 
+/**
+ * Encola tareas DENTRO de la corrida abierta, como hace el planificador.
+ *
+ * `/cola` encola sin `corrida_id`, y desde que la cola se acota por corrida eso
+ * ya no lo ve el ciclo — que es justo el arreglo: una corrida no puede heredar
+ * el trabajo de otra ni de una lista dictada a mano.
+ */
+async function encolarEnLaCorrida(
+  d: ReturnType<typeof arnes>,
+  textos: string[],
+): Promise<void> {
+  const c = await d.store.corridaAbierta(7);
+  if (!c) throw new Error('no hay corrida abierta');
+  await d.store.encolar(7, {
+    agente: 'c1',
+    proyecto: c.proyecto,
+    textos,
+    corridaId: c.id,
+    ronda: c.ronda,
+  });
+}
+
 async function correr(d: ReturnType<typeof arnes>): Promise<string[]> {
   const avisos: string[] = [];
   await correrCola(7, d, async (t) => {
@@ -348,7 +370,7 @@ describe('correrCola dentro de una corrida', () => {
   it('la hora de corte cierra la corrida antes de tomar una tarea', async () => {
     const d = arnes({ analista: () => [] });
     await abrir(d);
-    await handleIncoming({ chatId: 7, messageId: 2, text: '/cola una cosa' }, d);
+    await encolarEnLaCorrida(d, ['una cosa']);
 
     // Se mueve el arranque de la corrida a ayer: la hora de corte ya paso.
     const corrida = await d.store.corridaAbierta(7);
@@ -366,7 +388,7 @@ describe('correrCola dentro de una corrida', () => {
   it('una tarea que falla NO para la cola', async () => {
     const d = arnes({ analista: () => [], fallan: { dos: 'internal' } });
     await abrir(d);
-    await handleIncoming({ chatId: 7, messageId: 2, text: '/cola uno\ndos\ntres' }, d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
     const avisos = await correr(d);
 
     const tareas = await d.store.tareasDeChat(7);
@@ -377,7 +399,7 @@ describe('correrCola dentro de una corrida', () => {
   it('el informe lista la tarea que fallo', async () => {
     const d = arnes({ analista: () => [], fallan: { dos: 'internal' } });
     await abrir(d);
-    await handleIncoming({ chatId: 7, messageId: 2, text: '/cola uno\ndos' }, d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
     const avisos = await correr(d);
     // Solo las de la corrida entran al informe, y estas se dictaron a mano...
     // asi que el informe cuenta 0 y no las nombra. Es correcto: lo que el
@@ -392,7 +414,7 @@ describe('correrCola dentro de una corrida', () => {
       fallan: { uno: 'internal', dos: 'internal', tres: 'internal', cuatro: 'internal' },
     });
     await abrir(d);
-    await handleIncoming({ chatId: 7, messageId: 2, text: '/cola uno\ndos\ntres\ncuatro' }, d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres', 'cuatro']);
     const avisos = await correr(d);
 
     expect(avisos[avisos.length - 1]).toContain(`fallaron ${TOPE_DE_FALLOS} tareas seguidas`);
@@ -409,10 +431,7 @@ describe('correrCola dentro de una corrida', () => {
       fallan: { uno: 'internal', dos: 'internal', cuatro: 'internal', cinco: 'internal' },
     });
     await abrir(d);
-    await handleIncoming(
-      { chatId: 7, messageId: 2, text: '/cola uno\ndos\ntres\ncuatro\ncinco' },
-      d,
-    );
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres', 'cuatro', 'cinco']);
     await correr(d);
 
     // Cuatro fallos en total pero nunca tres seguidos: la cola llego al final.
@@ -431,7 +450,7 @@ describe('correrCola dentro de una corrida', () => {
   it('usage_limit cierra con cuentas_agotadas y no cuenta como fallo', async () => {
     const d = arnes({ analista: () => [], fallan: { uno: 'usage_limit' } });
     await abrir(d);
-    await handleIncoming({ chatId: 7, messageId: 2, text: '/cola uno\ndos' }, d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
     const avisos = await correr(d);
 
     expect(avisos[avisos.length - 1]).toContain('se agotaron los tokens');
@@ -454,7 +473,7 @@ describe('correrCola dentro de una corrida', () => {
   it('el turno de la corrida corre en modo desatendido', async () => {
     const d = arnes({ analista: () => [] });
     await abrir(d);
-    await handleIncoming({ chatId: 7, messageId: 2, text: '/cola uno' }, d);
+    await encolarEnLaCorrida(d, ['uno']);
     await d.store.setModoDeChat(7, 'preguntar');
     await correr(d);
 
@@ -490,6 +509,8 @@ describe('correrCola sin corrida: lo que ya andaba', () => {
     const d = arnes();
     await vincular(d.store, 7);
     await d.store.setModoDeChat(7, 'ediciones');
+    // `/cola` a proposito: este test es del camino SIN corrida, donde la cola
+    // del chat es toda la cola que hay.
     await handleIncoming({ chatId: 7, messageId: 1, text: '/cola uno' }, d);
     await correr(d);
     expect((d.ask.mock.calls[0]![0] as { modo?: string }).modo).toBe('ediciones');
@@ -552,7 +573,7 @@ describe('/corrida', () => {
   it('/cancelar cierra la corrida', async () => {
     const d = arnes();
     await abrir(d);
-    await handleIncoming({ chatId: 7, messageId: 2, text: '/cola uno\ndos' }, d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
     const r = await handleIncoming({ chatId: 7, messageId: 3, text: '/cancelar' }, d);
     expect(r).toEqual({ kind: 'cola_cancelada', cuantas: 2, corridaCerrada: true });
     expect(await d.store.corridaAbierta(7)).toBeUndefined();
@@ -1951,5 +1972,92 @@ describe('promptDePlan: lo que no es una tarea', () => {
 
   it('el rango bajo de 25 a 15', () => {
     expect(p).toContain('Entre 4 y 15 tareas');
+  });
+});
+
+// La cola es por CHAT, y una corrida heredaba el trabajo de la anterior.
+//
+// Visto en produccion, y el informe lo mostraba sin poder explicarlo: una
+// corrida nueva ejecuto tres tareas que habian quedado pendientes de OTRA
+// corrida del mismo chat. Fallaron —nombraban un agente que ya no estaba— y el
+// techo de tres fallos la cerro sin haber tocado ni una de las suyas.
+//
+// El informe decia "0 hechas · 0 fallaron · 8 sin hacer" y arriba mostraba tres
+// fallos de tareas que no figuraban en ninguna de las ocho. Los numeros eran
+// correctos y aun asi no se entendian.
+describe('una corrida no hereda las tareas de otra', () => {
+  it('solo toma las suyas', async () => {
+    const d = arnes({ analista: () => [] });
+    await vincular(d.store, 7);
+
+    // Una corrida vieja que quedo con trabajo sin hacer.
+    const vieja = await d.store.abrirCorrida({
+      chatId: 7,
+      proyecto: 'proyecto-viejo',
+      md: 'x',
+      techoRondas: 3,
+      techoHora: '07:00',
+    });
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: 'proyecto-viejo',
+      textos: ['tarea vieja 1', 'tarea vieja 2'],
+      corridaId: vieja!.id,
+      ronda: 1,
+    });
+    await d.store.cerrarCorrida(vieja!.id, 'demasiados_fallos');
+
+    // Y la nueva, con lo suyo.
+    await handleIncoming({ chatId: 7, messageId: 1, text: `/corrida\n${PLIEGO}` }, d);
+    await encolarEnLaCorrida(d, ['tarea nueva']);
+    await correr(d);
+
+    // Solo corrio la suya: las viejas siguen intactas.
+    expect(d.ask.mock.calls.map((c) => c[0].prompt).filter((p) => !p.includes('PLIEGO'))).toEqual([
+      'tarea nueva',
+    ]);
+    const todas = await d.store.tareasDeChat(7);
+    expect(todas.filter((t) => t.texto.startsWith('tarea vieja')).map((t) => t.estado)).toEqual([
+      'pendiente',
+      'pendiente',
+    ]);
+  });
+
+  // Y las viejas tampoco cuentan para cerrar: sin esto, el analisis veria la
+  // cola "con trabajo" para siempre y la corrida no podria terminar.
+  it('las tareas de otra corrida no impiden cerrar como completa', async () => {
+    const d = arnes({ analista: () => [] });
+    await vincular(d.store, 7);
+
+    const vieja = await d.store.abrirCorrida({
+      chatId: 7,
+      proyecto: 'viejo',
+      md: 'x',
+      techoRondas: 3,
+      techoHora: '07:00',
+    });
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: 'viejo',
+      textos: ['pendiente para siempre'],
+      corridaId: vieja!.id,
+      ronda: 1,
+    });
+    await d.store.cerrarCorrida(vieja!.id, 'cancelada');
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: `/corrida\n${PLIEGO}` }, d);
+    const avisos = await correr(d);
+
+    expect(avisos[avisos.length - 1]).toContain('el analista no encontro huecos');
+  });
+
+  // Una cola dictada a mano —sin corrida— sigue viendo todo: es el
+  // comportamiento de siempre y el filtro no lo toca.
+  it('sin corrida, la cola del chat es toda la cola', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/cola uno\ndos' }, d);
+    await correr(d);
+    expect(d.ask.mock.calls.map((c) => c[0].prompt)).toEqual(['uno', 'dos']);
   });
 });

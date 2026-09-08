@@ -588,8 +588,16 @@ export interface Store {
   encolar(chatId: number, encargo: Encargo): Promise<number>;
   /** Lo que hay en la cola, en orden. Para mostrarla. */
   tareasDeChat(chatId: number): Promise<Tarea[]>;
-  /** La proxima pendiente, sin tocarla. Para saber si hay trabajo. */
-  proximaTarea(chatId: number): Promise<Tarea | undefined>;
+  /**
+   * La proxima pendiente, sin tocarla. Para saber si hay trabajo.
+   *
+   * `corridaId` acota a las de ESA corrida. Sin el filtro, una corrida hereda
+   * las tareas pendientes de una corrida ANTERIOR del mismo chat — que es lo
+   * que paso en produccion: una corrida nueva ejecuto tres tareas de la vieja,
+   * fallaron porque nombraban un agente que ya no estaba, y el techo de fallos
+   * la cerro sin haber tocado ni una de las suyas.
+   */
+  proximaTarea(chatId: number, corridaId?: string): Promise<Tarea | undefined>;
   /**
    * Se lleva la proxima pendiente y la marca corriendo, en un solo paso.
    *
@@ -597,7 +605,7 @@ export interface Store {
    * bridge arranca dos veces— con un SELECT y despues un UPDATE las dos se
    * llevarian la misma tarea y el agente la haria dos veces.
    */
-  tomarProxima(chatId: number): Promise<Tarea | undefined>;
+  tomarProxima(chatId: number, corridaId?: string): Promise<Tarea | undefined>;
   cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void>;
   /** Cancela lo PENDIENTE. Devuelve cuantas saco. */
   cancelarCola(chatId: number): Promise<number>;
@@ -1199,12 +1207,14 @@ export class InMemoryStore implements Store {
     return this.cola.filter((t) => t.chatId === chatId).sort((a, b) => a.posicion - b.posicion);
   }
 
-  async proximaTarea(chatId: number): Promise<Tarea | undefined> {
-    return (await this.tareasDeChat(chatId)).find((t) => t.estado === 'pendiente');
+  async proximaTarea(chatId: number, corridaId?: string): Promise<Tarea | undefined> {
+    return (await this.tareasDeChat(chatId)).find(
+      (t) => t.estado === 'pendiente' && (corridaId === undefined || t.corridaId === corridaId),
+    );
   }
 
-  async tomarProxima(chatId: number): Promise<Tarea | undefined> {
-    const t = await this.proximaTarea(chatId);
+  async tomarProxima(chatId: number, corridaId?: string): Promise<Tarea | undefined> {
+    const t = await this.proximaTarea(chatId, corridaId);
     if (t) t.estado = 'corriendo';
     return t;
   }
@@ -2255,11 +2265,16 @@ export class PgStore implements Store {
     return r.rows.map((f) => this.aTarea(f));
   }
 
-  async proximaTarea(chatId: number): Promise<Tarea | undefined> {
+  async proximaTarea(chatId: number, corridaId?: string): Promise<Tarea | undefined> {
+    // El `($2::uuid IS NULL OR ...)` es lo que hace que un solo SQL sirva para
+    // los dos casos: dentro de una corrida se acota a las suyas, y una cola
+    // dictada a mano —sin corrida— sigue viendo todo lo del chat.
     const r = await this.pool.query(
       `SELECT ${PgStore.CAMPOS_TAREA} FROM cola_tareas
-       WHERE chat_id = $1 AND estado = 'pendiente' ORDER BY posicion LIMIT 1`,
-      [chatId],
+       WHERE chat_id = $1 AND estado = 'pendiente'
+         AND ($2::uuid IS NULL OR corrida_id = $2::uuid)
+       ORDER BY posicion LIMIT 1`,
+      [chatId, corridaId ?? null],
     );
     return r.rows[0] ? this.aTarea(r.rows[0]) : undefined;
   }
@@ -2271,17 +2286,18 @@ export class PgStore implements Store {
    * simultaneos no se lleven la misma: el segundo saltea la fila bloqueada y
    * agarra la siguiente, en vez de esperarla y despues pisarla.
    */
-  async tomarProxima(chatId: number): Promise<Tarea | undefined> {
+  async tomarProxima(chatId: number, corridaId?: string): Promise<Tarea | undefined> {
     const r = await this.pool.query(
       `UPDATE cola_tareas SET estado = 'corriendo', empezado_en = now()
        WHERE id = (
          SELECT id FROM cola_tareas
          WHERE chat_id = $1 AND estado = 'pendiente'
+           AND ($2::uuid IS NULL OR corrida_id = $2::uuid)
          ORDER BY posicion LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
        RETURNING ${PgStore.CAMPOS_TAREA}`,
-      [chatId],
+      [chatId, corridaId ?? null],
     );
     return r.rows[0] ? this.aTarea(r.rows[0]) : undefined;
   }
