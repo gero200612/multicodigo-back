@@ -607,8 +607,14 @@ export interface Store {
    */
   tomarProxima(chatId: number, corridaId?: string): Promise<Tarea | undefined>;
   cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void>;
-  /** Cancela lo PENDIENTE. Devuelve cuantas saco. */
-  cancelarCola(chatId: number): Promise<number>;
+  /**
+   * Cancela lo PENDIENTE. Devuelve cuantas saco.
+   *
+   * `corridaId` acota a las de ESA corrida, igual que en `tomarProxima`. Se usa
+   * al cerrar una corrida: sin eso las suyas quedan pendientes para siempre y
+   * ensucian la cola del chat.
+   */
+  cancelarCola(chatId: number, corridaId?: string): Promise<number>;
 
   // --- Corridas desatendidas ------------------------------------------------
   //
@@ -1226,8 +1232,13 @@ export class InMemoryStore implements Store {
     t.resultado = resultado;
   }
 
-  async cancelarCola(chatId: number): Promise<number> {
-    const pend = this.cola.filter((t) => t.chatId === chatId && t.estado === 'pendiente');
+  async cancelarCola(chatId: number, corridaId?: string): Promise<number> {
+    const pend = this.cola.filter(
+      (t) =>
+        t.chatId === chatId &&
+        t.estado === 'pendiente' &&
+        (corridaId === undefined || t.corridaId === corridaId),
+    );
     for (const t of pend) t.estado = 'cancelada';
     return pend.length;
   }
@@ -2316,11 +2327,15 @@ export class PgStore implements Store {
    * que prometer que se detiene seria mentir. Lo que se corta es todo lo que
    * viene despues.
    */
-  async cancelarCola(chatId: number): Promise<number> {
+  async cancelarCola(chatId: number, corridaId?: string): Promise<number> {
+    // Mismo `($2::uuid IS NULL OR ...)` que `proximaTarea`: con corrida se
+    // cancela solo lo suyo, y el `/cola cancelar` a mano —sin corrida— sigue
+    // barriendo todo el chat.
     const r = await this.pool.query(
       `UPDATE cola_tareas SET estado = 'cancelada', cerrado_en = now()
-       WHERE chat_id = $1 AND estado = 'pendiente'`,
-      [chatId],
+       WHERE chat_id = $1 AND estado = 'pendiente'
+         AND ($2::uuid IS NULL OR corrida_id = $2::uuid)`,
+      [chatId, corridaId ?? null],
     );
     return r.rowCount ?? 0;
   }

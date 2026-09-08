@@ -421,7 +421,37 @@ describe('correrCola dentro de una corrida', () => {
     // La cuarta no se corrio: el techo se mira antes de tomarla.
     expect(d.ask.mock.calls.map((c) => c[0].prompt)).toEqual(['uno', 'dos', 'tres']);
     const tareas = await d.store.tareasDeChat(7);
-    expect(tareas[3]!.estado).toBe('pendiente');
+    // Y queda CANCELADA, no pendiente: cerrar la corrida cierra su cola.
+    // Antes quedaba pendiente y la corrida siguiente se la llevaba.
+    expect(tareas[3]!.estado).toBe('cancelada');
+  });
+
+  // El caso exacto que se vio en produccion, en chico.
+  it('la corrida que sigue no hereda las pendientes de una que murio', async () => {
+    const d = arnes({
+      analista: () => [],
+      fallan: { uno: 'internal', dos: 'internal', tres: 'internal' },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres', 'cuatro', 'cinco']);
+    await correr(d);
+
+    // Murio por el techo y dejo 'cuatro' y 'cinco' sin correr.
+    const despues = await d.store.tareasDeChat(7);
+    expect(despues.map((t) => t.estado)).toEqual([
+      'fallida',
+      'fallida',
+      'fallida',
+      'cancelada',
+      'cancelada',
+    ]);
+
+    // La corrida nueva no tiene NADA que tomar de la anterior.
+    await abrir(d);
+    const otra = await d.store.corridaAbierta(7);
+    expect(otra).toBeDefined();
+    expect(await d.store.proximaTarea(7, otra!.id)).toBeUndefined();
+    expect(await d.store.tomarProxima(7, otra!.id)).toBeUndefined();
   });
 
   // Seguidos, no totales: una que sale bien vuelve el contador a cero.

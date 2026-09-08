@@ -1918,6 +1918,21 @@ async function cerrarConInforme(
       .map((t) => ({ texto: t.texto, ...(t.ronda !== undefined ? { ronda: t.ronda } : {}) })),
   };
 
+  // Cerrar la corrida NO cerraba su cola: sus pendientes quedaban vivas para
+  // siempre, al frente de la fila del chat.
+  //
+  // Visto en produccion: una corrida murio por tres fallos y dejo catorce
+  // tareas pendientes. La siguiente corrida las tomo a todas antes de llegar a
+  // las suyas y murio con las primeras tres, sin haber tocado ni una propia.
+  // `tomarProxima(chatId, corrida.id)` evita que se las lleve; esto evita que
+  // sigan ahi. Hacen falta las dos: el filtro no limpia, y la limpieza sola no
+  // sirve si una corrida vieja quedo abierta por otro camino.
+  //
+  // DESPUES de armar el resumen a proposito: el informe cuenta las pendientes,
+  // y cancelarlas antes lo dejaria diciendo "0 sin hacer" justo cuando quedaron
+  // todas sin hacer.
+  await deps.store.cancelarCola(corrida.chatId, corrida.id);
+
   // El PREFIJO de rama y no una rama concreta: el nombre exacto lo elige el
   // agente al pushear y el bridge no lo ve. Decir el prefijo es cierto y
   // alcanza para encontrarla; inventar un nombre completo seria mandar a
