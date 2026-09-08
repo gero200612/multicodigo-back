@@ -497,11 +497,28 @@ export async function handleIncoming(
     if (md === '' && abierta) {
       return { kind: 'corrida', corrida: abierta, recienAbierta: false, yaHabia: false };
     }
-    // Sin pliego y sin corrida: arranca el paso a paso. Es el camino nuevo, y
-    // el que toma quien escribe `/corrida` a secas — que antes recibia una
-    // explicacion de como armar un comando de cinco opciones.
+    // Sin pliego y sin corrida: arranca el paso a paso.
+    //
+    // Las OPCIONES se guardan antes de arrancarlo, y eso no es un detalle: sin
+    // esto habia un circulo cerrado del que no se salia.
+    //
+    // Con mas de una cuenta conectada, el sistema pide
+    // `/corrida proyecto=X org=Y`. Pero ese comando no trae pliego, y "sin
+    // pliego" significaba "arranca el paso a paso" tirando las dos opciones.
+    // Entonces el paso volvia a preguntar el nombre, y al contestarlo el
+    // sistema volvia a no saber la org y pedia lo mismo otra vez. La persona
+    // hacia exactamente lo que el mensaje le pedia y no pasaba nada.
     if (md === '') {
-      return await pasoDeCorrida({ chatId: input.chatId, texto: '' }, usuarioId, deps);
+      return await pasoDeCorrida(
+        {
+          chatId: input.chatId,
+          texto: '',
+          ...(opciones.proyecto ? { proyecto: opciones.proyecto } : {}),
+          ...(opciones.org ? { org: opciones.org } : {}),
+        },
+        usuarioId,
+        deps,
+      );
     }
     // Con pliego y una ya abierta: NO se abre otra. Dos corridas sobre el mismo
     // chat competirian por los mismos slots y ninguna de las dos terminaria.
@@ -1350,12 +1367,33 @@ async function proyectoDelChat(
  * toma cuando `/corrida` llega sin nada.
  */
 export async function pasoDeCorrida(
-  input: { chatId: number; texto: string },
+  input: { chatId: number; texto: string; proyecto?: string; org?: string },
   usuarioId: string,
   deps: PipelineDeps,
 ): Promise<PipelineOutcome> {
   const borrador = await deps.store.borradorDeChat(input.chatId);
   const texto = input.texto.trim();
+
+  // Lo que vino en el comando se GUARDA antes de cualquier otra cosa. Es lo que
+  // hace que `/corrida proyecto=X org=Y` no se pierda, y que `org=` dicha una
+  // vez valga para los pasos siguientes.
+  const org = input.org ?? borrador?.org;
+  const nombreDado = input.proyecto ?? borrador?.proyecto;
+  if (input.org || input.proyecto) {
+    await deps.store.guardarBorrador(
+      input.chatId,
+      borrador?.paso ?? 'nombre',
+      input.proyecto,
+      input.org,
+    );
+  }
+
+  // Con el nombre YA dado en el comando, el paso 1 no tiene nada que preguntar:
+  // se arma derecho. Es lo que convierte `/corrida proyecto=X org=Y` en un solo
+  // mensaje en vez de tres.
+  if (!borrador && nombreDado) {
+    return await armarYPedirPliego(input.chatId, usuarioId, nombreDado, org, deps);
+  }
 
   // Paso 1: el nombre. Es lo unico que no se puede deducir.
   if (!borrador) {
@@ -1378,18 +1416,7 @@ export async function pasoDeCorrida(
       return { kind: 'corrida_paso', paso: 'nombre', error: motivo };
     }
 
-    const armado = await armarDesdeElNombre(input.chatId, usuarioId, texto, deps);
-    if (!armado.ok) {
-      // El borrador se BORRA: el fallo es de configuracion —falta una org,
-      // falta un permiso— y no se arregla reintentando el mismo nombre. Dejarlo
-      // vivo haria que el proximo mensaje del chat se coma como si fuera una
-      // respuesta.
-      await deps.store.borrarBorrador(input.chatId);
-      return { kind: 'corrida_sin_armar', motivo: armado.motivo };
-    }
-
-    await deps.store.guardarBorrador(input.chatId, 'pliego', armado.proyecto);
-    return { kind: 'corrida_paso', paso: 'pliego', creado: armado.creado };
+    return await armarYPedirPliego(input.chatId, usuarioId, texto, org, deps);
   }
 
   // Paso 2: el pliego. Puede llegar como texto o como archivo adjunto —eso lo
@@ -1444,6 +1471,32 @@ export async function pasoDeCorrida(
   return { kind: 'corrida_planificando', corrida: nueva };
 }
 
+/**
+ * Arma el proyecto y pasa al paso del pliego.
+ *
+ * Salio del paso 1 porque ahora hay dos formas de llegar: contestando el nombre,
+ * o dandolo en el comando (`/corrida proyecto=X`). Duplicado eran dos lugares
+ * donde acordarse de guardar el borrador con el nombre canonico.
+ */
+async function armarYPedirPliego(
+  chatId: number,
+  usuarioId: string,
+  nombre: string,
+  org: string | undefined,
+  deps: PipelineDeps,
+): Promise<PipelineOutcome> {
+  const armado = await armarDesdeElNombre(chatId, usuarioId, nombre, org, deps);
+  if (!armado.ok) {
+    // El borrador se BORRA: el fallo es de configuracion —falta una org, falta
+    // un permiso— y no se arregla reintentando el mismo nombre. Dejarlo vivo
+    // haria que el proximo mensaje del chat se coma como si fuera una respuesta.
+    await deps.store.borrarBorrador(chatId);
+    return { kind: 'corrida_sin_armar', motivo: armado.motivo };
+  }
+  await deps.store.guardarBorrador(chatId, 'pliego', armado.proyecto, org);
+  return { kind: 'corrida_paso', paso: 'pliego', creado: armado.creado };
+}
+
 /** La misma forma que valida el router para `/proyecto`. */
 function nombreDeProyectoValido(n: string): boolean {
   return /^[a-zA-Z0-9._-]+$/.test(n) && n !== '.' && n !== '..' && n.length <= 60;
@@ -1470,6 +1523,7 @@ async function armarDesdeElNombre(
   chatId: number,
   usuarioId: string,
   nombre: string,
+  orgPedida: string | undefined,
   deps: PipelineDeps,
 ): Promise<{ ok: true; proyecto: string; creado: LoCreado } | { ok: false; motivo: string }> {
   const cuentas = await deps.store.cuentasConectadas(usuarioId);
@@ -1481,13 +1535,31 @@ async function armarDesdeElNombre(
         'en Configuracion, y despues la reuso sola.',
     };
   }
-  if (cuentas.length > 1) {
+
+  // La que se pidio, si se pidio y existe. Sin mayusculas, por lo mismo que en
+  // `/proyecto`: `org=sincro-arg` tiene que encontrar `Sincro-arg`.
+  const elegida = orgPedida
+    ? cuentas.find((c) => c.cuenta.toLowerCase() === orgPedida.toLowerCase())
+    : undefined;
+
+  if (orgPedida && !elegida) {
+    const lista = cuentas.map((c) => c.cuenta).join(', ');
+    return {
+      ok: false,
+      motivo: `no tenes conectada ninguna cuenta que se llame "${orgPedida}". Tenes: ${lista}`,
+    };
+  }
+
+  if (!elegida && cuentas.length > 1) {
     const lista = cuentas.map((c) => c.cuenta).join(', ');
     return {
       ok: false,
       motivo:
         `tenes mas de una cuenta conectada (${lista}) y no se en cual crear los repos. ` +
-        `Decimelo asi: /corrida proyecto=${nombre} org=<cuenta>`,
+        // El comando COMPLETO, con el pliego incluido, porque sin el pliego
+        // volvia a caer en el paso a paso — que era el circulo. Ahora eso no
+        // pasa, pero decirlo completo ahorra un mensaje igual.
+        `Mandame: /corrida proyecto=${nombre} org=<cuenta> y abajo el pliego`,
     };
   }
 
@@ -1500,7 +1572,9 @@ async function armarDesdeElNombre(
       techoRondas: TECHO_RONDAS_POR_DEFECTO,
       techoHora: TECHO_HORA_POR_DEFECTO,
       proyecto: nombre,
-      org: cuentas[0]!.cuenta,
+      // La elegida, o la unica que hay. El `!` es seguro: si no hay elegida,
+      // los dos `if` de arriba garantizan que `cuentas` tiene exactamente una.
+      org: (elegida ?? cuentas[0]!).cuenta,
       // La convencion de nombres. Dos repos y no uno: es como esta armado el
       // proyecto de referencia, y lo que el pliego describe casi siempre tiene
       // las dos mitades.

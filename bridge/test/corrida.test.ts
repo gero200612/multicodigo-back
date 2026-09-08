@@ -1580,3 +1580,100 @@ describe('horaArgentinaDe', () => {
     expect(horaArgentinaDe(new Date('2026-09-08T03:00:00Z'))).toBe('12:00am');
   });
 });
+
+// El circulo cerrado, reportado desde el chat.
+//
+//   Punchi:   tenes mas de una cuenta (...). Decimelo asi: /corrida proyecto=X org=<cuenta>
+//   Geronimo: /corrida proyecto=PruebaC org=Sincro-arg
+//   Punchi:   ¿Como se llama el proyecto?
+//   Geronimo: PruebaC
+//   Punchi:   tenes mas de una cuenta (...). Decimelo asi: ...
+//
+// La persona hacia EXACTAMENTE lo que el mensaje le pedia. El comando no traia
+// pliego, "sin pliego" significaba "arranca el paso a paso", y las dos opciones
+// se tiraban.
+describe('/corrida con varias cuentas conectadas', () => {
+  async function conTresCuentas() {
+    const d = arnes();
+    const crearRepo = vi.fn(async (_id: number, nombre: string) => ({
+      ok: true as const,
+      nombre,
+      github: `Sincro-arg/${nombre}`,
+    }));
+    Object.assign(d, { crearRepo });
+    await vincular(d.store, 7);
+    // Tres cuentas, como en produccion: dos de usuario y una org.
+    for (const [i, cuenta] of ['gero200612', 'Sincro-arg', 'sincrosns'].entries()) {
+      const p = await d.store.crearProyecto(`p${i}`, USUARIO);
+      await d.store.guardarInstalacion(p, 100 + i, cuenta);
+    }
+    return d as typeof d & { crearRepo: typeof crearRepo };
+  }
+
+  it('sin decir la org, pide que la nombre', async () => {
+    const d = await conTresCuentas();
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+    if (r.kind !== 'corrida_sin_armar') throw new Error(`no es sin_armar: ${r.kind}`);
+    expect(r.motivo).toContain('Sincro-arg');
+  });
+
+  // Lo que estaba roto: el comando con las opciones y SIN pliego.
+  it('con proyecto= y org= arma de una y pide el pliego', async () => {
+    const d = await conTresCuentas();
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: '/corrida proyecto=PruebaC org=Sincro-arg' },
+      d,
+    );
+    if (r.kind !== 'corrida_paso') throw new Error(`no es corrida_paso: ${r.kind}`);
+    // Ya paso el paso del nombre: pide el pliego.
+    expect(r.paso).toBe('pliego');
+    expect(r.creado?.proyecto).toBe('PruebaC');
+    expect(r.creado?.repos).toEqual(['Sincro-arg/PruebaC-front', 'Sincro-arg/PruebaC-back']);
+  });
+
+  // La org dicha UNA vez vale para los pasos siguientes: es lo que rompia el
+  // circulo cuando la persona contestaba el nombre despues.
+  it('la org dicha antes se recuerda al contestar el nombre', async () => {
+    const d = await conTresCuentas();
+    // Solo la org, sin nombre.
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida org=Sincro-arg' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida PruebaC' }, d);
+    if (r.kind !== 'corrida_paso') throw new Error(`no es corrida_paso: ${r.kind}`);
+    expect(r.paso).toBe('pliego');
+    expect(r.creado?.repos?.[0]).toContain('Sincro-arg/');
+  });
+
+  it('sin mayusculas tambien encuentra la cuenta', async () => {
+    const d = await conTresCuentas();
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: '/corrida proyecto=acme org=sincro-arg' },
+      d,
+    );
+    if (r.kind !== 'corrida_paso') throw new Error('no es corrida_paso');
+    // Y usa el nombre CANONICO: ese string va a una URL de git.
+    expect(r.creado?.repos?.[0]).toContain('Sincro-arg/');
+  });
+
+  it('una org que no esta conectada lo dice y lista las que hay', async () => {
+    const d = await conTresCuentas();
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: '/corrida proyecto=acme org=No-Existe' },
+      d,
+    );
+    if (r.kind !== 'corrida_sin_armar') throw new Error('no es sin_armar');
+    expect(r.motivo).toContain('No-Existe');
+    expect(r.motivo).toContain('Sincro-arg');
+  });
+
+  // El pliego completo en un solo mensaje sigue andando, y con la org tambien.
+  it('el comando completo con pliego no pasa por los pasos', async () => {
+    const d = await conTresCuentas();
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=acme org=Sincro-arg\n${PLIEGO}` },
+      d,
+    );
+    expect(r.kind).toBe('corrida');
+    expect(await d.store.borradorDeChat(7)).toBeUndefined();
+  });
+});

@@ -121,6 +121,14 @@ export interface Borrador {
   chatId: number;
   paso: 'nombre' | 'pliego';
   proyecto?: string;
+  /**
+   * La organizacion de GitHub, si ya la dijeron.
+   *
+   * Se recuerda porque con mas de una cuenta conectada el sistema la pide, y sin
+   * guardarla el paso a paso volvia a no saberla — un circulo del que no se
+   * salia. Ver la migracion 027.
+   */
+  org?: string;
 }
 
 export interface RepoDelProyecto {
@@ -664,7 +672,12 @@ export interface Store {
    */
   borradorDeChat(chatId: number): Promise<Borrador | undefined>;
   /** Guarda el paso. Un borrador nuevo pisa al anterior. */
-  guardarBorrador(chatId: number, paso: Borrador['paso'], proyecto?: string): Promise<void>;
+  guardarBorrador(
+    chatId: number,
+    paso: Borrador['paso'],
+    proyecto?: string,
+    org?: string,
+  ): Promise<void>;
   /** Lo borra. Se llama al abrir la corrida y al cancelar. */
   borrarBorrador(chatId: number): Promise<void>;
   /**
@@ -1294,9 +1307,24 @@ export class InMemoryStore implements Store {
     this.borradoresDesde.set(chatId, Date.now() - minutos * 60_000);
   }
 
-  async guardarBorrador(chatId: number, paso: Borrador['paso'], proyecto?: string) {
-    this.borradores.set(chatId, { chatId, paso, ...(proyecto ? { proyecto } : {}) });
-    this.borradoresDesde.set(chatId, Date.now());
+  async guardarBorrador(
+    chatId: number,
+    paso: Borrador['paso'],
+    proyecto?: string,
+    org?: string,
+  ) {
+    // Lo que no se pasa NO se borra, igual que el COALESCE del INSERT de
+    // Postgres. Este doble estaba pisando la org y por eso se comportaba
+    // distinto de produccion: un test verde aca con un bug alla es peor que no
+    // tener el doble.
+    const previo = this.borradores.get(chatId);
+    this.borradores.set(chatId, {
+      chatId,
+      paso,
+      ...(proyecto ?? previo?.proyecto ? { proyecto: proyecto ?? previo!.proyecto! } : {}),
+      ...(org ?? previo?.org ? { org: org ?? previo!.org! } : {}),
+    });
+    if (!previo) this.borradoresDesde.set(chatId, Date.now());
   }
 
   async borrarBorrador(chatId: number) {
@@ -2397,21 +2425,46 @@ export class PgStore implements Store {
       )
       .catch(() => undefined);
 
-    const r = await this.pool.query<{ paso: string; proyecto: string | null }>(
-      'SELECT paso, proyecto FROM corrida_borrador WHERE chat_id = $1',
+    const r = await this.pool.query<{
+      paso: string;
+      proyecto: string | null;
+      org: string | null;
+    }>(
+      // `COALESCE` no hace falta pero el SELECT nombra la columna, que es de la
+      // migracion 027: contra una base que no la corrio, esto falla y el paso a
+      // paso queda inservible. El catch de arriba no cubre este SELECT, asi que
+      // el orden de las migraciones importa.
+      'SELECT paso, proyecto, org FROM corrida_borrador WHERE chat_id = $1',
       [chatId],
     );
     const f = r.rows[0];
     return f
-      ? { chatId, paso: f.paso as Borrador['paso'], ...(f.proyecto ? { proyecto: f.proyecto } : {}) }
+      ? {
+          chatId,
+          paso: f.paso as Borrador['paso'],
+          ...(f.proyecto ? { proyecto: f.proyecto } : {}),
+          ...(f.org ? { org: f.org } : {}),
+        }
       : undefined;
   }
 
-  async guardarBorrador(chatId: number, paso: Borrador['paso'], proyecto?: string): Promise<void> {
+  async guardarBorrador(
+    chatId: number,
+    paso: Borrador['paso'],
+    proyecto?: string,
+    org?: string,
+  ): Promise<void> {
     await this.pool.query(
-      `INSERT INTO corrida_borrador (chat_id, paso, proyecto) VALUES ($1, $2, $3)
-       ON CONFLICT (chat_id) DO UPDATE SET paso = $2, proyecto = $3, creado_en = now()`,
-      [chatId, paso, proyecto ?? null],
+      `INSERT INTO corrida_borrador (chat_id, paso, proyecto, org) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (chat_id)
+       DO UPDATE SET paso = $2,
+                     -- COALESCE para no PERDER lo que ya estaba: el paso del
+                     -- pliego se guarda sin repetir la org, y sin esto la
+                     -- borraria justo antes de usarla.
+                     proyecto = COALESCE($3, corrida_borrador.proyecto),
+                     org = COALESCE($4, corrida_borrador.org),
+                     creado_en = now()`,
+      [chatId, paso, proyecto ?? null, org ?? null],
     );
   }
 
