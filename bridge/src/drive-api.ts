@@ -282,9 +282,15 @@ export function registrarDrive(app: FastifyInstance, deps: DriveApiDeps): void {
       // persona como una tarea suya es justo lo que este sistema viene
       // evitando.
       return (
-        `no encontre ningun archivo con "${nombre}" entre los que puedo ver. ` +
-        'Si existe pero nunca lo abriste conmigo, usa pedir_acceso_a_drive para que ' +
-        'la persona me lo autorice.'
+        // Se dice POR QUE no lo ve, porque el modelo lo estaba traduciendo mal:
+        // contesto "la cuenta me rechazo la busqueda", que suena a un permiso
+        // roto y manda a reconectar Drive. La busqueda FUNCIONO — lo que pasa es
+        // que `drive.file` solo ve los archivos que la persona autorizo uno por
+        // uno, asi que uno que existe en su Drive y nunca autorizo no aparece.
+        `no encontre "${nombre}" entre los archivos que puedo ver. OJO: no es un ` +
+        'problema de permisos ni de la cuenta, y no hay que reconectar nada. Solo ' +
+        'veo los archivos que la persona me autorizo uno por uno. ' +
+        'Usa pedir_acceso_a_drive para que te autorice este.'
       );
     }
     // Los ids van en la respuesta porque son lo que toman las demas
