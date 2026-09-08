@@ -56,8 +56,16 @@ const MODELO = 'q';
  *
  * Una letra sola como el resto: el `callback_data` de Telegram tiene 64 bytes y
  * los prefijos largos se los comen para nada.
+ *
+ * `y` y no `p`, que fue lo primero que puse: `p` ya era PROYECTO. El `if` de
+ * proyecto va antes en `parseMenuData`, asi que `p:si` caia ahi, no pasaba el
+ * chequeo de UUID y devolvia null — el boton de "Arrancar" no hacia
+ * absolutamente nada, sin ningun error en ningun lado.
+ *
+ * Los prefijos son un espacio de nombres de una letra sin nada que impida
+ * repetir uno. Por eso el test de abajo los recorre: ver `PREFIJOS`.
  */
-const PLAN = 'p';
+const PLAN = 'y';
 
 /**
  * Desatar el chat de la cuenta.
@@ -166,6 +174,26 @@ export function tecladoDeAcciones(): Boton[][] {
     [{ label: '📊 Ver estado', data: datosDeAccion('estado') }],
   ];
 }
+
+/**
+ * Todos los prefijos, para poder verificar que no se repitan.
+ *
+ * Existe porque son letras sueltas declaradas en nueve constantes distintas, y
+ * nada impide elegir una que ya estaba: paso con PLAN='p' contra PROYECTO='p',
+ * y el sintoma fue un boton que no hacia nada — sin error, sin log, sin nada
+ * que mirar. El test que recorre esta lista es lo que lo hace imposible.
+ */
+export const PREFIJOS = {
+  PROYECTO,
+  AGENTE,
+  MENU,
+  PERMISO,
+  ACCION,
+  MODELO,
+  PLAN,
+  DESVINCULAR,
+  ORG,
+} as const;
 
 export type MenuData =
   | { kind: 'proyecto'; id: string }
