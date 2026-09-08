@@ -421,7 +421,7 @@ export async function handleIncoming(
     // justo lo que no se ve en ningun lado. El boton lo elige de una lista
     // real, asi que no se puede escribir mal.
     if (!command.project) {
-      const activo = (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
+      const activo = await proyectoDelChat(input.chatId, usuarioId, deps);
       return { kind: 'project', project: activo, mios, botones: tecladoDeProyectos(mios) };
     }
 
@@ -457,7 +457,7 @@ export async function handleIncoming(
 
     const agente =
       (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
-    const proyecto = (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
+    const proyecto = await proyectoDelChat(input.chatId, usuarioId, deps);
     const n = await deps.store.encolar(input.chatId, { agente, proyecto, textos: tareas });
     return {
       kind: 'cola',
@@ -599,7 +599,7 @@ export async function handleIncoming(
   const agent =
     command.agent ?? (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
   // El proyecto del turno: lo que eligio el chat, o el default del bridge.
-  const project = (await deps.store.getActiveProject(input.chatId)) ?? deps.project;
+  const project = await proyectoDelChat(input.chatId, usuarioId, deps);
 
   // El id del proyecto, para poder compartir el hilo con el panel. Puede no
   // existir —un proyecto de config/projects.json que nunca se creo desde el
@@ -1231,6 +1231,44 @@ export async function armarMenuDeAgentes(
 }
 
 /**
+ * El proyecto sobre el que trabaja un chat.
+ *
+ * El que eligio, o —si nunca eligio y tiene UNO SOLO— ese, o el default del
+ * bridge.
+ *
+ * ## Por que el medio no es un lujo
+ *
+ * Sin ese caso, un chat recien vinculado cae en `demo`: el default global, que
+ * no es de nadie. Paso en produccion — alguien vinculo su chat, pidio trabajo
+ * sobre SU proyecto, y los turnos corrieron contra `demo` con el worktree de
+ * otro. El error que vio fue `worktree_failed`, tres capas abajo de la causa y
+ * sin ninguna relacion con lo que hizo.
+ *
+ * Y se GUARDA, no solo se devuelve: si no, cada mensaje volveria a resolverlo y
+ * la pantalla de `/proyecto` seguiria diciendo `demo` mientras los turnos van a
+ * otro lado — dos verdades distintas sobre lo mismo.
+ *
+ * Con mas de uno NO se adivina: elegir por alguien sobre cual de sus proyectos
+ * trabaja es peor que preguntarle, porque el trabajo termina en el equivocado y
+ * se nota tarde.
+ */
+async function proyectoDelChat(
+  chatId: number,
+  usuarioId: string,
+  deps: PipelineDeps,
+): Promise<string> {
+  const elegido = await deps.store.getActiveProject(chatId);
+  if (elegido) return elegido;
+
+  const mios = await deps.store.proyectosDeUsuario(usuarioId);
+  if (mios.length === 1) {
+    await deps.store.setActiveProject(chatId, mios[0]!.nombre);
+    return mios[0]!.nombre;
+  }
+  return deps.project;
+}
+
+/**
  * Un paso del `/corrida` conversacional.
  *
  * El comando pedia cinco opciones bien escritas de una sola vez —nombre, org,
@@ -1425,7 +1463,7 @@ async function armarProyecto(
   const creado: LoCreado = { repos: [], referencia: [] };
 
   // 1. El proyecto.
-  let proyecto = (await deps.store.getActiveProject(chatId)) ?? deps.project;
+  let proyecto = await proyectoDelChat(chatId, usuarioId, deps);
   let proyectoId: string | undefined;
   const mios = await deps.store.proyectosDeUsuario(usuarioId);
 

@@ -1515,3 +1515,73 @@ describe('correrCola: hacer la lista de a una', () => {
     expect(avisos).toEqual([]);
   });
 });
+
+// El chat que cae en `demo` sin haberlo pedido.
+//
+// Paso en produccion: alguien vinculo su chat, pidio trabajo sobre SU proyecto,
+// y los turnos corrieron contra `demo` —el default global, que no es de nadie—
+// con el worktree de otro. El error que vio fue `worktree_failed`, tres capas
+// abajo de la causa.
+describe('el proyecto de un chat que nunca eligio', () => {
+  it('con UN solo proyecto, es ese y no el default', async () => {
+    let visto = '';
+    const store = new InMemoryStore();
+    const d = deps({
+      store,
+      project: 'demo',
+      ask: async (req) => {
+        visto = req.project;
+        return { jobId: req.jobId, sessionId: 's', text: 'ok', turns: 1 };
+      },
+    });
+    await vincular(store, 1);
+    await store.crearProyecto('luciano-enrici', USUARIO_DE_PRUEBA);
+
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    expect(visto).toBe('luciano-enrici');
+    // Y queda GUARDADO: si no, /proyecto seguiria diciendo `demo` mientras los
+    // turnos van a otro lado.
+    expect(await store.getActiveProject(1)).toBe('luciano-enrici');
+  });
+
+  // Con mas de uno NO se adivina: elegir por alguien sobre cual de sus
+  // proyectos trabaja termina con el trabajo en el equivocado.
+  it('con varios proyectos sigue cayendo al default', async () => {
+    let visto = '';
+    const store = new InMemoryStore();
+    const d = deps({
+      store,
+      project: 'demo',
+      ask: async (req) => {
+        visto = req.project;
+        return { jobId: req.jobId, sessionId: 's', text: 'ok', turns: 1 };
+      },
+    });
+    await vincular(store, 1);
+    await store.crearProyecto('uno', USUARIO_DE_PRUEBA);
+    await store.crearProyecto('dos', USUARIO_DE_PRUEBA);
+
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    expect(visto).toBe('demo');
+  });
+
+  it('lo que ya eligio no se pisa', async () => {
+    let visto = '';
+    const store = new InMemoryStore();
+    const d = deps({
+      store,
+      project: 'demo',
+      ask: async (req) => {
+        visto = req.project;
+        return { jobId: req.jobId, sessionId: 's', text: 'ok', turns: 1 };
+      },
+    });
+    await vincular(store, 1);
+    await store.crearProyecto('uno', USUARIO_DE_PRUEBA);
+    await store.crearProyecto('dos', USUARIO_DE_PRUEBA);
+    await store.setActiveProject(1, 'dos');
+
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+    expect(visto).toBe('dos');
+  });
+});
