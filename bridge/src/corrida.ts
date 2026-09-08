@@ -531,8 +531,26 @@ export function promptDePlan(
     'NOMBRALO en la tarea ("...; en la referencia esta en <archivo>"): es lo que',
     'hace que se copie una estructura que anda en vez de inventar una nueva.',
     '',
-    'Entre 5 y 25 tareas. Menos es que te falto abrir el pliego; mas es que estas',
-    'partiendo en pedazos que no se pueden entregar solos.',
+    // Las tres cosas que un planificador convierte en tareas y no lo son.
+    //
+    // Visto en la primera corrida real: un pliego de una app de TODO —cuatro
+    // endpoints y una pantalla— salio con 17 tareas, y cinco eran estas. Sin
+    // decirlo, el modelo trata "escribir tests", "correr tests" y "commitear"
+    // como pasos de un proceso, y los enumera para cada repo.
+    //
+    // El costo no es la lista larga: cada tarea es un TURNO, con su arranque de
+    // sesion y su gasto de tokens. Cinco tareas que no construyen nada son
+    // cinco turnos que la noche no tenia por que pagar.
+    'LO QUE NO ES UNA TAREA, y no va en la lista:',
+    ' · "correr los tests" — corre los tests DENTRO de la tarea que escribio el codigo.',
+    ' · "commitear" — commitea al terminar cada tarea; es parte de terminarla.',
+    ' · "anotar el pendiente X" — eso se hace llamando anotar_pendiente cuando pasa,',
+    '   no encolando una tarea para hacerlo.',
+    'Una tarea deja CODIGO nuevo o cambiado. Si no lo deja, no va.',
+    '',
+    'Entre 4 y 15 tareas. Menos es que te falto abrir el pliego; mas es que estas',
+    'partiendo en pedazos que no se pueden entregar solos, o contando como tareas',
+    'cosas que son parte de hacer una.',
     '',
     'Es OBLIGATORIO llamar la herramienta: si escribis la lista en prosa, nadie la',
     'recibe y no hay con que arrancar.',

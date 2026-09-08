@@ -1919,3 +1919,37 @@ describe('elegir la org escribiendola', () => {
     expect(t).toContain('Sincro-arg');
   });
 });
+
+// El plan inflado, visto en la primera corrida real: un pliego de una app de
+// TODO —cuatro endpoints y una pantalla— salio con 17 tareas, y cinco no
+// construian nada ("correr los tests", "commitear", "anotar el pendiente").
+//
+// Cada tarea es un TURNO con su arranque de sesion y su gasto. Cinco turnos que
+// no dejan codigo son cinco que la noche no tenia por que pagar.
+describe('promptDePlan: lo que no es una tarea', () => {
+  const p = promptDePlan('una app de tareas', []);
+
+  it('dice que correr los tests no es una tarea', () => {
+    expect(p).toContain('correr los tests');
+    expect(p).toContain('DENTRO de la tarea');
+  });
+
+  it('dice que commitear no es una tarea', () => {
+    expect(p).toContain('commitea al terminar cada tarea');
+  });
+
+  // La peor de las tres: convierte una HERRAMIENTA en una tarea de la cola.
+  it('dice que anotar un pendiente se hace con la herramienta', () => {
+    expect(p).toContain('anotar_pendiente');
+    expect(p).toContain('no encolando una tarea');
+  });
+
+  it('da el criterio, no solo la lista de excepciones', () => {
+    // Sin el criterio, la proxima cosa que no es una tarea vuelve a entrar.
+    expect(p).toContain('deja CODIGO nuevo o cambiado');
+  });
+
+  it('el rango bajo de 25 a 15', () => {
+    expect(p).toContain('Entre 4 y 15 tareas');
+  });
+});
