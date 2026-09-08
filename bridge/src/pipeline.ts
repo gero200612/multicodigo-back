@@ -1815,7 +1815,11 @@ async function armarProyecto(
       const hechos = creado.repos.length > 0 ? ` Ya habia creado: ${creado.repos.join(', ')}.` : '';
       return { ok: false, motivo: `${explicacion}.${hechos}` };
     }
-    await deps.store.vincularRepo(proyectoId, r.nombre, r.github);
+    // El quinto argumento es lo que despues autoriza el merge automatico a
+    // main. Va aca y en ningun otro lado: este es el unico punto del sistema
+    // donde un repo nace del bot. El bucle de abajo, que vincula referencias,
+    // no lo pasa: una referencia ya existia de una persona.
+    await deps.store.vincularRepo(proyectoId, r.nombre, r.github, false, true);
     creado.repos.push(r.github);
     // El cable que queda: un repo recien creado NO esta conectado a Vercel ni a
     // Render, y hasta que alguien lo conecte el push del agente no despliega

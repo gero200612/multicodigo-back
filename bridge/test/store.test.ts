@@ -948,3 +948,67 @@ describe('guardar la fila de un documento', () => {
     expect(docs[0]!.ruta_texto).toBeNull();
   });
 });
+
+describe('repos creados por el bot', () => {
+  it('vincularRepo marca el repo como del bot cuando se le pide', async () => {
+    const s = new InMemoryStore();
+    const p = await s.crearProyecto('propinas', 'u1');
+    await s.vincularRepo(p, 'propinas-back', 'Sincro-arg/propinas-back', false, true);
+
+    const repos = await s.reposDeProyecto(p);
+    expect(repos).toEqual([
+      {
+        nombre: 'propinas-back',
+        github_repo: 'Sincro-arg/propinas-back',
+        creado_por_el_bot: true,
+        render_service_id: null,
+      },
+    ]);
+  });
+
+  // El default es el lado seguro: un repo que alguien conecto NO entra en el
+  // merge automatico.
+  it('sin pedirlo, el repo NO queda marcado como del bot', async () => {
+    const s = new InMemoryStore();
+    const p = await s.crearProyecto('sincro', 'u1');
+    await s.vincularRepo(p, 'sincro', 'sincrosns/sincro');
+
+    const repos = await s.reposDeProyecto(p);
+    expect(repos[0]!.creado_por_el_bot).toBe(false);
+  });
+
+  it('guardarRenderServiceId lo deja leible', async () => {
+    const s = new InMemoryStore();
+    const p = await s.crearProyecto('propinas', 'u1');
+    await s.vincularRepo(p, 'propinas-back', 'Sincro-arg/propinas-back', false, true);
+    await s.guardarRenderServiceId(p, 'propinas-back', 'srv-abc123');
+
+    const repos = await s.reposDeProyecto(p);
+    expect(repos[0]!.render_service_id).toBe('srv-abc123');
+  });
+
+  // El peor bug posible de esta feature: que un repo de REFERENCIA (uno que
+  // ya existia de una persona, montado solo para leer) termine marcado como
+  // del bot y quede habilitado para un merge automatico a su main.
+  it('un repo de referencia (solo_lectura) nunca queda marcado como del bot', async () => {
+    const s = new InMemoryStore();
+    const p = await s.crearProyecto('acme', 'u1');
+    await s.vincularRepo(p, 'acme-back', 'Sincro-arg/acme-back', false, true);
+    await s.vincularRepo(p, 'acme-legacy', 'alguien/acme-legacy', true);
+
+    const repos = await s.reposDeProyecto(p);
+    const nuevo = repos.find((r) => r.nombre === 'acme-back')!;
+    const referencia = repos.find((r) => r.nombre === 'acme-legacy')!;
+    expect(nuevo.creado_por_el_bot).toBe(true);
+    expect(referencia.creado_por_el_bot).toBe(false);
+    expect(referencia.solo_lectura).toBe(true);
+  });
+
+  it('idDeProyecto devuelve el id por nombre, o null si no existe', async () => {
+    const s = new InMemoryStore();
+    const p = await s.crearProyecto('propinas', 'u1');
+
+    expect(await s.idDeProyecto('propinas')).toBe(p);
+    expect(await s.idDeProyecto('no-existe')).toBeNull();
+  });
+});

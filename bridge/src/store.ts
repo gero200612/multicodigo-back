@@ -135,6 +135,22 @@ export interface RepoDelProyecto {
   nombre: string;
   github_repo: string;
   solo_lectura?: boolean;
+  /**
+   * Si lo creo el bot al abrir una corrida.
+   *
+   * Es lo unico que autoriza el merge automatico a main, y por eso NUNCA se
+   * omite como `solo_lectura`: una decision de seguridad apoyada en un campo
+   * ausente es una decision apoyada en un bug. El default de la columna es
+   * `false`, asi que un repo que conecto una persona nunca lo recibe.
+   */
+  creado_por_el_bot: boolean;
+  /**
+   * El servicio de Render ya creado, o null. Explicito por el mismo motivo
+   * que `creado_por_el_bot`: da idempotencia (dos corridas sobre el mismo
+   * proyecto no pueden dejar dos servicios facturando) y esa garantia no
+   * puede depender de si el campo vino o no en la respuesta.
+   */
+  render_service_id: string | null;
 }
 
 export const MODOS_PERMISO = ['preguntar', 'ediciones', 'todo'] as const;
@@ -499,13 +515,23 @@ export interface Store {
    *
    * `soloLectura` lo marca como REFERENCIA: se monta para leer y el gateway
    * rechaza commitear y pushear ahi.
+   *
+   * `creadoPorElBot` es lo unico que despues autoriza el merge automatico a
+   * main. Un repo de referencia (`soloLectura`) NUNCA lo lleva: ya existia de
+   * una persona, y marcarlo habilitaria un merge automatico sobre un repo que
+   * el sistema no creo.
    */
   vincularRepo(
     proyectoId: string,
     nombre: string,
     github: string,
     soloLectura?: boolean,
+    creadoPorElBot?: boolean,
   ): Promise<void>;
+  /** El servicio de Render ya creado para ese repo. Da idempotencia. */
+  guardarRenderServiceId(proyectoId: string, nombre: string, serviceId: string): Promise<void>;
+  /** El id del proyecto por nombre, o null si no existe. */
+  idDeProyecto(nombre: string): Promise<string | null>;
   /** Los agentes del proyecto, por slot. */
   agentesDeProyecto(proyectoId: string): Promise<AgenteResumen[]>;
   /** Anota que el slot pertenece al proyecto. NO crea el contenedor. */
@@ -1062,16 +1088,47 @@ export class InMemoryStore implements Store {
   /** Los repos, por proyecto. `reposDeProyecto` los devuelve. */
   private reposPorProyecto = new Map<string, RepoDelProyecto[]>();
 
-  async vincularRepo(proyectoId: string, nombre: string, github: string, soloLectura = false) {
-    const previos = (this.reposPorProyecto.get(proyectoId) ?? []).filter((r) => r.nombre !== nombre);
+  async vincularRepo(
+    proyectoId: string,
+    nombre: string,
+    github: string,
+    soloLectura = false,
+    creadoPorElBot = false,
+  ) {
+    const anteriores = this.reposPorProyecto.get(proyectoId) ?? [];
+    const existente = anteriores.find((r) => r.nombre === nombre);
+    const otros = anteriores.filter((r) => r.nombre !== nombre);
     this.reposPorProyecto.set(proyectoId, [
-      ...previos,
-      { nombre, github_repo: github, ...(soloLectura ? { solo_lectura: true } : {}) },
+      ...otros,
+      {
+        nombre,
+        github_repo: github,
+        ...(soloLectura ? { solo_lectura: true } : {}),
+        // Espeja PgStore.vincularRepo: un reintento no pisa lo que ya habia.
+        // `creado_por_el_bot` no puede convertirse en true por un reintento
+        // ajeno, y `render_service_id` no se puede perder porque alguien
+        // volvio a vincular el mismo repo.
+        creado_por_el_bot: existente?.creado_por_el_bot ?? creadoPorElBot,
+        render_service_id: existente?.render_service_id ?? null,
+      },
     ]);
   }
 
-  async reposDeProyecto(proyectoId: string): Promise<Array<{ nombre: string; github_repo: string }>> {
+  async reposDeProyecto(proyectoId: string): Promise<RepoDelProyecto[]> {
     return this.reposPorProyecto.get(proyectoId) ?? [];
+  }
+
+  async guardarRenderServiceId(proyectoId: string, nombre: string, serviceId: string): Promise<void> {
+    const repos = this.reposPorProyecto.get(proyectoId) ?? [];
+    const i = repos.findIndex((r) => r.nombre === nombre);
+    if (i >= 0) repos[i] = { ...repos[i]!, render_service_id: serviceId };
+  }
+
+  async idDeProyecto(nombre: string): Promise<string | null> {
+    for (const [id, p] of this.proyectos) {
+      if (p.nombre === nombre) return id;
+    }
+    return null;
   }
 
   async turnosRecientes(): Promise<Array<{ prompt: string; respuesta: string }>> {
@@ -1910,25 +1967,57 @@ export class PgStore implements Store {
         nombre: string;
         github_repo: string;
         solo_lectura: boolean;
+        creado_por_el_bot: boolean;
+        render_service_id: string | null;
       }>(
-        // `COALESCE` porque la columna es de la migracion 024: contra una base
-        // que todavia no la corrio, el SELECT fallaria entero y el proyecto se
-        // quedaria sin repos — un fallo mucho mas grande que el que agrega.
-        `SELECT nombre, github_repo, COALESCE(solo_lectura, false) solo_lectura
+        // `COALESCE` en `solo_lectura` porque la columna es de la migracion
+        // 024: contra una base que todavia no la corrio, el SELECT fallaria
+        // entero y el proyecto se quedaria sin repos — un fallo mucho mas
+        // grande que el que agrega. `creado_por_el_bot` y `render_service_id`
+        // son de la migracion 031 y no llevan COALESCE: si faltan, es porque
+        // esa migracion no corrio, y ahi SI conviene que el SELECT completo
+        // falle e informe [] en vez de mentir que ningun repo es del bot.
+        `SELECT nombre, github_repo, COALESCE(solo_lectura, false) solo_lectura,
+                creado_por_el_bot, render_service_id
            FROM repos WHERE proyecto_id = $1 ORDER BY nombre`,
         [proyectoId],
       );
-      // El flag se omite cuando es false en vez de viajar como `false`: el
-      // gateway lo lee como opcional, y asi el cuerpo del pedido de un proyecto
-      // sin referencias queda igual que antes de esta feature.
       return r.rows.map((f) => ({
         nombre: f.nombre,
         github_repo: f.github_repo,
+        // `solo_lectura` se omite cuando es false en vez de viajar como
+        // `false`: el gateway lo lee como opcional, y asi el cuerpo del
+        // pedido de un proyecto sin referencias queda igual que antes de esta
+        // feature.
         ...(f.solo_lectura ? { solo_lectura: true } : {}),
+        // `creado_por_el_bot` y `render_service_id`, al reves, NUNCA se
+        // omiten: son la base del merge automatico y de la idempotencia del
+        // deploy, y un campo ausente ahi seria un bug disfrazado de dato.
+        creado_por_el_bot: f.creado_por_el_bot,
+        render_service_id: f.render_service_id,
       }));
     } catch {
       return [];
     }
+  }
+
+  async guardarRenderServiceId(
+    proyectoId: string,
+    nombre: string,
+    serviceId: string,
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE repos SET render_service_id = $3 WHERE proyecto_id = $1 AND nombre = $2`,
+      [proyectoId, nombre, serviceId],
+    );
+  }
+
+  async idDeProyecto(nombre: string): Promise<string | null> {
+    const r = await this.pool.query<{ id: string }>(
+      'SELECT id FROM proyectos WHERE nombre = $1',
+      [nombre],
+    );
+    return r.rows[0]?.id ?? null;
   }
 
   async instalacionDeProyecto(proyectoId: string): Promise<number | undefined> {
@@ -2008,15 +2097,20 @@ export class PgStore implements Store {
     nombre: string,
     github: string,
     soloLectura = false,
+    creadoPorElBot = false,
   ): Promise<void> {
     // ON CONFLICT porque el nombre es unico por proyecto y reintentar una
     // corrida que fallo a la mitad no puede chocar contra lo que ya entro.
+    //
+    // `creado_por_el_bot` NO se pisa en el UPDATE: si el repo ya existia como
+    // de una persona, un reintento no puede convertirlo en uno del bot y
+    // habilitarle el merge automatico.
     await this.pool.query(
-      `INSERT INTO repos (proyecto_id, nombre, github_repo, solo_lectura)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO repos (proyecto_id, nombre, github_repo, solo_lectura, creado_por_el_bot)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (proyecto_id, nombre)
        DO UPDATE SET github_repo = $3, solo_lectura = $4`,
-      [proyectoId, nombre, github, soloLectura],
+      [proyectoId, nombre, github, soloLectura, creadoPorElBot],
     );
   }
 
