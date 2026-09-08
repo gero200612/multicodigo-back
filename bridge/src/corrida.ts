@@ -64,7 +64,46 @@ export interface Corrida {
    * dice "18 tareas hechas" sobre algo que no arranca.
    */
   pendientes?: string[];
+  /**
+   * Lo que el planificador quiso preguntar antes de armar la cola.
+   *
+   * Un pliego ambiguo produce un plan sobre supuestos que nadie confirmo.
+   * Preguntar cuesta un mensaje y cambia todo lo que sigue. Ver la migracion
+   * 028.
+   */
+  preguntas?: string[];
+  /** Lo que se contesto, en crudo. Ausente = todavia no contesto. */
+  respuestas?: string;
+  /** Cuando se pregunto. Sin esto el tope no sobrevive a un reinicio. */
+  preguntadoEn?: Date;
 }
+
+/**
+ * Cuanto se espera una respuesta antes de planificar igual: 20 minutos.
+ *
+ * El numero sale de la tension de la feature: si estas despierto contestas en
+ * minutos, y si te fuiste a dormir la corrida no puede quedarse esperando toda
+ * la noche. Veinte minutos alcanzan para el primer caso sin arruinar el segundo.
+ *
+ * Pasado el tope el plan se arma igual, y los supuestos van al informe: es
+ * peor una corrida que no hizo nada que una que hizo algo sobre una
+ * interpretacion declarada.
+ */
+export const MINUTOS_DE_PREGUNTAS = 20;
+
+/**
+ * Lo que se guarda como "respuesta" cuando nadie contesto.
+ *
+ * Un centinela y no una cadena vacia: el codigo distingue "todavia no contesto"
+ * de "no contesto y seguimos igual" por la PRESENCIA del campo, y una cadena
+ * vacia se leeria como ausente.
+ *
+ * Vive en este archivo —el de las decisiones puras— y no en telegram.ts, donde
+ * estaba primero: pipeline.ts lo necesita, y pipeline <- telegram <- pipeline es
+ * un ciclo de modulos que en tiempo de ejecucion deja la constante en
+ * `undefined`.
+ */
+export const SIN_RESPUESTA = '(nadie contesto: elegi lo razonable y decilo)';
 
 /**
  * Los defaults de los techos.
@@ -438,7 +477,11 @@ export function promptDeAnalisis(md: string, ronda: number): string {
  * por dependencias, cosa que el analista no necesita — cuando el analista corre,
  * lo que falta ya no tiene un orden natural.
  */
-export function promptDePlan(md: string, referencias: readonly string[]): string {
+export function promptDePlan(
+  md: string,
+  referencias: readonly string[],
+  respuestas?: string,
+): string {
   return [
     'Vas a planificar un proyecto nuevo. Todavia no construis nada: armas la lista.',
     '',
@@ -456,6 +499,29 @@ export function promptDePlan(md: string, referencias: readonly string[]): string
           'fijate si ahi ya esta resuelta.',
         ]
       : []),
+    '',
+    ...(respuestas
+      ? [
+          '',
+          'Ya preguntaste lo que no estaba claro y esto es lo que te contestaron:',
+          '',
+          respuestas,
+          '',
+          'Planifica con eso. No vuelvas a preguntar.',
+        ]
+      : [
+          '',
+          // La puerta a preguntar, con el umbral bien alto a proposito: un
+          // modelo al que se le ofrece preguntar pregunta SIEMPRE, y cada
+          // pregunta es un momento en que la corrida espera a una persona que
+          // puede estar durmiendo.
+          'Si algo del pliego es AMBIGUO de una forma que cambiaria el plan entero —no un',
+          'detalle— podes llamar UNA vez a preguntar_antes_de_planificar con hasta 3',
+          'preguntas concretas, y esperar la respuesta antes de armar la lista.',
+          'Usala solo si de verdad no podes decidir: si podes elegir algo razonable,',
+          'elegilo y segui. Preguntar cuesta que alguien te conteste a las tres de la',
+          'mañana.',
+        ]),
     '',
     'Despues llama a la herramienta reportar_huecos con las tareas, en el ORDEN en',
     'que hay que hacerlas: lo que otras cosas necesitan va primero.',

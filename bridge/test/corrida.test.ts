@@ -12,6 +12,7 @@ import {
   TOPE_DE_PLIEGO,
   promptDePlan,
   cuandoReintentar,
+  SIN_RESPUESTA,
   type Corrida,
 } from '../src/corrida.js';
 import {
@@ -1675,5 +1676,101 @@ describe('/corrida con varias cuentas conectadas', () => {
     );
     expect(r.kind).toBe('corrida');
     expect(await d.store.borradorDeChat(7)).toBeUndefined();
+  });
+});
+
+// Las preguntas del planificador.
+//
+// Un pliego ambiguo produce un plan sobre supuestos que nadie confirmo: el
+// modelo elige una interpretacion, arma doce tareas, y a la mañana el trabajo
+// esta hecho contra algo que no era.
+describe('el planificador pregunta antes de armar la cola', () => {
+  /** Un arnes donde el turno de plan pregunta en vez de encolar. */
+  function conPreguntas(preguntas: string[]) {
+    const d = arnes();
+    d.ask.mockImplementation(async (req: { prompt: string }) => {
+      const corrida = await d.store.corridaAbierta(7);
+      if (!corrida) throw new Error('sin corrida');
+      // Si ya hay respuestas, planifica; si no, pregunta. Es lo que hace el
+      // modelo cuando el prompt le ofrece la herramienta.
+      if (corrida.respuestas) {
+        await d.store.marcarHuecos(corrida.id, corrida.ronda);
+        await d.store.encolar(7, {
+          agente: 'c1',
+          proyecto: corrida.proyecto,
+          textos: ['la tarea que salio de las respuestas'],
+          corridaId: corrida.id,
+          ronda: corrida.ronda,
+        });
+      } else {
+        await d.store.guardarPreguntas(corrida.id, preguntas);
+      }
+      return { jobId: 'j', sessionId: 's', text: 'ok', turns: 1 };
+    });
+    return d;
+  }
+
+  it('devuelve las preguntas en vez de un plan', async () => {
+    const d = conPreguntas(['¿generico o gastronomico?', '¿con proveedores?']);
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+
+    const r = await planificarCorrida(c, USUARIO, d);
+    if (r.ok || !('preguntas' in r)) throw new Error('esperaba preguntas');
+    expect(r.preguntas).toHaveLength(2);
+    // Y NO encolo nada: el plan se arma despues, con las respuestas.
+    expect(await d.store.tareasDeCorrida(c.id)).toEqual([]);
+  });
+
+  it('con las respuestas arma el plan', async () => {
+    const d = conPreguntas(['¿cual?']);
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+
+    await planificarCorrida(c, USUARIO, d);
+    await d.store.guardarRespuestas(c.id, 'generico, sin proveedores');
+    const r = await planificarCorrida(c, USUARIO, d, 'generico, sin proveedores');
+
+    if (!r.ok) throw new Error(`esperaba plan: ${JSON.stringify(r)}`);
+    expect(r.tareas.map((t) => t.texto)).toEqual(['la tarea que salio de las respuestas']);
+  });
+
+  // En el segundo intento las preguntas viejas siguen en la fila. Sin la guarda
+  // por `respuestas`, se leerian como nuevas y el ciclo no terminaria.
+  it('no vuelve a preguntar cuando ya hay respuestas', async () => {
+    const d = conPreguntas(['¿cual?']);
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await planificarCorrida(c, USUARIO, d);
+    await d.store.guardarRespuestas(c.id, 'lo que sea');
+
+    const r = await planificarCorrida(c, USUARIO, d, 'lo que sea');
+    expect(r.ok).toBe(true);
+  });
+
+  // El caso de irse a dormir: el plan se arma igual, y el informe lo dice.
+  it('sin respuesta arma el plan y lo anota como pendiente', async () => {
+    const d = conPreguntas(['¿cual?']);
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await planificarCorrida(c, USUARIO, d);
+
+    // Lo que hace el timeout: guarda el centinela y replanifica. Sin guardarlo,
+    // el modelo no sabe que nadie contesto y vuelve a preguntar.
+    await d.store.guardarRespuestas(c.id, SIN_RESPUESTA);
+    const r = await planificarCorrida(c, USUARIO, d, SIN_RESPUESTA);
+    expect(r.ok).toBe(true);
+    // Lo primero que hay que revisar a la mañana: el plan salio de supuestos.
+    const pend = (await d.store.corridaAbierta(7))?.pendientes ?? [];
+    expect(pend.some((p) => p.includes('nadie contesto'))).toBe(true);
+  });
+
+  it('el prompt ofrece preguntar solo en el primer intento', () => {
+    expect(promptDePlan('x', [])).toContain('preguntar_antes_de_planificar');
+    // Con respuestas, la puerta se cierra: si no, pregunta en loop.
+    const conR = promptDePlan('x', [], 'generico');
+    expect(conR).not.toContain('preguntar_antes_de_planificar');
+    expect(conR).toContain('No vuelvas a preguntar');
+    expect(conR).toContain('generico');
   });
 });

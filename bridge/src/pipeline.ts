@@ -29,6 +29,7 @@ import {
   promptDePlan,
   TECHO_RONDAS_POR_DEFECTO,
   TECHO_HORA_POR_DEFECTO,
+  SIN_RESPUESTA,
   type OpcionesDeCorrida,
   promptDeAnalisis,
   techoAlcanzado,
@@ -1979,7 +1980,18 @@ export async function planificarCorrida(
   corrida: Corrida,
   usuarioId: string,
   deps: PipelineDeps,
-): Promise<{ ok: true; tareas: Tarea[] } | { ok: false; motivo: string }> {
+  /**
+   * Lo que se contesto, si esto es el SEGUNDO intento.
+   *
+   * Ausente en el primero. Cuando llega, el prompt lo incluye y le dice al
+   * modelo que no vuelva a preguntar.
+   */
+  respuestas?: string,
+): Promise<
+  | { ok: true; tareas: Tarea[] }
+  | { ok: false; motivo: string }
+  | { ok: false; preguntas: string[] }
+> {
   const chatId = corrida.chatId;
   const agente = (await deps.store.getActiveAgent(chatId)) ?? deps.defaultAgent;
   const ctx = await contextoDeCola(chatId, corrida.proyecto, usuarioId, deps);
@@ -1996,7 +2008,7 @@ export async function planificarCorrida(
       proyecto: corrida.proyecto,
       agente: agente as AgentId,
       usuarioId,
-      prompt: promptDePlan(corrida.md, referencias),
+      prompt: promptDePlan(corrida.md, referencias, respuestas),
       // El planificador no escribe: solo lee y llama la herramienta. El modo va
       // igual porque con `preguntar` un intento de editar colgaria el turno
       // quince minutos esperando un OK.
@@ -2016,6 +2028,32 @@ export async function planificarCorrida(
         ? 'se agotaron los tokens de todas las cuentas antes de poder planificar'
         : ERROR_TEXT[codigo] ?? codigo,
     };
+  }
+
+  // ¿Pregunto en vez de planificar? Se relee la corrida porque el endpoint de
+  // `preguntar_antes_de_planificar` la escribio DESPUES de que este turno
+  // empezara — igual que con los huecos.
+  const despues = await deps.store.corridaAbierta(corrida.chatId);
+  if (!despues) return { ok: false, motivo: 'la corrida se cerro mientras planificaba' };
+  // `!respuestas` en la condicion: en el segundo intento las preguntas viejas
+  // siguen en la fila, y sin esto se leerian como nuevas y el ciclo no
+  // terminaria.
+  if (!respuestas && despues.preguntas?.length) {
+    return { ok: false, preguntas: despues.preguntas };
+  }
+
+  // Si nadie contesto las preguntas, el informe tiene que decirlo: el plan se
+  // armo sobre supuestos del modelo, y a la mañana eso es lo primero que hay que
+  // revisar. Sin esta linea, un plan hecho a ciegas se ve igual que uno hecho
+  // con respuestas.
+  if (respuestas === SIN_RESPUESTA && despues.preguntas?.length) {
+    await deps.store
+      .anotarPendiente(
+        corrida.id,
+        `revisar el plan: pregunte ${despues.preguntas.length} cosa(s) y nadie contesto, ` +
+          'asi que elegi por mi cuenta',
+      )
+      .catch(() => undefined);
   }
 
   const tareas = await deps.store.tareasDeCorrida(corrida.id);

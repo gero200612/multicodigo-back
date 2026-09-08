@@ -30,6 +30,8 @@ import {
   TECHO_RONDAS_POR_DEFECTO,
   TOPE_DE_PLIEGO,
   TOPE_DE_FALLOS,
+  MINUTOS_DE_PREGUNTAS,
+  SIN_RESPUESTA,
   type Corrida,
   type ResumenDeTareas,
 } from './corrida.js';
@@ -38,6 +40,9 @@ import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
 import { decidir } from './decisiones.js';
 import type { Store } from './store.js';
+
+/** Un salto de linea. */
+const NL = String.fromCharCode(10);
 
 export function renderOutcome(outcome: PipelineOutcome): string {
   switch (outcome.kind) {
@@ -370,6 +375,23 @@ export function textoDePaso(
     'Aunque sea un parrafo — con eso armo el plan y te lo muestro antes de empezar.',
   );
   return lineas.join('\n');
+}
+
+/**
+ * Las preguntas del planificador.
+ *
+ * Numeradas para que se puedan contestar en un mensaje ("1 si, 2 generico") sin
+ * tener que repetir la pregunta. Es como se contesta en un chat.
+ */
+export function textoDePreguntas(preguntas: readonly string[]): string {
+  return [
+    '🤔 <b>Antes de armar el plan necesito saber:</b>',
+    '',
+    ...preguntas.map((p, i) => `${i + 1}. ${escaparHtml(p)}`),
+    '',
+    'Contestame en un mensaje. Si no me contestas en ' +
+      `${MINUTOS_DE_PREGUNTAS} minutos, sigo solo y te digo que asumi.`,
+  ].join(NL);
 }
 
 /**
@@ -911,16 +933,77 @@ async function responderPaso(
   const usuarioId = await deps.store.usuarioDeChat(ctx.chat.id);
   if (!usuarioId) return;
 
-  const plan = await planificarCorrida(out.corrida, usuarioId, deps);
+  await planificarYMostrar(ctx, out.corrida, usuarioId, deps);
+}
+
+/**
+ * Corre el plan, y si el planificador pregunta, espera la respuesta.
+ *
+ * Salio de `responderPaso` porque ahora hay DOS formas de llegar: el pliego
+ * recien mandado, y la respuesta a las preguntas. Duplicado eran dos lugares
+ * donde acordarse de cerrar la corrida cuando el plan falla.
+ *
+ * ## El tope, y por que existe
+ *
+ * Cada pregunta es un momento en que la corrida espera a una persona. Si mandas
+ * el pliego y te vas a dormir, tres preguntas sin contestar serian la noche
+ * entera perdida — al reves del punto de la feature.
+ *
+ * Asi que pasado `MINUTOS_DE_PREGUNTAS` el plan se arma igual, y el modelo lo
+ * hace sabiendo que nadie contesto: elige lo razonable y lo declara. Es peor una
+ * corrida que no hizo nada que una que hizo algo sobre una interpretacion
+ * dicha en voz alta.
+ */
+async function planificarYMostrar(
+  ctx: {
+    chat: { id: number };
+    reply: (t: string, o?: { parse_mode?: 'HTML'; reply_markup?: InlineKeyboard }) => Promise<unknown>;
+  },
+  corrida: Corrida,
+  usuarioId: string,
+  deps: BridgeDeps,
+  respuestas?: string,
+): Promise<void> {
+  const plan = await planificarCorrida(corrida, usuarioId, deps, respuestas);
+
+  // Pregunto. Se muestran y se deja el chat esperando: el proximo mensaje ES la
+  // respuesta, igual que el motivo de una aprobacion.
+  if (!plan.ok && 'preguntas' in plan) {
+    await ctx.reply(textoDePreguntas(plan.preguntas), { parse_mode: 'HTML' });
+
+    // El tope, en memoria. Si el bridge se reinicia antes de que venza, lo
+    // levanta `retomarCorridas`: la corrida queda abierta y sin cola, y el
+    // ciclo la retoma por el camino del analisis.
+    setTimeout(
+      () => {
+        void (async () => {
+          const ahora = await deps.store.corridaAbierta(corrida.chatId);
+          // Ya contestaron, o la corrida se cerro: no hay nada que hacer.
+          if (!ahora || ahora.respuestas || ahora.id !== corrida.id) return;
+          await ctx
+            .reply(
+              `No me contestaste en ${MINUTOS_DE_PREGUNTAS} minutos, asi que sigo solo. ` +
+                'Voy a elegir lo razonable y decirte que asumi.',
+            )
+            .catch(() => undefined);
+          await deps.store
+            .guardarRespuestas(corrida.id, SIN_RESPUESTA)
+            .catch(() => undefined);
+          await planificarYMostrar(ctx, corrida, usuarioId, deps, SIN_RESPUESTA);
+        })();
+      },
+      MINUTOS_DE_PREGUNTAS * 60_000,
+    );
+    return;
+  }
+
   if (!plan.ok) {
     // La corrida se CIERRA: sin plan no hay con que arrancar, y dejarla abierta
     // haria que el ciclo corra un analisis sobre un repo vacio esta misma
     // noche.
-    await deps.store.cerrarCorrida(out.corrida.id, 'cancelada');
+    await deps.store.cerrarCorrida(corrida.id, 'cancelada');
     await ctx.reply(
-      `No pude armar el plan: ${escaparHtml(plan.motivo)}
-
-Cerre la corrida. Proba de nuevo con /corrida.`,
+      `No pude armar el plan: ${escaparHtml(plan.motivo)}${NL}${NL}Cerre la corrida. Proba de nuevo con /corrida.`,
       { parse_mode: 'HTML' },
     );
     return;
@@ -931,7 +1014,7 @@ Cerre la corrida. Proba de nuevo con /corrida.`,
     for (const b of fila) teclado.text(b.label, b.data);
     teclado.row();
   }
-  await ctx.reply(textoDePlan(out.corrida.proyecto, plan.tareas), {
+  await ctx.reply(textoDePlan(corrida.proyecto, plan.tareas), {
     parse_mode: 'HTML',
     reply_markup: teclado,
   });
@@ -1306,6 +1389,25 @@ export function buildBot(deps: BridgeDeps): Bot {
       if (borrador) {
         await responderPaso(ctx, textoDelMensaje, deps);
         return;
+      }
+
+      // Y si una corrida esta esperando respuestas, este mensaje SON las
+      // respuestas. Mismo criterio que el borrador y que el motivo de una
+      // aprobacion: hay un estado que dice que se esta esperando algo, y el
+      // proximo mensaje es eso.
+      //
+      // La condicion es "tiene preguntas y NO tiene respuestas": una corrida
+      // que ya contesto vuelve a ser un chat normal, y sin la segunda mitad
+      // todos los mensajes siguientes se comerian como respuestas.
+      const corrida = await deps.store.corridaAbierta(ctx.chat.id);
+      if (corrida?.preguntas?.length && !corrida.respuestas) {
+        const usuarioId = await deps.store.usuarioDeChat(ctx.chat.id);
+        if (usuarioId) {
+          await deps.store.guardarRespuestas(corrida.id, textoDelMensaje);
+          await ctx.reply('Gracias. Armo el plan con eso.');
+          await planificarYMostrar(ctx as never, corrida, usuarioId, deps, textoDelMensaje);
+          return;
+        }
       }
     }
 

@@ -38,6 +38,8 @@ export interface ApiDeps {
     | 'corridaDeJob'
     | 'marcarHuecos'
     | 'anotarPendiente'
+    | 'guardarPreguntas'
+    | 'guardarRespuestas'
     | 'encolar'
     | 'getActiveAgent'
   >;
@@ -489,6 +491,59 @@ export function buildWebhookServer(
         ronda: corrida.ronda,
       });
       return reply.code(200).send({ output: `anote ${n} tarea(s) para la ronda que sigue` });
+    });
+
+    /**
+     * Lo que el planificador quiere preguntar antes de armar la cola.
+     *
+     * Un pliego ambiguo produce un plan sobre supuestos que nadie confirmo:
+     * el modelo elige una interpretacion, arma doce tareas, y a la mañana el
+     * trabajo esta hecho contra algo que no era. Preguntar cuesta un mensaje.
+     *
+     * El tope de 3 no es estetico: cada pregunta es un momento en que la corrida
+     * espera a alguien que puede estar durmiendo, y una lista de ocho preguntas
+     * en un chat de telefono no se contesta, se abandona.
+     */
+    const CuerpoPreguntas = z.object({
+      jobId: z.string().uuid(),
+      preguntas: z.array(z.string().min(1).max(300)).min(1).max(3),
+    });
+
+    app.post('/interno/corrida/preguntas', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      const cuerpo = CuerpoPreguntas.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply
+          .code(400)
+          .send({ code: 'cuerpo_invalido', message: 'entre 1 y 3 preguntas, cortas' });
+      }
+
+      const corrida = await api.store.corridaDeJob(cuerpo.data.jobId);
+      if (!corrida) {
+        return reply.code(400).send({
+          code: 'sin_corrida',
+          message:
+            'este turno no es de una corrida, asi que no hay a quien preguntarle. ' +
+            'No reintentes: decidi vos y segui.',
+        });
+      }
+      // Una sola vez: si ya se pregunto y se contesto, volver a preguntar seria
+      // un ciclo. El prompt ya se lo dice, y esto lo hace cumplir.
+      if (corrida.respuestas) {
+        return reply.code(409).send({
+          code: 'ya_pregunto',
+          message: 'ya preguntaste y te contestaron. No preguntes de nuevo: planifica con eso.',
+        });
+      }
+
+      await api.store.guardarPreguntas(corrida.id, cuerpo.data.preguntas);
+      return reply.code(200).send({
+        output:
+          'anotadas. Terminá tu respuesta ahora sin llamar reportar_huecos: ' +
+          'te voy a volver a pedir el plan cuando tenga las respuestas.',
+      });
     });
 
     /**

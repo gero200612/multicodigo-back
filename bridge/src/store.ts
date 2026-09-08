@@ -709,6 +709,15 @@ export interface Store {
    */
   anotarPendiente(corridaId: string, texto: string): Promise<void>;
   /**
+   * Guarda lo que el planificador quiere preguntar, y cuando.
+   *
+   * La hora se guarda para poder medir el tope despues de un reinicio: si
+   * viviera en memoria, un deploy dejaria la corrida esperando para siempre.
+   */
+  guardarPreguntas(corridaId: string, preguntas: readonly string[]): Promise<void>;
+  /** Guarda lo que contesto la persona, en crudo. */
+  guardarRespuestas(corridaId: string, respuestas: string): Promise<void>;
+  /**
    * Anota que el analista de esta ronda SI llamo a `reportar_huecos`.
    *
    * Lo escribe el endpoint de la herramienta, no el ciclo: es la unica prueba
@@ -1285,6 +1294,24 @@ export class InMemoryStore implements Store {
     if (!c) return;
     const ya = c.pendientes ?? [];
     if (!ya.includes(texto)) c.pendientes = [...ya, texto];
+  }
+
+  async guardarPreguntas(corridaId: string, preguntas: readonly string[]): Promise<void> {
+    const c = this.corridas.get(corridaId);
+    if (!c) return;
+    c.preguntas = [...preguntas];
+    c.preguntadoEn = new Date();
+  }
+
+  async guardarRespuestas(corridaId: string, respuestas: string): Promise<void> {
+    const c = this.corridas.get(corridaId);
+    if (c) c.respuestas = respuestas;
+  }
+
+  /** Solo para los tests: mueve el momento en que se pregunto. */
+  ponerPreguntadoEn(corridaId: string, cuando: Date): void {
+    const c = this.corridas.get(corridaId);
+    if (c) c.preguntadoEn = cuando;
   }
 
   private borradores = new Map<number, Borrador>();
@@ -2259,7 +2286,8 @@ export class PgStore implements Store {
 
   private static readonly CAMPOS_CORRIDA =
     'id, chat_id, proyecto, md, ronda, techo_rondas, techo_hora, ' +
-    'fallos_seguidos, huecos_de_ronda, pendientes, estado, motivo_de_cierre, creado_en';
+    'fallos_seguidos, huecos_de_ronda, pendientes, preguntas, respuestas, ' +
+    'preguntado_en, estado, motivo_de_cierre, creado_en';
 
   private aCorrida(f: Record<string, unknown>): Corrida {
     return {
@@ -2277,6 +2305,11 @@ export class PgStore implements Store {
       ...(Array.isArray(f.pendientes) && f.pendientes.length > 0
         ? { pendientes: f.pendientes as string[] }
         : {}),
+      ...(Array.isArray(f.preguntas) && f.preguntas.length > 0
+        ? { preguntas: f.preguntas as string[] }
+        : {}),
+      ...(f.respuestas ? { respuestas: f.respuestas as string } : {}),
+      ...(f.preguntado_en ? { preguntadoEn: new Date(f.preguntado_en as string) } : {}),
       estado: f.estado as Corrida['estado'],
       ...(f.motivo_de_cierre
         ? { motivoDeCierre: f.motivo_de_cierre as MotivoDeCierre }
@@ -2389,6 +2422,22 @@ export class PgStore implements Store {
       [corridaId],
     );
     return r.rows.map((f) => this.aTarea(f));
+  }
+
+  async guardarPreguntas(corridaId: string, preguntas: readonly string[]): Promise<void> {
+    await this.pool
+      .query(
+        `UPDATE corridas SET preguntas = $2::text[], preguntado_en = now(), respuestas = NULL
+          WHERE id = $1`,
+        [corridaId, preguntas],
+      )
+      .catch(() => undefined);
+  }
+
+  async guardarRespuestas(corridaId: string, respuestas: string): Promise<void> {
+    await this.pool
+      .query('UPDATE corridas SET respuestas = $2 WHERE id = $1', [corridaId, respuestas])
+      .catch(() => undefined);
   }
 
   async marcarHuecos(corridaId: string, ronda: number): Promise<void> {
