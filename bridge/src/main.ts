@@ -13,6 +13,9 @@ import { AgentId } from '@multicodigo/shared';
 import { PgStore, type FilaDeDocumento } from './store.js';
 import { askAgent, listarAgentes } from './agents-client.js';
 import { firmarToken, crearRepo } from './panel-client.js';
+import { publicar } from './publicar.js';
+import type { Corrida } from './corrida.js';
+import { mergearEnGateway, inspeccionarRepo } from './gateway-admin.js';
 import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
 import {
@@ -266,6 +269,53 @@ const pipelineDeps = {
           token: env.BRIDGE_API_TOKEN,
         })
     : undefined,
+  /**
+   * El cierre publica: mergea a main y crea el servicio en Render.
+   *
+   * Se cablea SOLO con las dos variables. Sin ellas el pipeline no recibe la
+   * dependencia y el sistema se comporta exactamente como antes — el informe
+   * vuelve a terminar en "conectalo a mano", que es el piso de esta feature.
+   *
+   * Este adaptador existe para traducir: el pipeline tiene una corrida y
+   * `publicar()` quiere el id del proyecto y el agente. Traducir aca deja al
+   * pipeline sin tener que aprender de donde sale cada cosa.
+   */
+  publicar:
+    env.RENDER_API_KEY && env.GATEWAY_ADMIN_TOKEN
+      ? async (corrida: Corrida, agente: string) => {
+          const proyectoId = await store.idDeProyecto(corrida.proyecto);
+          // Sin proyecto en la base no hay repos que publicar. Pasa cuando la
+          // corrida se armo por un camino que no creo el proyecto.
+          if (!proyectoId) return { publicados: [], pendientes: [] };
+
+          const admin = {
+            gatewayUrl: env.GATEWAY_URL,
+            adminToken: env.GATEWAY_ADMIN_TOKEN!,
+          };
+          // El token de GitHub sale de la instalacion de la App, no de una
+          // variable: es de una cuenta, y el gateway lo necesita para pushear
+          // main. En el merge SI viaja en el cuerpo porque `TokenDelTurno` esta
+          // vacio — no hay ningun turno en vuelo cuando la corrida cierra.
+          const instalacion = await store.instalacionDeProyecto(proyectoId);
+          const githubToken =
+            instalacion !== undefined && env.PANEL_URL
+              ? await firmarToken(instalacion, {
+                  panelUrl: env.PANEL_URL,
+                  token: env.BRIDGE_API_TOKEN,
+                })
+              : undefined;
+
+          return publicar(proyectoId, corrida.proyecto, agente, {
+            store,
+            render: { apiKey: env.RENDER_API_KEY, ownerId: env.RENDER_OWNER_ID },
+            mergear: (req) => mergearEnGateway(req, githubToken, admin),
+            tienePackageJson: async (project, repo) =>
+              (await inspeccionarRepo({ agent: agente, project, repo }, admin)).tienePackageJson,
+            usaSqlite: async (project, repo) =>
+              (await inspeccionarRepo({ agent: agente, project, repo }, admin)).usaSqlite,
+          });
+        }
+      : undefined,
   transcribe: (bytes: Uint8Array, mimeType: string) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),
   // Los documentos ya no se pasan: el pipeline los lee del store, que se
