@@ -95,7 +95,13 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       ].join('\n');
     case 'corrida_elegir_org':
       return [
+        ...(outcome.error ? [`⚠️ ${escaparHtml(outcome.error)}.`, ''] : []),
         '¿En que organizacion de GitHub creo los repos?',
+        '',
+        // Se dice que se puede ESCRIBIR, no solo tocar: en un chat lo natural
+        // es contestar escribiendo, y quien no ve los botones —o los pierde en
+        // el scroll— necesita saber que eso tambien vale.
+        `Tocá una o escribime el nombre: ${outcome.cuentas.join(', ')}.`,
         '',
         // Se dice que es UNA vez: sin eso, un botón parece algo que se va a
         // repetir en cada corrida y da la sensacion de configuracion pendiente.
@@ -927,8 +933,15 @@ async function responderPaso(
   // El paso del pliego devuelve `corrida_planificando`: hay que correr el turno
   // y despues mostrar el plan. Los demas outcomes se contestan y listo.
   if (out.kind !== 'corrida_planificando') {
+    // CON el teclado. Sin esto, un paso que ofrece botones —elegir la
+    // organizacion— llegaba como una pregunta sin opciones: la persona la leia,
+    // escribia la respuesta a mano, y ese texto se interpretaba como la
+    // respuesta al paso anterior. El circulo se veia como el bot repitiendo la
+    // misma pregunta.
+    const teclado = tecladoDe(out);
     await ctx.reply(renderOutcome(out), {
       ...(usaHtml(out) ? { parse_mode: 'HTML' as const } : {}),
+      ...(teclado ? { reply_markup: teclado } : {}),
     });
     return;
   }

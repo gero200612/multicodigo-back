@@ -119,7 +119,7 @@ export const MINUTOS_DE_BORRADOR = 15;
 /** Un `/corrida` a medias: en que paso quedo la conversacion. */
 export interface Borrador {
   chatId: number;
-  paso: 'nombre' | 'pliego';
+  paso: 'nombre' | 'org' | 'pliego';
   proyecto?: string;
   /**
    * La organizacion de GitHub, si ya la dijeron.

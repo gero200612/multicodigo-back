@@ -25,7 +25,7 @@ import { InMemoryStore, MINUTOS_DE_BORRADOR, type Store } from '../src/store.js'
 import { instanteDeReset, horaArgentinaDe } from '../src/horas.js';
 import { LimitePorChat } from '../src/vinculacion.js';
 import { buildWebhookServer } from '../src/webhook.js';
-import { textoDeCorridaEnCurso } from '../src/telegram.js';
+import { textoDeCorridaEnCurso, renderOutcome } from '../src/telegram.js';
 
 // --- Las decisiones puras -------------------------------------------------
 //
@@ -1837,5 +1837,85 @@ describe('el planificador pregunta antes de armar la cola', () => {
     expect(conR).not.toContain('preguntar_antes_de_planificar');
     expect(conR).toContain('No vuelvas a preguntar');
     expect(conR).toContain('generico');
+  });
+});
+
+// El circulo de la org, reportado desde el chat.
+//
+//   Punchi:   ¿En que organizacion creo los repos? (con botones que NO llegaron)
+//   Geronimo: Sincro-arg
+//   Punchi:   ¿En que organizacion creo los repos?
+//   Geronimo: Sincro-arg
+//
+// Dos causas: `responderPaso` mandaba el texto sin el teclado, y sin un paso
+// propio para la org el texto escrito se leia como el nombre del proyecto.
+describe('elegir la org escribiendola', () => {
+  async function conDosOrgs() {
+    const d = arnes();
+    const crearRepo = vi.fn(async (_id: number, nombre: string) => ({
+      ok: true as const,
+      nombre,
+      github: `Sincro-arg/${nombre}`,
+    }));
+    Object.assign(d, { crearRepo });
+    await vincular(d.store, 7);
+    const a = await d.store.crearProyecto('a', USUARIO);
+    const b = await d.store.crearProyecto('b', USUARIO);
+    await d.store.guardarInstalacion(a, 1, 'gero200612');
+    await d.store.guardarInstalacion(b, 2, 'Sincro-arg');
+    return d;
+  }
+
+  it('el nombre escrito se acepta como la org y sigue con el proyecto', async () => {
+    const d = await conDosOrgs();
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida Prueba-inventario' }, d);
+    // El paso quedo en 'org', con el nombre guardado.
+    expect((await d.store.borradorDeChat(7))?.paso).toBe('org');
+    expect((await d.store.borradorDeChat(7))?.proyecto).toBe('Prueba-inventario');
+
+    const r = await handleIncoming({ chatId: 7, messageId: 3, text: '/corrida Sincro-arg' }, d);
+
+    // Y sigue DERECHO al pliego: no vuelve a pedir el nombre.
+    if (r.kind !== 'corrida_paso') throw new Error(`no es corrida_paso: ${r.kind}`);
+    expect(r.paso).toBe('pliego');
+    expect(r.creado?.proyecto).toBe('Prueba-inventario');
+    expect(await d.store.orgDeCorridas(USUARIO)).toBe('Sincro-arg');
+  });
+
+  it('sin mayusculas tambien', async () => {
+    const d = await conDosOrgs();
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 3, text: '/corrida sincro-arg' }, d);
+    if (r.kind !== 'corrida_paso') throw new Error('no es corrida_paso');
+    // Guarda el canonico: ese string va a una URL de git.
+    expect(await d.store.orgDeCorridas(USUARIO)).toBe('Sincro-arg');
+  });
+
+  // Un nombre que no existe vuelve a preguntar CON el motivo, en vez de repetir
+  // la misma pregunta sin decir nada.
+  it('un nombre que no es ninguna cuenta lo dice', async () => {
+    const d = await conDosOrgs();
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 3, text: '/corrida No-Existe' }, d);
+
+    if (r.kind !== 'corrida_elegir_org') throw new Error('no es elegir_org');
+    expect(r.error).toContain('No-Existe');
+    // Y sigue en el paso: no se pierde el nombre del proyecto.
+    expect((await d.store.borradorDeChat(7))?.proyecto).toBe('acme');
+  });
+
+  // El mensaje tiene que decir que se puede escribir: en un chat lo natural es
+  // contestar escribiendo, y los botones se pierden en el scroll.
+  it('el mensaje ofrece escribir, no solo tocar', () => {
+    const t = renderOutcome({
+      kind: 'corrida_elegir_org',
+      cuentas: ['gero200612', 'Sincro-arg'],
+      botones: [],
+    });
+    expect(t).toContain('escribime');
+    expect(t).toContain('Sincro-arg');
   });
 });

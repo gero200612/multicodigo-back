@@ -230,7 +230,7 @@ export type PipelineOutcome =
    * era un mensaje que pedia escribir `org=<cuenta>` a mano, o sea un dato que
    * no cambia entre corridas escrito de nuevo cada vez.
    */
-  | { kind: 'corrida_elegir_org'; cuentas: string[]; botones: Boton[][] }
+  | { kind: 'corrida_elegir_org'; cuentas: string[]; botones: Boton[][]; error?: string }
   /**
    * Un paso del `/corrida` conversacional: lo que hay que contestar ahora.
    *
@@ -1411,6 +1411,39 @@ export async function pasoDeCorrida(
     return { kind: 'corrida_paso', paso: 'nombre' };
   }
 
+  // Paso 'org': lo que se escriba es el nombre de la cuenta.
+  //
+  // El boton hace lo mismo por otro camino (`manejarMenu`), y los dos existen a
+  // proposito: el boton es un toque, y escribir es lo que uno hace igual en un
+  // chat. Aceptar solo el boton fue lo que dejo a alguien escribiendo
+  // "Sincro-arg" tres veces.
+  if (borrador.paso === 'org') {
+    const cuentas = await deps.store.cuentasConectadas(usuarioId);
+    const elegida = cuentas.find((c) => c.cuenta.toLowerCase() === texto.toLowerCase());
+    if (!elegida) {
+      return {
+        kind: 'corrida_elegir_org',
+        cuentas: cuentas.map((c) => c.cuenta),
+        botones: tecladoDeOrgs(cuentas.map((c) => c.cuenta)),
+        ...(texto !== '' ? { error: `no tengo conectada ninguna cuenta que se llame "${texto}"` } : {}),
+      };
+    }
+    await deps.store.setOrgDeCorridas(usuarioId, elegida.cuenta);
+    // Y se sigue con el nombre que ya estaba guardado: no hay que volver a
+    // pedirlo por haber contestado algo en el medio.
+    if (!borrador.proyecto) {
+      await deps.store.guardarBorrador(input.chatId, 'nombre', undefined, elegida.cuenta);
+      return { kind: 'corrida_paso', paso: 'nombre' };
+    }
+    return await armarYPedirPliego(
+      input.chatId,
+      usuarioId,
+      borrador.proyecto,
+      elegida.cuenta,
+      deps,
+    );
+  }
+
   if (borrador.paso === 'nombre') {
     if (!nombreDeProyectoValido(texto)) {
       // No se avanza el paso: se vuelve a preguntar. Pero el motivo se dice
@@ -1501,7 +1534,10 @@ async function armarYPedirPliego(
   // fallo— porque el nombre ya se dio y no hay que volver a pedirlo: al tocar
   // el boton, el flujo sigue desde acá con lo que ya sabe.
   if (!armado.ok && 'elegirOrg' in armado) {
-    await deps.store.guardarBorrador(chatId, 'nombre', nombre);
+    // Paso 'org' y no 'nombre': sin un paso propio, el texto que la persona
+    // escribe para contestar se lee como el nombre del proyecto, y el sistema
+    // vuelve a preguntar la org. Ese era el circulo.
+    await deps.store.guardarBorrador(chatId, 'org', nombre);
     return {
       kind: 'corrida_elegir_org',
       cuentas: armado.elegirOrg,
