@@ -455,7 +455,12 @@ describe('vinculacion en el pipeline', () => {
       { chatId: 500, messageId: 1, text: '/vincular' },
       deps({ store }),
     );
-    expect(out).toEqual({ kind: 'sin_vincular', yaEstaba: true });
+    expect(out.kind).toBe('sin_vincular');
+    expect(out.kind === 'sin_vincular' && out.yaEstaba).toBe(true);
+    // Y ahora trae el boton de desvincular: antes este mensaje era un callejon
+    // —decia "ya esta vinculado" y nada mas— y desatarlo solo se podia desde el
+    // panel.
+    expect(out.kind === 'sin_vincular' && out.botones?.length).toBe(1);
   });
 
   it('un chat vinculado trabaja normalmente', async () => {

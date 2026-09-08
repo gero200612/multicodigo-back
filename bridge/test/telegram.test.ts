@@ -489,6 +489,48 @@ describe('los pasos del menu se reemplazan', () => {
     expect(editados).toHaveLength(0);
     expect(respondidos).toHaveLength(1);
   });
+
+  // Desvincular desde el chat. Antes solo se podia desde el panel: `/vincular`
+  // en un chat ya atado decia "ya esta vinculado" y nada mas.
+  describe('desvincular', () => {
+    it('el primer toque pregunta y NO desata', async () => {
+      const { ctx, editados, respondidos } = ctxFalso();
+      const deps = await depsDeMenu();
+
+      await manejarMenu(ctx, { kind: 'desvincular', confirmado: false }, deps);
+
+      const texto = [...editados, ...respondidos].join(' ');
+      expect(texto).toContain('¿Desvinculo');
+      // Se dice que NO se borra nada: sin eso, "¿seguro?" invita a decir que si
+      // sin saber contra que.
+      expect(texto).toContain('No se borra nada');
+      // Y sigue vinculado.
+      expect(await deps.store.usuarioDeChat(7)).toBeDefined();
+    });
+
+    it('el segundo toque desata', async () => {
+      const { ctx } = ctxFalso();
+      const deps = await depsDeMenu();
+
+      await manejarMenu(ctx, { kind: 'desvincular', confirmado: true }, deps);
+
+      expect(await deps.store.usuarioDeChat(7)).toBeUndefined();
+    });
+
+    // El boton queda en el chat despues de desatar, asi que se puede tocar de
+    // nuevo. No tiene que romper — y no dice nada, porque `manejarMenu` corta
+    // antes: sin cuenta no hay menu que manejar.
+    it('tocar el boton de un chat ya desatado no rompe', async () => {
+      const { ctx } = ctxFalso();
+      const deps = await depsDeMenu();
+
+      await manejarMenu(ctx, { kind: 'desvincular', confirmado: true }, deps);
+      await expect(
+        manejarMenu(ctx, { kind: 'desvincular', confirmado: true }, deps),
+      ).resolves.not.toThrow();
+      expect(await deps.store.usuarioDeChat(7)).toBeUndefined();
+    });
+  });
 });
 
 // El texto de una tarea es texto libre —lo dicta la persona o lo redacta el

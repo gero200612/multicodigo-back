@@ -59,6 +59,16 @@ const MODELO = 'q';
  */
 const PLAN = 'p';
 
+/**
+ * Desatar el chat de la cuenta.
+ *
+ * Dos valores y no uno: `pedir` muestra la confirmacion y `si` desata. Un solo
+ * boton que desate de una es un toque accidental que despues obliga a ir al
+ * panel a buscar un codigo nuevo — barato de deshacer, pero no desde el
+ * telefono y no a la noche.
+ */
+const DESVINCULAR = 'd';
+
 const ES_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function datosDeProyecto(id: string): string {
@@ -156,7 +166,9 @@ export type MenuData =
   | { kind: 'accion'; accion: Accion }
   | { kind: 'modelo'; modelo: ClaveDeModelo }
   /** El boton del plan de una corrida: `si` arranca, `no` la descarta. */
-  | { kind: 'plan'; arrancar: boolean };
+  | { kind: 'plan'; arrancar: boolean }
+  /** Desatar el chat: `confirmado` false solo pregunta. */
+  | { kind: 'desvincular'; confirmado: boolean };
 
 /**
  * Lee lo que trae un boton.
@@ -205,6 +217,12 @@ export function parseMenuData(data: string): MenuData | null {
     // algo que no salio de este teclado.
     if (resto === 'si') return { kind: 'plan', arrancar: true };
     if (resto === 'no') return { kind: 'plan', arrancar: false };
+    return null;
+  }
+
+  if (prefijo === DESVINCULAR) {
+    if (resto === 'pedir') return { kind: 'desvincular', confirmado: false };
+    if (resto === 'si') return { kind: 'desvincular', confirmado: true };
     return null;
   }
 
@@ -276,6 +294,19 @@ export function tecladoDePlan(): Boton[][] {
   return [[
     { label: '▶ Arrancar', data: `${PLAN}:si` },
     { label: 'Descartar', data: `${PLAN}:no` },
+  ]];
+}
+
+/** El boton que ofrece desatar. Va con el mensaje de "ya estas vinculado". */
+export function tecladoDeDesvincular(): Boton[][] {
+  return [[{ label: 'Desvincular este chat', data: `${DESVINCULAR}:pedir` }]];
+}
+
+/** La confirmacion. El "no" vuelve al menu, que es a donde uno queria ir. */
+export function tecladoDeConfirmarDesvinculo(): Boton[][] {
+  return [[
+    { label: 'Si, desvincular', data: `${DESVINCULAR}:si` },
+    { label: 'No', data: `${MENU}:` },
   ]];
 }
 

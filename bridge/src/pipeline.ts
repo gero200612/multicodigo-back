@@ -14,6 +14,7 @@ import {
   tecladoDeProyectos,
   tecladoDeAgentes,
   tecladoDeAcciones,
+  tecladoDeDesvincular,
   datosDeAgente,
   datosDeMenu,
 } from './menu.js';
@@ -270,7 +271,14 @@ export type PipelineOutcome =
       cambiado?: boolean;
     }
   /** El chat no esta atado a ninguna cuenta del panel. */
-  | { kind: 'sin_vincular'; yaEstaba: boolean }
+  /**
+   * El chat no esta atado a ninguna cuenta, o ya lo esta.
+   *
+   * `botones` solo cuando YA estaba: es el de desvincular. Antes este mensaje
+   * era un callejon —decia "ya esta vinculado" y nada mas— y desatarlo solo se
+   * podia desde el panel.
+   */
+  | { kind: 'sin_vincular'; yaEstaba: boolean; botones?: Boton[][] }
   | { kind: 'codigo'; codigo: string; minutos: number }
   /**
    * El menu principal: que queres hacer.
@@ -390,7 +398,9 @@ export async function handleIncoming(
   const usuarioId = await deps.store.usuarioDeChat(input.chatId);
 
   if (command.kind === 'vincular') {
-    if (usuarioId) return { kind: 'sin_vincular', yaEstaba: true };
+    if (usuarioId) {
+      return { kind: 'sin_vincular', yaEstaba: true, botones: tecladoDeDesvincular() };
+    }
     if (!deps.limite.permite(input.chatId)) return { kind: 'sin_vincular', yaEstaba: false };
     const codigo = await deps.store.crearCodigoVinculacion(input.chatId, MINUTOS_DE_CODIGO);
     return { kind: 'codigo', codigo, minutos: MINUTOS_DE_CODIGO };

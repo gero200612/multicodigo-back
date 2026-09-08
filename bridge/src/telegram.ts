@@ -15,6 +15,8 @@ import {
   NOMBRE_DE_MODO,
   NOMBRE_DE_MODELO,
   tecladoDePlan,
+  tecladoDeDesvincular,
+  tecladoDeConfirmarDesvinculo,
   type MenuData,
 } from './menu.js';
 import { saludo, encabezadoDeMenu, NOMBRE } from './identidad.js';
@@ -130,7 +132,11 @@ export function renderOutcome(outcome: PipelineOutcome): string {
       return '';
     case 'sin_vincular':
       return outcome.yaEstaba
-        ? 'Este chat ya esta vinculado a una cuenta.'
+        ? [
+            'Este chat ya esta vinculado a tu cuenta.',
+            '',
+            'Si queres atarlo a otra, primero desvincula este.',
+          ].join('\n')
         : 'No te tengo vinculado a ninguna cuenta. Mandame /vincular y te doy un codigo para pegar en el panel.';
     case 'codigo':
       return (
@@ -643,6 +649,16 @@ export function usaHtml(outcome: PipelineOutcome): boolean {
   );
 }
 
+/** Un InlineKeyboard a partir de filas de botones. */
+function tecladoDeTeclas(filas: Boton[][]): InlineKeyboard {
+  const teclado = new InlineKeyboard();
+  for (const fila of filas) {
+    for (const b of fila) teclado.text(b.label, b.data);
+    teclado.row();
+  }
+  return teclado;
+}
+
 /** El teclado de un outcome de menu, si lo tiene. */
 function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
   // El de permisos se arma con el modo actual y no viene en el outcome: es el
@@ -675,7 +691,9 @@ function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
     // con el mismo callback— asi que elegir por /proyecto y elegir por /menu
     // terminan en el mismo lugar.
     outcome.kind === 'project' ||
-    outcome.kind === 'project_desconocido'
+    outcome.kind === 'project_desconocido' ||
+    // Solo cuando YA estaba vinculado trae el boton de desvincular.
+    outcome.kind === 'sin_vincular'
       ? outcome.botones
       : undefined;
   if (!botones || botones.length === 0) return undefined;
@@ -1517,6 +1535,34 @@ export async function manejarMenu(
       parse_mode: 'HTML',
       reply_markup: tecladoDe(out),
     });
+    return;
+  }
+
+  if (menu.kind === 'desvincular') {
+    if (!menu.confirmado) {
+      // Se dice QUE se pierde y que se recupera: sin eso, "¿seguro?" invita a
+      // decir que si sin saber contra que.
+      await mostrar(
+        [
+          '¿Desvinculo este chat de tu cuenta?',
+          '',
+          'Dejo de poder trabajar en tus proyectos desde acá. No se borra nada:',
+          'tus proyectos, documentos y el historial quedan donde estan.',
+          '',
+          'Para volver a atarlo vas a necesitar un codigo nuevo del panel.',
+        ].join('\n'),
+        { reply_markup: tecladoDeTeclas(tecladoDeConfirmarDesvinculo()) },
+      );
+      return;
+    }
+
+    const fue = await deps.store.desvincularChat(chatId, usuarioId);
+    await mostrar(
+      fue
+        ? 'Listo, desvincule este chat. Mandame /vincular cuando quieras volver a atarlo.'
+        : 'Este chat ya no estaba vinculado.',
+      {},
+    );
     return;
   }
 
