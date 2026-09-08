@@ -334,6 +334,14 @@ export function textoDePaso(
       // etiqueta y no la raiz de dos repos que van a existir de verdad.
       'Con ese nombre creo el proyecto y dos repos: <code>&lt;nombre&gt;-front</code> y',
       '<code>&lt;nombre&gt;-back</code>. Escribilo sin espacios ni acentos.',
+      '',
+      // La salida, dicha SIEMPRE y no solo cuando algo falla.
+      //
+      // Mientras esto espera, TODO lo que se escriba se lee como la respuesta.
+      // Si no se dice como salir, la unica forma de descubrirlo es adivinar — y
+      // el caso real fue alguien pidiendo un archivo de Drive tres veces y
+      // recibiendo el mismo cartel las tres.
+      'Si no querias arrancar una corrida, manda <b>/cancelar</b> y seguimos como siempre.',
     ].join('\n');
   }
 

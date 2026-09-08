@@ -551,6 +551,12 @@ export async function handleIncoming(
     // resucitaria el trabajo que se acaba de cancelar.
     const abierta = await deps.store.corridaAbierta(input.chatId);
     if (abierta) await deps.store.cerrarCorrida(abierta.id, 'cancelada');
+    // Y el borrador. Sin esto el chat quedaba ATRAPADO: mientras hay un
+    // `/corrida` a medias, todo mensaje se lee como la respuesta al paso, y
+    // `/cancelar` —lo unico que la gente prueba para salir— no lo borraba. El
+    // sintoma fue un chat contestando "ese nombre no sirve" a cualquier cosa,
+    // sin salida.
+    await deps.store.borrarBorrador(input.chatId).catch(() => undefined);
     return { kind: 'cola_cancelada', cuantas: n, corridaCerrada: Boolean(abierta) };
   }
 
@@ -1341,9 +1347,17 @@ export async function pasoDeCorrida(
 
   if (borrador.paso === 'nombre') {
     if (!nombreDeProyectoValido(texto)) {
-      // No se avanza el paso: se vuelve a preguntar. Un nombre invalido no
-      // puede dejar el borrador en un estado del que no se sale.
-      return { kind: 'corrida_paso', paso: 'nombre', error: 'ese nombre no sirve' };
+      // No se avanza el paso: se vuelve a preguntar. Pero el motivo se dice
+      // ESPECIFICO, porque "ese nombre no sirve" no ayuda a nadie.
+      //
+      // El caso real: la persona escribio "traete sincrostatus del drive"
+      // —o sea, no estaba nombrando un proyecto— y recibio tres veces el mismo
+      // cartel. Cuando el texto tiene espacios casi nunca es un nombre mal
+      // escrito: es alguien que queria otra cosa.
+      const motivo = /\s/.test(texto)
+        ? 'eso parece un pedido, no el nombre de un proyecto'
+        : 'ese nombre no sirve: solo letras, numeros, punto, guion y guion bajo';
+      return { kind: 'corrida_paso', paso: 'nombre', error: motivo };
     }
 
     const armado = await armarDesdeElNombre(input.chatId, usuarioId, texto, deps);

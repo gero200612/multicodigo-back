@@ -103,6 +103,19 @@ export function recortar(texto: string): string {
  * En snake_case y no camelCase: estas filas viajan tal cual en el cuerpo del
  * pedido al gateway, que las valida con el schema de `@multicodigo/shared`.
  */
+/**
+ * Cuanto vive un `/corrida` a medias: 15 minutos.
+ *
+ * Es el tope de cuanto puede quedar un chat sin poder hablarle al agente. No es
+ * el tiempo que alguien tarda en contestar dos preguntas —con eso alcanzaba un
+ * minuto— sino el precio de que algo salga mal: mientras el borrador vive, cada
+ * mensaje se lee como la respuesta al paso.
+ *
+ * Paso en produccion: un chat quedo pidiendo el nombre del proyecto y contestaba
+ * "ese nombre no sirve" a todo, incluido `/cancelar`, que tampoco lo borraba.
+ */
+export const MINUTOS_DE_BORRADOR = 15;
+
 /** Un `/corrida` a medias: en que paso quedo la conversacion. */
 export interface Borrador {
   chatId: number;
@@ -628,7 +641,17 @@ export interface Store {
 
   // --- El borrador: el paso a paso antes de abrir la corrida ----------------
 
-  /** En que paso quedo el `/corrida` de este chat, si hay uno a medias. */
+  /**
+   * En que paso quedo el `/corrida` de este chat, si hay uno a medias.
+   *
+   * Un borrador VIEJO se trata como si no existiera, y eso es una garantia y no
+   * una optimizacion: mientras hay uno, TODO mensaje del chat se lee como la
+   * respuesta al paso. Si algo lo deja colgado —la persona se distrae, el
+   * nombre nunca valida, se va a dormir— el chat queda sin poder hablarle al
+   * agente. Con el vencimiento, se destraba solo pase lo que pase.
+   *
+   * Ver `MINUTOS_DE_BORRADOR`.
+   */
   borradorDeChat(chatId: number): Promise<Borrador | undefined>;
   /** Guarda el paso. Un borrador nuevo pisa al anterior. */
   guardarBorrador(chatId: number, paso: Borrador['paso'], proyecto?: string): Promise<void>;
@@ -1224,11 +1247,26 @@ export class InMemoryStore implements Store {
   private borradores = new Map<number, Borrador>();
 
   async borradorDeChat(chatId: number) {
-    return this.borradores.get(chatId);
+    const b = this.borradores.get(chatId);
+    if (!b) return undefined;
+    if (Date.now() - (this.borradoresDesde.get(chatId) ?? 0) > MINUTOS_DE_BORRADOR * 60_000) {
+      this.borradores.delete(chatId);
+      return undefined;
+    }
+    return b;
+  }
+
+  /** Cuando nacio cada borrador. En Postgres es la columna `creado_en`. */
+  private borradoresDesde = new Map<number, number>();
+
+  /** Solo para los tests: envejece un borrador. */
+  envejecerBorrador(chatId: number, minutos: number): void {
+    this.borradoresDesde.set(chatId, Date.now() - minutos * 60_000);
   }
 
   async guardarBorrador(chatId: number, paso: Borrador['paso'], proyecto?: string) {
     this.borradores.set(chatId, { chatId, paso, ...(proyecto ? { proyecto } : {}) });
+    this.borradoresDesde.set(chatId, Date.now());
   }
 
   async borrarBorrador(chatId: number) {
@@ -2293,6 +2331,17 @@ export class PgStore implements Store {
   }
 
   async borradorDeChat(chatId: number): Promise<Borrador | undefined> {
+    // El vencimiento va en el DELETE y no en un SELECT con filtro: asi el
+    // borrador viejo se va de la tabla en vez de quedar para siempre esperando
+    // que alguien lo limpie. Y el chat se destraba en el mismo pedido.
+    await this.pool
+      .query(
+        `DELETE FROM corrida_borrador
+          WHERE chat_id = $1 AND creado_en < now() - ($2 || ' minutes')::interval`,
+        [chatId, String(MINUTOS_DE_BORRADOR)],
+      )
+      .catch(() => undefined);
+
     const r = await this.pool.query<{ paso: string; proyecto: string | null }>(
       'SELECT paso, proyecto FROM corrida_borrador WHERE chat_id = $1',
       [chatId],

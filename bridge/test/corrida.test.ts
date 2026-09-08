@@ -19,7 +19,7 @@ import {
   planificarCorrida,
   type PipelineDeps,
 } from '../src/pipeline.js';
-import { InMemoryStore, type Store } from '../src/store.js';
+import { InMemoryStore, MINUTOS_DE_BORRADOR, type Store } from '../src/store.js';
 import { LimitePorChat } from '../src/vinculacion.js';
 import { buildWebhookServer } from '../src/webhook.js';
 import { textoDeCorridaEnCurso } from '../src/telegram.js';
@@ -1327,5 +1327,67 @@ describe('promptDePlan', () => {
   // corre, lo que falta ya no tiene un orden natural.
   it('pide orden por dependencias', () => {
     expect(promptDePlan('x', [])).toContain('ORDEN');
+  });
+});
+
+// El chat atrapado.
+//
+// Mientras hay un `/corrida` a medias, TODO mensaje se lee como la respuesta al
+// paso. Paso en produccion: alguien pidio un archivo de Drive, el chat contesto
+// "ese nombre no sirve", y lo contesto tres veces — incluido a `/cancelar`, que
+// no borraba el borrador. No habia salida.
+describe('salir de un /corrida a medias', () => {
+  it('/cancelar borra el borrador', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    expect(await d.store.borradorDeChat(7)).toBeDefined();
+
+    await handleIncoming({ chatId: 7, messageId: 2, text: '/cancelar' }, d);
+    expect(await d.store.borradorDeChat(7)).toBeUndefined();
+  });
+
+  // La garantia estructural: pase lo que pase, el chat se destraba solo. Es la
+  // unica de las cuatro defensas que no depende de que la persona sepa que
+  // hacer.
+  it('un borrador viejo se ignora y se limpia', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+
+    d.store.envejecerBorrador(7, MINUTOS_DE_BORRADOR + 1);
+    expect(await d.store.borradorDeChat(7)).toBeUndefined();
+  });
+
+  it('dentro de la ventana sigue vivo', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+
+    d.store.envejecerBorrador(7, MINUTOS_DE_BORRADOR - 1);
+    expect(await d.store.borradorDeChat(7)).toBeDefined();
+  });
+
+  // "ese nombre no sirve" no ayuda a nadie. Un texto con espacios casi nunca es
+  // un nombre mal escrito: es alguien que queria otra cosa.
+  it('un pedido en vez de un nombre se dice asi', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 2, text: '/corrida traete sincrostatus del drive' },
+      d,
+    );
+    if (r.kind !== 'corrida_paso') throw new Error('no es corrida_paso');
+    expect(r.error).toContain('parece un pedido');
+  });
+
+  it('un nombre con caracteres raros dice cuales valen', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida acme!' }, d);
+    if (r.kind !== 'corrida_paso') throw new Error('no es corrida_paso');
+    expect(r.error).toContain('letras, numeros');
   });
 });
