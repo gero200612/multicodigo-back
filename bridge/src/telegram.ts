@@ -607,7 +607,7 @@ export function textoDeOcupado(
  * `conCodigoParaTelegram`, que escapa TODO —prosa incluida— antes de meter sus
  * `<pre>`. Sin ese escapado, esto no podria estar aca.
  */
-function usaHtml(outcome: PipelineOutcome): boolean {
+export function usaHtml(outcome: PipelineOutcome): boolean {
   return (
     outcome.kind === 'answer' ||
     outcome.kind === 'codigo' ||
@@ -621,6 +621,16 @@ function usaHtml(outcome: PipelineOutcome): boolean {
     outcome.kind === 'cola' ||
     outcome.kind === 'corrida' ||
     outcome.kind === 'corrida_sin_armar' ||
+    // Los dos pasos del `/corrida` conversacional. Se olvidaron al agregarlos y
+    // el sintoma fue exactamente este: el mensaje llegaba con `<b>` y
+    // `&lt;nombre&gt;` a la vista, o sea "lleno de simbolos".
+    //
+    // Es la tercera vez que pasa lo mismo con esta lista. Por eso el test de
+    // abajo la recorre entera en vez de mirar un caso: un outcome que arma HTML
+    // y no esta declarado aca no falla, se ve mal — y verse mal no rompe ningun
+    // test que no lo busque.
+    outcome.kind === 'corrida_paso' ||
+    outcome.kind === 'corrida_planificando' ||
     // `status` lleva HTML desde que muestra la corrida: el nombre del proyecto
     // va en negrita y el texto de la tarea es libre. Sin declararlo, las
     // etiquetas se leerian crudas — el mismo agujero que tenia el informe.

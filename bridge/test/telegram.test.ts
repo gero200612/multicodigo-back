@@ -7,8 +7,10 @@ import {
   avisoDeRelevo,
   manejarMenu,
   textoDeCola,
+  usaHtml,
 } from '../src/telegram.js';
 import type { Tarea } from '../src/cola.js';
+import type { PipelineOutcome } from '../src/pipeline.js';
 import { LimitePorChat } from '../src/vinculacion.js';
 import { buildWebhookServer } from '../src/webhook.js';
 
@@ -514,4 +516,74 @@ describe('textoDeCola: escapado', () => {
     const t = textoDeCola([tarea('migrar <Component/>', 'corriendo')], 0);
     expect(t).toContain('&lt;Component/&gt;');
   });
+});
+
+/**
+ * La lista de `usaHtml`, contra lo que los mensajes REALMENTE arman.
+ *
+ * Existe porque este bug ya paso tres veces y ninguna rompio un test: un
+ * outcome que arma `<b>` y no esta declarado en la lista no falla, se VE mal —
+ * llega con las etiquetas crudas y `&lt;nombre&gt;` a la vista. El usuario lo
+ * reporto como "hay muchos simbolos".
+ *
+ * En vez de un caso por outcome, se recorre: cualquier mensaje que traiga una
+ * etiqueta tiene que estar declarado, y el dia que se agregue uno nuevo sin
+ * declararlo, esto lo dice.
+ */
+describe('usaHtml cubre todo lo que arma HTML', () => {
+  const tarea: Tarea = {
+    id: 'x',
+    chatId: 1,
+    agente: 'c1',
+    proyecto: 'demo',
+    texto: 'algo',
+    posicion: 0,
+    estado: 'pendiente',
+  };
+  const corrida = {
+    id: 'c',
+    chatId: 1,
+    proyecto: 'acme',
+    md: 'x',
+    ronda: 1,
+    techoRondas: 3,
+    techoHora: '07:00',
+    fallosSeguidos: 0,
+    estado: 'abierta' as const,
+    creadoEn: new Date(),
+  };
+
+  // Uno de cada outcome que puede traer formato. Si aparece uno nuevo que arma
+  // HTML y no esta aca, el que lo agrego tiene que sumarlo — que es el momento
+  // de acordarse de la lista.
+  const casos: PipelineOutcome[] = [
+    { kind: 'cola', tareas: [tarea], encoladas: 1 },
+    { kind: 'corrida', corrida, recienAbierta: true, yaHabia: false },
+    { kind: 'corrida_paso', paso: 'nombre' },
+    {
+      kind: 'corrida_paso',
+      paso: 'pliego',
+      creado: { proyecto: 'acme', repos: ['o/r'], referencia: [] },
+    },
+    { kind: 'corrida_planificando', corrida },
+    { kind: 'corrida_sin_armar', motivo: 'x' },
+    { kind: 'project', project: 'acme', mios: [], cambiado: true },
+    { kind: 'project_desconocido', pedido: 'x', mios: [], botones: [] },
+    { kind: 'status', agent: 'c1', otros: [] },
+    { kind: 'menu_agentes', proyecto: 'acme', botones: [] },
+    { kind: 'codigo', text: 'x', agent: 'c1', relevos: [] } as unknown as PipelineOutcome,
+  ];
+
+  for (const caso of casos) {
+    it(`${caso.kind} declara el formato que usa`, () => {
+      const texto = renderOutcome(caso);
+      // `<` con una letra atras es una etiqueta abierta. Si el mensaje trae
+      // una, tiene que ir con parse_mode o Telegram la muestra tal cual.
+      if (/<[a-z/]/i.test(texto)) {
+        expect(usaHtml(caso), `${caso.kind} arma HTML y no esta en usaHtml`).toBe(true);
+      }
+      // Y al reves: declarar HTML sin armarlo no rompe nada, asi que no se
+      // chequea. Lo que duele es el olvido, no el sobrante.
+    });
+  }
 });
