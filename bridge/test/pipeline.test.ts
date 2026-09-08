@@ -374,11 +374,63 @@ describe('multi-proyecto', () => {
   it('/proyecto sin nombre dice cual esta activo, sin cambiar nada', async () => {
     const store = new InMemoryStore();
     await vincular(store, 1);
+    // El proyecto tiene que EXISTIR y ser de esta persona. Antes este test
+    // pasaba sin esta linea, y eso era el bug: el nombre guardado se devolvia
+    // sin validar, asi que un chat revinculado a otra cuenta seguia apuntando
+    // al proyecto del usuario anterior — y de ahi en adelante el turno corria
+    // sin sesion, sin repos y sin documentos.
+    await store.crearProyecto('uno', USUARIO_DE_PRUEBA);
     await store.setActiveProject(1, 'uno');
     const out = await handleIncoming({ chatId: 1, messageId: 2, text: '/proyecto' }, deps({ store }));
     if (out.kind !== 'project') throw new Error('esperaba project');
     expect(out.project).toBe('uno');
     expect(await store.getActiveProject(1)).toBe('uno');
+  });
+
+  // El bug de produccion, exacto: el chat quedo con "sincro" y la cuenta nueva
+  // tiene "Sincro". Una mayuscula dejaba el turno sin sesion, sin repos y sin
+  // documentos, y las cuatro cosas degradaban en silencio.
+  it('un proyecto activo que difiere en mayusculas se resuelve al canonico', async () => {
+    const store = new InMemoryStore();
+    await vincular(store, 1);
+    await store.crearProyecto('Sincro', USUARIO_DE_PRUEBA);
+    await store.setActiveProject(1, 'sincro');
+
+    let visto = '';
+    const d = deps({
+      store,
+      ask: async (req) => {
+        visto = req.project;
+        return { jobId: req.jobId, sessionId: 's', text: 'ok', turns: 1 };
+      },
+    });
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+
+    expect(visto).toBe('Sincro');
+    // Y se reescribe el canonico: si no, el proximo turno repite el baile.
+    expect(await store.getActiveProject(1)).toBe('Sincro');
+  });
+
+  // El caso de la revinculacion: el proyecto guardado es de OTRA persona.
+  it('un proyecto activo que no es de esta cuenta no se usa', async () => {
+    const store = new InMemoryStore();
+    await vincular(store, 1);
+    await store.crearProyecto('mio', USUARIO_DE_PRUEBA);
+    // Guardado a mano, como quedaria despues de que el chat cambie de cuenta.
+    await store.setActiveProject(1, 'de-otro');
+
+    let visto = '';
+    const d = deps({
+      store,
+      ask: async (req) => {
+        visto = req.project;
+        return { jobId: req.jobId, sessionId: 's', text: 'ok', turns: 1 };
+      },
+    });
+    await handleIncoming({ chatId: 1, messageId: 2, text: 'hola' }, d);
+
+    // Cae al unico que SI es suyo, en vez de seguir con el ajeno.
+    expect(visto).toBe('mio');
   });
 
   // La sesion es por (chat, agente, proyecto): cambiar de proyecto no debe

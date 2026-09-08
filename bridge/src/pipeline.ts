@@ -616,7 +616,12 @@ export async function handleIncoming(
   // panel— y en ese caso el turno corre igual, pero sin sesion compartida: no
   // hay clave con que guardarla.
   const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
-  const proyectoId = proyectos.find((p) => p.nombre === project)?.id;
+  // Sin mayusculas, igual que en `proyectoDelChat`: el nombre puede venir del
+  // default del bridge o de un `chat_state` viejo, y una `S` de diferencia deja
+  // el turno sin sesion, sin repos y sin documentos.
+  const proyectoId = proyectos.find(
+    (p) => p.nombre.toLowerCase() === project.toLowerCase(),
+  )?.id;
 
   // Los repos y el token del proyecto, que en el camino del PANEL los pone el
   // panel. Aca los tiene que juntar el bridge: un turno de Telegram no pasa por
@@ -1267,10 +1272,41 @@ async function proyectoDelChat(
   usuarioId: string,
   deps: PipelineDeps,
 ): Promise<string> {
-  const elegido = await deps.store.getActiveProject(chatId);
-  if (elegido) return elegido;
-
   const mios = await deps.store.proyectosDeUsuario(usuarioId);
+  const elegido = await deps.store.getActiveProject(chatId);
+
+  // El elegido se VALIDA contra los proyectos de la persona, y se devuelve el
+  // nombre CANONICO. Esto es lo que arregla el fallo silencioso mas caro que
+  // tuvo el sistema, asi que vale contarlo entero.
+  //
+  // El nombre del proyecto activo se guarda como texto en `chat_state`, y todo
+  // lo que sigue se resuelve comparandolo con `p.nombre === project`. Una
+  // comparacion exacta.
+  //
+  // Visto en produccion: un chat quedo con `active_project = "sincro"` y
+  // despues se revinculo a OTRA cuenta, que tiene un proyecto llamado
+  // "Sincro". La comparacion falla por una mayuscula, `proyectoId` queda
+  // undefined, y de ahi en adelante el turno corre SIN sesion, SIN repos, SIN
+  // documentos y SIN token de GitHub. Ninguna de las cuatro cosas falla: cada
+  // una tiene su `if (proyectoId)` y degrada en silencio.
+  //
+  // Lo que la persona ve es un agente que "responde lo que quiere": dice que es
+  // el primer mensaje de la conversacion, no encuentra el codigo, no ve los
+  // documentos. Cuatro sintomas que no se parecen entre si ni apuntan a la
+  // causa.
+  if (elegido) {
+    const igual = mios.find((p) => p.nombre.toLowerCase() === elegido.toLowerCase());
+    if (igual) {
+      // Se reescribe el canonico cuando difiere: si no, el proximo turno vuelve
+      // a hacer el mismo baile de mayusculas.
+      if (igual.nombre !== elegido) await deps.store.setActiveProject(chatId, igual.nombre);
+      return igual.nombre;
+    }
+    // No es de esta persona. Pasa cuando el chat se revincula a otra cuenta, o
+    // cuando el proyecto se borro. NO se devuelve: seguir con el nombre de un
+    // proyecto ajeno es justo el estado roto de arriba.
+  }
+
   if (mios.length === 1) {
     await deps.store.setActiveProject(chatId, mios[0]!.nombre);
     return mios[0]!.nombre;
@@ -1504,7 +1540,7 @@ async function armarProyecto(
     }
     await deps.store.setActiveProject(chatId, proyecto);
   } else {
-    proyectoId = mios.find((p) => p.nombre === proyecto)?.id;
+    proyectoId = mios.find((p) => p.nombre.toLowerCase() === proyecto.toLowerCase())?.id;
   }
 
   if (opciones.repos.length === 0 && opciones.referencia.length === 0) {
@@ -1622,7 +1658,9 @@ async function contextoDeCola(
   deps: PipelineDeps,
 ) {
   const proyectos = await deps.store.proyectosDeUsuario(usuarioId);
-  const proyectoId = proyectos.find((p) => p.nombre === proyecto)?.id;
+  const proyectoId = proyectos.find(
+    (p) => p.nombre.toLowerCase() === proyecto.toLowerCase(),
+  )?.id;
   return {
     proyectoId,
     repos: proyectoId ? await deps.store.reposDeProyecto(proyectoId) : undefined,
