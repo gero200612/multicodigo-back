@@ -369,11 +369,11 @@ function tareasPedidas(d: { ask: { mock: { calls: Array<[{ prompt: string }, ...
 }
 
 /**
- * Le da al proyecto del arnes los slots que le corresponden.
+ * Le da a la persona del arnes los slots que son suyos.
  *
- * El proyecto tiene que EXISTIR y ser del usuario: `contextoDeCola` resuelve el
- * `proyectoId` desde `proyectosDeUsuario`, y sin eso el reparto no tiene a quien
- * preguntarle que slots son de este proyecto — y entonces no reparte, que es el
+ * El proyecto tiene que EXISTIR y ser de esa persona: lo que autoriza a usar un
+ * slot es de quien es la cuenta, y eso se resuelve subiendo del slot a su
+ * proyecto y del proyecto a su dueño. Sin registro no se reparte, que es el
  * default seguro.
  */
 async function conSlotsDelProyecto(
@@ -2787,7 +2787,7 @@ describe('el prompt de una tarea desatendida', () => {
  * tercero y el codigo del cliente pasando por una sesion que no es de quien
  * pidio el trabajo.
  */
-describe('el reparto se queda en los slots del proyecto', () => {
+describe('el reparto se queda en los slots de la persona', () => {
   function slotsUsados(d: ReturnType<typeof arnes>): string[] {
     return d.ask.mock.calls
       .filter((c) => !c[0].prompt.includes('--- PLIEGO ---'))
@@ -2795,7 +2795,7 @@ describe('el reparto se queda en los slots del proyecto', () => {
   }
 
 
-  it('un slot con cuenta que no es del proyecto no recibe trabajo', async () => {
+  it('un slot con cuenta que no es de esta persona no recibe trabajo', async () => {
     const d = arnes({
       analista: () => [],
       // El host tiene cuatro con credencial...
@@ -2816,7 +2816,7 @@ describe('el reparto se queda en los slots del proyecto', () => {
   // Sin registro no se adivina: se usa el agente con que se encolo la tarea,
   // que es el que la persona eligio. Repartir "por las dudas" es justo lo que
   // hizo que se gastaran cuentas ajenas.
-  it('un proyecto sin slots registrados no se reparte', async () => {
+  it('una persona sin slots registrados no reparte', async () => {
     const d = arnes({
       analista: () => [],
       slots: ['c1', 'c2', 'c4'],
@@ -2830,7 +2830,7 @@ describe('el reparto se queda en los slots del proyecto', () => {
 
   // Un slot del proyecto que perdio la credencial no sirve igual: el turno
   // volveria con `usage_limit` o `auth_expired`.
-  it('un slot del proyecto sin cuenta se saltea', async () => {
+  it('un slot propio sin cuenta cargada se saltea', async () => {
     const d = arnes({
       analista: () => [],
       slots: ['c2'],

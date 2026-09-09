@@ -534,6 +534,23 @@ export interface Store {
   idDeProyecto(nombre: string): Promise<string | null>;
   /** Los agentes del proyecto, por slot. */
   agentesDeProyecto(proyectoId: string): Promise<AgenteResumen[]>;
+  /**
+   * Los slots de una PERSONA, cruzando todos sus proyectos.
+   *
+   * Es la respuesta a "a quien se le puede dar trabajo de esta persona", y
+   * `agentesDeProyecto` no alcanza: `slot` es PRIMARY KEY, asi que un slot
+   * pertenece a UN proyecto y un proyecto recien creado no tiene ninguno.
+   *
+   * Sin esto el reparto de una corrida usaba cualquier slot del host que
+   * tuviera credencial cargada —los devuelve el gateway listando contenedores—
+   * incluido uno con la cuenta de otra persona. Paso en `saludos5`: es plata de
+   * un tercero y su sesion de Claude corriendo trabajo que no pidio.
+   *
+   * Un slot con credencial en el HOME pero SIN fila en `agentes` no es de
+   * nadie, y no aparece aca. Eso es deliberado: el registro es lo unico que
+   * dice de quien es un slot.
+   */
+  agentesDeUsuario(usuarioId: string): Promise<AgenteResumen[]>;
   /** Anota que el slot pertenece al proyecto. NO crea el contenedor. */
   registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void>;
 
@@ -1169,6 +1186,18 @@ export class InMemoryStore implements Store {
   async registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void> {
     const previo = this.agentes.get(slot);
     this.agentes.set(slot, { proyectoId, nombre: nombre ?? previo?.nombre, cuenta: previo?.cuenta });
+  }
+
+  async agentesDeUsuario(usuarioId: string): Promise<AgenteResumen[]> {
+    const mios = new Set((await this.proyectosDeUsuario(usuarioId)).map((p) => p.id));
+    return [...this.agentes.entries()]
+      .filter(([, a]) => mios.has(a.proyectoId))
+      .map(([slot, a]) => ({
+        slot: slot as AgentId,
+        ...(a.nombre !== undefined ? { nombre: a.nombre } : {}),
+        ...(a.cuenta !== undefined ? { cuenta: a.cuenta } : {}),
+      }))
+      .sort((a, b) => a.slot.localeCompare(b.slot, 'en', { numeric: true }));
   }
 
   private agotados = new Map<string, Agotamiento>();
@@ -2167,6 +2196,29 @@ export class PgStore implements Store {
     const r = await this.pool.query<{ slot: AgentId; nombre: string | null; cuenta: string | null }>(
       `SELECT slot, nombre, cuenta FROM agentes WHERE proyecto_id = $1 ORDER BY slot`,
       [proyectoId],
+    );
+    return r.rows.map((f) => ({
+      slot: f.slot,
+      nombre: f.nombre ?? undefined,
+      cuenta: f.cuenta ?? undefined,
+    }));
+  }
+
+  /**
+   * Del slot a su proyecto, y del proyecto a su dueño.
+   *
+   * Un JOIN y no dos queries: esto corre por cada tarea de una corrida, y la
+   * alternativa —traer los proyectos y despues los agentes— hace dos viajes
+   * para contestar una sola pregunta.
+   */
+  async agentesDeUsuario(usuarioId: string): Promise<AgenteResumen[]> {
+    const r = await this.pool.query<{ slot: AgentId; nombre: string | null; cuenta: string | null }>(
+      `SELECT a.slot, a.nombre, a.cuenta
+         FROM agentes a
+         JOIN miembros m ON m.proyecto_id = a.proyecto_id
+        WHERE m.usuario_id = $1
+        ORDER BY a.slot`,
+      [usuarioId],
     );
     return r.rows.map((f) => ({
       slot: f.slot,

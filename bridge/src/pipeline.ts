@@ -2456,31 +2456,34 @@ export async function correrCola(
     // pisarlo seria desobedecer, y sin merge el reparto romperia la
     // continuidad. Sin candidatos se usa el de la tarea, que es lo de siempre.
     //
-    // Y ACOTADO A LOS SLOTS DEL PROYECTO. `listarAgentes` devuelve todos los
-    // del host que tengan credencial cargada —el parametro de proyecto se
-    // descarta del lado del gateway— asi que sin este cruce la rotacion agarra
-    // cualquiera, incluido uno cuya cuenta de Claude es de otra persona.
+    // Y ACOTADO A LOS SLOTS DE ESTA PERSONA. `listarAgentes` devuelve todos los
+    // del host que tengan credencial cargada —los descubre listando
+    // contenedores, y el parametro de proyecto se descarta del lado del
+    // gateway— asi que sin este cruce la rotacion agarra cualquiera, incluido
+    // uno cuya cuenta de Claude no es de quien pidio el trabajo.
     //
-    // Paso en produccion con `saludos5`: el trabajo se reparti a slots de
-    // cuentas ajenas. No es prolijidad — es plata de un tercero y el codigo de
-    // un cliente pasando por una sesion que no es de quien pidio el trabajo.
+    // Paso en produccion con `saludos5`: se uso `c4`, que no figura entre los
+    // agentes de esta persona. No es prolijidad — es plata de un tercero y el
+    // codigo de un cliente pasando por una sesion ajena.
+    //
+    // Por USUARIO y no por proyecto: `agentes.slot` es PRIMARY KEY, asi que un
+    // slot pertenece a UN proyecto y una corrida sobre un proyecto nuevo no
+    // tendria ningun candidato. Lo que autoriza a usar un slot es de quien es
+    // la cuenta, y eso se sabe subiendo del slot a su proyecto y del proyecto a
+    // su dueño.
     //
     // Sin slots registrados NO se reparte: se usa el agente con que se encolo
     // la tarea, que es el que la persona eligio. Repartir "por las dudas" es
     // exactamente lo que causo el problema.
-    // Sin `proyectoId` no hay a quien preguntarle que slots corresponden, y
-    // entonces no se reparte: el default es quedarse con el agente que la
-    // persona eligio, nunca ampliar.
-    const delProyecto =
-      corrida && ctx.proyectoId
-        ? (await deps.store.agentesDeProyecto(ctx.proyectoId).catch(() => [])).map((a) => a.slot)
-        : [];
+    const mios = corrida
+      ? (await deps.store.agentesDeUsuario(usuarioId).catch(() => [])).map((a) => a.slot)
+      : [];
     const elegido =
-      corrida && deps.mergearTrabajo && delProyecto.length > 0
+      corrida && deps.mergearTrabajo && mios.length > 0
         ? clavarEn ??
           slotParaLaTarea(
             (await deps.listarAgentes?.(tarea.proyecto).catch(() => []) ?? []).filter((c) =>
-              delProyecto.includes(c.id as AgentId),
+              mios.includes(c.id as AgentId),
             ),
             [...(await deps.store.slotsAgotados().catch(() => new Map())).keys()],
             ultimoSlot,

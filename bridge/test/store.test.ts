@@ -173,6 +173,53 @@ describe.each<[string, () => Store]>([['InMemoryStore', () => new InMemoryStore(
       expect(agentes[0]!.nombre).toBe('Backend');
     });
 
+    /**
+     * Los slots de UNA PERSONA, cruzando todos sus proyectos.
+     *
+     * `agentesDeProyecto` no alcanza para decidir a quien se le puede dar
+     * trabajo: `slot` es PRIMARY KEY, asi que un slot pertenece a UN proyecto, y
+     * un proyecto nuevo no tiene ninguno. Con eso, el reparto de una corrida
+     * recien creada no tendria candidatos... o, sin filtro, agarraba cualquier
+     * slot del host — incluido uno con la credencial de otra persona, que es lo
+     * que paso en `saludos5`.
+     *
+     * Lo que define "se puede usar" es de quien es la cuenta, y eso se sabe
+     * subiendo del slot a su proyecto y del proyecto a su dueño.
+     */
+    it('lista los slots de todos los proyectos de una persona', async () => {
+      const mio = '66666666-6666-4666-8666-666666666666';
+      const uno = await store.crearProyecto('proyecto-uno', mio);
+      const dos = await store.crearProyecto('proyecto-dos', mio);
+      await store.registrarAgente(uno, 'c2');
+      await store.registrarAgente(dos, 'c1');
+
+      expect((await store.agentesDeUsuario(mio)).map((a) => a.slot)).toEqual(['c1', 'c2']);
+    });
+
+    // Lo que el bug de `saludos5` hacia mal: un slot con credencial cargada que
+    // no es de esta persona no puede recibir trabajo suyo. Es plata de un
+    // tercero y su sesion de Claude.
+    it('no lista el slot de otra persona', async () => {
+      const mio = '77777777-7777-4777-8777-777777777777';
+      const ajeno = '88888888-8888-4888-8888-888888888888';
+      const suyo = await store.crearProyecto('mio-solo', mio);
+      const deOtro = await store.crearProyecto('de-otro', ajeno);
+      await store.registrarAgente(suyo, 'c1');
+      await store.registrarAgente(deOtro, 'c4');
+
+      const mios = (await store.agentesDeUsuario(mio)).map((a) => a.slot);
+      expect(mios).toEqual(['c1']);
+      expect(mios).not.toContain('c4');
+    });
+
+    // Un slot con credencial en el HOME pero sin fila en `agentes` es de nadie:
+    // Docker lo reporta y el registro no lo conoce. No se le da trabajo.
+    it('una persona sin slots registrados no tiene ninguno', async () => {
+      const nadie = '99999999-9999-4999-8999-999999999999';
+      await store.crearProyecto('vacio', nadie);
+      expect(await store.agentesDeUsuario(nadie)).toEqual([]);
+    });
+
     it('un chat sin vincular no tiene usuario', async () => {
       expect(await store.usuarioDeChat(123)).toBeUndefined();
     });
