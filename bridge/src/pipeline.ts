@@ -584,6 +584,12 @@ export async function handleIncoming(
           texto: '',
           ...(opciones.proyecto ? { proyecto: opciones.proyecto } : {}),
           ...(opciones.org ? { org: opciones.org } : {}),
+          // `publico=si` sirve TAMBIEN por este camino: el comando con
+          // opciones y sin pliego arma el proyecto de una y pide el pliego
+          // despues. Sin esto la opcion se perdia justo en el camino mas
+          // natural de usarla — visto en produccion, los repos salieron
+          // privados con `publico=si` puesto.
+          publico: opciones.publico,
         },
         usuarioId,
         deps,
@@ -1436,7 +1442,18 @@ async function proyectoDelChat(
  * toma cuando `/corrida` llega sin nada.
  */
 export async function pasoDeCorrida(
-  input: { chatId: number; texto: string; proyecto?: string; org?: string },
+  input: {
+    chatId: number;
+    texto: string;
+    proyecto?: string;
+    org?: string;
+    /**
+     * `publico=si` del comando. NO se guarda en el borrador: vale para el
+     * mensaje que lo trajo, y contestar el nombre despues no puede heredar una
+     * decision de exponer codigo que quedo escrita hace tres mensajes.
+     */
+    publico?: boolean;
+  },
   usuarioId: string,
   deps: PipelineDeps,
 ): Promise<PipelineOutcome> {
@@ -1461,7 +1478,14 @@ export async function pasoDeCorrida(
   // se arma derecho. Es lo que convierte `/corrida proyecto=X org=Y` en un solo
   // mensaje en vez de tres.
   if (!borrador && nombreDado) {
-    return await armarYPedirPliego(input.chatId, usuarioId, nombreDado, org, deps);
+    return await armarYPedirPliego(
+      input.chatId,
+      usuarioId,
+      nombreDado,
+      org,
+      deps,
+      input.publico === true,
+    );
   }
 
   // Paso 1: el nombre. Es lo unico que no se puede deducir.
@@ -1594,8 +1618,10 @@ async function armarYPedirPliego(
   nombre: string,
   org: string | undefined,
   deps: PipelineDeps,
+  /** Lo que dijo `publico=si` en el comando, si lo dijo. */
+  publico = false,
 ): Promise<PipelineOutcome> {
-  const armado = await armarDesdeElNombre(chatId, usuarioId, nombre, org, deps);
+  const armado = await armarDesdeElNombre(chatId, usuarioId, nombre, org, deps, publico);
 
   // Falta elegir la org. El borrador se DEJA VIVO —al contrario que en un
   // fallo— porque el nombre ya se dio y no hay que volver a pedirlo: al tocar
@@ -1652,6 +1678,17 @@ async function armarDesdeElNombre(
   nombre: string,
   orgPedida: string | undefined,
   deps: PipelineDeps,
+  /**
+   * Si los repos nacen publicos. Lo trae el comando (`publico=si`); contestando
+   * el nombre en el paso a paso no hay forma de decirlo, y ahi es `false`.
+   *
+   * Antes estaba fijo en `false` con el argumento de que "el paso a paso no
+   * pregunta por esto". Es cierto que no pregunta, pero cuando la persona YA lo
+   * escribio en el comando, ignorarlo no es un default seguro: es desobedecer
+   * en silencio. Visto al probarlo en produccion — los repos salieron privados
+   * con `publico=si` puesto.
+   */
+  publico = false,
 ): Promise<
   | { ok: true; proyecto: string; creado: LoCreado }
   | { ok: false; motivo: string }
@@ -1727,11 +1764,10 @@ async function armarDesdeElNombre(
       // las dos mitades.
       repos: [`${nombre}-front`, `${nombre}-back`],
       referencia: referencias,
-      // El paso a paso NO pregunta por esto y crea repos PRIVADOS, que es el
-      // default seguro: exponer el trabajo de un cliente no puede salir de un
-      // camino donde nadie lo pidió. Para publicos hay que decirlo con
-      // `publico=si` en el comando largo, donde la eleccion queda escrita.
-      publico: false,
+      // Lo que dijo el comando, o privado. Contestando el nombre no hay forma
+      // de pedir publico —el paso a paso no pregunta— asi que ese camino
+      // siempre cae en privado, que es el default seguro.
+      publico,
     },
     deps,
   );

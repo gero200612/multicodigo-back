@@ -2930,3 +2930,64 @@ describe('publico=si llega a crearRepo', () => {
     expect(pedidos.some((p) => p.publico)).toBe(false);
   });
 });
+
+/**
+ * `publico=si` tambien cuando el comando NO trae pliego.
+ *
+ * El bug, visto al probarlo en produccion: `/corrida proyecto=x org=y publico=si`
+ * sin pliego arma el proyecto y pide el pliego —pasa por `armarDesdeElNombre`,
+ * que crea los repos por convencion— y ese camino tenia `publico: false` fijo.
+ *
+ * El comentario que lo justificaba decia "el paso a paso no pregunta por esto",
+ * y es cierto: no pregunta. Pero cuando la persona YA lo escribio en el comando,
+ * ignorarlo no es un default seguro, es desobedecer en silencio. La opcion se
+ * respeta si vino; si nadie la dijo, sigue siendo privado.
+ */
+describe('publico=si sin pliego', () => {
+  it('respeta la opcion aunque el pliego venga despues', async () => {
+    const pedidos: boolean[] = [];
+    const d = arnes();
+    const crearRepo = vi.fn(
+      async (_id: number, nombre: string, _desc?: string, publico?: boolean) => {
+        pedidos.push(publico === true);
+        return { ok: true as const, nombre, github: `Sincro-arg/${nombre}` };
+      },
+    );
+    Object.assign(d, { crearRepo });
+    await vincular(d.store, 7);
+    const viejo = await d.store.crearProyecto('anterior', USUARIO);
+    await d.store.guardarInstalacion(viejo, 159882934, 'Sincro-arg');
+
+    // Sin pliego: arma el proyecto y pide el pliego.
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: '/corrida proyecto=pub1 org=Sincro-arg publico=si' },
+      d,
+    );
+
+    if (r.kind !== 'corrida_paso') throw new Error(`no es corrida_paso: ${r.kind}`);
+    expect(pedidos.length).toBeGreaterThan(0);
+    expect(pedidos.every((p) => p)).toBe(true);
+  });
+
+  it('sin la opcion sigue creando privados', async () => {
+    const pedidos: boolean[] = [];
+    const d = arnes();
+    const crearRepo = vi.fn(
+      async (_id: number, nombre: string, _desc?: string, publico?: boolean) => {
+        pedidos.push(publico === true);
+        return { ok: true as const, nombre, github: `Sincro-arg/${nombre}` };
+      },
+    );
+    Object.assign(d, { crearRepo });
+    await vincular(d.store, 7);
+    const viejo = await d.store.crearProyecto('anterior', USUARIO);
+    await d.store.guardarInstalacion(viejo, 159882934, 'Sincro-arg');
+
+    await handleIncoming(
+      { chatId: 7, messageId: 1, text: '/corrida proyecto=pub2 org=Sincro-arg' },
+      d,
+    );
+    expect(pedidos.length).toBeGreaterThan(0);
+    expect(pedidos.some((p) => p)).toBe(false);
+  });
+});
