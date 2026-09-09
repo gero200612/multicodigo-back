@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { agentesQueTrabajaron, promptDeRelevo, proximoSlot } from '../src/relevo.js';
+import {
+  agentesQueTrabajaron,
+  promptDeRelevo,
+  proximoSlot,
+  slotParaLaTarea,
+} from '../src/relevo.js';
 import type { Tarea } from '../src/cola.js';
 
 const CON_CUENTA = (id: string) => ({ id, cuenta: true, arriba: false });
@@ -61,14 +66,30 @@ describe('el prompt del relevo', () => {
    * Lo mas importante del prompt.
    *
    * El slot que releva arranca una sesion NUEVA, asi que no sabe que hubo un
-   * antes. Sin decirle que el trabajo ya esta en disco, lo mas probable es que
-   * empiece de cero y pise lo que estaba hecho — el worktree es compartido por
-   * proyecto, no por slot.
+   * antes. Sin decirle que el trabajo ya esta hecho, lo mas probable es que
+   * empiece de cero y lo haga dos veces.
    */
   it('avisa que el trabajo ya esta en el worktree', () => {
     const p = promptDeRelevo('segui', turnos, 'c1');
     expect(p.toLowerCase()).toContain('worktree');
     expect(p.toLowerCase()).toContain('no lo rehagas');
+  });
+
+  /*
+   * Y le dice DE DONDE sale, que es lo que antes no era cierto.
+   *
+   * El worktree de cada slot es propio (`/srv/work/<slot>/...`) y nace de
+   * `origin/main`, asi que el trabajo del slot anterior llega por el merge de
+   * cada tarea. Si ese merge fallo, no llego — y entonces sigue estando en la
+   * rama del otro slot. Nombrar las dos cosas es la diferencia entre que el
+   * modelo encuentre el codigo y que concluya que no existe y lo rehaga.
+   *
+   * Ver `multicodigo-vm/docs/RETOMAR-relevo-agente.md` y el spec del reparto.
+   */
+  it('dice que el trabajo llega por main, y donde buscarlo si falta', () => {
+    const p = promptDeRelevo('segui', turnos, 'c1');
+    expect(p).toContain('main');
+    expect(p).toContain('claude/c1/');
   });
 
   it('dice de quien es el relevo', () => {
@@ -204,5 +225,74 @@ describe('de que slots quedo el trabajo', () => {
   // esta funcion no inventa un slot para llenar el hueco.
   it('una corrida sin ninguna tarea hecha no devuelve nada', () => {
     expect(agentesQueTrabajaron([tarea({ estado: 'fallida' })])).toEqual([]);
+  });
+});
+
+/**
+ * A quien le toca la proxima tarea de una corrida.
+ *
+ * Es reparto PROACTIVO, y ahi esta la diferencia con `proximoSlot`: aquel corre
+ * cuando una cuenta YA se agoto —es el relevo— y este reparte antes, para que
+ * ninguna cargue la noche entera. Con seis cuentas, el relevo solo significa
+ * quemar una hasta el limite antes de tocar la segunda.
+ *
+ * Ver `multicodigo-vm/docs/superpowers/specs/2026-09-09-reparto-por-capacidad-design.md`.
+ */
+describe('a quien le toca la proxima tarea', () => {
+  const libre = (id: string) => ({ id, cuenta: true, arriba: false });
+
+  it('sin nadie anterior, arranca por el primero', () => {
+    expect(slotParaLaTarea([libre('c1'), libre('c2')], [], undefined)).toBe('c1');
+  });
+
+  it('despues de uno, le toca al que sigue', () => {
+    expect(slotParaLaTarea([libre('c1'), libre('c2'), libre('c4')], [], 'c1')).toBe('c2');
+  });
+
+  // Circular: sin esto, la ultima tarea de la vuelta se queda sin slot y el
+  // reparto se corta justo cuando la cola es larga —que es cuando importa.
+  it('despues del ultimo vuelve al primero', () => {
+    expect(slotParaLaTarea([libre('c1'), libre('c2')], [], 'c2')).toBe('c1');
+  });
+
+  // El orden es por id y no el que devuelve el gateway: con un orden estable,
+  // "despues de c1 va c2" es una frase que se puede verificar. Numerico, para
+  // que c10 no se cuele entre c1 y c2.
+  it('el orden es estable y numerico', () => {
+    const revuelto = [libre('c10'), libre('c2'), libre('c1')];
+    expect(slotParaLaTarea(revuelto, [], undefined)).toBe('c1');
+    expect(slotParaLaTarea(revuelto, [], 'c2')).toBe('c10');
+  });
+
+  // Mandarle trabajo a una cuenta agotada gasta un intento y no produce nada:
+  // el turno vuelve con `usage_limit` y recien ahi actua el relevo.
+  it('saltea los que estan sin tokens', () => {
+    expect(slotParaLaTarea([libre('c1'), libre('c2'), libre('c4')], ['c2'], 'c1')).toBe('c4');
+  });
+
+  it('saltea los ocupados y los que no tienen cuenta', () => {
+    const candidatos = [
+      libre('c1'),
+      { id: 'c2', cuenta: true, arriba: true, ocupado: true },
+      { id: 'c4', cuenta: false, arriba: true },
+      libre('c5'),
+    ];
+    expect(slotParaLaTarea(candidatos, [], 'c1')).toBe('c5');
+  });
+
+  // El slot anterior puede no estar en la lista: se apago, lo tomo otra persona,
+  // o se agoto justo despues de trabajar. Se sigue por el ORDEN, no por su
+  // posicion, asi que el reparto no se rompe ni vuelve siempre al primero.
+  it('si el anterior ya no esta, sigue por el orden', () => {
+    expect(slotParaLaTarea([libre('c1'), libre('c4')], [], 'c2')).toBe('c4');
+  });
+
+  // Sin nadie elegible NO se inventa un slot: quien llama cae al comportamiento
+  // de hoy —el agente con que se encolo la tarea— y el relevo hace lo suyo si
+  // ese tampoco puede.
+  it('sin ninguno elegible no devuelve nada', () => {
+    expect(slotParaLaTarea([{ id: 'c1', cuenta: true, arriba: true, ocupado: true }], [], undefined))
+      .toBeUndefined();
+    expect(slotParaLaTarea([libre('c1')], ['c1'], undefined)).toBeUndefined();
   });
 });

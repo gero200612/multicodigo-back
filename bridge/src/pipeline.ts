@@ -1,5 +1,10 @@
 import type { Publicado } from './publicar.js';
-import { agentesQueTrabajaron, promptDeRelevo, proximoSlot } from './relevo.js';
+import {
+  agentesQueTrabajaron,
+  promptDeRelevo,
+  proximoSlot,
+  slotParaLaTarea,
+} from './relevo.js';
 import {
   esAvisoDeLimite,
   horaDeReset,
@@ -107,6 +112,23 @@ export interface PipelineDeps {
     corrida: Corrida,
     agentes: readonly string[],
   ) => Promise<{ publicados: Publicado[]; pendientes: string[] }>;
+  /**
+   * Mergea a main lo que un slot acaba de construir, al cerrar CADA tarea.
+   *
+   * Es lo que hace posible repartir la cola: el worktree de cada slot nace de
+   * `origin/main` y se rebasea sobre el, asi que sin este merge el slot
+   * siguiente NO ve el trabajo del anterior — y `promptDeRelevo` le dice al
+   * modelo que si, que es el bug que el spec documenta.
+   *
+   * OPCIONAL, y su ausencia apaga TAMBIEN el reparto: repartir sin mergear
+   * dejaria a cada slot construyendo sobre un main viejo, que es peor que no
+   * repartir. Ver
+   * `multicodigo-vm/docs/superpowers/specs/2026-09-09-reparto-por-capacidad-design.md`.
+   */
+  mergearTrabajo?: (
+    proyecto: string,
+    agente: string,
+  ) => Promise<{ ok: boolean; detalle?: string }>;
   /**
    * De donde salen los documentos del proyecto.
    *
@@ -2357,6 +2379,17 @@ export async function correrCola(
   const usuarioId = await deps.store.usuarioDeChat(chatId);
   if (!usuarioId) return;
 
+  // A quien le toco la ultima, para que la proxima le toque a otro. Vive en el
+  // bucle y no en la base a proposito: es de ESTA vuelta de la cola, y si el
+  // bridge se reinicia el reparto arranca de nuevo — perder la rotacion no
+  // pierde trabajo, y una columna mas seria un estado que hay que mantener
+  // sincronizado para nada.
+  let ultimoSlot: string | undefined;
+  // Cuando el merge de una tarea falla, main NO tiene ese trabajo: rotar haria
+  // que el siguiente construya sobre una base incompleta, asi que se queda con
+  // el que lo tiene en su disco.
+  let clavarEn: string | undefined;
+
   for (;;) {
     // Se relee en CADA vuelta y no una sola vez al entrar: la corrida se puede
     // cerrar desde afuera con /cancelar mientras el bucle corre, y un bucle que
@@ -2403,11 +2436,26 @@ export async function correrCola(
       ? 'desatendido'
       : await deps.store.modoDeChat(chatId).catch(() => undefined);
 
+    // A quien le toca. Solo adentro de una corrida y solo con el merge por tarea
+    // cableado: afuera de una corrida la persona eligio el slot con `/agente` y
+    // pisarlo seria desobedecer, y sin merge el reparto romperia la
+    // continuidad. Sin candidatos se usa el de la tarea, que es lo de siempre.
+    const elegido =
+      corrida && deps.mergearTrabajo
+        ? clavarEn ??
+          slotParaLaTarea(
+            await deps.listarAgentes?.(tarea.proyecto).catch(() => []) ?? [],
+            [...(await deps.store.slotsAgotados().catch(() => new Map())).keys()],
+            ultimoSlot,
+          )
+        : undefined;
+    const agente = (elegido ?? tarea.agente) as AgentId;
+
     try {
       const r = await ejecutarTurnoConRelevo(deps, {
         proyectoId: ctx.proyectoId,
         proyecto: tarea.proyecto,
-        agente: tarea.agente as AgentId,
+        agente,
         usuarioId,
         prompt: tarea.texto,
         modo,
@@ -2423,6 +2471,18 @@ export async function correrCola(
       // esto el informe manda a una rama vacia y publicar saltea el repo en
       // silencio. Ver `multicodigo-vm/docs/RETOMAR-relevo-agente.md`.
       await deps.store.cerrarTarea(tarea.id, 'lista', r.texto, r.agente);
+      // `r.agente` y no `agente`: si hubo relevo, el trabajo quedo en el
+      // worktree del que contesto, y ese es el que hay que mergear.
+      ultimoSlot = r.agente;
+      if (corrida && deps.mergearTrabajo) {
+        // Que el merge falle no tira la corrida: el trabajo esta commiteado y
+        // pusheado en la rama del slot, y el cierre lo reintenta. Lo que si
+        // cambia es a quien le toca la que viene.
+        const m = await deps
+          .mergearTrabajo(tarea.proyecto, r.agente)
+          .catch((err) => ({ ok: false, detalle: err instanceof Error ? err.message : 'error' }));
+        clavarEn = m.ok ? undefined : r.agente;
+      }
       // Una que sale bien vuelve el contador a cero: lo que corta la corrida
       // son tres fallos SEGUIDOS, no tres en toda la noche.
       if (corrida) await deps.store.contarFallo(corrida.id, false);

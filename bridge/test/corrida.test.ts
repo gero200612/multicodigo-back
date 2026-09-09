@@ -271,6 +271,8 @@ function arnes(opciones: {
   slots?: string[];
   /** Slots cuyo turno tira `usage_limit`, para forzar el relevo. */
   sinTokens?: string[];
+  /** El merge por tarea. Sin esto no se cablea, como en un server sin el token de admin. */
+  mergearTrabajo?: (proyecto: string, agente: string) => Promise<{ ok: boolean; detalle?: string }>;
 } = {}) {
   const store = new InMemoryStore();
   const ask = vi.fn(async (req: { prompt: string; agent?: string }) => {
@@ -312,6 +314,7 @@ function arnes(opciones: {
     ask,
     ...(opciones.publicar ? { publicar: opciones.publicar } : {}),
     transcribe: vi.fn(async () => ''),
+    ...(opciones.mergearTrabajo ? { mergearTrabajo: opciones.mergearTrabajo } : {}),
     listarAgentes: async () =>
       (opciones.slots ?? []).map((id) => ({ id, cuenta: true, arriba: false })),
   } as unknown as PipelineDeps & { store: InMemoryStore; ask: typeof ask };
@@ -2414,5 +2417,143 @@ describe('quien pide conectar a mano', () => {
     const informe = avisos[avisos.length - 1]!;
     expect(informe).toContain('Corrida terminada');
     expect(informe).toMatch(/a mano/);
+  });
+});
+
+/**
+ * El reparto de la cola entre slots.
+ *
+ * Etapa 1: NO acelera —sigue siendo una tarea a la vez— sino que evita que una
+ * sola cuenta cargue la noche entera. Ver
+ * `multicodigo-vm/docs/superpowers/specs/2026-09-09-reparto-por-capacidad-design.md`.
+ */
+describe('el reparto de la cola', () => {
+  /** Los slots que ejecutaron tareas, en orden, sin contar el analista. */
+  function slotsDeLasTareas(d: ReturnType<typeof arnes>): string[] {
+    return d.ask.mock.calls
+      .filter((c) => !c[0].prompt.includes('--- PLIEGO ---'))
+      .map((c) => (c[0] as { agent?: string }).agent ?? '?');
+  }
+
+  it('adentro de una corrida, cada tarea le toca a un slot distinto', async () => {
+    // `mergearTrabajo` va cableado porque el reparto DEPENDE de el: sin el merge
+    // por tarea, el slot siguiente arranca de un main que no tiene lo anterior.
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      mergearTrabajo: async () => ({ ok: true }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    await correr(d);
+    expect(slotsDeLasTareas(d)).toEqual(['c1', 'c2']);
+  });
+
+  it('con mas tareas que slots, la rotacion da la vuelta', async () => {
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      mergearTrabajo: async () => ({ ok: true }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    await correr(d);
+    expect(slotsDeLasTareas(d)).toEqual(['c1', 'c2', 'c1']);
+  });
+
+  // Afuera de una corrida la persona eligio el slot con `/agente`, y pisarlo
+  // seria desobedecer. El reparto vive donde vive el modo desatendido.
+  it('la cola dictada a mano NO se reparte', async () => {
+    const d = arnes({ slots: ['c1', 'c2'], mergearTrabajo: async () => ({ ok: true }) });
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/cola uno\ndos' }, d);
+    await correr(d);
+    expect(slotsDeLasTareas(d)).toEqual(['c1', 'c1']);
+  });
+
+  // Sin slots que repartir, el comportamiento de siempre: el agente con que se
+  // encolo la tarea. Es el piso.
+  it('sin candidatos usa el agente de la tarea', async () => {
+    const d = arnes({ analista: () => [], mergearTrabajo: async () => ({ ok: true }) });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    await correr(d);
+    expect(slotsDeLasTareas(d)).toEqual(['c1']);
+  });
+});
+
+/**
+ * El merge por tarea, que es lo que hace posible el reparto.
+ *
+ * El worktree de cada slot nace de `origin/main` y se rebasea sobre el, asi que
+ * sin esto el slot siguiente NO ve el trabajo del anterior — y el prompt de
+ * relevo le dice al modelo que si, que es el bug latente que el spec documenta.
+ */
+describe('el merge por tarea', () => {
+  it('cada tarea que sale bien se mergea, con el slot que la hizo', async () => {
+    const mergeados: Array<{ proyecto: string; agente: string }> = [];
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      mergearTrabajo: async (proyecto, agente) => {
+        mergeados.push({ proyecto, agente });
+        return { ok: true };
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    await correr(d);
+    expect(mergeados.map((m) => m.agente)).toEqual(['c1', 'c2']);
+    expect(mergeados.every((m) => m.proyecto === 'stock')).toBe(true);
+  });
+
+  // Una tarea que fallo no dejo nada que mergear.
+  it('una tarea que fallo no se mergea', async () => {
+    let mergeo = false;
+    const d = arnes({
+      analista: () => [],
+      fallan: { uno: 'internal' },
+      mergearTrabajo: async () => {
+        mergeo = true;
+        return { ok: true };
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    await correr(d);
+    expect(mergeo).toBe(false);
+  });
+
+  // El caso que decide si esto es seguro: si el merge fallo, main NO tiene el
+  // trabajo, asi que rotar haria que el siguiente construya sobre una base
+  // incompleta. Se queda con el que lo tiene en su disco. Se pierde el reparto,
+  // no el trabajo.
+  it('si el merge falla, la tarea siguiente se queda en el mismo slot', async () => {
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      mergearTrabajo: async () => ({ ok: false, detalle: 'CONFLICT' }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    await correr(d);
+    const slots = d.ask.mock.calls
+      .filter((c) => !c[0].prompt.includes('--- PLIEGO ---'))
+      .map((c) => (c[0] as { agent?: string }).agent);
+    expect(slots).toEqual(['c1', 'c1']);
+  });
+
+  // Un servidor sin el token de admin no recibe la dependencia, y entonces no
+  // hay merge por tarea NI reparto: repartir sin merge dejaria a cada slot
+  // construyendo sobre un main viejo, que es peor que no repartir.
+  it('sin el merge cableado, no se reparte', async () => {
+    const d = arnes({ analista: () => [], slots: ['c1', 'c2'] });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    await correr(d);
+    const slots = d.ask.mock.calls
+      .filter((c) => !c[0].prompt.includes('--- PLIEGO ---'))
+      .map((c) => (c[0] as { agent?: string }).agent);
+    expect(slots).toEqual(['c1', 'c1']);
   });
 });

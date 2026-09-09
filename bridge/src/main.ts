@@ -319,6 +319,57 @@ const pipelineDeps = {
           });
         }
       : undefined,
+  /**
+   * El merge de CADA tarea a main, que es lo que hace posible repartir la cola.
+   *
+   * Se cablea solo con `GATEWAY_ADMIN_TOKEN`, igual que `publicar`, y por la
+   * misma razon: `/git/merge` va con el bearer de admin, no con el del agente.
+   * Sin el, el pipeline no reparte — repartir sin mergear dejaria a cada slot
+   * construyendo sobre un main viejo.
+   *
+   * Ver
+   * `multicodigo-vm/docs/superpowers/specs/2026-09-09-reparto-por-capacidad-design.md`.
+   */
+  mergearTrabajo: env.GATEWAY_ADMIN_TOKEN
+    ? async (proyecto: string, agente: string) => {
+        const proyectoId = await store.idDeProyecto(proyecto);
+        if (!proyectoId) return { ok: false, detalle: 'el proyecto no esta en la base' };
+
+        const admin = { gatewayUrl: env.GATEWAY_URL, adminToken: env.GATEWAY_ADMIN_TOKEN! };
+        const instalacion = await store.instalacionDeProyecto(proyectoId);
+        const githubToken =
+          instalacion !== undefined && env.PANEL_URL
+            ? await firmarToken(instalacion, {
+                panelUrl: env.PANEL_URL,
+                token: env.BRIDGE_API_TOKEN,
+              })
+            : undefined;
+
+        // TODOS los repos que creo el bot, no solo el que la tarea toco: el
+        // bridge no sabe cual fue —el modelo elige donde escribe— y sobre un
+        // repo que no cambio el `--ff-only` es "Already up to date", o sea
+        // gratis. Los que conecto una persona no se tocan nunca.
+        //
+        // En serie, por la misma razon que el resto de los bucles de repos: si
+        // el segundo falla, el primero ya entro y el detalle puede nombrarlo.
+        const fallos: string[] = [];
+        for (const repo of await store.reposDeProyecto(proyectoId)) {
+          if (!repo.creado_por_el_bot) continue;
+          const m = await mergearEnGateway(
+            { agent: agente, project: proyecto, repo: repo.nombre, creadoPorElBot: true },
+            githubToken,
+            admin,
+          );
+          if (!m.ok) fallos.push(`${repo.nombre}: ${m.output}`);
+        }
+        // Si CUALQUIERA fallo se devuelve el fallo: main quedo sin parte del
+        // trabajo, y el pipeline tiene que dejar de rotar para que la tarea que
+        // viene no se construya sobre eso.
+        return fallos.length === 0
+          ? { ok: true }
+          : { ok: false, detalle: fallos.join(' · ') };
+      }
+    : undefined,
   transcribe: (bytes: Uint8Array, mimeType: string) =>
     transcribeAudio(bytes, mimeType, { apiKey: env.GEMINI_API_KEY }),
   // Los documentos ya no se pasan: el pipeline los lee del store, que se

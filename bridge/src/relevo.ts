@@ -98,6 +98,17 @@ export function promptDeRelevo(
     '',
     'IMPORTANTE: el codigo que se escribio hasta ahora YA ESTA en tu worktree, en',
     'disco. No lo rehagas: leelo primero y segui desde donde quedo.',
+    '',
+    // De DONDE sale, que es lo que antes no se decia y volvia falso el aviso de
+    // arriba en cuanto el otro slot habia construido algo. Cada tarea que
+    // cierra se mergea a main y tu worktree se rebasea sobre `origin/main`, asi
+    // que lo de antes llega por ahi. Si ese merge fallo no llego, y entonces
+    // sigue estando en la rama del otro slot — que este worktree ve, porque el
+    // clone es compartido.
+    `Te llega por main: cada tarea que cierra se mergea ahi y tu worktree se`,
+    `actualiza contra origin/main antes de cada turno. Si algo no aparece, el`,
+    `merge de esa tarea puede haber fallado: mira la rama claude/${slotAnterior}/trabajo,`,
+    `que este repo ya tiene, antes de escribir una linea de cero.`,
   ];
 
   if (recortado !== '') {
@@ -153,4 +164,51 @@ export function agentesQueTrabajaron(
     .filter((t) => t.estado === 'lista')
     .sort((a, b) => a.posicion - b.posicion);
   return [...new Set(listas.map((t) => t.agente))];
+}
+
+/**
+ * A quien le toca la proxima tarea de una corrida.
+ *
+ * ## Por que no alcanza con el relevo
+ *
+ * `proximoSlot` corre cuando una cuenta YA se agoto: es reactivo, y con seis
+ * cuentas eso significa quemar la primera hasta el limite antes de tocar la
+ * segunda. Esto reparte ANTES, por rotacion, para que ninguna cargue la noche
+ * entera. El relevo sigue existiendo y hace lo suyo si el elegido igual falla.
+ *
+ * Ver `multicodigo-vm/docs/superpowers/specs/2026-09-09-reparto-por-capacidad-design.md`.
+ *
+ * ## Por que circular y por orden
+ *
+ * Se sigue por el ORDEN y no por la posicion del anterior en la lista, y eso
+ * importa porque el anterior puede no estar: se apago, lo tomo otra persona, o
+ * se agoto justo despues de trabajar. Buscar su posicion obligaria a decidir que
+ * hacer cuando no aparece, y la respuesta natural —volver al primero— haria que
+ * el reparto se caiga siempre en el mismo slot.
+ *
+ * `undefined` significa "no hay a quien darsela", y NO se inventa un slot: quien
+ * llama cae al agente con que se encolo la tarea, que es el comportamiento de
+ * hoy.
+ */
+export function slotParaLaTarea(
+  candidatos: Candidato[],
+  agotados: readonly string[],
+  ultimo: string | undefined,
+): string | undefined {
+  // Mismo filtro que el relevo, mas los agotados: mandarle trabajo a una cuenta
+  // sin tokens gasta un intento y no produce nada — el turno vuelve con
+  // `usage_limit` y recien ahi actua el relevo.
+  const elegibles = candidatos
+    .filter((c) => c.cuenta && !c.ocupado && !agotados.includes(c.id))
+    // Numerico, para que `c10` no se cuele entre `c1` y `c2`.
+    .sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }))
+    .map((c) => c.id);
+
+  if (elegibles.length === 0) return undefined;
+  if (ultimo === undefined) return elegibles[0];
+
+  // El primero que viene DESPUES del anterior en el orden; si no hay ninguno,
+  // se cerro la vuelta y arranca otra.
+  return elegibles.find((id) => id.localeCompare(ultimo, 'en', { numeric: true }) > 0)
+    ?? elegibles[0];
 }
