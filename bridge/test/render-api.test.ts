@@ -64,3 +64,60 @@ describe('crearServicio', () => {
     expect((r as any).motivo).not.toContain('rnd_clave');
   });
 });
+
+/**
+ * El 400 de "unfetchable", traducido a lo que hay que hacer.
+ *
+ * Render contesta un JSON con el motivo y DESPUES la lista de formatos de URL
+ * que acepta, que es larga y ocupa casi todo el mensaje. Eso llegaba crudo al
+ * informe de la mañana y se leia como un problema de formato — cuando el
+ * formato que mandamos es justo el primero de esa lista.
+ *
+ * Lo verificado el 2026-09-09, por los dos caminos: la app de Render esta
+ * instalada en la org Y tiene acceso al repo, pero el WORKSPACE de Render no ve
+ * ningun repositorio ("No repositories found" en su propio dashboard). Falta el
+ * vinculo instalacion -> workspace, que solo se crea desde Render y necesita un
+ * click de una persona.
+ *
+ * Un pendiente que dice que hacer vale mil veces mas que el error textual.
+ */
+describe('el error de repo no conectado', () => {
+  const RECHAZO = JSON.stringify({
+    message:
+      'passed in repository URL is invalid or unfetchable: ' +
+      'https://github.com/Sincro-arg/saludos5-back. Accepted formats are: ' +
+      'https://github.com/{namespace}/{repository}, https://gitlab.com/{namespace}/{repository}, ' +
+      'https://bitbucket.org/{namespace}/{repository}, or ' +
+      'https://cursor.com/codebase/{namespace}/{repository}. ' +
+      'You may pass in a branch in the branch field.',
+  });
+
+  it('dice que falta conectar el repo, y donde', async () => {
+    const r = await crearServicio('saludos5-back', 'Sincro-arg/saludos5-back', {
+      apiKey: 'k',
+      ownerId: 'o',
+      fetchImpl: (async () => new Response(RECHAZO, { status: 400 })) as typeof fetch,
+    });
+
+    if (r.estado !== 'error') throw new Error(`no es error: ${r.estado}`);
+    expect(r.motivo).toContain('dashboard.render.com');
+    // Y no la lista de formatos, que es lo que tapaba el mensaje.
+    expect(r.motivo).not.toContain('bitbucket.org');
+  });
+
+  // Cualquier otro 400 sigue llegando textual: traducir solo lo que se entiende
+  // es mejor que inventar una explicacion para un error que no se conoce.
+  it('otro error de Render llega tal cual', async () => {
+    const r = await crearServicio('x', 'org/x', {
+      apiKey: 'k',
+      ownerId: 'o',
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ message: 'name already exists' }), {
+          status: 400,
+        })) as typeof fetch,
+    });
+
+    if (r.estado !== 'error') throw new Error(`no es error: ${r.estado}`);
+    expect(r.motivo).toContain('name already exists');
+  });
+});

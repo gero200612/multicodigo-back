@@ -85,12 +85,36 @@ export async function crearServicio(
 
     const texto = await res.text();
     if (!res.ok) {
-      // 600 y no 300: con 300 el error de la primera corrida real quedo
-      // cortado justo antes de la parte util. Render contesta el motivo y
-      // DESPUES la lista de formatos aceptados, que es larga y empuja la causa
-      // afuera del corte — el informe decia "invalid or unfetchable" y la
-      // explicacion no entraba. El tope existe para que un error de Render no
-      // se coma el mensaje de la mañana, y a 600 sigue cumpliendo eso.
+      // Un error conocido se TRADUCE a lo que hay que hacer.
+      //
+      // Render contesta el motivo y despues la lista de formatos de URL que
+      // acepta, que es larga y ocupa casi todo el mensaje: llegaba crudo al
+      // informe de la mañana y se leia como un problema de formato, cuando el
+      // que mandamos es el primero de esa lista.
+      //
+      // Verificado el 2026-09-09 por los dos caminos: la app de Render esta
+      // instalada en la org Y tiene acceso al repo, pero el WORKSPACE no ve
+      // ningun repositorio —"No repositories found" en su propio dashboard—.
+      // Falta el vinculo instalacion -> workspace, que solo se crea desde
+      // Render y necesita un click de una persona: no hay forma de hacerlo
+      // desde la API.
+      //
+      // Por eso el pendiente dice DONDE ir. Un cable suelto que explica como
+      // conectarse vale mil veces mas que el error textual del tercero.
+      if (texto.includes('invalid or unfetchable')) {
+        return {
+          estado: 'error',
+          motivo:
+            'Render no tiene tus repos conectados. Entra a ' +
+            'https://dashboard.render.com/web/new, elegi el workspace y apreta GitHub: ' +
+            'cuando esa pantalla liste los repos, esto anda solo. Es una vez.',
+        };
+      }
+
+      // Lo que no se reconoce llega textual, cortado a 600. Traducir solo lo
+      // que se entiende es mejor que inventarle una explicacion a un error
+      // desconocido. El tope existe para que un error de Render no se coma el
+      // mensaje de la mañana.
       return { estado: 'error', motivo: sinClave(texto.slice(0, 600), deps.apiKey) };
     }
 
