@@ -96,6 +96,14 @@ export interface PipelineDeps {
     installationId: number,
     nombre: string,
     descripcion?: string,
+    /**
+     * Si el repo nace PUBLICO. Sin esto, privado — ver `OpcionesDeCorrida.publico`.
+     *
+     * Va como cuarto parametro y opcional para que un llamador que no lo pase
+     * cree privados: el default de un dato que expone el trabajo de un cliente
+     * no puede depender de que alguien se acuerde de mandarlo.
+     */
+    publico?: boolean,
   ) => Promise<{ ok: true; nombre: string; github: string } | { ok: false; code: string }>;
   /**
    * Publica lo que la corrida construyo: mergea a main y crea el servicio.
@@ -1719,6 +1727,11 @@ async function armarDesdeElNombre(
       // las dos mitades.
       repos: [`${nombre}-front`, `${nombre}-back`],
       referencia: referencias,
+      // El paso a paso NO pregunta por esto y crea repos PRIVADOS, que es el
+      // default seguro: exponer el trabajo de un cliente no puede salir de un
+      // camino donde nadie lo pidió. Para publicos hay que decirlo con
+      // `publico=si` en el comando largo, donde la eleccion queda escrita.
+      publico: false,
     },
     deps,
   );
@@ -1866,7 +1879,12 @@ async function armarProyecto(
   // En paralelo, un 403 llegaria tres veces y el estado seria mas dificil de
   // contar que de arreglar.
   for (const nombre of opciones.repos) {
-    const r = await deps.crearRepo(instalacion, nombre, `Creado desde una corrida de ${proyecto}`);
+    const r = await deps.crearRepo(
+      instalacion,
+      nombre,
+      `Creado desde una corrida de ${proyecto}`,
+      opciones.publico,
+    );
     if (!r.ok) {
       const explicacion = MOTIVO_DE_REPO[r.code] ?? `no se pudo crear "${nombre}" (${r.code})`;
       // Lo que YA se creo se nombra: sin esto, reintentar choca contra

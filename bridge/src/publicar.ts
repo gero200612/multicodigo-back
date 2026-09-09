@@ -39,6 +39,17 @@ export interface PublicarDeps {
    */
   tienePackageJson: (agent: string, project: string, repo: string) => Promise<boolean>;
   usaSqlite?: (agent: string, project: string, repo: string) => Promise<boolean>;
+  /**
+   * Le pide a Render que despliegue un servicio que YA existe.
+   *
+   * Hace falta porque los servicios se crean con `autoDeploy: 'no'`: con un
+   * repo publico Render no se entera de los push, asi que el deploy lo dispara
+   * el sistema cuando mergea. Ver `dispararDeploy` en `render-api.ts`.
+   *
+   * OPCIONAL: sin esto, un repo que ya tiene servicio se saltea igual que
+   * antes. Es el piso de siempre — nunca peor que hoy.
+   */
+  desplegar?: (serviceId: string) => Promise<{ ok: boolean; motivo?: string }>;
 }
 
 /**
@@ -83,7 +94,27 @@ export async function publicar(
     //
     // Se mira ANTES de inspeccionar los worktrees: es el chequeo mas barato de
     // los dos y ahorra una llamada al gateway por agente.
-    if (repo.render_service_id) continue;
+    if (repo.render_service_id) {
+      // Pero NO se saltea sin mas: hay que desplegar lo que la corrida acaba de
+      // mergear. Los servicios se crean con `autoDeploy: 'no'` —con un repo
+      // publico Render no se entera de los push— asi que saltear dejaria el
+      // servicio corriendo la version vieja, sin que nada lo diga.
+      //
+      // El merge ya paso: cada tarea mergea a main durante la corrida.
+      if (deps.desplegar) {
+        const d = await deps.desplegar(repo.render_service_id);
+        if (!d.ok) {
+          // El codigo esta en main y el servicio existe: lo peor que pasa es
+          // que la version nueva tarde hasta el proximo deploy. Se nombra y se
+          // sigue con el repo que viene.
+          pendientes.push(
+            `no pude desplegar ${repo.nombre} en Render (${d.motivo ?? 'sin detalle'}): ` +
+              'dale Deploy a mano desde el dashboard',
+          );
+        }
+      }
+      continue;
+    }
 
     // Cual de los slots tiene ESTE repo. Un repo vacio —como quedo
     // `propinas-front`, que el pliego dejo sin contenido— no tiene nada que

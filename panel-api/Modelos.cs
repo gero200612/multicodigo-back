@@ -207,7 +207,17 @@ public sealed record CuerpoTokenInterno(
 public sealed record CuerpoRepoInterno(
     [property: JsonPropertyName("installation_id")] long InstallationId,
     [property: JsonPropertyName("nombre")] string? Nombre,
-    [property: JsonPropertyName("descripcion")] string? Descripcion);
+    [property: JsonPropertyName("descripcion")] string? Descripcion,
+    /// <summary>
+    /// Si el repo nace PUBLICO. Ausente = privado, que es el default y el que
+    /// protege el trabajo del cliente.
+    ///
+    /// `bool` y no `bool?` a proposito: un JSON sin el campo deserializa en
+    /// `false`, o sea privado. Con `bool?` habria un tercer estado —"no
+    /// dijeron"— y alguien tendria que decidir que significa; que un default
+    /// peligroso salga de un campo ausente es justo lo que no puede pasar.
+    /// </summary>
+    [property: JsonPropertyName("publico")] bool Publico = false);
 
 /// <summary>
 /// Lo que el front manda al volver de GitHub. Solo el id: la cuenta se le

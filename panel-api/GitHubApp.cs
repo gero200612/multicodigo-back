@@ -226,6 +226,18 @@ public sealed class GitHubApp
     /// privado ya se indexó, se clonó y quedó en cachés que nadie controla. Y
     /// lo que se va a crear acá es el trabajo de un cliente.
     ///
+    /// `publico` invierte eso, y existe por una razón concreta: Render no puede
+    /// fetchear un repo privado sin su proveedor conectado al workspace, y ese
+    /// vínculo pide un click que no se puede automatizar —verificado el
+    /// 2026-09-09: la App está instalada en la org con acceso a todos los repos
+    /// y el workspace igual no ve ninguno—. Con el repo público, crear el
+    /// servicio por API funciona.
+    ///
+    /// El default sigue siendo privado y la excepción se pide explícitamente,
+    /// por corrida, con `publico=si`. El argumento de arriba no cambió: lo que
+    /// cambia es que ahora hay una razón para aceptarlo a veces, y quien la
+    /// acepta lo escribe.
+    ///
     /// Con `auto_init: true`, o sea con un commit inicial y un README. Sin eso
     /// el repo nace sin ninguna rama, y un `git push` a `claude/c1/algo` contra
     /// un repo sin HEAD deja el repo sin rama por defecto: la web muestra la
@@ -233,7 +245,7 @@ public sealed class GitHubApp
     /// </summary>
     public async Task<RepoDeGitHub> CrearRepoAsync(
         long installationId, string org, string nombre, string? descripcion,
-        HttpClient http, CancellationToken ct = default)
+        HttpClient http, CancellationToken ct = default, bool publico = false)
     {
         var token = await TokenDeInstalacionAsync(installationId, http, ct);
 
@@ -246,7 +258,7 @@ public sealed class GitHubApp
         {
             name = nombre,
             description = descripcion ?? "",
-            @private = true,
+            @private = !publico,
             auto_init = true,
         });
 

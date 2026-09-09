@@ -2843,3 +2843,90 @@ describe('el reparto se queda en los slots de la persona', () => {
     expect(slotsUsados(d)).toEqual(['c2']);
   });
 });
+
+/**
+ * `publico=si`, la opcion que deja que Render publique solo.
+ *
+ * Los repos del bot nacen PRIVADOS y eso no cambia: `GitHubApp.cs` lo decide
+ * asi con un argumento que sigue valiendo —privado a publico es un click,
+ * publico a privado no borra lo que ya se indexo y clono— y lo que se crea es
+ * el trabajo de un cliente.
+ *
+ * Pero un repo privado no lo puede fetchear Render sin su proveedor conectado,
+ * y ese vinculo pide un click que no se puede automatizar (verificado el
+ * 2026-09-09: la app esta instalada en la org con acceso a todos los repos, y
+ * el workspace igual no ve ninguno). Con el repo publico, `POST /v1/services`
+ * anda —probado, 201—.
+ *
+ * Asi que la eleccion es explicita y por corrida: sin la opcion, nada se
+ * expone.
+ */
+describe('parseOpcionesDeCorrida: publico', () => {
+  it('sin la opcion, los repos son privados', () => {
+    expect(parseOpcionesDeCorrida('# Stock').publico).toBe(false);
+  });
+
+  it('publico=si los hace publicos', () => {
+    expect(parseOpcionesDeCorrida('publico=si\n# Stock').publico).toBe(true);
+  });
+
+  // `no` explicito vale lo mismo que no decir nada: sirve para escribirlo en un
+  // pliego guardado y que se lea sin ambiguedad.
+  it('publico=no es lo mismo que no decirlo', () => {
+    expect(parseOpcionesDeCorrida('publico=no\n# Stock').publico).toBe(false);
+  });
+
+  // Cualquier otra cosa NO prende la opcion. Un `publico=quizas` que se
+  // interprete como si expondria el trabajo de un cliente por un typo.
+  it('un valor que no se entiende deja los repos privados', () => {
+    expect(parseOpcionesDeCorrida('publico=quizas\n# Stock').publico).toBe(false);
+    expect(parseOpcionesDeCorrida('publico=true\n# Stock').publico).toBe(false);
+  });
+
+  it('la opcion no queda en el pliego', () => {
+    expect(parseOpcionesDeCorrida('publico=si\n# Stock').md).toBe('# Stock');
+  });
+});
+
+/**
+ * `publico=si` viaja hasta la creacion del repo.
+ *
+ * El bridge no crea repos: se los pide al panel, que tiene la instalacion de la
+ * GitHub App. Asi que la opcion no sirve de nada si no llega hasta ahi.
+ */
+describe('publico=si llega a crearRepo', () => {
+  function conCrearRepo() {
+    const pedidos: Array<{ nombre: string; publico: boolean }> = [];
+    const d = arnes();
+    const crearRepo = vi.fn(
+      async (_id: number, nombre: string, _desc?: string, publico?: boolean) => {
+        pedidos.push({ nombre, publico: publico === true });
+        return { ok: true as const, nombre, github: `Sincro-arg/${nombre}` };
+      },
+    );
+    Object.assign(d, { crearRepo });
+    return { d, pedidos };
+  }
+
+  async function abrirCon(d: ReturnType<typeof arnes>, opciones: string): Promise<void> {
+    await vincular(d.store, 7);
+    const viejo = await d.store.crearProyecto('anterior', USUARIO);
+    await d.store.guardarInstalacion(viejo, 159882934, 'Sincro-arg');
+    await handleIncoming({ chatId: 7, messageId: 1, text: `/corrida ${opciones}\n${PLIEGO}` }, d);
+  }
+
+  it('con la opcion, los repos se piden publicos', async () => {
+    const { d, pedidos } = conCrearRepo();
+    await abrirCon(d, 'proyecto=acme org=Sincro-arg repos=front,back publico=si');
+    expect(pedidos.length).toBeGreaterThan(0);
+    expect(pedidos.every((p) => p.publico)).toBe(true);
+  });
+
+  // El default, y el que importa: sin decirlo, nada se expone.
+  it('sin la opcion, se piden privados', async () => {
+    const { d, pedidos } = conCrearRepo();
+    await abrirCon(d, 'proyecto=acme2 org=Sincro-arg repos=front,back');
+    expect(pedidos.length).toBeGreaterThan(0);
+    expect(pedidos.some((p) => p.publico)).toBe(false);
+  });
+});

@@ -264,6 +264,24 @@ export interface OpcionesDeCorrida {
   /** Los repos a crear, en el orden en que se nombraron. */
   repos: string[];
   /**
+   * Si los repos a crear nacen PUBLICOS. Por defecto no.
+   *
+   * Los repos del bot son privados, y eso no cambia: la razon esta en
+   * `panel-api/GitHubApp.cs` y sigue valiendo —privado a publico es un click,
+   * publico a privado no borra lo que ya se indexo, se clono y quedo en caches
+   * que nadie controla— y lo que se crea es el trabajo de un cliente.
+   *
+   * Existe porque un repo privado no lo puede fetchear Render sin su proveedor
+   * conectado al workspace, y ese vinculo pide un click que no se puede
+   * automatizar: verificado el 2026-09-09, con la app instalada en la org y
+   * acceso a todos los repos, el workspace igual no ve ninguno. Con el repo
+   * publico, `POST /v1/services` funciona —probado, 201—.
+   *
+   * Asi que la decision es explicita y por corrida. Sin la opcion, nada se
+   * expone.
+   */
+  publico: boolean;
+  /**
    * Repos que ya existen y se montan de REFERENCIA: se leen, no se escriben.
    *
    * Es lo que permite construir mirando un proyecto que ya funciona en vez de
@@ -274,8 +292,8 @@ export interface OpcionesDeCorrida {
   referencia: string[];
 }
 
-/** `rondas=3`, `hasta=07:00`, `proyecto=x`, `org=y`, `repos=a,b`. */
-const OPCION = /^(rondas|hasta|proyecto|org|repos|referencia)=(\S+)$/;
+/** `rondas=3`, `hasta=07:00`, `proyecto=x`, `org=y`, `repos=a,b`, `publico=si`. */
+const OPCION = /^(rondas|hasta|proyecto|org|repos|referencia|publico)=(\S+)$/;
 
 /**
  * La misma forma que valida el CHECK de `repos` y el nombre de proyecto.
@@ -367,6 +385,7 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
   let org: string | undefined;
   let repos: string[] = [];
   let referencia: string[] = [];
+  let publico = false;
   let consumidos = 0;
   for (const t of tokens) {
     const m = OPCION.exec(t);
@@ -382,6 +401,12 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
       if (nombreSano(valor)) proyecto = valor;
     } else if (m[1] === 'org') {
       if (nombreSano(valor)) org = valor;
+    } else if (m[1] === 'publico') {
+      // SOLO `si` prende. Un `publico=quizas` —o un `publico=true` de quien
+      // piensa en ingles— deja los repos privados en vez de exponer el trabajo
+      // de un cliente por un typo. El default nunca puede salir de un valor que
+      // no se entendio.
+      publico = valor.toLowerCase() === 'si';
     } else {
       // Los invalidos se descartan UNO POR UNO en vez de tirar la lista
       // entera: un `repos=front,back,` con una coma de mas no puede costar los
@@ -406,6 +431,7 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
     ...(org ? { org } : {}),
     repos,
     referencia,
+    publico,
   };
 }
 

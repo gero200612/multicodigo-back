@@ -71,9 +71,19 @@ export async function crearServicio(
         repo: `https://github.com/${github}`,
         // main y no la rama del agente: para cuando esto corre, el merge ya paso.
         branch: 'main',
-        // Lo que hace que el sistema no tenga que volver a intervenir nunca:
-        // de aca en adelante cada push lo publica Render sola.
-        autoDeploy: 'yes',
+        // `no`, y el deploy lo dispara el bridge con `dispararDeploy`.
+        //
+        // Render solo hace auto-deploy con un proveedor de Git CONECTADO:
+        // "Auto-deploys require a connected Git provider. Services that use a
+        // prebuilt Docker image or a public Git repository URL must be deployed
+        // manually". Y este camino existe justamente porque ese proveedor no se
+        // puede conectar sin un click que nadie puede automatizar.
+        //
+        // Se pone explicito aunque Render devuelva `yes` al crear —lo hizo en
+        // la prueba del 2026-09-09— porque depender de un comportamiento que su
+        // propia doc desmiente es depender de nada. Y ademas evita el deploy
+        // duplicado si algun dia empezara a funcionar.
+        autoDeploy: 'no',
         serviceDetails: {
           env: 'node',
           plan: PLAN,
@@ -132,5 +142,47 @@ export async function crearServicio(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { estado: 'error', motivo: sinClave(msg, deps.apiKey) };
+  }
+}
+
+/**
+ * Le pide a Render que despliegue lo que hay en main.
+ *
+ * Lo llama el bridge despues de mergear, que es el momento exacto en que hay
+ * algo nuevo: no hay que esperar un webhook ni confiar en el auto-deploy, que
+ * con un repo publico no dispara.
+ *
+ * Devuelve el fallo en vez de tirar: que un deploy no arranque NO puede tirar
+ * el cierre de una corrida. El codigo ya esta en main y el servicio existe —lo
+ * peor que pasa es que la version nueva tarde hasta el proximo deploy— asi que
+ * esto se reporta y se sigue.
+ */
+export async function dispararDeploy(
+  serviceId: string,
+  deps: RenderDeps,
+): Promise<{ ok: true } | { ok: false; motivo: string }> {
+  if (!deps.apiKey) return { ok: false, motivo: 'sin Render configurado' };
+
+  const doFetch = deps.fetchImpl ?? fetch;
+  try {
+    const res = await doFetch(`${API}/services/${serviceId}/deploys`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${deps.apiKey}`,
+        'content-type': 'application/json',
+      },
+      // Sin cuerpo: no se pide una commit ni un clearCache. Se despliega lo que
+      // hay en la rama del servicio, que es main y es lo que se acaba de
+      // mergear.
+      body: '{}',
+    });
+
+    const texto = await res.text();
+    return res.ok
+      ? { ok: true }
+      : { ok: false, motivo: sinClave(texto.slice(0, 300), deps.apiKey) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, motivo: sinClave(msg, deps.apiKey) };
   }
 }

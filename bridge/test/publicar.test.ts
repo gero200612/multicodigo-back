@@ -357,3 +357,85 @@ describe('publicar con varios agentes', () => {
     expect(r.pendientes).toEqual([]);
   });
 });
+
+/**
+ * Un repo que YA tiene servicio: no se crea otro, pero se despliega.
+ *
+ * Antes se salteaba completo con un `continue`, y con `autoDeploy` en `yes` eso
+ * estaba bien: Render se enteraba del push y desplegaba sola. Ahora el
+ * autoDeploy va en `no` —con un repo publico Render no dispara nada— asi que
+ * saltear significaria que el trabajo de la SEGUNDA corrida sobre un proyecto
+ * nunca se publica. El servicio sigue ahi, con la version vieja, y nada lo dice.
+ *
+ * El merge ya paso: cada tarea mergea a main durante la corrida.
+ */
+describe('publicar en un repo que ya tiene servicio', () => {
+  const CON_SERVICIO: RepoDelProyecto[] = [
+    {
+      nombre: 'propinas-back',
+      github_repo: 'Sincro-arg/propinas-back',
+      creado_por_el_bot: true,
+      render_service_id: 'srv-viejo',
+    },
+  ];
+
+  function conServicio(over: Partial<PublicarDeps> = {}): PublicarDeps {
+    return deps({
+      store: {
+        reposDeProyecto: async () => CON_SERVICIO,
+        guardarRenderServiceId: async () => undefined,
+      },
+      ...over,
+    });
+  }
+
+  it('dispara el deploy del servicio que ya existe', async () => {
+    const desplegados: string[] = [];
+    await publicar('p1', 'propinas', ['c2'], {
+      ...conServicio(),
+      desplegar: async (id) => {
+        desplegados.push(id);
+        return { ok: true };
+      },
+    });
+    expect(desplegados).toEqual(['srv-viejo']);
+  });
+
+  // Idempotencia: sigue sin crear un segundo servicio.
+  it('no crea un segundo servicio', async () => {
+    let llamo = false;
+    await publicar('p1', 'propinas', ['c2'], {
+      ...conServicio({
+        render: {
+          apiKey: 'k',
+          ownerId: 'o',
+          fetchImpl: (async () => {
+            llamo = true;
+            return new Response(RESPUESTA_OK, { status: 201 });
+          }) as typeof fetch,
+        },
+      }),
+      desplegar: async () => ({ ok: true }),
+    });
+    expect(llamo).toBe(false);
+  });
+
+  // El trabajo esta en main y el servicio existe: lo peor que pasa es que la
+  // version nueva tarde. Se nombra y se sigue.
+  it('si el deploy no arranca, queda como pendiente', async () => {
+    const r = await publicar('p1', 'propinas', ['c2'], {
+      ...conServicio(),
+      desplegar: async () => ({ ok: false, motivo: 'rate limited' }),
+    });
+    expect(r.pendientes.join(' ')).toContain('rate limited');
+    expect(r.pendientes.join(' ')).toContain('propinas-back');
+  });
+
+  // Sin la dependencia cableada el sistema se comporta como antes: no se
+  // dispara nada y tampoco se inventa un pendiente.
+  it('sin desplegar cableado, no pasa nada', async () => {
+    const r = await publicar('p1', 'propinas', ['c2'], conServicio());
+    expect(r.publicados).toEqual([]);
+    expect(r.pendientes).toEqual([]);
+  });
+});

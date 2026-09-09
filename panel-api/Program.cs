@@ -405,7 +405,8 @@ app.MapPost("/interno/github/repo", async (
         }
         var cuenta = await gh.App.CuentaDeInstalacionAsync(cuerpo.InstallationId, http, ct);
         var creado = await gh.App.CrearRepoAsync(
-            cuerpo.InstallationId, cuenta, nombre, cuerpo.Descripcion, http, ct);
+            cuerpo.InstallationId, cuenta, nombre, cuerpo.Descripcion, http, ct,
+            cuerpo.Publico);
 
         return Results.Ok(new { nombre = creado.Nombre, github_repo = creado.FullName });
     }

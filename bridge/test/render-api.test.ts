@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { crearServicio } from '../src/render-api.js';
+import { crearServicio, dispararDeploy } from '../src/render-api.js';
 
 const OK = {
   apiKey: 'rnd_clave',
@@ -7,7 +7,7 @@ const OK = {
 };
 
 describe('crearServicio', () => {
-  it('crea un web service de Node en main con autoDeploy y devuelve la URL', async () => {
+  it('crea un web service de Node en main y devuelve la URL', async () => {
     let visto: any = null;
     const r = await crearServicio('propinas-back', 'Sincro-arg/propinas-back', {
       ...OK,
@@ -23,7 +23,10 @@ describe('crearServicio', () => {
     expect(r).toEqual({ estado: 'creado', serviceId: 'srv-abc', url: 'https://propinas-back.onrender.com' });
     expect(visto.repo).toBe('https://github.com/Sincro-arg/propinas-back');
     expect(visto.branch).toBe('main');
-    expect(visto.autoDeploy).toBe('yes');
+    // `no`: el deploy lo dispara el bridge al mergear. Antes iba en `yes`,
+    // cuando la feature asumia un proveedor de Git conectado; con repos
+    // publicos Render no dispara nada. Ver `dispararDeploy` mas abajo.
+    expect(visto.autoDeploy).toBe('no');
     expect(visto.serviceDetails.env).toBe('node');
     expect(visto.serviceDetails.envSpecificDetails.buildCommand).toBe('npm install');
     expect(visto.serviceDetails.envSpecificDetails.startCommand).toBe('npm start');
@@ -119,5 +122,74 @@ describe('el error de repo no conectado', () => {
 
     if (r.estado !== 'error') throw new Error(`no es error: ${r.estado}`);
     expect(r.motivo).toContain('name already exists');
+  });
+});
+
+/**
+ * El deploy lo dispara el sistema, no el push.
+ *
+ * Render solo hace auto-deploy con un proveedor de Git conectado: "Auto-deploys
+ * require a connected Git provider. Services that use a prebuilt Docker image or
+ * a public Git repository URL must be deployed manually". Y este camino existe
+ * justamente porque ese proveedor NO se puede conectar sin un click.
+ *
+ * Asi que `autoDeploy` va en `no` explicito —aunque Render lo devuelva en `yes`
+ * al crear, que es lo que hizo en la prueba— y el deploy lo pide el bridge
+ * cuando mergea a main. Es el momento exacto en que hay algo nuevo, y no
+ * depende de que un webhook llegue.
+ */
+describe('el deploy se dispara a mano', () => {
+  it('el servicio se crea con autoDeploy en no', async () => {
+    let cuerpo = '';
+    await crearServicio('x-back', 'org/x-back', {
+      apiKey: 'k',
+      ownerId: 'o',
+      fetchImpl: (async (_u: string, init: RequestInit) => {
+        cuerpo = String(init.body);
+        return new Response(
+          JSON.stringify({
+            service: { id: 'srv-1', serviceDetails: { url: 'https://x.onrender.com' } },
+          }),
+          { status: 201 },
+        );
+      }) as unknown as typeof fetch,
+    });
+
+    expect(JSON.parse(cuerpo).autoDeploy).toBe('no');
+  });
+
+  it('dispararDeploy le pide a Render un deploy del servicio', async () => {
+    let url = '';
+    let metodo = '';
+    const r = await dispararDeploy('srv-1', {
+      apiKey: 'k',
+      ownerId: 'o',
+      fetchImpl: (async (u: string, init: RequestInit) => {
+        url = u;
+        metodo = String(init.method);
+        return new Response(JSON.stringify({ id: 'dep-1' }), { status: 201 });
+      }) as unknown as typeof fetch,
+    });
+
+    expect(url).toContain('/services/srv-1/deploys');
+    expect(metodo).toBe('POST');
+    expect(r.ok).toBe(true);
+  });
+
+  // Que el deploy no salga NO puede tirar el cierre de la corrida: el codigo ya
+  // esta en main y el servicio existe. Se reporta y sigue.
+  it('un fallo al disparar se devuelve, no explota', async () => {
+    const r = await dispararDeploy('srv-1', {
+      apiKey: 'k',
+      ownerId: 'o',
+      fetchImpl: (async () => new Response('{"message":"nope"}', { status: 400 })) as typeof fetch,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.motivo).toContain('nope');
+  });
+
+  it('sin Render configurado no intenta nada', async () => {
+    const r = await dispararDeploy('srv-1', {});
+    expect(r.ok).toBe(false);
   });
 });

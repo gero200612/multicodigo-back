@@ -14,6 +14,7 @@ import { PgStore, type FilaDeDocumento } from './store.js';
 import { askAgent, listarAgentes } from './agents-client.js';
 import { firmarToken, crearRepo } from './panel-client.js';
 import { publicar } from './publicar.js';
+import { dispararDeploy } from './render-api.js';
 import type { Corrida } from './corrida.js';
 import { mergearEnGateway, inspeccionarRepo } from './gateway-admin.js';
 import { fetchPending, sendDecision } from './approvals.js';
@@ -263,11 +264,20 @@ const pipelineDeps = {
   // Igual que arriba: sin PANEL_URL no hay quien firme, y `/corrida` lo dice en
   // vez de crear un proyecto sin los repos que se le pidieron.
   crearRepo: env.PANEL_URL
-    ? (id: number, nombre: string, descripcion?: string) =>
-        crearRepo(id, nombre, descripcion, {
-          panelUrl: env.PANEL_URL!,
-          token: env.BRIDGE_API_TOKEN,
-        })
+    ? (id: number, nombre: string, descripcion?: string, publico?: boolean) =>
+        crearRepo(
+          id,
+          nombre,
+          descripcion,
+          {
+            panelUrl: env.PANEL_URL!,
+            token: env.BRIDGE_API_TOKEN,
+          },
+          // `?? false`: si el llamador no lo dice, privado. El default de un
+          // dato que expone el trabajo de un cliente no puede salir de un
+          // `undefined`.
+          publico ?? false,
+        )
     : undefined,
   /**
    * El cierre publica: mergea a main y crea el servicio en Render.
@@ -316,6 +326,14 @@ const pipelineDeps = {
               (await inspeccionarRepo({ agent, project, repo }, admin)).tienePackageJson,
             usaSqlite: async (agent, project, repo) =>
               (await inspeccionarRepo({ agent, project, repo }, admin)).usaSqlite,
+            // El deploy de un servicio que ya existe. Los servicios se crean
+            // con `autoDeploy: 'no'` porque con un repo publico Render no se
+            // entera de los push, asi que el que dispara es el sistema.
+            desplegar: (serviceId) =>
+              dispararDeploy(serviceId, {
+                apiKey: env.RENDER_API_KEY,
+                ownerId: env.RENDER_OWNER_ID,
+              }),
           });
         }
       : undefined,

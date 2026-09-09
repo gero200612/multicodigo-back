@@ -82,6 +82,14 @@ export async function crearRepo(
   nombre: string,
   descripcion: string | undefined,
   deps: PanelDeps,
+  /**
+   * Si el repo nace PUBLICO. Por defecto no.
+   *
+   * El panel es el que decide de verdad —tiene la instalacion de la App— y su
+   * default tambien es privado: esto le pide una excepcion explicita, no le
+   * cambia la politica. Ver `OpcionesDeCorrida.publico` y `GitHubApp.cs`.
+   */
+  publico = false,
 ): Promise<{ ok: true; nombre: string; github: string } | { ok: false; code: string }> {
   const doFetch = deps.fetchImpl ?? fetch;
   try {
@@ -91,7 +99,9 @@ export async function crearRepo(
         'content-type': 'application/json',
         authorization: `Bearer ${deps.token}`,
       },
-      body: JSON.stringify({ installation_id: installationId, nombre, descripcion }),
+      // `publico` va SIEMPRE, tambien cuando es false: un panel que lo lee sabe
+      // que la decision se tomo, y no queda dependiendo de que el campo falte.
+      body: JSON.stringify({ installation_id: installationId, nombre, descripcion, publico }),
       // Mas largo que el de firmar: crear un repo es una escritura en GitHub
       // con `auto_init`, o sea que del otro lado se arma un commit inicial.
       signal: AbortSignal.timeout(30_000),
