@@ -265,11 +265,18 @@ function arnes(opciones: {
   /** El publicar del cierre. Sin esto no se cablea, como en un server sin Render. */
   publicar?: (
     corrida: unknown,
-    agente: string,
+    agentes: readonly string[],
   ) => Promise<{ publicados: { repo: string; url: string }[]; pendientes: string[] }>;
+  /** Slots con cuenta, para que haya relevo. Sin esto, `listarAgentes` no da ninguno. */
+  slots?: string[];
+  /** Slots cuyo turno tira `usage_limit`, para forzar el relevo. */
+  sinTokens?: string[];
 } = {}) {
   const store = new InMemoryStore();
-  const ask = vi.fn(async (req: { prompt: string }) => {
+  const ask = vi.fn(async (req: { prompt: string; agent?: string }) => {
+    // `agent` es el slot al que le toco el turno, y el relevo lo cambia entre
+    // intentos: es lo que estos tests miran para saber quien contesto.
+    if (req.agent && opciones.sinTokens?.includes(req.agent)) throw new Error('usage_limit');
     const esAnalisis = req.prompt.includes('--- PLIEGO ---');
     if (esAnalisis) {
       const corrida = await store.corridaAbierta(7);
@@ -305,7 +312,8 @@ function arnes(opciones: {
     ask,
     ...(opciones.publicar ? { publicar: opciones.publicar } : {}),
     transcribe: vi.fn(async () => ''),
-    listarAgentes: async () => [],
+    listarAgentes: async () =>
+      (opciones.slots ?? []).map((id) => ({ id, cuenta: true, arriba: false })),
   } as unknown as PipelineDeps & { store: InMemoryStore; ask: typeof ask };
   return deps;
 }
@@ -2208,5 +2216,116 @@ describe('cerrarConInforme publica', () => {
     const informe = avisos[avisos.length - 1]!;
     expect(informe).toContain('Corrida terminada');
     expect(informe).not.toContain('Publicado:');
+  });
+});
+
+/**
+ * De quien es el trabajo cuando hubo un relevo.
+ *
+ * El bug que estos tests fijan estuvo en produccion y el informe lo mostraba
+ * sin poder explicarlo: en la corrida `gastos` del 2026-09-09 el trabajo real
+ * quedo en `claude/c1/trabajo` —los dos commits, el `node_modules`, todo— y el
+ * informe decia "El trabajo esta en claude/c2/*", una rama con un
+ * "Initial commit" y nada mas.
+ *
+ * La causa: `cola_tareas.agente` guardaba el ASIGNADO y `getActiveAgent`
+ * devuelve el ultimo slot activo, que suele ser el del analista. Ninguno de los
+ * dos dice quien trabajo. Ver `multicodigo-vm/docs/RETOMAR-relevo-agente.md`.
+ */
+describe('el informe nombra la rama donde esta el trabajo', () => {
+  it('despues de un relevo nombra el slot que trabajo, no el asignado', async () => {
+    const d = arnes({ analista: () => [], slots: ['c1', 'c2'], sinTokens: ['c1'] });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    const avisos = await correr(d);
+    const informe = avisos[avisos.length - 1]!;
+    expect(informe).toContain('claude/c2/*');
+    expect(informe).not.toContain('claude/c1/*');
+  });
+
+  // Cowork: los dos tienen commits y las dos ramas van a main, asi que el
+  // informe nombra las dos. Nombrar una sola manda a buscar la otra a ciegas.
+  it('con dos slots que trabajaron, nombra las dos ramas', async () => {
+    const d = arnes({ analista: () => [], slots: ['c1', 'c2'], sinTokens: [] });
+    await abrir(d);
+    const c = await d.store.corridaAbierta(7);
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: c!.proyecto,
+      textos: ['uno'],
+      corridaId: c!.id,
+    });
+    await d.store.encolar(7, {
+      agente: 'c2',
+      proyecto: c!.proyecto,
+      textos: ['dos'],
+      corridaId: c!.id,
+    });
+    const avisos = await correr(d);
+    const informe = avisos[avisos.length - 1]!;
+    expect(informe).toContain('claude/c1/*');
+    expect(informe).toContain('claude/c2/*');
+  });
+
+  // Sin nada hecho no hay rama con trabajo, y el informe no puede inventar una.
+  // Cae al comportamiento de antes: el slot activo, o el default.
+  it('sin ninguna tarea hecha, el prefijo es el de siempre', async () => {
+    const d = arnes({ analista: () => [], fallan: { uno: 'internal' } });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    const avisos = await correr(d);
+    expect(avisos[avisos.length - 1]!).toContain('claude/c1/*');
+  });
+});
+
+/**
+ * Y lo mismo para publicar, que es donde el bug costaba trabajo hecho: le
+ * preguntaba por el worktree del slot equivocado, no encontraba `package.json`
+ * y salteaba el repo en silencio.
+ */
+describe('publicar recibe los slots que trabajaron', () => {
+  it('despues de un relevo recibe el que trabajo', async () => {
+    let recibidos: readonly string[] = [];
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      sinTokens: ['c1'],
+      publicar: async (_c, agentes) => {
+        recibidos = agentes;
+        return { publicados: [], pendientes: [] };
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    await correr(d);
+    expect(recibidos).toEqual(['c2']);
+  });
+
+  it('con cowork recibe los dos, en el orden en que trabajaron', async () => {
+    let recibidos: readonly string[] = [];
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      publicar: async (_c, agentes) => {
+        recibidos = agentes;
+        return { publicados: [], pendientes: [] };
+      },
+    });
+    await abrir(d);
+    const c = await d.store.corridaAbierta(7);
+    await d.store.encolar(7, {
+      agente: 'c2',
+      proyecto: c!.proyecto,
+      textos: ['uno'],
+      corridaId: c!.id,
+    });
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: c!.proyecto,
+      textos: ['dos'],
+      corridaId: c!.id,
+    });
+    await correr(d);
+    expect(recibidos).toEqual(['c2', 'c1']);
   });
 });

@@ -632,7 +632,24 @@ export interface Store {
    * llevarian la misma tarea y el agente la haria dos veces.
    */
   tomarProxima(chatId: number, corridaId?: string): Promise<Tarea | undefined>;
-  cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void>;
+  /**
+   * Cierra la tarea y, si hubo relevo, corrige de quien es el trabajo.
+   *
+   * `agenteReal` es el slot que CONTESTO, que despues de un relevo no es el que
+   * se encolo. Antes no se guardaba en ningun lado y el informe mandaba a una
+   * rama vacia; la feature de publicar heredaba el mismo error y salteaba el
+   * repo en silencio. Ver `multicodigo-vm/docs/RETOMAR-relevo-agente.md`.
+   *
+   * Opcional: sin relevo no hay nada que corregir, y quien no lo pasa deja la
+   * fila como estaba. Un `undefined` NUNCA borra el agente — el informe lo usa
+   * para nombrar la rama.
+   */
+  cerrarTarea(
+    id: string,
+    estado: 'lista' | 'fallida',
+    resultado?: string,
+    agenteReal?: string,
+  ): Promise<void>;
   /**
    * Cancela lo PENDIENTE. Devuelve cuantas saco.
    *
@@ -1282,11 +1299,17 @@ export class InMemoryStore implements Store {
     return t;
   }
 
-  async cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void> {
+  async cerrarTarea(
+    id: string,
+    estado: 'lista' | 'fallida',
+    resultado?: string,
+    agenteReal?: string,
+  ): Promise<void> {
     const t = this.cola.find((x) => x.id === id);
     if (!t) return;
     t.estado = estado;
     t.resultado = resultado;
+    if (agenteReal) t.agente = agenteReal;
   }
 
   async cancelarCola(chatId: number, corridaId?: string): Promise<number> {
@@ -2407,10 +2430,21 @@ export class PgStore implements Store {
     return r.rows[0] ? this.aTarea(r.rows[0]) : undefined;
   }
 
-  async cerrarTarea(id: string, estado: 'lista' | 'fallida', resultado?: string): Promise<void> {
+  async cerrarTarea(
+    id: string,
+    estado: 'lista' | 'fallida',
+    resultado?: string,
+    agenteReal?: string,
+  ): Promise<void> {
+    // `COALESCE` y no dos queries ni un `if`: sin relevo llega `null` y la
+    // columna se sobreescribe con lo que ya tenia. Un `UPDATE ... = null`
+    // pelado dejaria la tarea sin agente y el informe sin rama que nombrar.
     await this.pool.query(
-      'UPDATE cola_tareas SET estado = $2, resultado = $3, cerrado_en = now() WHERE id = $1',
-      [id, estado, resultado ?? null],
+      `UPDATE cola_tareas
+          SET estado = $2, resultado = $3, cerrado_en = now(),
+              agente = COALESCE($4, agente)
+        WHERE id = $1`,
+      [id, estado, resultado ?? null, agenteReal ?? null],
     );
   }
 

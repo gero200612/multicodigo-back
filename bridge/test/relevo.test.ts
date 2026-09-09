@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { promptDeRelevo, proximoSlot } from '../src/relevo.js';
+import { agentesQueTrabajaron, promptDeRelevo, proximoSlot } from '../src/relevo.js';
+import type { Tarea } from '../src/cola.js';
 
 const CON_CUENTA = (id: string) => ({ id, cuenta: true, arriba: false });
 
@@ -137,5 +138,71 @@ describe('proximoSlot y los slots ocupados', () => {
   it('sin el dato de ocupado, el slot sigue siendo candidato', () => {
     const candidatos = [{ id: 'c2', cuenta: true, arriba: true }];
     expect(proximoSlot(candidatos, ['c1'])).toBe('c2');
+  });
+});
+
+/**
+ * De que slots quedo el trabajo de una corrida.
+ *
+ * Es la pieza que arregla el bug de
+ * `multicodigo-vm/docs/RETOMAR-relevo-agente.md`: el informe nombraba
+ * `claude/c2/*` cuando el trabajo estaba en `claude/c1/trabajo`.
+ */
+describe('de que slots quedo el trabajo', () => {
+  const tarea = (over: Partial<Tarea>): Tarea => ({
+    id: 'x',
+    chatId: 7,
+    agente: 'c1',
+    proyecto: 'gastos',
+    texto: 't',
+    posicion: 1,
+    estado: 'lista',
+    ...over,
+  });
+
+  it('el agente de la tarea que salio bien', () => {
+    expect(agentesQueTrabajaron([tarea({ agente: 'c1' })])).toEqual(['c1']);
+  });
+
+  // El caso del bug: la tarea se ASIGNO a c2 y la hizo c1 tras el relevo. Lo
+  // que vale es lo que quedo escrito al cerrarla, no lo que se encolo.
+  it('despues de un relevo, el que relevo y no el asignado', () => {
+    expect(agentesQueTrabajaron([tarea({ agente: 'c1' })])).toEqual(['c1']);
+  });
+
+  // Cowork: dos slots construyendo en el mismo proyecto. Los DOS tienen trabajo
+  // y las dos ramas van a main, asi que las dos se nombran.
+  it('con cowork devuelve los dos, en el orden en que trabajaron', () => {
+    const tareas = [
+      tarea({ id: 'a', agente: 'c2', posicion: 1 }),
+      tarea({ id: 'b', agente: 'c1', posicion: 2 }),
+    ];
+    expect(agentesQueTrabajaron(tareas)).toEqual(['c2', 'c1']);
+  });
+
+  it('un slot con varias tareas aparece una sola vez', () => {
+    const tareas = [
+      tarea({ id: 'a', agente: 'c1', posicion: 1 }),
+      tarea({ id: 'b', agente: 'c1', posicion: 2 }),
+    ];
+    expect(agentesQueTrabajaron(tareas)).toEqual(['c1']);
+  });
+
+  // Una tarea que fallo no dejo nada que mergear, y una pendiente ni empezo.
+  // Nombrar su slot manda a una rama vacia, que es el bug de arriba con otra
+  // cara.
+  it('lo que fallo o quedo pendiente no cuenta', () => {
+    const tareas = [
+      tarea({ id: 'a', agente: 'c2', estado: 'fallida' }),
+      tarea({ id: 'b', agente: 'c3', estado: 'pendiente' }),
+      tarea({ id: 'c', agente: 'c1', estado: 'lista' }),
+    ];
+    expect(agentesQueTrabajaron(tareas)).toEqual(['c1']);
+  });
+
+  // Sin nada hecho no hay rama que nombrar. Quien llama decide que poner, y
+  // esta funcion no inventa un slot para llenar el hueco.
+  it('una corrida sin ninguna tarea hecha no devuelve nada', () => {
+    expect(agentesQueTrabajaron([tarea({ estado: 'fallida' })])).toEqual([]);
   });
 });

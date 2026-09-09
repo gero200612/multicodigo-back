@@ -277,12 +277,12 @@ const pipelineDeps = {
    * vuelve a terminar en "conectalo a mano", que es el piso de esta feature.
    *
    * Este adaptador existe para traducir: el pipeline tiene una corrida y
-   * `publicar()` quiere el id del proyecto y el agente. Traducir aca deja al
+   * `publicar()` quiere el id del proyecto y los agentes. Traducir aca deja al
    * pipeline sin tener que aprender de donde sale cada cosa.
    */
   publicar:
     env.RENDER_API_KEY && env.GATEWAY_ADMIN_TOKEN
-      ? async (corrida: Corrida, agente: string) => {
+      ? async (corrida: Corrida, agentes: readonly string[]) => {
           const proyectoId = await store.idDeProyecto(corrida.proyecto);
           // Sin proyecto en la base no hay repos que publicar. Pasa cuando la
           // corrida se armo por un camino que no creo el proyecto.
@@ -305,14 +305,17 @@ const pipelineDeps = {
                 })
               : undefined;
 
-          return publicar(proyectoId, corrida.proyecto, agente, {
+          return publicar(proyectoId, corrida.proyecto, agentes, {
             store,
             render: { apiKey: env.RENDER_API_KEY, ownerId: env.RENDER_OWNER_ID },
             mergear: (req) => mergearEnGateway(req, githubToken, admin),
-            tienePackageJson: async (project, repo) =>
-              (await inspeccionarRepo({ agent: agente, project, repo }, admin)).tienePackageJson,
-            usaSqlite: async (project, repo) =>
-              (await inspeccionarRepo({ agent: agente, project, repo }, admin)).usaSqlite,
+            // El `agent` viene de arriba y no se cierra aca: el worktree es de
+            // un slot, y con varios hay que poder preguntar por cada uno.
+            // Preguntarle al equivocado es el bug que esto arregla.
+            tienePackageJson: async (agent, project, repo) =>
+              (await inspeccionarRepo({ agent, project, repo }, admin)).tienePackageJson,
+            usaSqlite: async (agent, project, repo) =>
+              (await inspeccionarRepo({ agent, project, repo }, admin)).usaSqlite,
           });
         }
       : undefined,

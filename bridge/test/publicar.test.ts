@@ -34,7 +34,7 @@ function deps(over: Partial<PublicarDeps> = {}): PublicarDeps {
 
 describe('publicar', () => {
   it('mergea y publica un repo del bot, y devuelve la URL', async () => {
-    const r = await publicar('p1', 'propinas', 'c2', deps());
+    const r = await publicar('p1', 'propinas', ['c2'], deps());
     expect(r.publicados).toEqual([{ repo: 'propinas-back', url: 'https://x.onrender.com' }]);
   });
 
@@ -45,7 +45,7 @@ describe('publicar', () => {
     const r = await publicar(
       'p1',
       'propinas',
-      'c2',
+      ['c2'],
       deps({
         store: {
           reposDeProyecto: async () => [
@@ -75,7 +75,7 @@ describe('publicar', () => {
     await publicar(
       'p1',
       'propinas',
-      'c2',
+      ['c2'],
       deps({
         store: {
           reposDeProyecto: async () => [{ ...UN_REPO[0]!, render_service_id: 'srv-viejo' }],
@@ -97,7 +97,7 @@ describe('publicar', () => {
   // El front de una corrida real quedo asi, vacio: no falta nada, no hay nada
   // que arrancar.
   it('un repo sin package.json se saltea sin ruido', async () => {
-    const r = await publicar('p1', 'propinas', 'c2', deps({ tienePackageJson: async () => false }));
+    const r = await publicar('p1', 'propinas', ['c2'], deps({ tienePackageJson: async () => false }));
     expect(r.publicados).toEqual([]);
     expect(r.pendientes).toEqual([]);
   });
@@ -108,7 +108,7 @@ describe('publicar', () => {
     const r = await publicar(
       'p1',
       'propinas',
-      'c2',
+      ['c2'],
       deps({
         mergear: async () => ({ ok: false, output: 'Not possible to fast-forward' }),
         render: {
@@ -128,7 +128,7 @@ describe('publicar', () => {
 
   // El piso de esta feature es "nunca peor que hoy".
   it('sin Render configurado vuelve el pendiente de siempre', async () => {
-    const r = await publicar('p1', 'propinas', 'c2', deps({ render: {} }));
+    const r = await publicar('p1', 'propinas', ['c2'], deps({ render: {} }));
     expect(r.publicados).toEqual([]);
     expect(r.pendientes.join(' ')).toContain('a mano');
   });
@@ -137,7 +137,7 @@ describe('publicar', () => {
     const r = await publicar(
       'p1',
       'propinas',
-      'c2',
+      ['c2'],
       deps({
         store: {
           reposDeProyecto: async () => [
@@ -159,7 +159,7 @@ describe('publicar', () => {
     await publicar(
       'p1',
       'propinas',
-      'c2',
+      ['c2'],
       deps({
         store: {
           reposDeProyecto: async () => UN_REPO,
@@ -173,7 +173,7 @@ describe('publicar', () => {
   });
 
   it('el pendiente de las env vars nombra el repo y la URL', async () => {
-    const r = await publicar('p1', 'propinas', 'c2', deps());
+    const r = await publicar('p1', 'propinas', ['c2'], deps());
     const env = r.pendientes.find((p) => p.includes('env vars'));
     expect(env).toContain('propinas-back');
     expect(env).toContain('https://x.onrender.com');
@@ -181,12 +181,12 @@ describe('publicar', () => {
 
   // Sin esto, la primera perdida de datos manda a buscar un bug que no existe.
   it('avisa del disco efimero si el repo usa sqlite', async () => {
-    const r = await publicar('p1', 'propinas', 'c2', deps({ usaSqlite: async () => true }));
+    const r = await publicar('p1', 'propinas', ['c2'], deps({ usaSqlite: async () => true }));
     expect(r.pendientes.join(' ')).toContain('SQLite');
   });
 
   it('no avisa del disco si el repo no usa sqlite', async () => {
-    const r = await publicar('p1', 'propinas', 'c2', deps({ usaSqlite: async () => false }));
+    const r = await publicar('p1', 'propinas', ['c2'], deps({ usaSqlite: async () => false }));
     expect(r.pendientes.join(' ')).not.toContain('SQLite');
   });
 
@@ -197,7 +197,7 @@ describe('publicar', () => {
     const r = await publicar(
       'p1',
       'propinas',
-      'c2',
+      ['c2'],
       deps({
         store: {
           reposDeProyecto: async () => [
@@ -219,5 +219,141 @@ describe('publicar', () => {
     );
     expect(r.publicados.map((p) => p.repo)).toEqual(['a']);
     expect(r.pendientes.join(' ')).toContain('b');
+  });
+});
+
+/**
+ * Varios slots con trabajo en el mismo repo.
+ *
+ * Pasa por dos caminos: el relevo —un slot se queda sin tokens y otro sigue— y
+ * cowork, donde dos slots construyen el mismo proyecto a la vez. En los dos, el
+ * trabajo esta repartido en ramas distintas y TODAS van a main: elegir una
+ * seria tirar la otra.
+ *
+ * Ver `multicodigo-vm/docs/RETOMAR-relevo-agente.md`.
+ */
+describe('publicar con varios agentes', () => {
+  it('mergea la rama de cada uno, en orden, y crea UN solo servicio', async () => {
+    const mergeados: string[] = [];
+    let servicios = 0;
+    const r = await publicar(
+      'p1',
+      'propinas',
+      ['c2', 'c1'],
+      deps({
+        mergear: async (req) => {
+          mergeados.push(req.agent);
+          return { ok: true, output: '' };
+        },
+        render: {
+          apiKey: 'k',
+          ownerId: 'o',
+          fetchImpl: (async () => {
+            servicios += 1;
+            return new Response(RESPUESTA_OK, { status: 201 });
+          }) as typeof fetch,
+        },
+      }),
+    );
+    expect(mergeados).toEqual(['c2', 'c1']);
+    expect(servicios).toBe(1);
+    expect(r.publicados).toEqual([{ repo: 'propinas-back', url: 'https://x.onrender.com' }]);
+  });
+
+  // El worktree de un slot que no toco ESTE repo no tiene nada: es el caso del
+  // relevo, donde el slot original quedo con el repo vacio. Mergear ahi no
+  // aporta nada y el gateway ni tiene rama que resolver.
+  it('el slot que no tiene nada en ese repo no se mergea', async () => {
+    const mergeados: string[] = [];
+    await publicar(
+      'p1',
+      'propinas',
+      ['c2', 'c1'],
+      deps({
+        tienePackageJson: async (agent) => agent === 'c1',
+        mergear: async (req) => {
+          mergeados.push(req.agent);
+          return { ok: true, output: '' };
+        },
+      }),
+    );
+    expect(mergeados).toEqual(['c1']);
+  });
+
+  it('si ninguno tiene nada en ese repo, se saltea sin ruido', async () => {
+    const r = await publicar(
+      'p1',
+      'propinas',
+      ['c2', 'c1'],
+      deps({ tienePackageJson: async () => false }),
+    );
+    expect(r.publicados).toEqual([]);
+    expect(r.pendientes).toEqual([]);
+  });
+
+  // El segundo merge puede conflictuar con el primero si tocaron los mismos
+  // archivos. Que main tenga UNA de las dos ramas no es un main vacio: hay
+  // codigo real corriendo, asi que la URL vale y lo que falta se nombra.
+  it('si un merge falla y otro anda, publica igual y nombra el que falto', async () => {
+    const r = await publicar(
+      'p1',
+      'propinas',
+      ['c2', 'c1'],
+      deps({
+        mergear: async (req) =>
+          req.agent === 'c1'
+            ? { ok: false, output: 'CONFLICT (content)' }
+            : { ok: true, output: '' },
+      }),
+    );
+    expect(r.publicados.map((p) => p.repo)).toEqual(['propinas-back']);
+    const pend = r.pendientes.join(' ');
+    expect(pend).toContain('c1');
+    expect(pend).toContain('CONFLICT');
+  });
+
+  // Si NINGUNA rama entro, main quedo como estaba y una URL contra eso promete
+  // algo que no esta. Es la misma regla que con un solo agente.
+  it('si fallan todos los merges, NO se crea el servicio', async () => {
+    let llamo = false;
+    const r = await publicar(
+      'p1',
+      'propinas',
+      ['c2', 'c1'],
+      deps({
+        mergear: async () => ({ ok: false, output: 'CONFLICT (content)' }),
+        render: {
+          apiKey: 'k',
+          ownerId: 'o',
+          fetchImpl: (async () => {
+            llamo = true;
+            return new Response(RESPUESTA_OK, { status: 201 });
+          }) as typeof fetch,
+        },
+      }),
+    );
+    expect(llamo).toBe(false);
+    expect(r.publicados).toEqual([]);
+    expect(r.pendientes.join(' ')).toContain('propinas-back');
+  });
+
+  // Sin ningun agente no hay worktree que mirar. Pasa con una corrida que cerro
+  // completa sin ninguna tarea hecha, y el piso es no tocar nada.
+  it('sin agentes no mergea ni publica nada', async () => {
+    let mergeo = false;
+    const r = await publicar(
+      'p1',
+      'propinas',
+      [],
+      deps({
+        mergear: async () => {
+          mergeo = true;
+          return { ok: true, output: '' };
+        },
+      }),
+    );
+    expect(mergeo).toBe(false);
+    expect(r.publicados).toEqual([]);
+    expect(r.pendientes).toEqual([]);
   });
 });

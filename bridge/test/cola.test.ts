@@ -93,6 +93,26 @@ describe('la cola en el store', () => {
     expect(todas[0]!.resultado).toBe('quedo hecho');
   });
 
+  // El arreglo del bug del relevo: `agente` guardaba el ASIGNADO y nadie
+  // registraba que el trabajo se mudo de slot. Ver
+  // `multicodigo-vm/docs/RETOMAR-relevo-agente.md`.
+  it('cerrar una tarea guarda el agente que la hizo de verdad', async () => {
+    const store = await conCola(['uno']);
+    const t = await store.tomarProxima(CHAT);
+    expect(t!.agente).toBe('c1');
+    await store.cerrarTarea(t!.id, 'lista', 'quedo hecho', 'c3');
+    expect((await store.tareasDeChat(CHAT))[0]!.agente).toBe('c3');
+  });
+
+  // Sin relevo no hay nada que corregir, y un `undefined` no puede borrar el
+  // agente: el informe lo usa para nombrar la rama.
+  it('sin agente real, el de la tarea queda como estaba', async () => {
+    const store = await conCola(['uno']);
+    const t = await store.tomarProxima(CHAT);
+    await store.cerrarTarea(t!.id, 'lista', 'quedo hecho');
+    expect((await store.tareasDeChat(CHAT))[0]!.agente).toBe('c1');
+  });
+
   // Cancelar es para "pare todo": lo que ya corre no se toca —no hay forma de
   // abortar un turno en vuelo— pero nada mas arranca.
   it('cancelar vacia lo pendiente y devuelve cuantas saco', async () => {

@@ -1,5 +1,5 @@
 import type { Publicado } from './publicar.js';
-import { promptDeRelevo, proximoSlot } from './relevo.js';
+import { agentesQueTrabajaron, promptDeRelevo, proximoSlot } from './relevo.js';
 import {
   esAvisoDeLimite,
   horaDeReset,
@@ -96,13 +96,16 @@ export interface PipelineDeps {
    * OPCIONAL: sin `RENDER_API_KEY` o sin `GATEWAY_ADMIN_TOKEN` no se cablea, el
    * pipeline no la recibe, y el sistema queda exactamente como estaba.
    *
-   * Recibe la corrida entera y el agente, no los cuatro datos sueltos que toma
-   * `publicar()`: `main.ts` es quien sabe traducir de uno al otro, y el
+   * Recibe la corrida entera y los agentes, no los cuatro datos sueltos que
+   * toma `publicar()`: `main.ts` es quien sabe traducir de uno al otro, y el
    * pipeline no tiene por que aprenderlo.
+   *
+   * Los agentes son TODOS los que dejaron trabajo, no uno: con un relevo o con
+   * cowork el trabajo queda repartido en ramas distintas y todas van a main.
    */
   publicar?: (
     corrida: Corrida,
-    agente: string,
+    agentes: readonly string[],
   ) => Promise<{ publicados: Publicado[]; pendientes: string[] }>;
   /**
    * De donde salen los documentos del proyecto.
@@ -1952,11 +1955,27 @@ async function cerrarConInforme(
   // todas sin hacer.
   await deps.store.cancelarCola(corrida.chatId, corrida.id);
 
+  // De que slots quedo el trabajo. Sale de las tareas cerradas y NO de
+  // `getActiveAgent`, que devuelve el ultimo slot activo —suele ser el del
+  // analista— y no dice quien construyo. Ver
+  // `multicodigo-vm/docs/RETOMAR-relevo-agente.md`.
+  const trabajaron = agentesQueTrabajaron(tareas);
+
+  // Sin ninguna tarea hecha no hay rama con trabajo, y el informe no puede
+  // inventar una: cae al comportamiento de antes, que es el piso.
+  const paraNombrar =
+    trabajaron.length > 0
+      ? trabajaron
+      : [(await deps.store.getActiveAgent(corrida.chatId)) ?? deps.defaultAgent];
+
   // El PREFIJO de rama y no una rama concreta: el nombre exacto lo elige el
   // agente al pushear y el bridge no lo ve. Decir el prefijo es cierto y
   // alcanza para encontrarla; inventar un nombre completo seria mandar a
   // alguien a una rama que no existe.
-  const agente = (await deps.store.getActiveAgent(corrida.chatId)) ?? deps.defaultAgent;
+  //
+  // Con varios slots van todos: con cowork los dos tienen commits, y nombrar
+  // uno solo manda a buscar el resto a ciegas.
+  const rama = paraNombrar.map((a) => `claude/${a}/*`).join(' y ');
 
   // Publicar va DESPUES del resumen y ANTES del informe: el informe necesita
   // las URLs, y el resumen no puede depender de si Render contesto.
@@ -1969,7 +1988,10 @@ async function cerrarConInforme(
   let pendientesDePublicar: string[] = [];
   if (motivo === 'completo' && deps.publicar) {
     try {
-      const r = await deps.publicar(corrida, agente);
+      // `trabajaron` y no `paraNombrar`: sin trabajo no hay nada que mergear, y
+      // el default de ahi arriba sirve para nombrar una rama, no para ir a
+      // buscar un worktree que nadie toco.
+      const r = await deps.publicar(corrida, trabajaron);
       publicados = r.publicados;
       // Se guardan Y se juntan aparte, y las dos cosas hacen falta.
       //
@@ -1999,7 +2021,7 @@ async function cerrarConInforme(
       corrida,
       motivo,
       resumen,
-      `claude/${agente}/*`,
+      rama,
       [...(ahora?.pendientes ?? corrida.pendientes ?? []), ...pendientesDePublicar],
       publicados,
     ),
@@ -2374,7 +2396,11 @@ export async function correrCola(
         origen: 'telegram',
         chatId,
       });
-      await deps.store.cerrarTarea(tarea.id, 'lista', r.texto);
+      // `r.agente` y no `tarea.agente`: si hubo relevo son distintos, y el que
+      // vale es el que trabajo — su worktree es el que tiene el codigo. Sin
+      // esto el informe manda a una rama vacia y publicar saltea el repo en
+      // silencio. Ver `multicodigo-vm/docs/RETOMAR-relevo-agente.md`.
+      await deps.store.cerrarTarea(tarea.id, 'lista', r.texto, r.agente);
       // Una que sale bien vuelve el contador a cero: lo que corta la corrida
       // son tres fallos SEGUIDOS, no tres en toda la noche.
       if (corrida) await deps.store.contarFallo(corrida.id, false);

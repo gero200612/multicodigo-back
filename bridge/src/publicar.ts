@@ -31,9 +31,14 @@ export interface PublicarDeps {
    *
    * Entran como funciones porque miran el disco del GATEWAY, no el del bridge.
    * De paso, los tests de politica no necesitan un worktree de verdad.
+   *
+   * `agent` va PRIMERO y no cerrado en el adaptador porque el worktree es de un
+   * slot: `worktreeFor(agent, project, repo)`. Con varios agentes hay que poder
+   * preguntar por cada uno, y preguntarle al slot equivocado es exactamente el
+   * bug que esto arregla — el repo se salteaba en silencio.
    */
-  tienePackageJson: (project: string, repo: string) => Promise<boolean>;
-  usaSqlite?: (project: string, repo: string) => Promise<boolean>;
+  tienePackageJson: (agent: string, project: string, repo: string) => Promise<boolean>;
+  usaSqlite?: (agent: string, project: string, repo: string) => Promise<boolean>;
 }
 
 /**
@@ -45,10 +50,16 @@ export interface PublicarDeps {
 const PENDIENTE_A_MANO = (github: string) =>
   `conectar ${github} a Vercel o a Render (la primera vez es a mano; despues cada push hace un preview solo)`;
 
+/**
+ * @param agentes Los slots que TIENEN trabajo de esta corrida, en el orden en
+ * que trabajaron. Salen de `agentesQueTrabajaron` y son un registro, no una
+ * adivinanza. Van TODOS a main: con un relevo o con cowork el trabajo queda
+ * repartido en ramas distintas, y elegir una seria tirar la otra.
+ */
 export async function publicar(
   proyectoId: string,
   proyecto: string,
-  agente: string,
+  agentes: readonly string[],
   deps: PublicarDeps,
 ): Promise<{ publicados: Publicado[]; pendientes: string[] }> {
   const publicados: Publicado[] = [];
@@ -65,30 +76,70 @@ export async function publicar(
     // nada que pedir.
     if (!repo.creado_por_el_bot) continue;
 
-    // Un repo vacio —como quedo `propinas-front`, que el pliego dejo sin
-    // contenido— no tiene nada que arrancar. Tampoco es un pendiente: no falta
-    // nada.
-    if (!(await deps.tienePackageJson(proyecto, repo.nombre))) continue;
-
     // Idempotencia: dos corridas sobre el mismo proyecto no pueden dejar dos
     // servicios facturando. Se mira lo guardado y no se le pregunta a Render:
     // preguntar significa buscar por nombre, y un nombre repetido no dice si el
     // servicio es de este proyecto o de otro que se llamo igual.
+    //
+    // Se mira ANTES de inspeccionar los worktrees: es el chequeo mas barato de
+    // los dos y ahorra una llamada al gateway por agente.
     if (repo.render_service_id) continue;
 
-    const m = await deps.mergear({
-      agent: agente,
-      project: proyecto,
-      repo: repo.nombre,
-      creadoPorElBot: true,
-    });
-    if (!m.ok) {
-      // Y NO se crea el servicio: una URL que responde contra un main vacio es
-      // peor que ninguna URL, porque promete algo que no esta. Se sigue con el
-      // repo que viene.
-      pendientes.push(`no pude mergear ${repo.nombre} a main (${m.output}): conectalo a mano`);
-      continue;
+    // Cual de los slots tiene ESTE repo. Un repo vacio —como quedo
+    // `propinas-front`, que el pliego dejo sin contenido— no tiene nada que
+    // arrancar, y despues de un relevo el slot original queda igual de vacio.
+    // Ninguno de los dos casos es un pendiente: no falta nada.
+    //
+    // En serie por la misma razon que el bucle de afuera, y porque son a lo
+    // sumo tres slots: el paralelismo no compra nada y hace el orden del
+    // registro dificil de leer.
+    const conTrabajo: string[] = [];
+    for (const agente of agentes) {
+      if (await deps.tienePackageJson(agente, proyecto, repo.nombre)) conTrabajo.push(agente);
     }
+    if (conTrabajo.length === 0) continue;
+
+    // TODAS las ramas van a main, en el orden en que se trabajo: el primero
+    // entra limpio y el ultimo, si tocaron los mismos archivos, es el que
+    // puede conflictuar.
+    //
+    // Y con cowork de verdad es PROBABLE que el segundo no entre: el gateway
+    // mergea con `--ff-only` para no inventar un merge commit a las cuatro de
+    // la mañana sobre trabajo que no es del agente, asi que dos ramas que
+    // divergieron piden una decision que este proceso no puede tomar. Cuando
+    // pasa, la rama queda pusheada y nombrada en el pendiente. Eso es el
+    // resultado correcto, no una limitacion a tapar: lo que NO puede pasar
+    // —y era el bug— es que el trabajo se pierda en silencio.
+    const mergeados: string[] = [];
+    for (const agente of conTrabajo) {
+      const m = await deps.mergear({
+        agent: agente,
+        project: proyecto,
+        repo: repo.nombre,
+        creadoPorElBot: true,
+      });
+      if (m.ok) {
+        mergeados.push(agente);
+        continue;
+      }
+      // El fallo se NOMBRA con el slot y con lo que dijo git —un
+      // `CONFLICT (content)` es una cosa y un `Not possible to fast-forward`
+      // es otra— porque lo que queda es que una persona resuelva esa rama a
+      // mano, y para eso tiene que saber cual es.
+      pendientes.push(
+        `no pude mergear ${repo.nombre} de ${agente} a main (${m.output}): mergealo a mano`,
+      );
+    }
+
+    // Con ninguna rama adentro, main quedo como estaba: una URL que responde
+    // contra eso es peor que ninguna URL, porque promete algo que no esta. Se
+    // sigue con el repo que viene.
+    //
+    // Pero con UNA de dos alcanza para crear el servicio: hay codigo real
+    // corriendo, y el pendiente de arriba ya dice que rama falta. Perder la URL
+    // por un conflicto en la segunda rama seria castigar el trabajo que si
+    // entro.
+    if (mergeados.length === 0) continue;
 
     const r = await crearServicio(repo.nombre, repo.github_repo, deps.render);
     if (r.estado === 'sin_render') {
@@ -113,7 +164,10 @@ export async function publicar(
     // borra en cada deploy y en cada spin-down. Un proyecto que guarda en
     // SQLite va a andar y va a perder los datos solo. Sin este aviso, la
     // primera perdida manda a buscar un bug que no existe.
-    if (await deps.usaSqlite?.(proyecto, repo.nombre)) {
+    // Se le pregunta al primero que mergeo: el aviso es del REPO, no del slot,
+    // y lo que quedo en main sale de esa rama. Preguntarles a todos daria el
+    // mismo aviso repetido.
+    if (await deps.usaSqlite?.(mergeados[0]!, proyecto, repo.nombre)) {
       pendientes.push(
         `${repo.nombre} guarda en SQLite y el plan free borra el disco en cada deploy: ` +
           'los datos no van a sobrevivir. Para que persistan hay que pasarlo a Postgres o pagar un disco',
