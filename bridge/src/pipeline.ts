@@ -1505,16 +1505,24 @@ export async function pasoDeCorrida(
     // Los mismos pendientes que en el comando largo. El paso a paso los junto
     // al crear los repos, en el paso del nombre — y los guardo en el borrador
     // no, porque el borrador no los tiene: se recalculan de los repos.
-    for (const r of await deps.store.reposDeProyecto(
-      (await deps.store.proyectosDeUsuario(usuarioId)).find(
-        (p) => p.nombre.toLowerCase() === proyecto.toLowerCase(),
-      )?.id ?? '',
-    )) {
-      if (r.solo_lectura) continue;
-      await deps.store.anotarPendiente(
-        nueva.id,
-        `conectar ${r.github_repo} a Vercel o a Render (la primera vez es a mano; despues cada push hace un preview solo)`,
-      );
+    //
+    // Solo si NO se sabe publicar: con `publicar` cableado, pedir a mano algo
+    // que el sistema esta por hacer solo deja el informe contradiciendose. El
+    // primer informe real quedo con las dos cosas juntas: "conectar
+    // pruebarelevo-back (la primera vez es a mano)" y, tres lineas abajo, el
+    // resultado de haber intentado exactamente eso.
+    if (!deps.publicar) {
+      for (const r of await deps.store.reposDeProyecto(
+        (await deps.store.proyectosDeUsuario(usuarioId)).find(
+          (p) => p.nombre.toLowerCase() === proyecto.toLowerCase(),
+        )?.id ?? '',
+      )) {
+        if (r.solo_lectura) continue;
+        await deps.store.anotarPendiente(
+          nueva.id,
+          `conectar ${r.github_repo} a Vercel o a Render (la primera vez es a mano; despues cada push hace un preview solo)`,
+        );
+      }
     }
   }
   if (!nueva) {
@@ -1841,11 +1849,18 @@ async function armarProyecto(
     creado.repos.push(r.github);
     // El cable que queda: un repo recien creado NO esta conectado a Vercel ni a
     // Render, y hasta que alguien lo conecte el push del agente no despliega
-    // nada. Es el paso manual que este sistema no automatiza, y decirlo en el
-    // informe es la diferencia entre "18 tareas hechas" y "esto no levanta".
-    creado.pendientes!.push(
-      `conectar ${r.github} a Vercel o a Render (la primera vez es a mano; despues cada push hace un preview solo)`,
-    );
+    // nada. Decirlo en el informe es la diferencia entre "18 tareas hechas" y
+    // "esto no levanta".
+    //
+    // Pero solo si NO se sabe publicar. Con `publicar` cableado esto dejo de
+    // ser "el paso manual que este sistema no automatiza": el cierre lo
+    // intenta, y el que sabe como salio es el unico que puede pedir algo. Al
+    // crear el repo todavia no se sabe nada.
+    if (!deps.publicar) {
+      creado.pendientes!.push(
+        `conectar ${r.github} a Vercel o a Render (la primera vez es a mano; despues cada push hace un preview solo)`,
+      );
+    }
   }
 
   // 4. Los de REFERENCIA: no se crean, se vinculan marcados de solo lectura.
@@ -2009,6 +2024,13 @@ async function cerrarConInforme(
       // una excepcion aca no puede comerse el informe entero — que es el unico
       // mensaje de toda la feature que no se puede perder.
       console.error('[bridge] publicar fallo:', err);
+      // Y el pedido a mano vuelve. Es la contracara de haberlo sacado de la
+      // creacion del repo: si publicar explota y nadie lo pide, el informe
+      // dice "todo hecho" sobre repos que nadie conecto. Ese seria el unico
+      // camino por el que este cambio dejaria el sistema PEOR que antes.
+      pendientesDePublicar = [
+        'no pude publicar en Render (fallo el intento): conectar los repos a mano',
+      ];
     }
   }
 

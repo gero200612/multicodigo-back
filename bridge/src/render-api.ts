@@ -85,7 +85,13 @@ export async function crearServicio(
 
     const texto = await res.text();
     if (!res.ok) {
-      return { estado: 'error', motivo: sinClave(texto.slice(0, 300), deps.apiKey) };
+      // 600 y no 300: con 300 el error de la primera corrida real quedo
+      // cortado justo antes de la parte util. Render contesta el motivo y
+      // DESPUES la lista de formatos aceptados, que es larga y empuja la causa
+      // afuera del corte — el informe decia "invalid or unfetchable" y la
+      // explicacion no entraba. El tope existe para que un error de Render no
+      // se coma el mensaje de la mañana, y a 600 sigue cumpliendo eso.
+      return { estado: 'error', motivo: sinClave(texto.slice(0, 600), deps.apiKey) };
     }
 
     const cuerpo = JSON.parse(texto) as {

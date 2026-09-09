@@ -2329,3 +2329,90 @@ describe('publicar recibe los slots que trabajaron', () => {
     expect(recibidos).toEqual(['c2', 'c1']);
   });
 });
+
+/**
+ * El pendiente de "conectalo a mano" y quien lo emite.
+ *
+ * Se anotaba al CREAR el repo, cuando el sistema no sabia publicar y el paso
+ * manual era inevitable. Con `publicar` cableado eso dejo de ser cierto, y el
+ * informe de la primera corrida real quedo diciendo las dos cosas a la vez:
+ * "conectar pruebarelevo-back a Vercel o a Render (la primera vez es a mano)" y,
+ * tres lineas mas abajo, el resultado de haber intentado justamente eso.
+ *
+ * Ahora lo emite UNA sola parte: la que sabe como salio.
+ */
+describe('quien pide conectar a mano', () => {
+  const conectar = /conectar .* a Vercel o a Render/;
+
+  async function corridaConRepos(d: ReturnType<typeof arnes>): Promise<string[]> {
+    const crearRepo = vi.fn(async (_id: number, nombre: string) => ({
+      ok: true as const,
+      nombre,
+      github: `Sincro-arg/${nombre}`,
+    }));
+    Object.assign(d, { crearRepo });
+    await vincular(d.store, 7);
+    const viejo = await d.store.crearProyecto('anterior', USUARIO);
+    await d.store.guardarInstalacion(viejo, 159882934, 'Sincro-arg');
+    // El camino que crea los repos: nombre y org SIN pliego —los dos repos se
+    // crean en ese paso— y el pliego despues, que es el que abre la corrida. Es
+    // el flujo que se uso en la prueba real por Telegram.
+    await handleIncoming(
+      { chatId: 7, messageId: 1, text: '/corrida proyecto=acme org=Sincro-arg' },
+      d,
+    );
+    await handleIncoming({ chatId: 7, messageId: 2, text: `/corrida ${PLIEGO}` }, d);
+    await encolarEnLaCorrida(d, ['uno']);
+    return correr(d);
+  }
+
+  // El piso: un servidor sin Render configurado no recibe `publicar`, el paso
+  // manual sigue siendo inevitable, y el informe lo tiene que decir.
+  it('sin publicar cableado, el pendiente se anota al crear el repo', async () => {
+    const d = arnes({ analista: () => [] });
+    const avisos = await corridaConRepos(d);
+    expect(avisos[avisos.length - 1]!).toMatch(conectar);
+  });
+
+  // Con publicar cableado, el que decide es publicar: si pudo, hay URL, y si no
+  // pudo, su pendiente dice por que. Anotarlo antes es pedir a mano algo que el
+  // sistema esta por hacer solo.
+  it('con publicar cableado, no se anota al crear el repo', async () => {
+    const d = arnes({
+      analista: () => [],
+      publicar: async () => ({ publicados: [], pendientes: [] }),
+    });
+    const avisos = await corridaConRepos(d);
+    expect(avisos[avisos.length - 1]!).not.toMatch(conectar);
+  });
+
+  // Y el que SI emite publicar llega igual.
+  it('el pendiente que emite publicar llega al informe', async () => {
+    const d = arnes({
+      analista: () => [],
+      publicar: async () => ({
+        publicados: [],
+        pendientes: ['conectar Sincro-arg/acme-back a Vercel o a Render (la primera vez es a mano)'],
+      }),
+    });
+    const avisos = await corridaConRepos(d);
+    expect(avisos[avisos.length - 1]!).toMatch(conectar);
+  });
+
+  // El agujero que abre sacar el pendiente de la creacion: si publicar explota,
+  // antes quedaba el pendiente viejo y ahora no quedaria NINGUNO — el informe
+  // diria "todo hecho" sobre repos que nadie conecto. Es la unica forma en que
+  // este cambio podria dejar el sistema peor que antes.
+  it('si publicar explota, el informe igual pide conectarlo a mano', async () => {
+    const d = arnes({
+      analista: () => [],
+      publicar: async () => {
+        throw new Error('render caido');
+      },
+    });
+    const avisos = await corridaConRepos(d);
+    const informe = avisos[avisos.length - 1]!;
+    expect(informe).toContain('Corrida terminada');
+    expect(informe).toMatch(/a mano/);
+  });
+});
