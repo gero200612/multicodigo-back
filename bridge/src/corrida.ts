@@ -669,3 +669,44 @@ export function textoDeInforme(
   }
   return lineas.join('\n');
 }
+
+/**
+ * El prompt de una tarea que corre adentro de una corrida.
+ *
+ * ## Por que hace falta decirlo
+ *
+ * En la corrida `saludos3` del 2026-09-09, la tarea de `c1` contesto "Quiero
+ * commitear esto. ¿Aprobás el commit?" y nadie contesto —eran las 13:24 de una
+ * corrida desatendida, a nadie le tocaba— asi que el trabajo quedo sin
+ * commitear y la tarea se conto como hecha.
+ *
+ * Lo importante: **el agente NO estaba bloqueado**. `policy.ts` devuelve `free`
+ * para `git_commit` en modo `desatendido`; tenia la herramienta libre y eligio
+ * preguntar. Un permiso suelto no es una instruccion, y el modelo no tiene forma
+ * de saber que del otro lado no hay nadie: en un turno normal de Telegram,
+ * preguntar es lo correcto.
+ *
+ * `pidePermisoParaCommitear` en `respuesta.ts` es la red que evita contar eso
+ * como trabajo hecho. Esto es lo que evita que pase.
+ *
+ * La tarea va al FINAL, y no es estetico: es lo que hay que hacer, y lo ultimo
+ * que se lee es lo que mas pesa. El aviso es contexto.
+ */
+export function promptDeTareaDesatendida(texto: string): string {
+  return [
+    'Esto corre en una corrida desatendida: del otro lado no hay nadie despierto',
+    'para contestarte, asi que una pregunta tuya no la va a leer nadie hasta la',
+    'mañana y el turno se cierra igual.',
+    '',
+    'Tenes commit y push habilitados en este modo. Usalos: cuando el trabajo de la',
+    'tarea este listo, commitealo vos y segui. NO pidas aprobacion para commitear',
+    'ni preguntes si conviene hacerlo — si lo dejas sin commitear, se pierde.',
+    '',
+    'Si algo te bloquea de verdad y no podes seguir, decilo en tu respuesta con el',
+    'detalle: eso SI lo va a leer una persona a la mañana.',
+    '',
+    'La tarea:',
+    '',
+    texto,
+  ].join('\n');
+}

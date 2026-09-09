@@ -15,6 +15,7 @@ import {
   type RepoDelPedido,
 } from '@multicodigo/shared';
 import { parseCommand } from './router.js';
+import { pidePermisoParaCommitear } from './respuesta.js';
 import { separarInstructivo, type DocumentoConMarca } from './documentos.js';
 import {
   tecladoDeProyectos,
@@ -41,6 +42,7 @@ import {
   promptDeAnalisis,
   techoAlcanzado,
   textoDeInforme,
+  promptDeTareaDesatendida,
   type Corrida,
   type MotivoDeCierre,
   type ResumenDeTareas,
@@ -423,6 +425,15 @@ const ERROR_TEXT: Record<string, string> = {
   approval_timeout: 'Me quede esperando tu OK 15 minutos y lo cancele.',
   forbidden_branch: 'Esa branch no se puede tocar.',
   git_failed: 'Git fallo. Fijate el detalle en el ultimo mensaje del agente.',
+  // Una tarea que termino PIDIENDO PERMISO no dejo el trabajo commiteado, y en
+  // una corrida no hay nadie despierto para contestarle. Antes se cerraba como
+  // `lista` —el sistema tomaba la pregunta por una respuesta— y el informe
+  // contaba la tarea como hecha sobre trabajo que no estaba. Visto en la
+  // corrida `saludos3` del 2026-09-09.
+  pidio_permiso:
+    'La tarea termino pidiendo permiso para commitear, asi que su trabajo NO quedo ' +
+    'guardado. Ese slot tiene los permisos mas estrictos que los demas: fijate su ' +
+    'configuracion antes de la proxima corrida.',
   run_failed: 'La tarea fallo. El agente te cuenta el detalle en su respuesta.',
   run_timeout: 'La tarea tardo demasiado y la corte.',
   unknown_task: 'Esa tarea no esta configurada para el proyecto.',
@@ -2389,6 +2400,10 @@ export async function correrCola(
   // que el siguiente construya sobre una base incompleta, asi que se queda con
   // el que lo tiene en su disco.
   let clavarEn: string | undefined;
+  // Para que el pendiente del merge fallido salga una vez y no una por tarea.
+  let mergeAnotado = false;
+  // Lo mismo para el slot que pide permiso.
+  let permisoAnotado = false;
 
   for (;;) {
     // Se relee en CADA vuelta y no una sola vez al entrar: la corrida se puede
@@ -2457,7 +2472,11 @@ export async function correrCola(
         proyecto: tarea.proyecto,
         agente,
         usuarioId,
-        prompt: tarea.texto,
+        // Adentro de una corrida, la tarea va envuelta en el aviso de que nadie
+        // puede contestar: el modelo tiene el commit libre pero no tiene como
+        // saber que del otro lado no hay nadie, y preguntar —que en un turno
+        // normal de Telegram es lo correcto— ahi deja el trabajo sin guardar.
+        prompt: corrida ? promptDeTareaDesatendida(tarea.texto) : tarea.texto,
         modo,
         modelo: ctx.modelo,
         repos: ctx.repos,
@@ -2470,6 +2489,40 @@ export async function correrCola(
       // vale es el que trabajo — su worktree es el que tiene el codigo. Sin
       // esto el informe manda a una rama vacia y publicar saltea el repo en
       // silencio. Ver `multicodigo-vm/docs/RETOMAR-relevo-agente.md`.
+      // Antes de darla por hecha: si termino pidiendo permiso para commitear,
+      // el trabajo NO esta guardado y en una corrida nadie va a contestar. Se
+      // trata como fallo —que se ve— en vez de como exito, que es lo que hacia
+      // que el informe contara tareas hechas sobre trabajo que no estaba.
+      //
+      // Solo adentro de una corrida: afuera hay alguien que puede contestar, y
+      // preguntar es legitimo.
+      if (corrida && pidePermisoParaCommitear(r.texto)) {
+        await deps.store.cerrarTarea(tarea.id, 'fallida', 'pidio_permiso', r.agente);
+        await deps.store.contarFallo(corrida.id, true);
+        // Y al informe, porque es lo que se lee a la mañana: el aviso del
+        // momento queda enterrado arriba en el chat. Nombra el SLOT porque el
+        // arreglo es de configuracion —ese slot tiene permisos mas estrictos
+        // que los otros— y sin el nombre no se sabe cual tocar.
+        //
+        // Uno por corrida: diez tareas del mismo slot dan diez lineas iguales.
+        if (!permisoAnotado) {
+          permisoAnotado = true;
+          await deps.store
+            .anotarPendiente(
+              corrida.id,
+              `${r.agente} pide permiso para commitear y en una corrida nadie se lo puede dar, ` +
+                'asi que su trabajo no queda guardado: revisale los permisos a ese slot',
+            )
+            .catch(() => undefined);
+        }
+        await avisar(
+          `⛔ Fallo: ${escaparHtml(tarea.texto)}\n\n` +
+            `${escaparHtml(ERROR_TEXT.pidio_permiso!)}\n\n` +
+            `Su respuesta fue:\n\n${conCodigoParaTelegram(r.texto)}\n\nSigo con la que viene.`,
+        );
+        continue;
+      }
+
       await deps.store.cerrarTarea(tarea.id, 'lista', r.texto, r.agente);
       // `r.agente` y no `agente`: si hubo relevo, el trabajo quedo en el
       // worktree del que contesto, y ese es el que hay que mergear.
@@ -2482,6 +2535,28 @@ export async function correrCola(
           .mergearTrabajo(tarea.proyecto, r.agente)
           .catch((err) => ({ ok: false, detalle: err instanceof Error ? err.message : 'error' }));
         clavarEn = m.ok ? undefined : r.agente;
+
+        // Y si fallo, se ANOTA. Sin esto el reparto se apaga en silencio: el
+        // pipeline usa el resultado para dejar de rotar y el motivo se tira, asi
+        // que a la mañana el informe dice "6 hechas" y nada explica por que
+        // todo lo hizo un solo slot. Paso exactamente eso en la corrida
+        // `saludos3` del 2026-09-09, y es el mismo patron del bug del relevo:
+        // un dato que existe por un instante y se pierde.
+        //
+        // UNA sola vez por corrida, no una por tarea: diez tareas que fallan
+        // por la misma causa dejarian diez lineas identicas tapando el resto
+        // del informe. El primer fallo ya trae el motivo, y los que siguen son
+        // consecuencia suya —el reparto ya se apago—.
+        if (!m.ok && !mergeAnotado) {
+          mergeAnotado = true;
+          await deps.store
+            .anotarPendiente(
+              corrida.id,
+              `no pude mergear a main lo que hizo ${r.agente} (${m.detalle ?? 'sin detalle'}): ` +
+                'sigo con ese slot y lo reintento al cerrar',
+            )
+            .catch(() => undefined);
+        }
       }
       // Una que sale bien vuelve el contador a cero: lo que corta la corrida
       // son tres fallos SEGUIDOS, no tres en toda la noche.

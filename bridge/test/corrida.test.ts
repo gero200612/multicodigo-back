@@ -11,6 +11,7 @@ import {
   pliegoDeArchivo,
   TOPE_DE_PLIEGO,
   promptDePlan,
+  promptDeTareaDesatendida,
   cuandoReintentar,
   SIN_RESPUESTA,
   type Corrida,
@@ -271,6 +272,8 @@ function arnes(opciones: {
   slots?: string[];
   /** Slots cuyo turno tira `usage_limit`, para forzar el relevo. */
   sinTokens?: string[];
+  /** Respuestas a medida, por texto de tarea. Para el caso de "pide permiso". */
+  respuestas?: Record<string, string>;
   /** El merge por tarea. Sin esto no se cablea, como en un server sin el token de admin. */
   mergearTrabajo?: (proyecto: string, agente: string) => Promise<{ ok: boolean; detalle?: string }>;
 } = {}) {
@@ -301,9 +304,22 @@ function arnes(opciones: {
       }
       return { jobId: 'j', sessionId: 's', text: 'revisado', turns: 1 };
     }
-    const codigo = opciones.fallan?.[req.prompt];
+    // El texto de la tarea, sin el envoltorio. Adentro de una corrida el prompt
+    // viene con el aviso de que nadie puede contestar
+    // (`promptDeTareaDesatendida`) y la tarea al final, despues de "La tarea:".
+    //
+    // Se EXTRAE en vez de buscar la clave en todo el prompt: un `includes` sobre
+    // el prompt entero matchea "dos" adentro de "habilitados", y una tarea que
+    // tenia que salir bien empezaba a fallar por una palabra del aviso.
+    const MARCA = 'La tarea:';
+    const texto = req.prompt.includes(MARCA)
+      ? req.prompt.slice(req.prompt.lastIndexOf(MARCA) + MARCA.length).trim()
+      : req.prompt;
+
+    const codigo = opciones.fallan?.[texto];
     if (codigo) throw new Error(codigo);
-    return { jobId: 'j', sessionId: 's', text: 'listo', turns: 1 };
+    const aMedida = opciones.respuestas?.[texto];
+    return { jobId: 'j', sessionId: 's', text: aMedida ?? 'listo', turns: 1 };
   });
 
   const deps = {
@@ -336,6 +352,22 @@ async function abrir(d: ReturnType<typeof arnes>, argumentos = ''): Promise<void
  * ya no lo ve el ciclo — que es justo el arreglo: una corrida no puede heredar
  * el trabajo de otra ni de una lista dictada a mano.
  */
+/**
+ * Los textos de tarea que se pidieron, sin el envoltorio del modo desatendido.
+ *
+ * Adentro de una corrida el prompt lleva el aviso de que nadie puede contestar
+ * (`promptDeTareaDesatendida`) y la tarea al final. Comparar el prompt crudo
+ * contra el texto de la tarea deja de servir; lo que estos tests miran es QUE
+ * tareas se pidieron y en que orden.
+ */
+function tareasPedidas(d: { ask: { mock: { calls: Array<[{ prompt: string }, ...unknown[]]> } } }): string[] {
+  const MARCA = 'La tarea:';
+  return d.ask.mock.calls
+    .map((c) => c[0].prompt)
+    .filter((p) => !p.includes('--- PLIEGO ---'))
+    .map((p) => (p.includes(MARCA) ? p.slice(p.lastIndexOf(MARCA) + MARCA.length).trim() : p));
+}
+
 async function encolarEnLaCorrida(
   d: ReturnType<typeof arnes>,
   textos: string[],
@@ -464,7 +496,7 @@ describe('correrCola dentro de una corrida', () => {
 
     expect(avisos[avisos.length - 1]).toContain(`fallaron ${TOPE_DE_FALLOS} tareas seguidas`);
     // La cuarta no se corrio: el techo se mira antes de tomarla.
-    expect(d.ask.mock.calls.map((c) => c[0].prompt)).toEqual(['uno', 'dos', 'tres']);
+    expect(tareasPedidas(d)).toEqual(['uno', 'dos', 'tres']);
     const tareas = await d.store.tareasDeChat(7);
     // Y queda CANCELADA, no pendiente: cerrar la corrida cierra su cola.
     // Antes quedaba pendiente y la corrida siguiente se la llevaba.
@@ -2088,7 +2120,7 @@ describe('una corrida no hereda las tareas de otra', () => {
     await correr(d);
 
     // Solo corrio la suya: las viejas siguen intactas.
-    expect(d.ask.mock.calls.map((c) => c[0].prompt).filter((p) => !p.includes('PLIEGO'))).toEqual([
+    expect(tareasPedidas(d)).toEqual([
       'tarea nueva',
     ]);
     const todas = await d.store.tareasDeChat(7);
@@ -2555,5 +2587,167 @@ describe('el merge por tarea', () => {
       .filter((c) => !c[0].prompt.includes('--- PLIEGO ---'))
       .map((c) => (c[0] as { agent?: string }).agent);
     expect(slots).toEqual(['c1', 'c1']);
+  });
+});
+
+/**
+ * Que el fallo del merge por tarea SE VEA.
+ *
+ * En la corrida `saludos3` el merge por tarea fallo y el reparto se apago solo,
+ * en silencio: el pipeline usaba el resultado para decidir la rotacion y tiraba
+ * el motivo. Hubo que deducirlo del estado de los worktrees.
+ *
+ * Es el mismo patron que el bug del relevo —un dato que existe por un instante
+ * y se pierde— reintroducido por mi en el mismo dia que lo arreglabamos. El
+ * fallo tiene que llegar al informe, que es el unico mensaje que nadie se
+ * pierde.
+ */
+describe('el fallo del merge por tarea se ve', () => {
+  it('el informe lo nombra, con el slot y lo que dijo git', async () => {
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      mergearTrabajo: async () => ({
+        ok: false,
+        detalle: "fatal: 'main' is already checked out at '/srv/work/c1/x'",
+      }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    const avisos = await correr(d);
+    const informe = avisos[avisos.length - 1]!;
+    expect(informe).toContain('c1');
+    expect(informe).toContain('already checked out');
+  });
+
+  // Un solo pendiente por corrida y no uno por tarea: con diez tareas fallando
+  // por la MISMA causa, diez lineas identicas en el informe de la mañana
+  // esconden el resto de lo que hay que leer.
+  it('varias tareas que fallan por lo mismo dejan un solo pendiente', async () => {
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      mergearTrabajo: async () => ({ ok: false, detalle: 'CONFLICT' }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    const avisos = await correr(d);
+    const informe = avisos[avisos.length - 1]!;
+    expect(informe.match(/no pude mergear/g)?.length).toBe(1);
+  });
+
+  it('si el merge anda, no hay pendiente', async () => {
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      mergearTrabajo: async () => ({ ok: true }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    const avisos = await correr(d);
+    expect(avisos[avisos.length - 1]!).not.toContain('no pude mergear');
+  });
+});
+
+/**
+ * Una tarea que pide permiso no se cuenta como hecha.
+ *
+ * El caso de `saludos3`: la tarea contesto "¿Aprobás el commit?", nadie contesto
+ * —era desatendida— y se cerro como `lista`. El trabajo quedo sin commitear y el
+ * informe dijo que estaba hecho. Eso es peor que un fallo: un fallo se ve.
+ */
+describe('una tarea que pide permiso', () => {
+  const PIDE = 'Quedo la estructura. Quiero commitear esto. ¿Aprobás el commit?';
+
+  it('en una corrida se cuenta como fallida, no como hecha', async () => {
+    const d = arnes({
+      analista: () => [],
+      respuestas: { uno: PIDE },
+      mergearTrabajo: async () => ({ ok: true }),
+    });
+    await abrir(d);
+    const c = await d.store.corridaAbierta(7);
+    await encolarEnLaCorrida(d, ['uno']);
+    await correr(d);
+
+    const tareas = await d.store.tareasDeCorrida(c!.id);
+    expect(tareas.map((t) => t.estado)).toContain('fallida');
+    expect(tareas.map((t) => t.estado)).not.toContain('lista');
+  });
+
+  // Lo que importa del informe: que la tarea NO figure entre las hechas y que
+  // se diga por que, para que a la mañana se sepa que ese trabajo no esta.
+  it('el informe la nombra sin resolver y dice que falto commitear', async () => {
+    const d = arnes({
+      analista: () => [],
+      respuestas: { uno: PIDE },
+      mergearTrabajo: async () => ({ ok: true }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    const avisos = await correr(d);
+    const informe = avisos[avisos.length - 1]!;
+    expect(informe).toContain('0 hechas');
+    expect(informe.toLowerCase()).toContain('permiso');
+  });
+
+  // Si el merge no corre no hay nada que mergear: la tarea no dejo commits.
+  it('no se mergea nada de una tarea que pidio permiso', async () => {
+    let mergeo = false;
+    const d = arnes({
+      analista: () => [],
+      respuestas: { uno: PIDE },
+      mergearTrabajo: async () => {
+        mergeo = true;
+        return { ok: true };
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    await correr(d);
+    expect(mergeo).toBe(false);
+  });
+
+  // Afuera de una corrida SI hay alguien para contestar, asi que preguntar es
+  // legitimo y la respuesta llega al chat como siempre.
+  it('afuera de una corrida no se toca: hay alguien que puede contestar', async () => {
+    const d = arnes({ respuestas: { uno: PIDE } });
+    await vincular(d.store, 7);
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/cola uno' }, d);
+    const avisos = await correr(d);
+    expect(avisos.join('\n')).toContain('Aprobás el commit');
+  });
+});
+
+/**
+ * El prompt de una tarea desatendida le dice al modelo que nadie puede
+ * contestarle.
+ *
+ * En `saludos3`, `c1` contesto "¿Aprobás el commit?" teniendo el commit LIBRE:
+ * la politica del agente devuelve `free` para `git_commit` en modo
+ * `desatendido`, asi que no estaba bloqueado — eligio preguntar. Nadie contesto
+ * y su trabajo quedo sin commitear.
+ *
+ * `pidePermisoParaCommitear` es la red que evita contar eso como hecho. Esto es
+ * lo que evita que pase.
+ */
+describe('el prompt de una tarea desatendida', () => {
+  it('lleva la tarea y le dice que commitee sin preguntar', () => {
+    const p = promptDeTareaDesatendida('agregar el endpoint /salud');
+    expect(p).toContain('agregar el endpoint /salud');
+    expect(p.toLowerCase()).toContain('nadie');
+    expect(p.toLowerCase()).toContain('commite');
+  });
+
+  // La tarea va al FINAL: es lo que el modelo tiene que hacer, y lo ultimo que
+  // lee es lo que mas pesa. El aviso es contexto, no la instruccion.
+  it('la tarea va al final', () => {
+    const p = promptDeTareaDesatendida('hacer esto');
+    expect(p.trimEnd().endsWith('hacer esto')).toBe(true);
+  });
+
+  it('no le cambia una coma al texto de la tarea', () => {
+    const tarea = 'En x-back, agregar GET /saludo/:nombre con validacion de 400.';
+    expect(promptDeTareaDesatendida(tarea)).toContain(tarea);
   });
 });
