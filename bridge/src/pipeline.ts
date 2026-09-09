@@ -2455,11 +2455,33 @@ export async function correrCola(
     // cableado: afuera de una corrida la persona eligio el slot con `/agente` y
     // pisarlo seria desobedecer, y sin merge el reparto romperia la
     // continuidad. Sin candidatos se usa el de la tarea, que es lo de siempre.
+    //
+    // Y ACOTADO A LOS SLOTS DEL PROYECTO. `listarAgentes` devuelve todos los
+    // del host que tengan credencial cargada —el parametro de proyecto se
+    // descarta del lado del gateway— asi que sin este cruce la rotacion agarra
+    // cualquiera, incluido uno cuya cuenta de Claude es de otra persona.
+    //
+    // Paso en produccion con `saludos5`: el trabajo se reparti a slots de
+    // cuentas ajenas. No es prolijidad — es plata de un tercero y el codigo de
+    // un cliente pasando por una sesion que no es de quien pidio el trabajo.
+    //
+    // Sin slots registrados NO se reparte: se usa el agente con que se encolo
+    // la tarea, que es el que la persona eligio. Repartir "por las dudas" es
+    // exactamente lo que causo el problema.
+    // Sin `proyectoId` no hay a quien preguntarle que slots corresponden, y
+    // entonces no se reparte: el default es quedarse con el agente que la
+    // persona eligio, nunca ampliar.
+    const delProyecto =
+      corrida && ctx.proyectoId
+        ? (await deps.store.agentesDeProyecto(ctx.proyectoId).catch(() => [])).map((a) => a.slot)
+        : [];
     const elegido =
-      corrida && deps.mergearTrabajo
+      corrida && deps.mergearTrabajo && delProyecto.length > 0
         ? clavarEn ??
           slotParaLaTarea(
-            await deps.listarAgentes?.(tarea.proyecto).catch(() => []) ?? [],
+            (await deps.listarAgentes?.(tarea.proyecto).catch(() => []) ?? []).filter((c) =>
+              delProyecto.includes(c.id as AgentId),
+            ),
             [...(await deps.store.slotsAgotados().catch(() => new Map())).keys()],
             ultimoSlot,
           )

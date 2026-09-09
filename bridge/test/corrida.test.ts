@@ -368,6 +368,22 @@ function tareasPedidas(d: { ask: { mock: { calls: Array<[{ prompt: string }, ...
     .map((p) => (p.includes(MARCA) ? p.slice(p.lastIndexOf(MARCA) + MARCA.length).trim() : p));
 }
 
+/**
+ * Le da al proyecto del arnes los slots que le corresponden.
+ *
+ * El proyecto tiene que EXISTIR y ser del usuario: `contextoDeCola` resuelve el
+ * `proyectoId` desde `proyectosDeUsuario`, y sin eso el reparto no tiene a quien
+ * preguntarle que slots son de este proyecto — y entonces no reparte, que es el
+ * default seguro.
+ */
+async function conSlotsDelProyecto(
+  d: ReturnType<typeof arnes>,
+  slots: string[],
+): Promise<void> {
+  const proyectoId = await d.store.crearProyecto('stock', USUARIO);
+  for (const s of slots) await d.store.registrarAgente(proyectoId, s as 'c1');
+}
+
 async function encolarEnLaCorrida(
   d: ReturnType<typeof arnes>,
   textos: string[],
@@ -2475,6 +2491,7 @@ describe('el reparto de la cola', () => {
       slots: ['c1', 'c2'],
       mergearTrabajo: async () => ({ ok: true }),
     });
+    await conSlotsDelProyecto(d, ['c1', 'c2']);
     await abrir(d);
     await encolarEnLaCorrida(d, ['uno', 'dos']);
     await correr(d);
@@ -2487,6 +2504,7 @@ describe('el reparto de la cola', () => {
       slots: ['c1', 'c2'],
       mergearTrabajo: async () => ({ ok: true }),
     });
+    await conSlotsDelProyecto(d, ['c1', 'c2']);
     await abrir(d);
     await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
     await correr(d);
@@ -2532,6 +2550,7 @@ describe('el merge por tarea', () => {
         return { ok: true };
       },
     });
+    await conSlotsDelProyecto(d, ['c1', 'c2']);
     await abrir(d);
     await encolarEnLaCorrida(d, ['uno', 'dos']);
     await correr(d);
@@ -2749,5 +2768,78 @@ describe('el prompt de una tarea desatendida', () => {
   it('no le cambia una coma al texto de la tarea', () => {
     const tarea = 'En x-back, agregar GET /saludo/:nombre con validacion de 400.';
     expect(promptDeTareaDesatendida(tarea)).toContain(tarea);
+  });
+});
+
+/**
+ * El reparto NO usa cuentas ajenas.
+ *
+ * Reportado despues de `saludos5`: el panel mostraba trabajo hecho por slots
+ * cuyas cuentas de Claude son de otras personas. La causa es mia:
+ * `listarAgentes` le pregunta al gateway por TODOS los slots del host y
+ * devuelve los que tienen credencial cargada —el parametro `proyecto` se
+ * descarta— asi que la rotacion agarraba cualquiera.
+ *
+ * Antes del reparto no se notaba: el slot lo elegia la persona con `/agente`, y
+ * el relevo solo saltaba a otro cuando el primero se agotaba.
+ *
+ * Gastar la cuenta de otro no es un detalle de prolijidad: es plata de un
+ * tercero y el codigo del cliente pasando por una sesion que no es de quien
+ * pidio el trabajo.
+ */
+describe('el reparto se queda en los slots del proyecto', () => {
+  function slotsUsados(d: ReturnType<typeof arnes>): string[] {
+    return d.ask.mock.calls
+      .filter((c) => !c[0].prompt.includes('--- PLIEGO ---'))
+      .map((c) => (c[0] as { agent?: string }).agent ?? '?');
+  }
+
+
+  it('un slot con cuenta que no es del proyecto no recibe trabajo', async () => {
+    const d = arnes({
+      analista: () => [],
+      // El host tiene cuatro con credencial...
+      slots: ['c1', 'c2', 'c4', 'c5'],
+      mergearTrabajo: async () => ({ ok: true }),
+    });
+    // ...pero al proyecto solo le corresponden dos.
+    await conSlotsDelProyecto(d, ['c1', 'c2']);
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    await correr(d);
+
+    expect(slotsUsados(d)).toEqual(['c1', 'c2', 'c1']);
+    expect(slotsUsados(d)).not.toContain('c4');
+    expect(slotsUsados(d)).not.toContain('c5');
+  });
+
+  // Sin registro no se adivina: se usa el agente con que se encolo la tarea,
+  // que es el que la persona eligio. Repartir "por las dudas" es justo lo que
+  // hizo que se gastaran cuentas ajenas.
+  it('un proyecto sin slots registrados no se reparte', async () => {
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2', 'c4'],
+      mergearTrabajo: async () => ({ ok: true }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    await correr(d);
+    expect(slotsUsados(d)).toEqual(['c1', 'c1']);
+  });
+
+  // Un slot del proyecto que perdio la credencial no sirve igual: el turno
+  // volveria con `usage_limit` o `auth_expired`.
+  it('un slot del proyecto sin cuenta se saltea', async () => {
+    const d = arnes({
+      analista: () => [],
+      slots: ['c2'],
+      mergearTrabajo: async () => ({ ok: true }),
+    });
+    await conSlotsDelProyecto(d, ['c1', 'c2']);
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    await correr(d);
+    expect(slotsUsados(d)).toEqual(['c2']);
   });
 });
