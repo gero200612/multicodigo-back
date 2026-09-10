@@ -6,6 +6,9 @@
  * nombre mentia y ademas rompia la simetria con el agente y el gateway, que ya
  * tienen su main.ts separado.
  */
+// PRIMERO y por su efecto: sube el techo real de un turno antes del primer
+// fetch. Ver `dispatcher.ts` — el techo de verdad eran 5 minutos, no 20.
+import './dispatcher.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
