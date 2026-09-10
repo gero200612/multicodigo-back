@@ -126,6 +126,21 @@ export function renderOutcome(outcome: PipelineOutcome): string {
           : `Listo, saque ${outcome.cuantas} tarea(s) de la cola. Lo que ya estaba corriendo sigue.`;
       return outcome.corridaCerrada ? `${cola}\n\nY cerre la corrida: no voy a seguir sola.` : cola;
     }
+    case 'reanudada':
+      return (
+        `▶ Sigo con <b>${escaparHtml(outcome.proyecto)}</b> desde donde quedo.
+
+` +
+        `Devolvi ${outcome.reencoladas} tarea(s) a la cola. Lo que ya estaba hecho no se repite.`
+      );
+    case 'sin_reanudar':
+      // Los dos casos dicen QUE hacer en su lugar. "No hay nada que reanudar" a
+      // secas deja a alguien mirando el chat sin saber si el problema es que no
+      // hay corrida o que la que hay ya termino.
+      return outcome.motivo === 'hay_una_abierta'
+        ? 'Esa corrida sigue viva, no hace falta reanudarla. Con /status te digo en que anda.'
+        : 'No hay ninguna corrida cortada para seguir. Las que terminaron completas no se reanudan: ' +
+            'para trabajo nuevo, /corrida con el pliego.';
     case 'menu':
       // `/start` se presenta; `/menu` no. Ver `identidad.ts`.
       return outcome.saluda ? saludo() : encabezadoDeMenu();
@@ -666,6 +681,8 @@ export function usaHtml(outcome: PipelineOutcome): boolean {
     outcome.kind === 'modelo' ||
     outcome.kind === 'cola' ||
     outcome.kind === 'corrida' ||
+    // Lleva el nombre del proyecto en negrita.
+    outcome.kind === 'reanudada' ||
     outcome.kind === 'corrida_sin_armar' ||
     // Los dos pasos del `/corrida` conversacional. Se olvidaron al agregarlos y
     // el sintoma fue exactamente este: el mensaje llegaba con `<b>` y
@@ -864,6 +881,7 @@ const COMANDOS = [
   // horas.
   { command: 'corrida', description: 'Dejarme trabajando toda la noche sobre un pliego' },
   { command: 'cancelar', description: 'Cortar lo que queda en la cola' },
+  { command: 'reanudar', description: 'Seguir una corrida que se corto sin terminar' },
   { command: 'agente', description: 'Elegir con qué agente hablar' },
   { command: 'proyecto', description: 'Ver o cambiar el proyecto activo' },
   { command: 'status', description: 'Con qué agentes estás trabajando' },
@@ -1595,6 +1613,13 @@ export function buildBot(deps: BridgeDeps): Bot {
       // SIN `await` a proposito: una cola de cinco tareas puede tardar media
       // hora y este handler tiene que devolver el control ya. El progreso
       // llega por mensajes sueltos, uno por tarea terminada.
+      // Reanudar tiene que poner el bucle en marcha, igual que encolar: una
+      // corrida reabierta y quieta es peor que no haberla reanudado — el chat
+      // dice "sigo desde donde quedo" y no sigue nada.
+      if (outcome.kind === 'reanudada') {
+        void arrancarCola(ctx.chat.id, deps, (t) => avisarPartido(ctx, t));
+      }
+
       if (outcome.kind === 'cola' && outcome.encoladas > 0) {
         // Con parse_mode HTML, y hacia falta: lo que manda `correrCola` ya
         // venia con formato —`conCodigoParaTelegram` arma `<pre>`, y el informe

@@ -32,6 +32,26 @@ export const MOTIVOS_DE_CIERRE = [
 ] as const;
 export type MotivoDeCierre = (typeof MOTIVOS_DE_CIERRE)[number];
 
+/**
+ * Los cierres que NO significan "el trabajo esta hecho", y por eso se pueden
+ * reanudar con `/reanudar`.
+ *
+ * `completo` queda afuera porque no hay nada que seguir. `cancelada` tambien,
+ * y esa es la que importa justificar: la corto una persona a proposito, y
+ * ofrecerle reanudarla seria ofrecerle deshacer lo que acaba de pedir.
+ *
+ * Los otros cuatro son todos "se corto en el medio": el trabajo que falta sigue
+ * siendo valido y el que se hizo tambien. Volver a dictar el pliego seria
+ * empezar de cero al lado de lo que ya esta — es lo que paso en `despacho2`
+ * (2026-09-10), que cerro por tres fallas con el back entero hecho.
+ */
+export const SE_PUEDE_REANUDAR: readonly MotivoDeCierre[] = [
+  'demasiados_fallos',
+  'techo_rondas',
+  'techo_hora',
+  'cuentas_agotadas',
+];
+
 /** Una corrida, como la devuelve el store. */
 export interface Corrida {
   id: string;
@@ -892,6 +912,24 @@ export function textoDeInforme(
       }
       lineas.push(` · ${v.cumple ? '✅' : '⚠️'} ${eje} — ${escaparHtml(v.resumen)}`);
     }
+  }
+
+  // Y como seguir, cuando el cierre no fue "esta hecho".
+  //
+  // Va DESPUES de todo lo demas a proposito: es lo ultimo que se lee y lo
+  // primero que se hace. Sin esta linea, la unica salida visible de una corrida
+  // que se corto en el medio era volver a dictar el pliego entero, que empieza
+  // de cero al lado del trabajo que ya esta.
+  //
+  // Solo si quedo algo por hacer: ofrecer reanudar una corrida que se corto por
+  // la hora con todas sus tareas listas es mandar a alguien a mirar una cola
+  // vacia.
+  if (SE_PUEDE_REANUDAR.includes(motivo) && t.fallidas + t.pendientes > 0) {
+    lineas.push(
+      '',
+      `Quedaron ${t.fallidas + t.pendientes} sin hacer. Con <b>/reanudar</b> sigo desde ahi, ` +
+        'sin repetir lo que ya esta.',
+    );
   }
 
   // La rama es lo unico que hace accionable el informe: sin ella, "18 hechas"

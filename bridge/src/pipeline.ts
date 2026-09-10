@@ -306,6 +306,16 @@ export type PipelineOutcome =
   | { kind: 'corrida_planificando'; corrida: Corrida }
   | { kind: 'cola_cancelada'; cuantas: number; corridaCerrada: boolean }
   /**
+   * Se reanudo una corrida que se habia cortado sin terminar.
+   *
+   * `arrancar` es lo que le dice a telegram.ts que ponga el bucle en marcha:
+   * reabrir la corrida sin correr la cola la dejaria abierta y quieta, que es
+   * peor que no haber reanudado.
+   */
+  | { kind: 'reanudada'; proyecto: string; reencoladas: number; arrancar: true }
+  /** No habia ninguna corrida que se pueda reanudar, y por que. */
+  | { kind: 'sin_reanudar'; motivo: 'hay_una_abierta' | 'ninguna' }
+  /**
    * Un `/proyecto <nombre>` que no es ninguno de los de la persona.
    *
    * Separado de `error` porque no es una falla del sistema: es un dedazo, y la
@@ -660,6 +670,23 @@ export async function handleIncoming(
     // sin salida.
     await deps.store.borrarBorrador(input.chatId).catch(() => undefined);
     return { kind: 'cola_cancelada', cuantas: n, corridaCerrada: Boolean(abierta) };
+  }
+
+  if (command.kind === 'reanudar') {
+    // Una corrida abierta se dice aparte y NO se reanuda: si el chat ya tiene
+    // una andando, lo que quiere quien escribe /reanudar es saber que sigue
+    // viva, no abrir otra.
+    if (await deps.store.corridaAbierta(input.chatId)) {
+      return { kind: 'sin_reanudar', motivo: 'hay_una_abierta' };
+    }
+    const r = await deps.store.reanudarCorrida(input.chatId).catch(() => undefined);
+    if (!r) return { kind: 'sin_reanudar', motivo: 'ninguna' };
+    return {
+      kind: 'reanudada',
+      proyecto: r.corrida.proyecto,
+      reencoladas: r.reencoladas,
+      arrancar: true,
+    };
   }
 
   if (command.kind === 'modelo') {

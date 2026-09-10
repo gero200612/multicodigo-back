@@ -46,6 +46,20 @@ export type ParsedCommand =
   | { kind: 'corrida'; texto: string }
   /** Corta lo que queda por hacer, y la corrida si habia una abierta. */
   | { kind: 'cola_cancelar' }
+  /**
+   * Sigue una corrida que se corto sin terminar.
+   *
+   * Existe porque una corrida puede cerrarse por algo que NO es "el trabajo
+   * esta hecho": tres fallas seguidas, la hora de corte, las cuentas sin
+   * tokens. En esos casos lo que falta sigue siendo valido y lo hecho tambien,
+   * asi que volver a dictar el pliego seria empezar de cero al lado del trabajo
+   * que ya esta.
+   *
+   * Visto en `despacho2` (2026-09-10): cerro por tres fallas —que eran un
+   * timeout mal puesto, no el trabajo— con el back entero hecho y dos tareas
+   * sin empezar. La unica salida era abrir otra corrida.
+   */
+  | { kind: 'reanudar' }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
   | { kind: 'vincular' }
   /**
@@ -92,6 +106,8 @@ export function parseCommand(raw: string): ParsedCommand {
   }
 
   if (command === 'cancelar') return { kind: 'cola_cancelar' };
+
+  if (command === 'reanudar') return { kind: 'reanudar' };
 
   // Mismo `[\s\S]*` que /cola, y por lo mismo pero peor: lo que viene atras de
   // /corrida es un MD entero. Con `.*` llegaria solo la primera linea, o sea el

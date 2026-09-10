@@ -3242,3 +3242,150 @@ describe('publico=si sin pliego', () => {
     expect(pedidos.some((p) => p)).toBe(false);
   });
 });
+
+/**
+ * Seguir una corrida que se corto sin terminar.
+ *
+ * El caso que lo trajo es `despacho2` (2026-09-10): cerro por tres fallas
+ * seguidas —que eran un timeout mal puesto, no el trabajo— con el back entero
+ * hecho y dos tareas sin empezar. La unica salida era volver a dictar el pliego,
+ * o sea empezar de cero al lado del trabajo que ya estaba.
+ */
+describe('/reanudar', () => {
+  /** Deja una corrida cerrada como quedo `despacho2`: 3 hechas, 3 fallidas, 2 canceladas. */
+  async function comoDespacho2(d: ReturnType<typeof arnes>) {
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: c.proyecto,
+      textos: ['back 1', 'back 2', 'back 3', 'front 1', 'front 2', 'front 3', 'front 4', 'front 5'],
+      corridaId: c.id,
+      ronda: 1,
+    });
+    const tareas = await d.store.tareasDeCorrida(c.id);
+    for (const [i, t] of tareas.entries()) {
+      if (i < 3) await d.store.cerrarTarea(t.id, 'lista', 'ok');
+      else if (i < 6) await d.store.cerrarTarea(t.id, 'fallida', 'fetch failed');
+      else await d.store.cerrarTarea(t.id, 'cancelada');
+    }
+    await d.store.cerrarCorrida(c.id, 'demasiados_fallos');
+    return c;
+  }
+
+  it('devuelve a la cola lo fallido y lo cancelado, y no toca lo hecho', async () => {
+    const d = arnes({});
+    const c = await comoDespacho2(d);
+
+    const r = await d.store.reanudarCorrida(7);
+    expect(r?.reencoladas).toBe(5);
+    expect(r?.corrida.id).toBe(c.id);
+    expect(r?.corrida.estado).toBe('abierta');
+
+    const tareas = await d.store.tareasDeCorrida(c.id);
+    expect(tareas.filter((t) => t.estado === 'lista')).toHaveLength(3);
+    expect(tareas.filter((t) => t.estado === 'pendiente')).toHaveLength(5);
+  });
+
+  // El contador es de UNA tanda, y reanudar es empezar otra. Sin esto, una
+  // corrida que cerro por tres fallas se cerraria con la primera del reintento.
+  it('pone el contador de fallos en cero', async () => {
+    const d = arnes({});
+    const c = await comoDespacho2(d);
+    await d.store.contarFallo(c.id, true);
+    await d.store.contarFallo(c.id, true);
+
+    const r = await d.store.reanudarCorrida(7);
+    expect(r?.corrida.fallosSeguidos).toBe(0);
+  });
+
+  // `limiteDeHora` calcula el techo desde `creadoEn`. Sin moverlo, una corrida
+  // que cerro a las 07:00 y se reanuda a las 08:00 tendria su techo en el pasado
+  // y volveria a cerrarse en la primera vuelta del bucle.
+  it('mueve la fecha de apertura, para que el techo de hora no corte al instante', async () => {
+    const d = arnes({});
+    const c = await comoDespacho2(d);
+    const antes = c.creadoEn.getTime();
+
+    const r = await d.store.reanudarCorrida(7);
+    expect(r!.corrida.creadoEn.getTime()).toBeGreaterThanOrEqual(antes);
+    expect(techoAlcanzado(r!.corrida, new Date())).toBeNull();
+  });
+
+  // No hay nada que seguir, y ofrecerlo seria ofrecer deshacer lo que la
+  // persona acaba de pedir.
+  it('no reanuda una corrida completa ni una cancelada', async () => {
+    for (const motivo of ['completo', 'cancelada'] as const) {
+      const d = arnes({});
+      await abrir(d);
+      const c = (await d.store.corridaAbierta(7))!;
+      await d.store.cerrarCorrida(c.id, motivo);
+      expect(await d.store.reanudarCorrida(7)).toBeUndefined();
+    }
+  });
+
+  it('con una corrida abierta no reanuda nada', async () => {
+    const d = arnes({});
+    await abrir(d);
+    expect(await d.store.reanudarCorrida(7)).toBeUndefined();
+  });
+
+  it('el comando devuelve el motivo cuando no hay nada que seguir', async () => {
+    const d = arnes({});
+    await vincular(d.store, 7);
+    const out = await handleIncoming({ chatId: 7, messageId: 1, text: '/reanudar' }, d);
+    expect(out.kind).toBe('sin_reanudar');
+    if (out.kind === 'sin_reanudar') expect(out.motivo).toBe('ninguna');
+  });
+
+  it('reanudado, la cola vuelve a correr y termina el trabajo que faltaba', async () => {
+    const d = arnes({ analista: () => [] });
+    const c = await comoDespacho2(d);
+
+    const out = await handleIncoming({ chatId: 7, messageId: 1, text: '/reanudar' }, d);
+    expect(out.kind).toBe('reanudada');
+    if (out.kind === 'reanudada') {
+      expect(out.reencoladas).toBe(5);
+      expect(out.arrancar).toBe(true);
+    }
+
+    // Y al correr la cola, las cinco que faltaban se hacen.
+    await correr(d);
+    const tareas = await d.store.tareasDeCorrida(c.id);
+    expect(tareas.filter((t) => t.estado === 'lista')).toHaveLength(8);
+  });
+
+  // Sin esta linea, la unica salida visible de una corrida cortada era volver a
+  // dictar el pliego entero.
+  it('el informe de un cierre cortado ofrece /reanudar', () => {
+    const t = textoDeInforme({ proyecto: 'despacho2', ronda: 1, techoRondas: 3 }, 'demasiados_fallos', {
+      hechas: 3,
+      fallidas: 3,
+      pendientes: 2,
+      sinResolver: [{ texto: 'front 1', ronda: 1 }],
+    });
+    expect(t).toContain('/reanudar');
+    expect(t).toContain('5 sin hacer');
+  });
+
+  // Mandar a alguien a mirar una cola vacia es peor que no decir nada.
+  it('no lo ofrece si no quedo nada por hacer', () => {
+    const t = textoDeInforme({ proyecto: 'despacho2', ronda: 3, techoRondas: 3 }, 'techo_rondas', {
+      hechas: 8,
+      fallidas: 0,
+      pendientes: 0,
+      sinResolver: [],
+    });
+    expect(t).not.toContain('/reanudar');
+  });
+
+  it('no lo ofrece cuando la corrida termino completa', () => {
+    const t = textoDeInforme({ proyecto: 'despacho2', ronda: 2, techoRondas: 3 }, 'completo', {
+      hechas: 8,
+      fallidas: 1,
+      pendientes: 1,
+      sinResolver: [{ texto: 'algo', ronda: 2 }],
+    });
+    expect(t).not.toContain('/reanudar');
+  });
+});

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import type { AgentId, ApprovalDecision } from '@multicodigo/shared';
 import type { Encargo, Tarea } from './cola.js';
-import { EJES } from './corrida.js';
+import { EJES, SE_PUEDE_REANUDAR } from './corrida.js';
 import type { Corrida, Eje, MotivoDeCierre, Veredicto } from './corrida.js';
 
 /**
@@ -845,6 +845,26 @@ export interface Store {
    */
   guardarVeredicto(corridaId: string, eje: Eje, cumple: boolean, resumen: string): Promise<void>;
   /**
+   * Reabre la ultima corrida cerrada del chat y devuelve a la cola lo que no
+   * se hizo. `undefined` si no hay ninguna que se pueda reanudar.
+   *
+   * Lo que NO se hizo son las `fallida` y las `cancelada`: las primeras se
+   * intentaron y salieron mal, las segundas nunca se intentaron porque el
+   * cierre las corto. Las dos siguen siendo trabajo pendiente del mismo pliego.
+   *
+   * Mueve `creado_en` a ahora, y no es un detalle: `limiteDeHora` calcula el
+   * techo de hora a partir de esa fecha. Sin moverla, una corrida que cerro a
+   * las 07:00 y se reanuda a las 08:00 tendria su techo en el pasado y se
+   * cerraria de nuevo en la primera vuelta del bucle.
+   *
+   * Y `fallos_seguidos` vuelve a cero: el contador es de una tanda, y reanudar
+   * es empezar otra. Sin esto, una corrida que cerro por tres fallas se cerraria
+   * con la primera del reintento.
+   */
+  reanudarCorrida(
+    chatId: number,
+  ): Promise<{ corrida: Corrida; reencoladas: number } | undefined>;
+  /**
    * Desata un chat de una cuenta. Devuelve si habia algo que desatar.
    *
    * `usuarioId` no es opcional y se usa en el WHERE: es lo que impide que
@@ -1480,6 +1500,33 @@ export class InMemoryStore implements Store {
     if (!c) return;
     const otros = (c.veredictos ?? []).filter((v) => v.eje !== eje);
     c.veredictos = [...otros, { eje, cumple, resumen }];
+  }
+
+  async reanudarCorrida(
+    chatId: number,
+  ): Promise<{ corrida: Corrida; reencoladas: number } | undefined> {
+    if ([...this.corridas.values()].some((c) => c.chatId === chatId && c.estado === 'abierta')) {
+      return undefined;
+    }
+    const cerradas = [...this.corridas.values()]
+      .filter((c) => c.chatId === chatId && c.estado === 'cerrada')
+      .sort((a, b) => b.creadoEn.getTime() - a.creadoEn.getTime());
+    const c = cerradas[0];
+    if (!c || !SE_PUEDE_REANUDAR.includes(c.motivoDeCierre as MotivoDeCierre)) return undefined;
+
+    c.estado = 'abierta';
+    delete c.motivoDeCierre;
+    c.fallosSeguidos = 0;
+    c.creadoEn = new Date();
+
+    let reencoladas = 0;
+    for (const t of this.cola) {
+      if (t.corridaId !== c.id) continue;
+      if (t.estado !== 'fallida' && t.estado !== 'cancelada') continue;
+      t.estado = 'pendiente';
+      reencoladas += 1;
+    }
+    return { corrida: c, reencoladas };
   }
 
   async guardarPreguntas(corridaId: string, preguntas: readonly string[]): Promise<void> {
@@ -2755,6 +2802,67 @@ export class PgStore implements Store {
       // La columna es de la migracion 032. Contra una base que no la corrio,
       // perder una firma es menos grave que voltear el turno del analista.
       .catch(() => undefined);
+  }
+
+  async reanudarCorrida(
+    chatId: number,
+  ): Promise<{ corrida: Corrida; reencoladas: number } | undefined> {
+    const cliente = await this.pool.connect();
+    try {
+      await cliente.query('BEGIN');
+
+      // Reabrir y reencolar en UNA transaccion: una corrida abierta cuyas
+      // tareas quedaron fallidas es peor que no haber reanudado — el ciclo la
+      // ve sin cola pendiente y arranca un analisis sobre trabajo a medias.
+      //
+      // El `WHERE` hace todo el trabajo:
+      //  · `estado = 'cerrada'` y el motivo entre los reanudables: una corrida
+      //    completa no se reanuda, y una cancelada la corto una persona.
+      //  · `cerrado_en IS NOT NULL` lo pide el CHECK de la migracion 023, que
+      //    exige que estado, motivo y fecha sean coherentes entre si. Por eso
+      //    se limpian los DOS y no solo el motivo.
+      //  · el indice unico `corridas_una_abierta_por_chat` es lo que impide
+      //    reabrir una si el chat ya tiene otra abierta: no hace falta
+      //    chequearlo antes, y chequearlo no serviria contra dos /reanudar
+      //    mandados juntos.
+      const r = await cliente.query(
+        `UPDATE corridas SET estado = 'abierta', motivo_de_cierre = NULL, cerrado_en = NULL,
+                fallos_seguidos = 0, creado_en = now()
+           WHERE id = (
+             SELECT id FROM corridas
+              WHERE chat_id = $1 AND estado = 'cerrada'
+                AND motivo_de_cierre = ANY($2::text[])
+              ORDER BY creado_en DESC LIMIT 1
+           )
+         RETURNING ${PgStore.CAMPOS_CORRIDA}`,
+        [chatId, [...SE_PUEDE_REANUDAR]],
+      );
+      if (!r.rows[0]) {
+        await cliente.query('ROLLBACK');
+        return undefined;
+      }
+      const corrida = this.aCorrida(r.rows[0]);
+
+      // Lo que no se hizo vuelve a la cola. Las `fallida` se intentaron y
+      // salieron mal; las `cancelada` nunca se intentaron porque el cierre las
+      // corto. Las dos son trabajo pendiente del mismo pliego.
+      //
+      // `cerrado_en` y `resultado` se limpian: si quedaran, una tarea que
+      // vuelve a fallar mostraria el error de la vez anterior.
+      const t = await cliente.query(
+        `UPDATE cola_tareas SET estado = 'pendiente', cerrado_en = NULL, resultado = NULL,
+                empezado_en = NULL
+           WHERE corrida_id = $1 AND estado IN ('fallida', 'cancelada')`,
+        [corrida.id],
+      );
+      await cliente.query('COMMIT');
+      return { corrida, reencoladas: t.rowCount ?? 0 };
+    } catch (err) {
+      await cliente.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      cliente.release();
+    }
   }
 
   async anotarPendiente(corridaId: string, texto: string): Promise<void> {
