@@ -15,6 +15,8 @@ import { askAgent, listarAgentes } from './agents-client.js';
 import { firmarToken, crearRepo } from './panel-client.js';
 import { publicar } from './publicar.js';
 import { dispararDeploy, setearEnvVar } from './render-api.js';
+import { reescribirConfig } from './conectar.js';
+import { escribirArchivo, leerArchivo } from './github-contenido.js';
 import type { Corrida } from './corrida.js';
 import { mergearEnGateway, inspeccionarRepo } from './gateway-admin.js';
 import { fetchPending, sendDecision } from './approvals.js';
@@ -347,6 +349,19 @@ const pipelineDeps = {
                 apiKey: env.RENDER_API_KEY,
                 ownerId: env.RENDER_OWNER_ID,
               }),
+            // El respaldo de la variable: el config.js del front. Con el mismo
+            // token de la App que pushea main; sin token no hay con que
+            // escribir, y se conecta solo por entorno, como antes.
+            ...(githubToken
+              ? {
+                  reescribirConfig: (githubRepo: string, url: string) =>
+                    reescribirConfig(githubRepo, url, {
+                      leer: (repo, ruta) => leerArchivo(repo, ruta, { token: githubToken }),
+                      escribir: (repo, ruta, texto, sha, mensaje) =>
+                        escribirArchivo(repo, ruta, texto, sha, mensaje, { token: githubToken }),
+                    }),
+                }
+              : {}),
           });
         }
       : undefined,

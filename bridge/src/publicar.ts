@@ -1,5 +1,5 @@
 import { crearServicio, type RenderDeps } from './render-api.js';
-import { frontYBackDe } from './conectar.js';
+import { CONFIG_DEL_FRONT, frontYBackDe, type ResultadoDeConfig } from './conectar.js';
 import type { Store } from './store.js';
 
 /**
@@ -78,6 +78,16 @@ export interface PublicarDeps {
     clave: string,
     valor: string,
   ) => Promise<{ ok: boolean; motivo?: string }>;
+  /**
+   * Reescribe el `config.js` del front para que apunte al back.
+   *
+   * El respaldo de `setearEnvVar`: la variable sola no alcanza si el front no
+   * la lee, y en `mesas` no la leia. Ver `reescribirConfig` en `conectar.ts`.
+   *
+   * OPCIONAL por lo mismo que las demas: sin esto se conecta solo por entorno,
+   * que es lo de antes.
+   */
+  reescribirConfig?: (githubRepo: string, url: string) => Promise<ResultadoDeConfig>;
 }
 
 /**
@@ -105,6 +115,8 @@ export async function publicar(
   const pendientes: string[] = [];
   /** El id del servicio de Render de cada repo publicado, por nombre. */
   const servicios = new Map<string, string>();
+  /** El `owner/nombre` de GitHub de cada repo publicado, para reescribirle archivos. */
+  const githubDe = new Map<string, string>();
 
   // EN SERIE y no en paralelo, por la misma razon que el bucle que crea los
   // repos en `pipeline.ts`: si el tercero falla, los dos primeros ya estan y el
@@ -246,6 +258,7 @@ export async function publicar(
     // El id del servicio se guarda aparte para poder conectarlos al final: el
     // informe muestra la URL, pero para tocar el servicio hace falta el id.
     servicios.set(repo.nombre, r.serviceId);
+    githubDe.set(repo.nombre, repo.github_repo);
 
     // El cable que queda. Nombra el servicio Y la URL: a la mañana, con dos
     // proyectos nuevos, "carga las env vars" sin decir de cual no alcanza.
@@ -272,24 +285,71 @@ export async function publicar(
   // Va DESPUES del bucle a proposito. Adentro no se puede: cuando se publica el
   // front, el back todavia no tiene URL.
   const par = frontYBackDe(publicados);
-  if (par && deps.setearEnvVar) {
-    const idFront = servicios.get(par.front.repo);
-    if (idFront) {
+  const idFront = par ? servicios.get(par.front.repo) : undefined;
+  if (par && idFront && (deps.setearEnvVar || deps.reescribirConfig)) {
+    // Dos caminos, y hacen falta los dos.
+    //
+    // La variable de entorno es el principal, pero SOLO sirve si el front la
+    // lee: en `mesas` quedo seteada en Render y el front siguio apuntando a
+    // `localhost`, porque su config.js tenia la URL escrita a mano. El informe
+    // dio la conexion por hecha y no lo estaba.
+    let porEntorno = false;
+    let motivoEntorno: string | undefined;
+    if (deps.setearEnvVar) {
       const r = await deps
         .setearEnvVar(idFront, 'API_URL', par.back.url)
         .catch((err) => ({ ok: false, motivo: err instanceof Error ? err.message : 'error' }));
+      if (r.ok) porEntorno = true;
+      else motivoEntorno = r.motivo ?? 'sin detalle';
+    }
 
-      if (r.ok) {
-        // Render NO aplica los cambios de variables solo —"Changes will not be
-        // deployed automatically"— asi que sin este deploy la variable queda
-        // guardada y el front sigue corriendo con la de antes.
-        await deps.desplegar?.(idFront).catch(() => undefined);
-      } else {
+    let porConfig = false;
+    let configCambiado = false;
+    const githubFront = githubDe.get(par.front.repo);
+    if (deps.reescribirConfig && githubFront) {
+      const c: ResultadoDeConfig = await deps
+        .reescribirConfig(githubFront, par.back.url)
+        .catch((err) => ({
+          estado: 'error' as const,
+          motivo: err instanceof Error ? err.message : 'error',
+        }));
+      if (c.estado === 'cambiado') {
+        porConfig = true;
+        configCambiado = true;
+      } else if (c.estado === 'igual') {
+        porConfig = true;
+      } else if (c.estado === 'error') {
+        // Un error de verdad —GitHub contesto mal, el archivo cambio en el
+        // medio— se nombra aunque la variable haya salido bien: si el front no
+        // lee el entorno, esto es lo unico que lo conectaba.
         pendientes.push(
-          `no pude conectar ${par.front.repo} con ${par.back.repo} ` +
-            `(${r.motivo ?? 'sin detalle'}): seteale API_URL=${par.back.url} a mano`,
+          `no pude apuntar el ${CONFIG_DEL_FRONT} de ${par.front.repo} al back ` +
+            `(${c.motivo}): cambiale la URL a ${par.back.url} a mano`,
         );
       }
+      // `sin_config` no dice nada, y a proposito: el front no tiene ese
+      // archivo, asi que la URL la recibe por otro lado —el entorno, si esta—.
+    }
+
+    // Render NO aplica los cambios de variables solo —"Changes will not be
+    // deployed automatically"— y el commit del config tampoco se despliega
+    // solo con `autoDeploy: 'no'`. Un deploy alcanza para los dos.
+    if (porEntorno || configCambiado) await deps.desplegar?.(idFront).catch(() => undefined);
+
+    if (porEntorno || porConfig) {
+      // El cable de las variables del FRONT ya esta conectado: pedirlo igual en
+      // el informe mandaria a alguien a cargar algo que ya esta. El del back se
+      // queda: ahi puede haber variables que solo la persona conoce.
+      const i = pendientes.indexOf(
+        `cargar las env vars de ${par.front.repo} en Render (${par.front.url})`,
+      );
+      if (i !== -1) pendientes.splice(i, 1);
+    } else {
+      pendientes.push(
+        `no pude conectar ${par.front.repo} con ${par.back.repo} ` +
+          `(${motivoEntorno ?? `no tiene ${CONFIG_DEL_FRONT} ni se le pudo setear la variable`}): ` +
+          `seteale API_URL=${par.back.url} a mano`,
+      );
     }
   }
 
