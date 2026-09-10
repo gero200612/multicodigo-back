@@ -550,7 +550,7 @@ export interface Veredicto {
 /**
  * El prompt del turno de analisis.
  *
- * Arranca en sesion LIMPIA —quien lo llama no pasa `sessionId`— y eso es la
+ * Arranca en sesion LIMPIA —el turno lleva `sesionLimpia`— y eso es la
  * mitad del diseño: si heredara la conversacion del constructor heredaria
  * tambien sus puntos ciegos y sus justificaciones. Un agente que paso la noche
  * diciendo "listo, hecho" lee su propio trabajo con los mismos anteojos.

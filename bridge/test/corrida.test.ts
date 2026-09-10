@@ -288,7 +288,7 @@ function arnes(opciones: {
   mergearTrabajo?: (proyecto: string, agente: string) => Promise<{ ok: boolean; detalle?: string }>;
 } = {}) {
   const store = new InMemoryStore();
-  const ask = vi.fn(async (req: { prompt: string; agent?: string }) => {
+  const ask = vi.fn(async (req: { prompt: string; agent?: string; sessionId?: string }) => {
     // `agent` es el slot al que le toco el turno, y el relevo lo cambia entre
     // intentos: es lo que estos tests miran para saber quien contesto.
     if (req.agent && opciones.sinTokens?.includes(req.agent)) throw new Error('usage_limit');
@@ -3387,5 +3387,67 @@ describe('/reanudar', () => {
       sinResolver: [{ texto: 'algo', ronda: 2 }],
     });
     expect(t).not.toContain('/reanudar');
+  });
+});
+
+/**
+ * Que los turnos de una corrida no hereden la conversacion del proyecto.
+ *
+ * Para el analista es la mitad de su diseño: si lee su propio trabajo con la
+ * conversacion en la que dijo "listo, hecho", lo lee con los mismos anteojos.
+ * Y hasta el 2026-09-10 NO se cumplia — el comentario decia que alcanzaba con
+ * que el llamador no pasara `sessionId`, y la sesion la busca `ejecutarTurno`
+ * contra el proyecto.
+ *
+ * Para las tareas es plata: la sesion se re-manda entera en cada turno, y en
+ * `despacho2` el costo fue de u$s 0,33 a 0,98 en tres tareas del mismo slot.
+ */
+describe('la sesion de los turnos de una corrida', () => {
+  /** El proyecto tiene que existir y tener sesion guardada para que se note. */
+  async function conSesionGuardada(d: ReturnType<typeof arnes>) {
+    const proyectoId = await d.store.crearProyecto('stock', USUARIO);
+    await d.store.setSession(proyectoId, 'c1', 'sesion-vieja-del-chat');
+    return proyectoId;
+  }
+
+  it('el analista arranca sin la conversacion anterior', async () => {
+    const d = arnes({ analista: () => [] });
+    const proyectoId = await conSesionGuardada(d);
+    await abrir(d);
+    await correr(d);
+
+    const analisis = d.ask.mock.calls.filter((c) => c[0].prompt.includes('--- PLIEGO ---'));
+    expect(analisis.length).toBeGreaterThan(0);
+    for (const [req] of analisis) expect(req.sessionId).toBeUndefined();
+
+    // Y no la pisa: el hilo del chat con ese proyecto sigue donde estaba.
+    expect(await d.store.getSession(proyectoId, 'c1')).toBe('sesion-vieja-del-chat');
+  });
+
+  it('las tareas de la corrida tampoco la heredan', async () => {
+    const d = arnes({ analista: () => [] });
+    await conSesionGuardada(d);
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['armar el listado']);
+    await correr(d);
+
+    const tareas = d.ask.mock.calls.filter((c) => c[0].prompt.includes('La tarea:'));
+    expect(tareas.length).toBeGreaterThan(0);
+    for (const [req] of tareas) expect(req.sessionId).toBeUndefined();
+  });
+
+  // Afuera de una corrida NO cambia nada: un chat necesita su hilo, que es lo
+  // que hace que se pueda conversar.
+  it('un turno normal de chat sigue con su conversacion', async () => {
+    const d = arnes({});
+    await vincular(d.store, 7);
+    const proyectoId = await conSesionGuardada(d);
+    await d.store.setActiveProject(7, 'stock');
+    await handleIncoming({ chatId: 7, messageId: 1, text: 'hola, como venis?' }, d);
+
+    const sueltos = d.ask.mock.calls.filter((c) => !c[0].prompt.includes('--- PLIEGO ---'));
+    expect(sueltos.length).toBeGreaterThan(0);
+    expect(sueltos[0]![0].sessionId).toBe('sesion-vieja-del-chat');
+    expect(await d.store.getSession(proyectoId, 'c1')).toBe('s');
   });
 });

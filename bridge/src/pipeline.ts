@@ -1003,6 +1003,31 @@ export interface Turno {
   modo?: ModoDeTurno;
   /** Con que modelo corre. Ausente = el default del CLI de Claude. */
   modelo?: ClaveDeModelo;
+  /**
+   * Que este turno NO herede la conversacion del proyecto ni la pise.
+   *
+   * Lo usan los turnos de una corrida, y por dos razones distintas:
+   *
+   * **El analista NECESITA no heredarla.** Es la mitad de su diseño: si lee su
+   * propio trabajo con la conversacion en la que dijo "listo, hecho", lo lee con
+   * los mismos anteojos. El comentario de `rondaDeAnalisis` decia que arrancaba
+   * limpio "porque quien lo llama no pasa sessionId" — y era falso: el que la
+   * busca es `ejecutarTurno`, no el que llama. Corria heredando todo.
+   *
+   * **Las tareas la pagan.** La sesion se re-manda entera en cada turno, asi que
+   * el costo crece con la noche: medido en `despacho2` (2026-09-10), 6.596 →
+   * 18.780 → 31.116 tokens en tres tareas del mismo slot, de u$s 0,33 a 0,98.
+   * En una corrida de quince tareas eso no para de subir.
+   *
+   * Y la continuidad que se pierde ya estaba perdida: con el reparto entre
+   * cuentas, la tarea 3 puede caer en otro slot y no hereda nada igual. Cada
+   * tarea se redacta para que otro agente pueda tomarla sin contexto, y lo que
+   * de verdad las conecta es main, no la conversacion.
+   *
+   * Tampoco GUARDA la sesion, y eso es aparte: una corrida no puede pisarle a
+   * la persona el hilo de su chat con ese proyecto.
+   */
+  sesionLimpia?: boolean;
   origen: 'telegram' | 'panel';
   /** Solo cuando viene de Telegram: para poder colgar el poller del mensaje. */
   chatId?: number;
@@ -1207,9 +1232,12 @@ export async function ejecutarTurno(
   deps: PipelineDeps,
   t: Turno,
 ): Promise<{ jobId: string; texto: string }> {
-  const sessionId = t.proyectoId
-    ? await deps.store.getSession(t.proyectoId, t.agente)
-    : undefined;
+  // `sesionLimpia` gana sobre el proyecto: ver el campo en `Turno` para por que
+  // los turnos de una corrida no heredan la conversacion.
+  const sessionId =
+    t.proyectoId && !t.sesionLimpia
+      ? await deps.store.getSession(t.proyectoId, t.agente)
+      : undefined;
 
   const jobId = await deps.store.createJob({
     chatId: t.chatId ?? 0,
@@ -1277,7 +1305,11 @@ export async function ejecutarTurno(
       throw e;
     }
 
-    if (t.proyectoId) await deps.store.setSession(t.proyectoId, t.agente, r.sessionId);
+    // No se guarda la de un turno limpio: una corrida no puede pisarle a la
+    // persona el hilo de su chat con ese proyecto.
+    if (t.proyectoId && !t.sesionLimpia) {
+      await deps.store.setSession(t.proyectoId, t.agente, r.sessionId);
+    }
     // El consumo del turno, si el agente lo mando. Es lo que despues suma
     // `consumoPorAgente` para mostrar cuanto gasto cada uno.
     const consumo =
@@ -2184,6 +2216,12 @@ async function cerrarConInforme(
  * ciegos y sus justificaciones: un agente que paso la noche diciendo "listo,
  * hecho" lee su propio trabajo con los mismos anteojos.
  *
+ * Lo hace `sesionLimpia: true` en el turno. Aca decia que alcanzaba con que
+ * "quien lo llama no pasa sessionId", y era falso: la sesion la busca
+ * `ejecutarTurno` contra el proyecto, no la recibe. O sea que el analisis
+ * heredaba todo, en silencio y desde siempre — justo lo que este parrafo dice
+ * que no puede pasar.
+ *
  * ## Por que no se parsea la respuesta
  *
  * El analista encola llamando a `reportar_huecos`, que entra por
@@ -2353,6 +2391,10 @@ async function tandaDeAnalisis(
         // con `preguntar`, un intento de editar dejaria el turno colgado quince
         // minutos esperando un OK que nadie va a dar a las tres de la mañana.
         modo: 'desatendido',
+        // La mitad del diseño del analisis, y hasta hoy no se cumplia: si
+        // hereda la conversacion del constructor hereda sus puntos ciegos, y
+        // lee su propio trabajo con los mismos anteojos.
+        sesionLimpia: true,
         modelo: ctx.modelo,
         repos: ctx.repos,
         githubToken: ctx.githubToken,
@@ -2463,6 +2505,9 @@ export async function planificarCorrida(
       // igual porque con `preguntar` un intento de editar colgaria el turno
       // quince minutos esperando un OK.
       modo: 'desatendido',
+      // Arranca de un repo vacio: no hay conversacion previa que le sirva, y
+      // heredar la del chat le mete contexto de otra cosa.
+      sesionLimpia: true,
       modelo: ctx.modelo,
       repos: ctx.repos,
       githubToken: ctx.githubToken,
@@ -2728,6 +2773,11 @@ export async function correrCola(
         // normal de Telegram es lo correcto— ahi deja el trabajo sin guardar.
         prompt: corrida ? promptDeTareaDesatendida(tarea.texto) : tarea.texto,
         modo,
+        // Adentro de una corrida cada tarea arranca limpia; afuera, no. Un chat
+        // normal necesita su hilo —es lo que hace que se pueda conversar— y una
+        // corrida paga esa conversacion en cada turno sin usarla: las tareas se
+        // redactan para tomarse sin contexto, y lo que las conecta es main.
+        ...(corrida ? { sesionLimpia: true as const } : {}),
         modelo: ctx.modelo,
         repos: ctx.repos,
         githubToken: ctx.githubToken,
