@@ -35,7 +35,7 @@ import {
   type Corrida,
   type ResumenDeTareas,
 } from './corrida.js';
-import { escaparHtml } from './codigo.js';
+import { escaparHtml, partirParaTelegram } from './codigo.js';
 import { startWatching } from './approvals.js';
 import { parseApprovalData, renderApproval, type BotonKind } from './render.js';
 import { decidir } from './decisiones.js';
@@ -889,6 +889,22 @@ const COMANDOS = [
 const colasVivas = new Set<number>();
 
 /** Arranca la cola de un chat si no la esta corriendo ya. */
+/**
+ * Manda un aviso de la cola, partido si se pasa del tope de Telegram.
+ *
+ * Existe porque por este camino sale el INFORME de la mañana, que crece con las
+ * tareas, las cuatro firmas de los analistas y los pendientes. Un informe de
+ * 4097 caracteres se perdia entero y en silencio.
+ */
+async function avisarPartido(
+  ctx: { reply: (t: string, o?: { parse_mode?: 'HTML' }) => Promise<unknown> },
+  texto: string,
+): Promise<void> {
+  for (const parte of partirParaTelegram(texto)) {
+    await ctx.reply(parte, { parse_mode: 'HTML' }).then(() => undefined);
+  }
+}
+
 async function arrancarCola(
   chatId: number,
   deps: BridgeDeps,
@@ -1032,10 +1048,20 @@ async function planificarYMostrar(
     for (const b of fila) teclado.text(b.label, b.data);
     teclado.row();
   }
-  await ctx.reply(textoDePlan(corrida.proyecto, plan.tareas), {
-    parse_mode: 'HTML',
-    reply_markup: teclado,
-  });
+  // Partido si hace falta, y el teclado SOLO en la ultima parte: los botones
+  // van con el "¿Arranco?", que es el final del texto. Repetirlos en cada
+  // pedazo dejaria tres pares de botones y ninguna forma de saber cual cuenta.
+  //
+  // Este es el mensaje que se perdio en `despacho2`: ocho tareas, 5300
+  // caracteres, rechazado entero por Telegram. Ver `partirParaTelegram`.
+  const partes = partirParaTelegram(textoDePlan(corrida.proyecto, plan.tareas));
+  for (const [i, parte] of partes.entries()) {
+    const ultima = i === partes.length - 1;
+    await ctx.reply(parte, {
+      parse_mode: 'HTML',
+      ...(ultima ? { reply_markup: teclado } : {}),
+    });
+  }
 }
 
 /**
@@ -1069,12 +1095,17 @@ export function retomarCorridas(bot: Bot, deps: BridgeDeps): void {
 
     for (const c of abiertas) {
       const avisar = async (texto: string) => {
-        await bot.api
-          .sendMessage(c.chatId, texto, { parse_mode: 'HTML' })
-          .then(() => undefined)
-          // Un chat al que no se puede escribir —bloqueado, borrado— no puede
-          // frenar el resto.
-          .catch(() => undefined);
+        // Partido: por aca sale el informe de la mañana, que crece con las
+        // tareas, las cuatro firmas y los pendientes. Es el unico mensaje de
+        // toda la feature que no se puede perder.
+        for (const parte of partirParaTelegram(texto)) {
+          await bot.api
+            .sendMessage(c.chatId, parte, { parse_mode: 'HTML' })
+            .then(() => undefined)
+            // Un chat al que no se puede escribir —bloqueado, borrado— no puede
+            // frenar el resto.
+            .catch(() => undefined);
+        }
       };
       await avisar('Me reinicie. Retomo la corrida donde habia quedado.');
       void arrancarCola(c.chatId, deps, avisar);
@@ -1573,9 +1604,7 @@ export function buildBot(deps: BridgeDeps): Bot {
         // El precio es que todo lo que viaje por aca tiene que estar escapado.
         // Lo esta: ver `escaparHtml` en los mensajes de `correrCola` y de
         // `textoDeInforme`.
-        void arrancarCola(ctx.chat.id, deps, (t) =>
-          ctx.reply(t, { parse_mode: 'HTML' }).then(() => undefined),
-        );
+        void arrancarCola(ctx.chat.id, deps, (t) => avisarPartido(ctx, t));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1789,9 +1818,7 @@ export async function manejarMenu(
     });
     // Sin await: la cola puede tardar ocho horas y este handler tiene que
     // contestarle a Telegram ya. El progreso llega por los avisos.
-    void arrancarCola(chatId, deps, (t) =>
-      ctx.reply(t, { parse_mode: 'HTML' }).then(() => undefined),
-    );
+    void arrancarCola(chatId, deps, (t) => avisarPartido(ctx, t));
     return;
   }
 

@@ -115,8 +115,19 @@ export function buildWebhookServer(
     }
     // Fire and forget: Telegram reintenta si no contestamos rapido, y el turno
     // de Claude tarda minutos. El error se loguea, no se propaga al request.
+    //
+    // Con `console.error` y NO con `app.log.error`: el servidor se crea con
+    // `logger: false`, asi que `app.log.error` no escribe en ningun lado. O sea
+    // que TODO fallo de un update se perdia — y con el, la unica pista de que
+    // algo habia pasado.
+    //
+    // Costo real: el 2026-09-10 el mensaje del plan de `despacho2` se paso de
+    // los 4096 caracteres de Telegram, se rechazo entero, y la corrida quedo
+    // esperando un boton que no existia. Los logs estaban vacios y el
+    // contenedor decia "Up 26 minutes", asi que no habia por donde empezar a
+    // buscar.
     void bot.handleUpdate(request.body as never).catch((err: unknown) => {
-      app.log.error({ err }, 'fallo el procesamiento del update');
+      console.error('[bridge] fallo el procesamiento del update:', err);
     });
     return reply.code(200).send({ ok: true });
   });

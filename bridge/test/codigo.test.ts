@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { conCodigoParaTelegram } from '../src/codigo.js';
+import { conCodigoParaTelegram, partirParaTelegram, TOPE_DE_MENSAJE } from '../src/codigo.js';
 
 /**
  * Los bloques cortos de codigo se muestran como consola.
@@ -117,5 +117,56 @@ describe('el Markdown que escribe el agente', () => {
 
   it('un asterisco suelto no abre nada', () => {
     expect(conCodigoParaTelegram('2 * 3 = 6')).toBe('2 * 3 = 6');
+  });
+});
+
+describe('partirParaTelegram', () => {
+  // El caso real: el plan de `despacho2` medía 5300 caracteres y Telegram lo
+  // rechazó entero, con lo que la corrida quedó esperando un botón que nunca
+  // se dibujó. Ver `partirParaTelegram`.
+  it('parte un mensaje que se pasa del tope', () => {
+    const linea = 'Back (despacho2-back): implementar el modulo y los endpoints de pedidos. ';
+    const texto = Array.from({ length: 80 }, (_, i) => `${i + 1}. ${linea.repeat(3)}`).join('\n');
+    expect(texto.length).toBeGreaterThan(TOPE_DE_MENSAJE);
+
+    const partes = partirParaTelegram(texto);
+    expect(partes.length).toBeGreaterThan(1);
+    for (const p of partes) expect(p.length).toBeLessThanOrEqual(TOPE_DE_MENSAJE);
+    // Nada se pierde por el camino: es lo unico que el arreglo tiene que
+    // garantizar de verdad.
+    expect(partes.join('\n')).toBe(texto);
+  });
+
+  it('un mensaje que entra vuelve tal cual, en una sola parte', () => {
+    expect(partirParaTelegram('📋 <b>El plan</b>\n\n1. una cosa')).toEqual([
+      '📋 <b>El plan</b>\n\n1. una cosa',
+    ]);
+  });
+
+  // Cortar por caracteres partiria `<b>algo</b>` al medio y Telegram rechazaria
+  // el pedazo con las etiquetas desbalanceadas: el arreglo tendria el mismo
+  // sintoma que el bug.
+  it('corta en los saltos de linea, sin partir las etiquetas', () => {
+    const l = `<b>${'x'.repeat(300)}</b>`;
+    const partes = partirParaTelegram(Array.from({ length: 40 }, () => l).join('\n'));
+    expect(partes.length).toBeGreaterThan(1);
+    for (const p of partes) {
+      // Cada parte tiene tantas aperturas como cierres.
+      expect((p.match(/<b>/g) ?? []).length).toBe((p.match(/<\/b>/g) ?? []).length);
+    }
+  });
+
+  // No pasa hoy —la tarea mas larga medida son 1251 caracteres— pero el texto
+  // lo escribe un modelo, y "no deberia" no alcanza para el mensaje que no se
+  // puede perder.
+  it('una sola linea mas larga que el tope se parte igual', () => {
+    const partes = partirParaTelegram('y'.repeat(TOPE_DE_MENSAJE * 2 + 15));
+    expect(partes).toHaveLength(3);
+    for (const p of partes) expect(p.length).toBeLessThanOrEqual(TOPE_DE_MENSAJE);
+    expect(partes.join('')).toHaveLength(TOPE_DE_MENSAJE * 2 + 15);
+  });
+
+  it('nunca devuelve cero partes, que seria el mismo silencio', () => {
+    expect(partirParaTelegram('\n'.repeat(TOPE_DE_MENSAJE + 10)).length).toBeGreaterThan(0);
   });
 });

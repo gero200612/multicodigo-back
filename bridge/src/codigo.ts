@@ -168,3 +168,72 @@ export function conCodigoParaTelegram(texto: string): string {
   // blanco donde antes habia algo.
   return salida.filter((l, i) => l !== '' || i === 0 || salida[i - 1] !== '').join('\n');
 }
+
+/**
+ * El tope de un mensaje de Telegram: 4096 caracteres.
+ *
+ * No es una cifra prudente elegida por nosotros, es el limite de la API:
+ * `sendMessage` contesta 400 "message is too long" y no manda nada.
+ */
+export const TOPE_DE_MENSAJE = 4096;
+
+/**
+ * Parte un mensaje largo en varios que Telegram si acepte.
+ *
+ * ## El bug que lo trajo
+ *
+ * En la corrida `despacho2` (2026-09-10) el plan salio de 5300 caracteres —ocho
+ * tareas, dos de mas de 1100— y Telegram lo rechazo entero. La corrida quedo
+ * con sus ocho tareas encoladas esperando un boton que nunca se dibujo, y en
+ * silencio: el `.catch` del webhook manda el error a `app.log.error`, y el
+ * servidor se crea con `logger: false`.
+ *
+ * Con las tareas cortas de `mesas` el mensaje entraba, asi que el limite estaba
+ * ahi desde el principio y aparecio recien con un pliego rico. Los dos mensajes
+ * que mas crecen son justo los que no se pueden perder: el plan —sin el, la
+ * corrida no arranca— y el informe de la mañana.
+ *
+ * ## Por que corta por LINEAS
+ *
+ * Estos textos van con `parse_mode: 'HTML'` y sus etiquetas —`<b>`, `<code>`,
+ * `<pre>`— abren y cierran DENTRO de una linea. Cortar en un salto de linea no
+ * puede partir un par de etiquetas al medio; cortar por caracteres si, y
+ * Telegram rechaza el pedazo con las etiquetas desbalanceadas — o sea que el
+ * arreglo tendria el mismo sintoma que el bug.
+ *
+ * Una linea sola mas larga que el tope se parte igual, por caracteres, porque
+ * la alternativa es no mandarla. No pasa hoy —la tarea mas larga medida son
+ * 1251— pero el texto lo escribe un modelo y "no deberia" no alcanza.
+ */
+export function partirParaTelegram(texto: string, tope = TOPE_DE_MENSAJE): string[] {
+  if (texto.length <= tope) return [texto];
+
+  const partes: string[] = [];
+  let actual = '';
+
+  const cerrar = () => {
+    if (actual !== '') partes.push(actual);
+    actual = '';
+  };
+
+  for (const linea of texto.split('\n')) {
+    // Una linea que ni sola entra: se parte por caracteres. Se cierra lo que
+    // venia primero, para no mezclar.
+    if (linea.length > tope) {
+      cerrar();
+      for (let i = 0; i < linea.length; i += tope) partes.push(linea.slice(i, i + tope));
+      continue;
+    }
+    // El `+ 1` es el salto de linea que se agrega al pegarla.
+    if (actual === '') actual = linea;
+    else if (actual.length + 1 + linea.length <= tope) actual += `\n${linea}`;
+    else {
+      cerrar();
+      actual = linea;
+    }
+  }
+  cerrar();
+  // Un texto de solo saltos de linea no deja ninguna parte, y mandar cero
+  // mensajes seria el mismo silencio que se esta arreglando.
+  return partes.length > 0 ? partes : [texto.slice(0, tope)];
+}
