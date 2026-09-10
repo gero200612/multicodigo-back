@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { crearServicio, dispararDeploy } from '../src/render-api.js';
+import { crearServicio, dispararDeploy, setearEnvVar } from '../src/render-api.js';
 
 const OK = {
   apiKey: 'rnd_clave',
@@ -191,5 +191,104 @@ describe('el deploy se dispara a mano', () => {
   it('sin Render configurado no intenta nada', async () => {
     const r = await dispararDeploy('srv-1', {});
     expect(r.ok).toBe(false);
+  });
+});
+
+/**
+ * Setear una variable de entorno SIN borrar las demas.
+ *
+ * `PUT /services/{id}/env-vars` reemplaza la lista ENTERA: "Any environment
+ * variables that are not included will be removed from the service". Mandar
+ * solo `API_URL` borraria todo lo que la persona haya cargado a mano.
+ *
+ * Por eso se lee primero y se manda la lista completa. Y si la lectura falla no
+ * se escribe nada: perder las variables de un servicio es mucho peor que no
+ * conectarlo.
+ */
+describe('setear una env var', () => {
+  const OK = { apiKey: 'k', ownerId: 'o' };
+
+  it('conserva las que ya estaban y agrega la nueva', async () => {
+    let enviado: unknown;
+    const r = await setearEnvVar('srv-1', 'API_URL', 'https://back.onrender.com', {
+      ...OK,
+      fetchImpl: (async (u: string, init: RequestInit) => {
+        if (String(init.method ?? 'GET') === 'GET') {
+          return new Response(
+            JSON.stringify([
+              { envVar: { key: 'NODE_ENV', value: 'production' } },
+              { envVar: { key: 'SECRETO', value: 'no-me-borres' } },
+            ]),
+            { status: 200 },
+          );
+        }
+        enviado = JSON.parse(String(init.body));
+        return new Response('[]', { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+
+    expect(r.ok).toBe(true);
+    const claves = (enviado as { key: string }[]).map((v) => v.key).sort();
+    expect(claves).toEqual(['API_URL', 'NODE_ENV', 'SECRETO']);
+    const api = (enviado as { key: string; value: string }[]).find((v) => v.key === 'API_URL');
+    expect(api?.value).toBe('https://back.onrender.com');
+  });
+
+  // Si ya estaba, se PISA y no se duplica: dos entradas con la misma clave es
+  // un estado que Render no deberia recibir.
+  it('si la variable ya existia, la reemplaza sin duplicarla', async () => {
+    let enviado: unknown;
+    await setearEnvVar('srv-1', 'API_URL', 'https://nueva.onrender.com', {
+      ...OK,
+      fetchImpl: (async (u: string, init: RequestInit) => {
+        if (String(init.method ?? 'GET') === 'GET') {
+          return new Response(
+            JSON.stringify([{ envVar: { key: 'API_URL', value: 'https://vieja.onrender.com' } }]),
+            { status: 200 },
+          );
+        }
+        enviado = JSON.parse(String(init.body));
+        return new Response('[]', { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+
+    const lista = enviado as { key: string; value: string }[];
+    expect(lista.filter((v) => v.key === 'API_URL')).toHaveLength(1);
+    expect(lista[0]!.value).toBe('https://nueva.onrender.com');
+  });
+
+  // Lo mas importante de todo: no escribir a ciegas.
+  it('si no puede leer las que hay, NO escribe nada', async () => {
+    let escribio = false;
+    const r = await setearEnvVar('srv-1', 'API_URL', 'https://back.onrender.com', {
+      ...OK,
+      fetchImpl: (async (u: string, init: RequestInit) => {
+        if (String(init.method ?? 'GET') === 'GET') {
+          return new Response('{"message":"boom"}', { status: 500 });
+        }
+        escribio = true;
+        return new Response('[]', { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+
+    expect(escribio).toBe(false);
+    expect(r.ok).toBe(false);
+  });
+
+  it('un fallo al escribir se devuelve, no explota', async () => {
+    const r = await setearEnvVar('srv-1', 'API_URL', 'https://x', {
+      ...OK,
+      fetchImpl: (async (u: string, init: RequestInit) =>
+        String(init.method ?? 'GET') === 'GET'
+          ? new Response('[]', { status: 200 })
+          : new Response('{"message":"nope"}', { status: 400 })) as unknown as typeof fetch,
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.motivo).toContain('nope');
+  });
+
+  it('sin Render configurado no intenta nada', async () => {
+    expect((await setearEnvVar('srv-1', 'API_URL', 'https://x', {})).ok).toBe(false);
   });
 });

@@ -14,7 +14,7 @@ import { PgStore, type FilaDeDocumento } from './store.js';
 import { askAgent, listarAgentes } from './agents-client.js';
 import { firmarToken, crearRepo } from './panel-client.js';
 import { publicar } from './publicar.js';
-import { dispararDeploy } from './render-api.js';
+import { dispararDeploy, setearEnvVar } from './render-api.js';
 import type { Corrida } from './corrida.js';
 import { mergearEnGateway, inspeccionarRepo } from './gateway-admin.js';
 import { fetchPending, sendDecision } from './approvals.js';
@@ -335,6 +335,14 @@ const pipelineDeps = {
             // entera de los push, asi que el que dispara es el sistema.
             desplegar: (serviceId) =>
               dispararDeploy(serviceId, {
+                apiKey: env.RENDER_API_KEY,
+                ownerId: env.RENDER_OWNER_ID,
+              }),
+            // Para que el front sepa donde quedo el back. Lee las variables que
+            // el servicio ya tiene antes de escribir: el PUT de Render reemplaza
+            // la lista entera.
+            setearEnvVar: (serviceId, clave, valor) =>
+              setearEnvVar(serviceId, clave, valor, {
                 apiKey: env.RENDER_API_KEY,
                 ownerId: env.RENDER_OWNER_ID,
               }),

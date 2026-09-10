@@ -505,3 +505,116 @@ describe('publicar solo lo que puede arrancar', () => {
     expect(r.publicados).toEqual([{ repo: 'propinas-back', url: 'https://x.onrender.com' }]);
   });
 });
+
+/**
+ * Conectar el front al back al terminar de publicar.
+ *
+ * Ver
+ * `multicodigo-vm/docs/superpowers/specs/2026-09-10-conectar-front-y-back-design.md`.
+ */
+describe('conectar el front con el back', () => {
+  const DOS: RepoDelProyecto[] = [
+    {
+      nombre: 'mesas-front',
+      github_repo: 'Sincro-arg/mesas-front',
+      creado_por_el_bot: true,
+      render_service_id: null,
+    },
+    {
+      nombre: 'mesas-back',
+      github_repo: 'Sincro-arg/mesas-back',
+      creado_por_el_bot: true,
+      render_service_id: null,
+    },
+  ];
+
+  /** Render devuelve un id distinto por servicio, para poder distinguirlos. */
+  function conDosRepos(over: Partial<PublicarDeps> = {}): PublicarDeps {
+    let n = 0;
+    return deps({
+      store: {
+        reposDeProyecto: async () => DOS,
+        guardarRenderServiceId: async () => undefined,
+      },
+      render: {
+        apiKey: 'k',
+        ownerId: 'o',
+        fetchImpl: (async () => {
+          n += 1;
+          return new Response(
+            JSON.stringify({
+              service: {
+                id: `srv-${n}`,
+                serviceDetails: { url: `https://servicio-${n}.onrender.com` },
+              },
+            }),
+            { status: 201 },
+          );
+        }) as typeof fetch,
+      },
+      ...over,
+    });
+  }
+
+  it('le setea API_URL al front con la URL del back', async () => {
+    const seteadas: Array<{ serviceId: string; clave: string; valor: string }> = [];
+    const r = await publicar('p1', 'mesas', ['c2'], {
+      ...conDosRepos(),
+      setearEnvVar: async (serviceId, clave, valor) => {
+        seteadas.push({ serviceId, clave, valor });
+        return { ok: true };
+      },
+    });
+
+    expect(seteadas).toHaveLength(1);
+    expect(seteadas[0]!.clave).toBe('API_URL');
+    // El front es srv-1 (se publica primero) y el back srv-2.
+    expect(seteadas[0]!.serviceId).toBe('srv-1');
+    expect(seteadas[0]!.valor).toBe('https://servicio-2.onrender.com');
+    expect(r.publicados).toHaveLength(2);
+  });
+
+  // Render no aplica los cambios de variables solo: hay que desplegar.
+  it('despliega el front despues de setear la variable', async () => {
+    const desplegados: string[] = [];
+    await publicar('p1', 'mesas', ['c2'], {
+      ...conDosRepos(),
+      setearEnvVar: async () => ({ ok: true }),
+      desplegar: async (id) => {
+        desplegados.push(id);
+        return { ok: true };
+      },
+    });
+
+    expect(desplegados).toContain('srv-1');
+  });
+
+  it('si no se pudo setear, queda como pendiente', async () => {
+    const r = await publicar('p1', 'mesas', ['c2'], {
+      ...conDosRepos(),
+      setearEnvVar: async () => ({ ok: false, motivo: 'no pude leer las que ya tenia' }),
+    });
+
+    const pend = r.pendientes.join(' ');
+    expect(pend).toContain('mesas-front');
+    expect(pend).toContain('no pude leer');
+  });
+
+  // Un proyecto de un solo servicio no tiene a quien conectarse.
+  it('un proyecto sin front no intenta conectar nada', async () => {
+    let llamo = false;
+    await publicar('p1', 'propinas', ['c2'], {
+      ...deps(),
+      setearEnvVar: async () => {
+        llamo = true;
+        return { ok: true };
+      },
+    });
+    expect(llamo).toBe(false);
+  });
+
+  it('sin la dependencia cableada, publica igual que antes', async () => {
+    const r = await publicar('p1', 'mesas', ['c2'], conDosRepos());
+    expect(r.publicados).toHaveLength(2);
+  });
+});

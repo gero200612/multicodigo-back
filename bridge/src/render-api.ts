@@ -186,3 +186,81 @@ export async function dispararDeploy(
     return { ok: false, motivo: sinClave(msg, deps.apiKey) };
   }
 }
+
+/**
+ * Setea UNA variable de entorno del servicio, sin borrar las demas.
+ *
+ * ## Por que lee antes de escribir
+ *
+ * `PUT /services/{id}/env-vars` reemplaza la lista ENTERA. La doc de Render lo
+ * dice sin vueltas: "Any environment variables that are not included will be
+ * removed from the service". Mandar solo la nueva borraria todo lo que la
+ * persona cargo a mano —claves de APIs, secretos, configuracion— sin ningun
+ * aviso.
+ *
+ * Asi que se lee la lista actual, se agrega o se pisa la clave pedida, y se
+ * manda completa. **Si la lectura falla no se escribe nada**: no conectar dos
+ * servicios es un inconveniente; borrarle las variables a un servicio que anda
+ * es un incidente.
+ *
+ * ## Lo que NO hace
+ *
+ * No despliega. Render no aplica los cambios de variables solo —"Changes will
+ * not be deployed automatically"— asi que quien llama decide cuando disparar el
+ * deploy, y normalmente es despues de setear todo lo que iba a setear.
+ */
+export async function setearEnvVar(
+  serviceId: string,
+  clave: string,
+  valor: string,
+  deps: RenderDeps,
+): Promise<{ ok: true } | { ok: false; motivo: string }> {
+  if (!deps.apiKey) return { ok: false, motivo: 'sin Render configurado' };
+
+  const doFetch = deps.fetchImpl ?? fetch;
+  const url = `${API}/services/${serviceId}/env-vars`;
+  const headers = {
+    authorization: `Bearer ${deps.apiKey}`,
+    'content-type': 'application/json',
+  };
+
+  try {
+    const leidas = await doFetch(url, { headers });
+    const texto = await leidas.text();
+    if (!leidas.ok) {
+      // A ciegas no se escribe. Ver arriba.
+      return {
+        ok: false,
+        motivo: `no pude leer las variables que ya tenia (${sinClave(texto.slice(0, 200), deps.apiKey)})`,
+      };
+    }
+
+    // Render las envuelve en `{ envVar: {...} }` al listar, pero las espera
+    // planas al escribir. El `?? f` cubre las dos formas sin tener que adivinar
+    // cual version de la API contesto.
+    const filas = JSON.parse(texto) as Array<{ envVar?: { key?: string; value?: string } }>;
+    const actuales = filas
+      .map((f) => f.envVar ?? (f as { key?: string; value?: string }))
+      .filter((v): v is { key: string; value: string } => typeof v.key === 'string')
+      // La que vamos a setear se saca de la lista: si ya estaba, se pisa; si
+      // no, no cambia nada. Dos entradas con la misma clave es un estado que
+      // Render no deberia recibir.
+      .filter((v) => v.key !== clave)
+      .map((v) => ({ key: v.key, value: v.value ?? '' }));
+
+    const escrita = await doFetch(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify([...actuales, { key: clave, value: valor }]),
+    });
+
+    if (escrita.ok) return { ok: true };
+    return {
+      ok: false,
+      motivo: sinClave((await escrita.text()).slice(0, 200), deps.apiKey),
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, motivo: sinClave(msg, deps.apiKey) };
+  }
+}

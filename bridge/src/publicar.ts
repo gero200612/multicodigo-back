@@ -1,4 +1,5 @@
 import { crearServicio, type RenderDeps } from './render-api.js';
+import { frontYBackDe } from './conectar.js';
 import type { Store } from './store.js';
 
 /**
@@ -62,6 +63,21 @@ export interface PublicarDeps {
    * antes. Es el piso de siempre — nunca peor que hoy.
    */
   desplegar?: (serviceId: string) => Promise<{ ok: boolean; motivo?: string }>;
+  /**
+   * Setea una variable de entorno de un servicio, sin borrar las demas.
+   *
+   * Con esto el front se entera de donde quedo el back: una corrida que
+   * construye dos servicios los publicaba SIN conocerse, y quedaba un paso
+   * manual —editar una URL y desplegar— que se repite en cada proyecto.
+   *
+   * OPCIONAL: sin esto se publica igual que antes y el pendiente de siempre
+   * pide hacerlo a mano.
+   */
+  setearEnvVar?: (
+    serviceId: string,
+    clave: string,
+    valor: string,
+  ) => Promise<{ ok: boolean; motivo?: string }>;
 }
 
 /**
@@ -87,6 +103,8 @@ export async function publicar(
 ): Promise<{ publicados: Publicado[]; pendientes: string[] }> {
   const publicados: Publicado[] = [];
   const pendientes: string[] = [];
+  /** El id del servicio de Render de cada repo publicado, por nombre. */
+  const servicios = new Map<string, string>();
 
   // EN SERIE y no en paralelo, por la misma razon que el bucle que crea los
   // repos en `pipeline.ts`: si el tercero falla, los dos primeros ya estan y el
@@ -225,6 +243,9 @@ export async function publicar(
 
     await deps.store.guardarRenderServiceId(proyectoId, repo.nombre, r.serviceId);
     publicados.push({ repo: repo.nombre, url: r.url });
+    // El id del servicio se guarda aparte para poder conectarlos al final: el
+    // informe muestra la URL, pero para tocar el servicio hace falta el id.
+    servicios.set(repo.nombre, r.serviceId);
 
     // El cable que queda. Nombra el servicio Y la URL: a la mañana, con dos
     // proyectos nuevos, "carga las env vars" sin decir de cual no alcanza.
@@ -242,6 +263,33 @@ export async function publicar(
         `${repo.nombre} guarda en SQLite y el plan free borra el disco en cada deploy: ` +
           'los datos no van a sobrevivir. Para que persistan hay que pasarlo a Postgres o pagar un disco',
       );
+    }
+  }
+
+  // Ya publicados los dos, se conectan: el front no puede saber la URL del back
+  // hasta que el back existe, y eso recien pasa aca.
+  //
+  // Va DESPUES del bucle a proposito. Adentro no se puede: cuando se publica el
+  // front, el back todavia no tiene URL.
+  const par = frontYBackDe(publicados);
+  if (par && deps.setearEnvVar) {
+    const idFront = servicios.get(par.front.repo);
+    if (idFront) {
+      const r = await deps
+        .setearEnvVar(idFront, 'API_URL', par.back.url)
+        .catch((err) => ({ ok: false, motivo: err instanceof Error ? err.message : 'error' }));
+
+      if (r.ok) {
+        // Render NO aplica los cambios de variables solo —"Changes will not be
+        // deployed automatically"— asi que sin este deploy la variable queda
+        // guardada y el front sigue corriendo con la de antes.
+        await deps.desplegar?.(idFront).catch(() => undefined);
+      } else {
+        pendientes.push(
+          `no pude conectar ${par.front.repo} con ${par.back.repo} ` +
+            `(${r.motivo ?? 'sin detalle'}): seteale API_URL=${par.back.url} a mano`,
+        );
+      }
     }
   }
 
