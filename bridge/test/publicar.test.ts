@@ -439,3 +439,69 @@ describe('publicar en un repo que ya tiene servicio', () => {
     expect(r.pendientes).toEqual([]);
   });
 });
+
+/**
+ * Un repo que no se puede ARRANCAR no se publica.
+ *
+ * El caso, entero, de la corrida `publico2` del 2026-09-09: el trabajo estaba
+ * completo en main —endpoints, tests, el server— el servicio se creo, y el
+ * deploy murio en 27 segundos porque el `package.json` no tenia script `start`.
+ * Render arranca con `npm start`; sin ese script no hay nada que correr.
+ *
+ * Nadie hizo nada mal: el plan pidio "script test", el agente lo hizo, y el
+ * analista comparo contra un pliego que habla de endpoints y del puerto. Lo que
+ * faltaba era que el sistema verificara el contrato que EL mismo impone al
+ * desplegar.
+ *
+ * Un servicio que nace roto es peor que ninguno: ocupa el nombre, aparece en el
+ * dashboard como si algo hubiera salido, y hay que ir a borrarlo.
+ */
+describe('publicar solo lo que puede arrancar', () => {
+  it('sin script start no crea el servicio', async () => {
+    let llamo = false;
+    const r = await publicar('p1', 'propinas', ['c2'], {
+      ...deps({
+        render: {
+          apiKey: 'k',
+          ownerId: 'o',
+          fetchImpl: (async () => {
+            llamo = true;
+            return new Response(RESPUESTA_OK, { status: 201 });
+          }) as typeof fetch,
+        },
+      }),
+      puedeArrancar: async () => false,
+    });
+
+    expect(llamo).toBe(false);
+    expect(r.publicados).toEqual([]);
+  });
+
+  // Y lo DICE, con lo que hay que hacer. Es un cable suelto de verdad: el
+  // trabajo esta hecho y le falta una linea para poder correr.
+  it('lo explica en un pendiente, con el repo', async () => {
+    const r = await publicar('p1', 'propinas', ['c2'], {
+      ...deps(),
+      puedeArrancar: async () => false,
+    });
+
+    const pend = r.pendientes.join(' ');
+    expect(pend).toContain('propinas-back');
+    expect(pend).toContain('start');
+  });
+
+  it('con script start publica normalmente', async () => {
+    const r = await publicar('p1', 'propinas', ['c2'], {
+      ...deps(),
+      puedeArrancar: async () => true,
+    });
+    expect(r.publicados).toEqual([{ repo: 'propinas-back', url: 'https://x.onrender.com' }]);
+  });
+
+  // Sin la dependencia cableada se comporta como antes: un gateway viejo no
+  // devuelve el dato, y eso no puede dejar de publicar todo.
+  it('sin el dato, publica igual que antes', async () => {
+    const r = await publicar('p1', 'propinas', ['c2'], deps());
+    expect(r.publicados).toEqual([{ repo: 'propinas-back', url: 'https://x.onrender.com' }]);
+  });
+});

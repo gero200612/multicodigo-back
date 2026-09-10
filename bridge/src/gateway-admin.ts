@@ -79,16 +79,26 @@ export async function mergearEnGateway(
 export async function inspeccionarRepo(
   req: { agent: string; project: string; repo: string },
   deps: GatewayAdminDeps,
-): Promise<{ tienePackageJson: boolean; usaSqlite: boolean }> {
+): Promise<{ tienePackageJson: boolean; usaSqlite: boolean; tieneStart: boolean }> {
   try {
     const r = await pedir('/repo/inspeccionar', req, deps);
-    if (!r.ok) return { tienePackageJson: true, usaSqlite: false };
-    const j = JSON.parse(r.texto) as { tienePackageJson?: unknown; usaSqlite?: unknown };
+    if (!r.ok) return { tienePackageJson: true, usaSqlite: false, tieneStart: true };
+    const j = JSON.parse(r.texto) as {
+      tienePackageJson?: unknown;
+      usaSqlite?: unknown;
+      tieneStart?: unknown;
+    };
     return {
       tienePackageJson: j.tienePackageJson !== false,
       usaSqlite: j.usaSqlite === true,
+      // `!== false` y no `=== true`: un gateway viejo no manda el campo, y ahi
+      // la respuesta correcta es "no se" — que se trata como que SI se puede
+      // arrancar, por lo mismo que `tienePackageJson`: no publicar por un dato
+      // que falta seria perder trabajo hecho en silencio. El deploy fallido, si
+      // pasa, se ve.
+      tieneStart: j.tieneStart !== false,
     };
   } catch {
-    return { tienePackageJson: true, usaSqlite: false };
+    return { tienePackageJson: true, usaSqlite: false, tieneStart: true };
   }
 }

@@ -40,6 +40,18 @@ export interface PublicarDeps {
   tienePackageJson: (agent: string, project: string, repo: string) => Promise<boolean>;
   usaSqlite?: (agent: string, project: string, repo: string) => Promise<boolean>;
   /**
+   * Si el repo se puede ARRANCAR: si su `package.json` tiene script `start`.
+   *
+   * Render arranca con `npm start` —es el `startCommand` que manda
+   * `render-api.ts`— asi que sin ese script el servicio nace roto. En la
+   * corrida `publico2` del 2026-09-09 el deploy murio en 27 segundos con el
+   * codigo entero y correcto en main.
+   *
+   * OPCIONAL: un gateway que todavia no devuelve el dato no puede dejar de
+   * publicar todo. Sin esto se comporta como antes.
+   */
+  puedeArrancar?: (agent: string, project: string, repo: string) => Promise<boolean>;
+  /**
    * Le pide a Render que despliegue un servicio que YA existe.
    *
    * Hace falta porque los servicios se crean con `autoDeploy: 'no'`: con un
@@ -171,6 +183,33 @@ export async function publicar(
     // por un conflicto en la segunda rama seria castigar el trabajo que si
     // entro.
     if (mergeados.length === 0) continue;
+
+    // Y ANTES de crear nada: que el proyecto se pueda arrancar.
+    //
+    // Render corre `npm start`, asi que un `package.json` sin ese script deja
+    // un servicio que muere al primer deploy. Paso en la corrida `publico2` del
+    // 2026-09-09: el trabajo estaba completo en main —endpoints, tests, el
+    // server— y el deploy fallo en 27 segundos.
+    //
+    // Nadie hizo nada mal ahi: el plan pidio "script test", el agente lo hizo, y
+    // el analista comparo contra un pliego que habla de endpoints y del puerto.
+    // Lo que faltaba era que el sistema verificara el contrato que EL mismo
+    // impone al desplegar.
+    //
+    // Un servicio que nace roto es peor que ninguno: ocupa el nombre, aparece
+    // en el dashboard como si algo hubiera salido bien, y hay que ir a
+    // borrarlo. Y el pendiente que queda en cambio es de los buenos: el trabajo
+    // esta hecho y le falta una linea.
+    //
+    // Se pregunta por el slot que mergeo primero, igual que `usaSqlite`: lo que
+    // se despliega es lo que quedo en main.
+    if (deps.puedeArrancar && !(await deps.puedeArrancar(mergeados[0]!, proyecto, repo.nombre))) {
+      pendientes.push(
+        `${repo.nombre} no tiene script "start" en su package.json, asi que Render no lo puede ` +
+          'arrancar: agregalo (por ejemplo "start": "node src/server.js") y volve a publicar',
+      );
+      continue;
+    }
 
     const r = await crearServicio(repo.nombre, repo.github_repo, deps.render);
     if (r.estado === 'sin_render') {

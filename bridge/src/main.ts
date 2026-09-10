@@ -326,6 +326,10 @@ const pipelineDeps = {
               (await inspeccionarRepo({ agent, project, repo }, admin)).tienePackageJson,
             usaSqlite: async (agent, project, repo) =>
               (await inspeccionarRepo({ agent, project, repo }, admin)).usaSqlite,
+            // Sin script `start`, Render no puede arrancar el servicio: mejor
+            // no crearlo y decirlo, que dejar uno roto ocupando el nombre.
+            puedeArrancar: async (agent, project, repo) =>
+              (await inspeccionarRepo({ agent, project, repo }, admin)).tieneStart,
             // El deploy de un servicio que ya existe. Los servicios se crean
             // con `autoDeploy: 'no'` porque con un repo publico Render no se
             // entera de los push, asi que el que dispara es el sistema.
