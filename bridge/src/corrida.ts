@@ -602,6 +602,21 @@ export function promptDeAnalisis(
           '',
         ]
       : []),
+    // Visual y usuario MIRAN. Leyendo el codigo no se ve si algo "se ve mal" ni
+    // si hay por donde cargar datos: `mesas` tenia CSS y tenia endpoints de
+    // alta, y en la pantalla no habia ni color ni un solo formulario.
+    ...(eje === 'visual' || eje === 'usuario'
+      ? [
+          'Para esto NO alcanza con leer el codigo: MIRALO. Tenes la herramienta mirar,',
+          'que levanta el front —y el back del proyecto, si hay— y te devuelve capturas',
+          'de pantalla en tamaño computadora y telefono. Pasale el repo del front y las',
+          'rutas principales. Juzga por lo que VES en las capturas.',
+          '',
+          'Si no arranca, eso ya es un hueco: reportalo igual, y segui revisando el',
+          'codigo como puedas.',
+          '',
+        ]
+      : []),
     // El analista es quien REDACTA las tareas, asi que es el que tiene que
     // nombrar la referencia: si el hueco dice "falta el modulo de stock" a
     // secas, el constructor arranca de cero. Si dice "falta el modulo de stock,
