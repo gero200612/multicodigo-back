@@ -43,7 +43,10 @@ import {
   techoAlcanzado,
   textoDeInforme,
   promptDeTareaDesatendida,
+  EJES,
+  QUE_MIRA,
   type Corrida,
+  type Eje,
   type MotivoDeCierre,
   type ResumenDeTareas,
 } from './corrida.js';
@@ -2133,6 +2136,11 @@ async function cerrarConInforme(
       rama,
       [...(ahora?.pendientes ?? corrida.pendientes ?? []), ...pendientesDePublicar],
       publicados,
+      // Las firmas salen de la corrida que recibio esta funcion, que es la que
+      // el ciclo releyo DESPUES de los veredictos. `ahora` no sirve para esto:
+      // `corridaAbierta` filtra por estado y arriba ya se cerro, asi que vuelve
+      // vacio siempre.
+      corrida.veredictos,
     ),
   );
 }
@@ -2164,48 +2172,23 @@ async function rondaDeAnalisis(
   avisar: (texto: string) => Promise<void>,
 ): Promise<boolean> {
   const chatId = corrida.chatId;
-  const agente = (await deps.store.getActiveAgent(chatId)) ?? deps.defaultAgent;
-  const ctx = await contextoDeCola(chatId, corrida.proyecto, usuarioId, deps);
 
-  await avisar(`🔎 No queda nada pendiente. Reviso contra el pliego (ronda ${corrida.ronda}).`);
-
-  try {
-    await ejecutarTurnoConRelevo(deps, {
-      proyectoId: ctx.proyectoId,
-      proyecto: corrida.proyecto,
-      agente: agente as AgentId,
-      usuarioId,
-      prompt: promptDeAnalisis(corrida.md, corrida.ronda),
-      // El analista no escribe —el prompt se lo prohibe— pero el modo va igual:
-      // con `preguntar`, un intento de editar dejaria el turno colgado quince
-      // minutos esperando un OK que nadie va a dar a las tres de la mañana.
-      modo: 'desatendido',
-      modelo: ctx.modelo,
-      repos: ctx.repos,
-      githubToken: ctx.githubToken,
-      documentos: ctx.documentos,
-      origen: 'telegram',
-      chatId,
-    });
-  } catch (err) {
-    const codigo = err instanceof Error ? err.message : 'internal';
-    // Sin cuentas: se espera si se sabe cuando vuelven, igual que en la cola.
-    // El analisis no se reencola porque no es una tarea — el `return true`
-    // vuelve al bucle, la cola sigue vacia, y se corre de nuevo.
-    if (codigo === 'usage_limit') {
-      if (await esperarQueVuelvan(corrida, deps, avisar)) return true;
-      await cerrarConInforme(corrida, 'cuentas_agotadas', deps, avisar);
-      return false;
-    }
-    const fallos = await deps.store.contarFallo(corrida.id, true);
-    if (techoAlcanzado({ ...corrida, fallosSeguidos: fallos }, new Date()) !== null) {
-      await cerrarConInforme(corrida, 'demasiados_fallos', deps, avisar);
-      return false;
-    }
-    // Se vuelve al bucle SIN avanzar la ronda: el analisis se reintenta, y el
-    // techo de fallos es lo que acota el reintento a tres.
-    return true;
-  }
+  // La revision de la ronda. Los CUATRO en la primera, el generico despues.
+  //
+  // Los cuatro en la ronda 1 y no en todas: es cuando mas rinde —lo que
+  // encuentran queda con dos rondas por delante para arreglarse— y en las del
+  // medio el proyecto ya paso por sus ojos. Las del medio siguen costando un
+  // turno, que es lo que hace que la noche rinda.
+  const revision = await tandaDeAnalisis(
+    corrida,
+    usuarioId,
+    deps,
+    avisar,
+    corrida.ronda === 1 ? EJES : [undefined],
+    false,
+  );
+  if (revision === 'cerrada') return false;
+  if (revision === 'reintentar') return true;
 
   // ¿Llamo a la herramienta? Se relee la corrida porque el endpoint de
   // `reportar_huecos` la escribio despues de que este turno empezara.
@@ -2217,6 +2200,10 @@ async function rondaDeAnalisis(
     // Reviso y contesto en prosa sin llamar la herramienta. Es un turno fallido
     // y no una corrida completa: cerrar aca diciendo "completo" es exactamente
     // la falla silenciosa que este ciclo no puede tener.
+    //
+    // Con los cuatro alcanza con que UNO haya llamado para que la ronda valga:
+    // la marca es de la ronda, no del analista. El que no llamo se ve igual, en
+    // el informe, como un eje sin veredicto — que es donde tiene que verse.
     const fallos = await deps.store.contarFallo(corrida.id, true);
     await avisar('El analista no reporto por la herramienta. Reintento la revision.');
     if (techoAlcanzado({ ...despues, fallosSeguidos: fallos }, new Date()) !== null) {
@@ -2228,16 +2215,173 @@ async function rondaDeAnalisis(
 
   await deps.store.contarFallo(corrida.id, false);
 
-  // Llamo, y no aparecio nada: la corrida esta completa. Es el UNICO camino a
-  // ese motivo, y por eso la marca de la herramienta es lo que lo habilita.
-  if (!(await deps.store.proximaTarea(chatId, corrida.id))) {
+  // Aparecio trabajo: se hace, y ya habra otra vuelta.
+  if (await deps.store.proximaTarea(chatId, corrida.id)) {
+    const ronda = await deps.store.avanzarRonda(corrida.id);
+    await avisar(`Encontre trabajo que falta. Arranco la ronda ${ronda}.`);
+    return true;
+  }
+
+  // No quedo nada. Antes esto cerraba la corrida como completa; ahora eso lo
+  // deciden los cuatro.
+  //
+  // Salvo que ACABEN de opinar: en la ronda 1 la revision que corrio recien ya
+  // fue de los cuatro, y volver a correrlos serian ocho turnos seguidos para
+  // preguntar dos veces lo mismo.
+  if (corrida.ronda === 1) {
     await cerrarConInforme(despues, 'completo', deps, avisar);
     return false;
   }
 
-  const ronda = await deps.store.avanzarRonda(corrida.id);
-  await avisar(`Encontre trabajo que falta. Arranco la ronda ${ronda}.`);
-  return true;
+  const cierre = await tandaDeAnalisis(despues, usuarioId, deps, avisar, EJES, true);
+  if (cierre === 'cerrada') return false;
+  if (cierre === 'reintentar') return true;
+
+  // Lo que hayan encolado. Si encontraron algo, la corrida SIGUE: es la
+  // decision central de esta feature —el piso se cumple o se sigue trabajando—
+  // y el limite duro lo siguen poniendo los techos, que se miran en cada vuelta
+  // del bucle de la cola.
+  if (await deps.store.proximaTarea(chatId, corrida.id)) {
+    const ronda = await deps.store.avanzarRonda(corrida.id);
+    await avisar(
+      `Los cuatro encontraron cosas que no cumplen el piso. Arranco la ronda ${ronda}.`,
+    );
+    return true;
+  }
+
+  const final = (await deps.store.corridaAbierta(chatId)) ?? despues;
+  await cerrarConInforme(final, 'completo', deps, avisar);
+  return false;
+}
+
+/** Que hacer despues de una tanda de analistas. */
+type ResultadoDeTanda = 'ok' | 'cerrada' | 'reintentar';
+
+/**
+ * Corre una tanda de analistas: el generico solo, o los cuatro ejes.
+ *
+ * ## En serie, y repartidos entre los slots
+ *
+ * En serie porque el gateway serializa igual: su cola es de UN slot para toda
+ * la maquina, a proposito, para que el pico de RAM del host sea el de un turno
+ * y no el de cuatro (ver `queue.ts` alla). Cuatro turnos lanzados juntos harian
+ * fila lo mismo, con el riesgo agregado de quedarse sin memoria — que ya paso
+ * el 2026-09-10 y mato los push de esa noche.
+ *
+ * Repartidos igual, porque lo que se reparte no es el tiempo sino los TOKENS:
+ * cuatro revisiones sobre la misma cuenta la agotan cuatro veces mas rapido, y
+ * una cuenta agotada frena la corrida entera.
+ */
+async function tandaDeAnalisis(
+  corrida: Corrida,
+  usuarioId: string,
+  deps: PipelineDeps,
+  avisar: (texto: string) => Promise<void>,
+  ejes: readonly (Eje | undefined)[],
+  cierre: boolean,
+): Promise<ResultadoDeTanda> {
+  const chatId = corrida.chatId;
+  const ctx = await contextoDeCola(chatId, corrida.proyecto, usuarioId, deps);
+
+  if (cierre) {
+    await avisar(
+      '🧐 Parece terminado. Antes de cerrar lo miran los cuatro analistas: ' +
+        `${EJES.join(', ')}.`,
+    );
+  } else if (ejes.length > 1) {
+    await avisar(
+      `🔎 No queda nada pendiente. Lo revisan los cuatro analistas (ronda ${corrida.ronda}).`,
+    );
+  } else {
+    await avisar(`🔎 No queda nada pendiente. Reviso contra el pliego (ronda ${corrida.ronda}).`);
+  }
+
+  // A quien le toca cada revision. Mismo criterio que la cola: solo los slots
+  // de ESTA persona, porque cada slot es una cuenta de Claude y usar una ajena
+  // es gastarle los tokens a un tercero. Ver el comentario largo en
+  // `correrCola`.
+  const mios = (await deps.store.agentesDeUsuario(usuarioId).catch(() => [])).map((a) => a.slot);
+  let ultimo: string | undefined;
+
+  for (const eje of ejes) {
+    const agente = await slotDeRevision(corrida.proyecto, mios, ultimo, deps);
+    if (agente) ultimo = agente;
+    const elegido = (agente ??
+      (await deps.store.getActiveAgent(chatId)) ??
+      deps.defaultAgent) as AgentId;
+
+    if (eje) await avisar(`   · ${eje} (${QUE_MIRA[eje]}) — ${elegido}`);
+
+    try {
+      await ejecutarTurnoConRelevo(deps, {
+        proyectoId: ctx.proyectoId,
+        proyecto: corrida.proyecto,
+        agente: elegido,
+        usuarioId,
+        prompt: promptDeAnalisis(corrida.md, corrida.ronda, {
+          ...(eje ? { eje } : {}),
+          ...(cierre ? { cierre } : {}),
+        }),
+        // El analista no escribe —el prompt se lo prohibe— pero el modo va igual:
+        // con `preguntar`, un intento de editar dejaria el turno colgado quince
+        // minutos esperando un OK que nadie va a dar a las tres de la mañana.
+        modo: 'desatendido',
+        modelo: ctx.modelo,
+        repos: ctx.repos,
+        githubToken: ctx.githubToken,
+        documentos: ctx.documentos,
+        origen: 'telegram',
+        chatId,
+      });
+    } catch (err) {
+      const codigo = err instanceof Error ? err.message : 'internal';
+      // Sin cuentas: se espera si se sabe cuando vuelven, igual que en la cola.
+      // El analisis no se reencola porque no es una tarea — el `reintentar`
+      // vuelve al bucle, la cola sigue vacia, y se corre de nuevo.
+      if (codigo === 'usage_limit') {
+        if (await esperarQueVuelvan(corrida, deps, avisar)) return 'reintentar';
+        await cerrarConInforme(corrida, 'cuentas_agotadas', deps, avisar);
+        return 'cerrada';
+      }
+      const fallos = await deps.store.contarFallo(corrida.id, true);
+      if (techoAlcanzado({ ...corrida, fallosSeguidos: fallos }, new Date()) !== null) {
+        await cerrarConInforme(corrida, 'demasiados_fallos', deps, avisar);
+        return 'cerrada';
+      }
+      // Se vuelve al bucle SIN avanzar la ronda: el analisis se reintenta, y el
+      // techo de fallos es lo que acota el reintento a tres.
+      //
+      // Se corta la tanda entera en vez de seguir con el eje que viene: si el
+      // turno fallo por algo del entorno —el slot murio, el gateway no
+      // contesta— los que faltan van a fallar igual, y serian tres fallos mas
+      // contra el techo por la misma causa.
+      return 'reintentar';
+    }
+  }
+
+  return 'ok';
+}
+
+/**
+ * A que slot le toca esta revision, o `undefined` si no hay con que repartir.
+ *
+ * Devuelve `undefined` —y no un default— cuando la persona no tiene slots
+ * registrados o el gateway no contesta: quien llama cae al agente activo, que
+ * es el comportamiento de siempre. Repartir "por las dudas" es lo que hizo que
+ * una corrida usara `c4`, que no era de esta persona.
+ */
+async function slotDeRevision(
+  proyecto: string,
+  mios: readonly string[],
+  ultimo: string | undefined,
+  deps: PipelineDeps,
+): Promise<string | undefined> {
+  if (mios.length === 0) return undefined;
+  const candidatos = ((await deps.listarAgentes?.(proyecto).catch(() => [])) ?? []).filter((c) =>
+    mios.includes(c.id as AgentId),
+  );
+  const agotados = [...(await deps.store.slotsAgotados().catch(() => new Map())).keys()];
+  return slotParaLaTarea(candidatos, agotados, ultimo);
 }
 
 /**

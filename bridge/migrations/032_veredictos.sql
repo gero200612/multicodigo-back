@@ -1,0 +1,32 @@
+-- Lo que dictamino cada uno de los cuatro analistas.
+--
+-- Ver `multicodigo-vm/docs/superpowers/specs/2026-09-10-piso-minimo-y-cuatro-analistas-design.md`.
+--
+-- Nace de `mesas` (2026-09-10): la corrida cerro con todas las tareas hechas,
+-- los tests verdes y el analista diciendo que no faltaba nada, y el proyecto no
+-- se podia usar —no habia forma de cargar datos— ni mirar sin que doliera. El
+-- informe contaba tareas, que es lo unico que sabia contar, y ninguna de las
+-- dos cosas que importaban a la mañana aparecia.
+--
+-- Ahora revisan cuatro analistas, uno por eje, y cada uno FIRMA lo suyo. Esto
+-- es donde queda su firma para el informe.
+--
+-- Un JSONB con el eje de clave y no una tabla, ni un TEXT[] como `pendientes`:
+--
+--  · son CUATRO filas por corrida como maximo, escritas una vez y leidas una
+--    vez. Una tabla con su id, su fecha y su foreign key seria mas maquinaria
+--    de la que ahorra, igual que se decidio en la migracion 026;
+--  · pero a diferencia de un pendiente, esto tiene forma —eje, cumple,
+--    resumen— y se PISA: el veredicto del cierre reemplaza al de la ronda 1,
+--    porque lo que vale es el ultimo. Con el eje de clave, pisar es un `||`
+--    contra la clave; con un array habria que buscar el elemento y reescribir
+--    la lista entera.
+--
+-- Queda: {"visual": {"cumple": false, "resumen": "..."}, ...}
+--
+-- Sin CHECK sobre las claves a proposito. Los cuatro ejes se validan en el
+-- endpoint con un enum de zod, que es donde el error se puede contestar en
+-- castellano y decirle al modelo que no reintente; un CHECK aca daria un 500
+-- ilegible por la misma causa.
+ALTER TABLE public.corridas
+  ADD COLUMN IF NOT EXISTS veredictos JSONB NOT NULL DEFAULT '{}'::jsonb;

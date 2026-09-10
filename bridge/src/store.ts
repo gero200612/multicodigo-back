@@ -3,7 +3,33 @@ import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import type { AgentId, ApprovalDecision } from '@multicodigo/shared';
 import type { Encargo, Tarea } from './cola.js';
-import type { Corrida, MotivoDeCierre } from './corrida.js';
+import { EJES } from './corrida.js';
+import type { Corrida, Eje, MotivoDeCierre, Veredicto } from './corrida.js';
+
+/**
+ * La columna `veredictos` de una fila, como lista.
+ *
+ * En la base es un objeto con el eje de clave —pisar es un `||`— y en el codigo
+ * es una lista, que es como la lee el informe. La traduccion vive aca y no en
+ * los dos lugares que la usarian.
+ *
+ * Se recorre `EJES` y no `Object.keys` a proposito: asi una clave que no es un
+ * eje —una columna vieja, algo escrito a mano— no llega al informe, y el orden
+ * de salida es siempre el mismo sin depender de como Postgres ordena el jsonb.
+ */
+function veredictosDeFila(raw: unknown): Veredicto[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const obj = raw as Record<string, unknown>;
+  const salida: Veredicto[] = [];
+  for (const eje of EJES) {
+    const v = obj[eje];
+    if (typeof v !== 'object' || v === null) continue;
+    const { cumple, resumen } = v as { cumple?: unknown; resumen?: unknown };
+    if (typeof cumple !== 'boolean' || typeof resumen !== 'string') continue;
+    salida.push({ eje, cumple, resumen });
+  }
+  return salida;
+}
 
 /**
  * Los estados del spec 5.
@@ -810,6 +836,15 @@ export interface Store {
    */
   marcarHuecos(corridaId: string, ronda: number): Promise<void>;
   /**
+   * Guarda el veredicto de UN analista sobre su eje.
+   *
+   * Pisa el anterior del mismo eje, y eso es lo que se quiere: los cuatro
+   * revisan dos veces —en la ronda 1 y en el cierre— y lo que vale es lo ultimo
+   * que dijeron. Guardar los dos obligaria al informe a elegir, que es la misma
+   * decision tomada en peor lugar.
+   */
+  guardarVeredicto(corridaId: string, eje: Eje, cumple: boolean, resumen: string): Promise<void>;
+  /**
    * Desata un chat de una cuenta. Devuelve si habia algo que desatar.
    *
    * `usuarioId` no es opcional y se usa en el WHERE: es lo que impide que
@@ -1433,6 +1468,18 @@ export class InMemoryStore implements Store {
     if (!c) return;
     const ya = c.pendientes ?? [];
     if (!ya.includes(texto)) c.pendientes = [...ya, texto];
+  }
+
+  async guardarVeredicto(
+    corridaId: string,
+    eje: Eje,
+    cumple: boolean,
+    resumen: string,
+  ): Promise<void> {
+    const c = this.corridas.get(corridaId);
+    if (!c) return;
+    const otros = (c.veredictos ?? []).filter((v) => v.eje !== eje);
+    c.veredictos = [...otros, { eje, cumple, resumen }];
   }
 
   async guardarPreguntas(corridaId: string, preguntas: readonly string[]): Promise<void> {
@@ -2525,7 +2572,7 @@ export class PgStore implements Store {
   private static readonly CAMPOS_CORRIDA =
     'id, chat_id, proyecto, md, ronda, techo_rondas, techo_hora, ' +
     'fallos_seguidos, huecos_de_ronda, pendientes, preguntas, respuestas, ' +
-    'preguntado_en, estado, motivo_de_cierre, creado_en';
+    'preguntado_en, estado, motivo_de_cierre, creado_en, veredictos';
 
   private aCorrida(f: Record<string, unknown>): Corrida {
     return {
@@ -2553,6 +2600,9 @@ export class PgStore implements Store {
         ? { motivoDeCierre: f.motivo_de_cierre as MotivoDeCierre }
         : {}),
       creadoEn: new Date(f.creado_en as string),
+      ...(veredictosDeFila(f.veredictos).length > 0
+        ? { veredictos: veredictosDeFila(f.veredictos) }
+        : {}),
     };
   }
 
@@ -2683,6 +2733,28 @@ export class PgStore implements Store {
       corridaId,
       ronda,
     ]);
+  }
+
+  async guardarVeredicto(
+    corridaId: string,
+    eje: Eje,
+    cumple: boolean,
+    resumen: string,
+  ): Promise<void> {
+    // El `||` de jsonb pisa la clave si ya estaba, que es justo lo que se
+    // quiere: el veredicto del cierre reemplaza al de la ronda 1. Y se arma con
+    // `jsonb_build_object` y no interpolando: el resumen lo escribe un modelo.
+    await this.pool
+      .query(
+        `UPDATE corridas
+            SET veredictos = veredictos || jsonb_build_object(
+                  $2::text, jsonb_build_object('cumple', $3::boolean, 'resumen', $4::text))
+          WHERE id = $1`,
+        [corridaId, eje, cumple, resumen],
+      )
+      // La columna es de la migracion 032. Contra una base que no la corrio,
+      // perder una firma es menos grave que voltear el turno del analista.
+      .catch(() => undefined);
   }
 
   async anotarPendiente(corridaId: string, texto: string): Promise<void> {

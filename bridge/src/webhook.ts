@@ -6,6 +6,7 @@ import { ejecutarTurnoConRelevo, type PipelineDeps } from './pipeline.js';
 import { z } from 'zod';
 import type { Store } from './store.js';
 import { FORMATOS_GENERABLES } from './documentos.js';
+import { EJES } from './corrida.js';
 import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
 
@@ -37,6 +38,7 @@ export interface ApiDeps {
     | 'archivoAutorizadoReciente'
     | 'corridaDeJob'
     | 'marcarHuecos'
+    | 'guardarVeredicto'
     | 'anotarPendiente'
     | 'guardarPreguntas'
     | 'guardarRespuestas'
@@ -586,6 +588,68 @@ export function buildWebhookServer(
       }
       await api.store.anotarPendiente(corrida.id, cuerpo.data.texto);
       return reply.code(200).send({ output: 'anotado para el informe' });
+    });
+
+    /**
+     * La firma de uno de los cuatro analistas sobre su eje.
+     *
+     * Ver
+     * `multicodigo-vm/docs/superpowers/specs/2026-09-10-piso-minimo-y-cuatro-analistas-design.md`.
+     *
+     * Es una herramienta APARTE de `reportar_huecos` porque son dos cosas
+     * distintas: los huecos son trabajo que se encola, esto es una opinion que
+     * se lee. Meterlas en una sola obligaria a decidir que pasa cuando alguien
+     * manda huecos sin veredicto —o al reves— y esa decision no tiene una
+     * respuesta buena.
+     *
+     * Como en las otras tres: la corrida sale del jobId y no del cuerpo. Un id
+     * de corrida que el modelo elige es un id con el que podria firmarle el
+     * informe a otro chat.
+     */
+    const CuerpoVeredicto = z.object({
+      jobId: z.string().uuid(),
+      eje: z.enum(EJES),
+      cumple: z.boolean(),
+      // Del largo de dos lineas de un informe que se lee en un telefono. Un
+      // veredicto de tres parrafos no se lee, y lo que hay que hacer con lo que
+      // no cumple ya viaja como hueco por el otro endpoint.
+      resumen: z.string().min(1).max(300),
+    });
+
+    app.post('/interno/corrida/veredicto', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      const cuerpo = CuerpoVeredicto.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply.code(400).send({
+          code: 'cuerpo_invalido',
+          message:
+            'el veredicto necesita el eje (usuario, visual, funcionamiento o testeos), si cumple, ' +
+            'y un resumen de hasta 300 caracteres.',
+        });
+      }
+
+      const corrida = await api.store.corridaDeJob(cuerpo.data.jobId);
+      if (!corrida) {
+        // El mensaje lo repite el modelo: dice que hacer, no solo que fallo.
+        return reply.code(400).send({
+          code: 'sin_corrida',
+          message:
+            'este turno no pertenece a ninguna corrida abierta, asi que no hay informe donde ' +
+            'firmar. No reintentes: decilo en tu respuesta.',
+        });
+      }
+
+      await api.store.guardarVeredicto(
+        corrida.id,
+        cuerpo.data.eje,
+        cuerpo.data.cumple,
+        cuerpo.data.resumen,
+      );
+      return reply
+        .code(200)
+        .send({ output: `anotado: tu veredicto de ${cuerpo.data.eje} va en el informe` });
     });
 
     /**

@@ -74,6 +74,14 @@ export interface Corrida {
   preguntas?: string[];
   /** Lo que se contesto, en crudo. Ausente = todavia no contesto. */
   respuestas?: string;
+  /**
+   * Lo que dictamino cada uno de los cuatro analistas.
+   *
+   * Uno por eje como maximo: el del cierre pisa al de la ronda 1, porque lo que
+   * vale es el ultimo. Vacio en una corrida vieja o en una que no llego a
+   * revisar.
+   */
+  veredictos?: Veredicto[];
   /** Cuando se pregunto. Sin esto el tope no sobrevive a un reinicio. */
   preguntadoEn?: Date;
 }
@@ -436,6 +444,90 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
 }
 
 /**
+ * Los cuatro ejes que se revisan por separado.
+ *
+ * Ver
+ * `multicodigo-vm/docs/superpowers/specs/2026-09-10-piso-minimo-y-cuatro-analistas-design.md`.
+ *
+ * El orden importa y no es alfabetico: es el orden en que se leen al pie del
+ * informe, de lo que mas se nota a lo que menos. Que no se puedan cargar datos
+ * se ve al segundo de abrir; que falte un test no se ve nunca hasta que rompe.
+ */
+export const EJES = ['usuario', 'visual', 'funcionamiento', 'testeos'] as const;
+export type Eje = (typeof EJES)[number];
+
+/** Que mira cada uno, en una linea. Para los avisos del chat. */
+export const QUE_MIRA: Record<Eje, string> = {
+  usuario: 'si se puede usar de verdad',
+  visual: 'como se ve',
+  funcionamiento: 'si hace lo que dice',
+  testeos: 'si esta probado',
+};
+
+/**
+ * El piso minimo: lo que toda corrida tiene que cumplir, pida o no el pliego.
+ *
+ * ## Por que existe
+ *
+ * `mesas` (2026-09-10) salio de una corrida entera con los tests verdes y el
+ * analista diciendo que no faltaba nada, y no habia forma de cargar datos ni de
+ * mirarlo sin que doliera. No fue un bug: el sistema verificaba que se
+ * construyera lo que el pliego pide, y "un panel de mesas con metricas" se
+ * cumple con una tabla gris de solo lectura. El pliego no miente; le falta
+ * decir lo que nadie escribe porque se da por obvio.
+ *
+ * ## Por que esta redactado asi
+ *
+ * Cada linea tiene que poder contestarse con si o no mirando el proyecto. "Que
+ * se vea lindo" no es revisable —dos personas no coinciden— y un analista al
+ * que se le pide eso contesta con adjetivos. "Hay estados de vacio, cargando y
+ * error" si es revisable, y ademas es lo que hace que se vea bien.
+ *
+ * Se usa en TRES lugares, y el primero es el que mas rinde: el prompt del plan.
+ * Una tarea que desde el principio dice "con su formulario de alta" cuesta lo
+ * mismo que una que no lo dice; descubrirlo en la ronda 3 cuesta una ronda.
+ */
+const PISO: Record<Eje, readonly string[]> = {
+  usuario: [
+    'Se puede CARGAR, EDITAR y BORRAR desde la interfaz. Que solo se pueda mirar no alcanza.',
+    'Todo lo que el back acepta tiene por donde entrar desde el front.',
+    'Al abrir hay datos de ejemplo: una pantalla vacia no se puede ni evaluar ni mostrar.',
+  ],
+  visual: [
+    'Hay una paleta y una tipografia elegidas, no el default del navegador.',
+    'Cada pantalla que trae datos tiene sus estados de VACIO, CARGANDO y ERROR.',
+    'Se puede usar en un telefono.',
+    'Algo confirma cuando guardaste.',
+  ],
+  funcionamiento: [
+    'Cada cosa que pide el pliego existe y responde.',
+    'Los errores devuelven un mensaje que se entiende, no un stack.',
+    'El front no se rompe si el back no esta: avisa que no se pudo conectar.',
+  ],
+  testeos: [
+    'Hay tests y CORRIERON VERDES con la herramienta run. "Se escribieron tests" no cuenta.',
+    'Cubren el camino feliz y al menos un error de cada endpoint.',
+  ],
+};
+
+/** El piso de un eje, como lineas de prompt. */
+export function pisoDeEje(eje: Eje): string[] {
+  return PISO[eje].map((l) => ` · ${l}`);
+}
+
+/** El piso entero, agrupado por eje. Para el plan, que los necesita a los cuatro. */
+export function pisoCompleto(): string[] {
+  return EJES.flatMap((eje) => [`${eje} (${QUE_MIRA[eje]}):`, ...pisoDeEje(eje)]);
+}
+
+/** Lo que un analista dictamino sobre su eje. */
+export interface Veredicto {
+  eje: Eje;
+  cumple: boolean;
+  resumen: string;
+}
+
+/**
  * El prompt del turno de analisis.
  *
  * Arranca en sesion LIMPIA —quien lo llama no pasa `sessionId`— y eso es la
@@ -449,10 +541,44 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
  * cierra diciendo que esta completa. Con una tool, o llamo o no llamo, y eso es
  * verificable.
  */
-export function promptDeAnalisis(md: string, ronda: number): string {
+export function promptDeAnalisis(
+  md: string,
+  ronda: number,
+  /**
+   * El eje que le toca, si es uno de los cuatro.
+   *
+   * Ausente = el analista generico de las rondas del medio, que es el de
+   * siempre y compara contra el pliego a secas.
+   */
+  opciones: { eje?: Eje; cierre?: boolean } = {},
+): string {
+  const { eje, cierre } = opciones;
   return [
-    'Sos el analista de esta corrida. No construis nada: revisas.',
+    eje
+      ? `Sos el analista de ${eje.toUpperCase()} de esta corrida: mirás ${QUE_MIRA[eje]}. No construis nada: revisas.`
+      : 'Sos el analista de esta corrida. No construis nada: revisas.',
     '',
+    ...(eje
+      ? [
+          // Sin esto revisa todo y contesta poco de lo suyo. Son cuatro turnos
+          // justamente para que cada uno entre hondo en una cosa; un analista
+          // de visual que ademas opina de los tests es el analista generico de
+          // antes, pagado cuatro veces.
+          'Hay otros tres analistas mirando los otros ejes. Vos mirás SOLO el tuyo:',
+          'lo que caiga en el eje de otro, dejaselo.',
+          '',
+        ]
+      : []),
+    ...(cierre
+      ? [
+          // El peso de este turno tiene que estar dicho: es la ultima palabra
+          // sobre si la corrida cierra, y un analista que no lo sabe lo trata
+          // como una revision mas.
+          'Esta es la revision de CIERRE: la corrida termina despues de esto. Lo que',
+          'no digas ahora queda sin hacer y se lee a la mañana como terminado.',
+          '',
+        ]
+      : []),
     `Esta es la ronda ${ronda}. Abajo esta el pliego completo de lo que hay que`,
     'construir. En el worktree esta lo que se construyo hasta ahora.',
     '',
@@ -461,6 +587,21 @@ export function promptDeAnalisis(md: string, ronda: number): string {
     'lo que quedo a medias, y lo que esta escrito pero sin ninguna prueba que lo',
     'respalde.',
     '',
+    ...(eje
+      ? [
+          // El piso va DESPUES del pliego-vs-codigo y no antes: primero lo que
+          // se pidio, despues lo que se da por obvio. Al reves, el analista
+          // llena la lista con el piso y no lee el pliego.
+          'Y ademas del pliego, esto se exige SIEMPRE aunque el pliego no lo diga.',
+          'Es lo que separa algo que anda de algo que se puede usar:',
+          '',
+          ...pisoDeEje(eje),
+          '',
+          'Cada punto de esa lista se contesta con si o no mirando el proyecto. Si la',
+          'respuesta es no, es un hueco, y va en la lista igual que lo del pliego.',
+          '',
+        ]
+      : []),
     // El analista es quien REDACTA las tareas, asi que es el que tiene que
     // nombrar la referencia: si el hueco dice "falta el modulo de stock" a
     // secas, el constructor arranca de cero. Si dice "falta el modulo de stock,
@@ -481,6 +622,20 @@ export function promptDeAnalisis(md: string, ronda: number): string {
     '',
     'Si revisaste todo y de verdad no falta nada, llama igual a reportar_huecos',
     'con la lista vacia. Eso es lo que cierra la corrida como completa.',
+    ...(eje
+      ? [
+          '',
+          'Y DESPUES llama a dar_veredicto con tu eje, si cumple o no, y dos lineas de',
+          'por que. Es lo que se lee firmado al pie del informe de la mañana, con tu',
+          'nombre al lado. Las dos herramientas: reportar_huecos deja el trabajo',
+          'encolado, dar_veredicto deja tu opinion. Son distintas y van las dos.',
+          '',
+          // Sin esta linea el veredicto se vuelve decorativo: el modelo pone
+          // `cumple: true` y lista tres huecos, porque "en general esta bien".
+          'Si encontraste aunque sea un hueco de los que exige el piso, tu veredicto es',
+          'que NO cumple. No hay "cumple con observaciones".',
+        ]
+      : []),
     '',
     '--- PLIEGO ---',
     md,
@@ -551,6 +706,22 @@ export function promptDePlan(
     '',
     'Despues llama a la herramienta reportar_huecos con las tareas, en el ORDEN en',
     'que hay que hacerlas: lo que otras cosas necesitan va primero.',
+    '',
+    // El piso, en el plan y no solo en la revision.
+    //
+    // Es lo mismo que van a exigir los cuatro analistas, dicho ANTES de que se
+    // construya nada. La diferencia de costo es toda: una tarea que ya dice
+    // "con su formulario de alta" cuesta lo mismo que una que no lo dice, y
+    // descubrirlo en la ronda 3 cuesta una ronda entera.
+    '',
+    'ADEMAS de lo que pide el pliego, esto se exige SIEMPRE y no hace falta que el',
+    'pliego lo diga. Es lo que separa algo que anda de algo que se puede usar, y',
+    'al terminar lo van a revisar cuatro analistas, uno por eje:',
+    '',
+    ...pisoCompleto(),
+    '',
+    'No son tareas aparte: son parte de las tareas que armes. Una pantalla se',
+    'entrega con su forma de cargar datos y sus estados, no en dos tareas.',
     '',
     'Cada tarea tiene que poder tomarla otro agente sin volver a leer el pliego:',
     'decí que hay que hacer y donde. Cuando algo ya exista en la referencia,',
@@ -623,6 +794,7 @@ export function textoDeInforme(
   rama?: string,
   pendientes?: readonly string[],
   publicados?: readonly { repo: string; url: string }[],
+  veredictos?: readonly Veredicto[],
 ): string {
   // Todo lo que no escribimos nosotros va escapado. El informe se manda con
   // `parse_mode: 'HTML'`, y aca entran dos textos libres: el nombre del
@@ -669,7 +841,11 @@ export function textoDeInforme(
     lineas.push('', '<b>Publicado:</b>');
     for (const p of publicados) {
       lineas.push(` · ${escaparHtml(p.repo)} → ${escaparHtml(p.url)}`);
-      lineas.push('   (main, se actualiza solo en cada push)');
+      // Decia "se actualiza solo en cada push", y dejo de ser cierto cuando los
+      // servicios pasaron a crearse con `autoDeploy: 'no'` (ver render-api.ts).
+      // Un informe que promete un despliegue automatico que no existe manda a
+      // buscar por que "no se actualizo" algo que nadie iba a actualizar.
+      lineas.push('   (main, desplegado recien; los push que vengan no se despliegan solos)');
     }
   }
 
@@ -679,6 +855,28 @@ export function textoDeInforme(
       '<b>Para que ande, falta que hagas esto:</b>',
       ...pendientes.map((p) => ` · ${escaparHtml(p)}`),
     );
+  }
+
+  // Lo que dijeron los cuatro, firmado.
+  //
+  // Va al pie y no arriba porque el motivo de cierre sigue siendo lo primero
+  // que hay que leer. Pero es lo que contesta la pregunta que uno se hace de
+  // verdad a la mañana —"¿esto se puede abrir y usar?"— que el conteo de tareas
+  // no contesta: `mesas` cerro con todas las tareas hechas y no se podia usar.
+  //
+  // El eje que NO contesto se nombra igual. Un veredicto ausente que
+  // desaparece del informe se lee como aprobado, y esa es exactamente la falla
+  // silenciosa que los cuatro existen para evitar.
+  if (veredictos && veredictos.length > 0) {
+    lineas.push('', '<b>Los cuatro analistas:</b>');
+    for (const eje of EJES) {
+      const v = veredictos.find((x) => x.eje === eje);
+      if (!v) {
+        lineas.push(` · ❔ ${eje} — no llego a dar su veredicto`);
+        continue;
+      }
+      lineas.push(` · ${v.cumple ? '✅' : '⚠️'} ${eje} — ${escaparHtml(v.resumen)}`);
+    }
   }
 
   // La rama es lo unico que hace accionable el informe: sin ella, "18 hechas"

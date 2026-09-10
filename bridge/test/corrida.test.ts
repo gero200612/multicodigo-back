@@ -14,7 +14,9 @@ import {
   promptDeTareaDesatendida,
   cuandoReintentar,
   SIN_RESPUESTA,
+  EJES,
   type Corrida,
+  type Eje,
 } from '../src/corrida.js';
 import {
   handleIncoming,
@@ -259,8 +261,16 @@ async function vincular(store: Store, chatId: number): Promise<void> {
  * abajo.
  */
 function arnes(opciones: {
-  /** Que devuelve el analista en cada ronda. `null` = no llama la herramienta. */
-  analista?: (ronda: number) => string[] | null;
+  /**
+   * Que devuelve el analista en cada ronda. `null` = no llama la herramienta.
+   *
+   * El `eje` viene cuando el turno es de uno de los cuatro analistas y queda
+   * `undefined` en el generico de las rondas del medio. Hace falta que los
+   * tests puedan distinguirlos: sin eso, un analista que devuelve un hueco lo
+   * devuelve CUATRO veces en la ronda 1 y la cola queda con cuatro copias de lo
+   * mismo, que es un artefacto del arnes y no del sistema.
+   */
+  analista?: (ronda: number, eje?: string) => string[] | null;
   /** Tareas cuyo turno tira. La clave es el texto de la tarea. */
   fallan?: Record<string, string>;
   /** El publicar del cierre. Sin esto no se cablea, como en un server sin Render. */
@@ -286,12 +296,28 @@ function arnes(opciones: {
     if (esAnalisis) {
       const corrida = await store.corridaAbierta(7);
       if (!corrida) throw new Error('el analista corrio sin corrida abierta');
+      // Cual de los cuatro es, sacado del prompt como lo leeria el modelo.
+      // `undefined` = el generico de las rondas del medio.
+      const eje = /Sos el analista de ([A-Z]+) de esta corrida/
+        .exec(req.prompt)?.[1]
+        ?.toLowerCase();
       // `?? []` seria un bug del arnes: colapsaria el `null` de "no llamo la
       // herramienta" con la lista vacia de "reviso y no falta nada", que son
       // justo los dos casos que el ciclo tiene que distinguir.
-      const huecos = opciones.analista ? opciones.analista(corrida.ronda) : [];
+      const huecos = opciones.analista ? opciones.analista(corrida.ronda, eje) : [];
       if (huecos !== null) {
         await store.marcarHuecos(corrida.id, corrida.ronda);
+        // Y firma, que es lo que hace un analista de eje de verdad. Un arnes
+        // que encola pero no firma dejaria pasar un informe sin las cuatro
+        // lineas sin que ningun test se entere.
+        if (eje) {
+          await store.guardarVeredicto(
+            corrida.id,
+            eje as Eje,
+            huecos.length === 0,
+            `revisado por el arnes: ${huecos.length} hueco(s)`,
+          );
+        }
         if (huecos.length > 0) {
           await store.encolar(7, {
             agente: 'c1',
@@ -415,10 +441,59 @@ describe('correrCola dentro de una corrida', () => {
     await abrir(d);
     const avisos = await correr(d);
 
+    // Cuatro, uno por eje: la ronda 1 es donde mas rinde revisar en serio,
+    // porque lo que encuentren tiene dos rondas por delante para arreglarse.
     const prompts = d.ask.mock.calls.map((c) => c[0].prompt);
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain('--- PLIEGO ---');
-    expect(avisos.some((a) => a.includes('Reviso contra el pliego'))).toBe(true);
+    expect(prompts).toHaveLength(4);
+    for (const p of prompts) expect(p).toContain('--- PLIEGO ---');
+    for (const eje of EJES) {
+      expect(prompts.some((p) => p.includes(`Sos el analista de ${eje.toUpperCase()}`))).toBe(true);
+    }
+    expect(avisos.some((a) => a.includes('Lo revisan los cuatro analistas'))).toBe(true);
+  });
+
+  // Cada uno mira lo suyo y NO el resto. Sin esto, cuatro turnos costarian
+  // cuatro veces lo mismo: el analista generico de antes, pagado cuatro veces.
+  it('a cada analista se le da su piso y se le pide que no invada el de otro', async () => {
+    const d = arnes({ analista: () => [] });
+    await abrir(d);
+    await correr(d);
+
+    const prompts = d.ask.mock.calls.map((c) => c[0].prompt);
+    const visual = prompts.find((p) => p.includes('Sos el analista de VISUAL'))!;
+    expect(visual).toContain('estados de VACIO, CARGANDO y ERROR');
+    expect(visual).toContain('mirás SOLO el tuyo');
+    // El piso de otro eje no viaja en este prompt.
+    expect(visual).not.toContain('CORRIERON VERDES');
+
+    const testeos = prompts.find((p) => p.includes('Sos el analista de TESTEOS'))!;
+    expect(testeos).toContain('CORRIERON VERDES');
+    expect(testeos).not.toContain('estados de VACIO, CARGANDO y ERROR');
+  });
+
+  // El reparto: cuatro revisiones sobre la misma cuenta la agotan cuatro veces
+  // mas rapido, y una cuenta agotada frena la corrida entera.
+  it('los cuatro se reparten entre los slots de la persona', async () => {
+    const d = arnes({ analista: () => [], slots: ['c1', 'c2'] });
+    await conSlotsDelProyecto(d, ['c1', 'c2']);
+    await abrir(d);
+    await correr(d);
+
+    const slots = d.ask.mock.calls.map((c) => c[0].agent);
+    expect(slots).toEqual(['c1', 'c2', 'c1', 'c2']);
+  });
+
+  // Las cuatro firmas al pie del informe. Es lo que contesta la pregunta que
+  // uno se hace de verdad a la mañana y el conteo de tareas no contesta:
+  // `mesas` cerro con todas las tareas hechas y no se podia usar.
+  it('el informe termina con lo que dijo cada uno de los cuatro', async () => {
+    const d = arnes({ analista: () => [] });
+    await abrir(d);
+    const avisos = await correr(d);
+
+    const informe = avisos[avisos.length - 1]!;
+    expect(informe).toContain('Los cuatro analistas:');
+    for (const eje of EJES) expect(informe).toContain(`${eje} —`);
   });
 
   it('un analista sin huecos cierra la corrida como completa', async () => {
@@ -432,7 +507,10 @@ describe('correrCola dentro de una corrida', () => {
 
   it('con huecos los encola en la ronda siguiente y los hace', async () => {
     const d = arnes({
-      analista: (ronda) => (ronda === 1 ? ['falta el descuento al facturar'] : []),
+      // Lo reporta UN eje. Los otros tres revisan lo suyo y no encuentran nada,
+      // que es lo normal: un hueco cae en el eje de alguien, no en los cuatro.
+      analista: (ronda, eje) =>
+        ronda === 1 && eje === 'funcionamiento' ? ['falta el descuento al facturar'] : [],
     });
     await abrir(d);
     await correr(d);
@@ -448,16 +526,64 @@ describe('correrCola dentro de una corrida', () => {
   // El techo que evita que el analista y el constructor se pasen la noche
   // agregando y quitando lo mismo.
   it('el techo de rondas corta y el informe lo dice', async () => {
-    const d = arnes({ analista: (r) => [`hueco de la ronda ${r}`] });
+    const d = arnes({
+      analista: (r, eje) => (eje === undefined || eje === 'usuario' ? [`hueco de la ronda ${r}`] : []),
+    });
     await abrir(d, 'rondas=2');
     const avisos = await correr(d);
 
     const corrida = await d.store.corridaAbierta(7);
     expect(corrida).toBeUndefined();
     expect(avisos[avisos.length - 1]).toContain('techo de rondas');
-    // Dos rondas de analisis, no mas.
-    const analisis = d.ask.mock.calls.filter((c) => c[0].prompt.includes('--- PLIEGO ---'));
-    expect(analisis).toHaveLength(2);
+    // Dos rondas de analisis, no mas. Se cuenta por RONDA y no por turno: la
+    // ronda 1 son cuatro turnos —uno por eje— y la 2 es el generico.
+    const analisis = d.ask.mock.calls
+      .map((c) => c[0].prompt)
+      .filter((p) => p.includes('--- PLIEGO ---'));
+    expect(analisis.filter((p) => p.includes('Esta es la ronda 1'))).toHaveLength(4);
+    expect(analisis.filter((p) => p.includes('Esta es la ronda 2'))).toHaveLength(1);
+    expect(analisis.filter((p) => p.includes('Esta es la ronda 3'))).toHaveLength(0);
+  });
+
+  // La decision central de la feature: el piso se cumple o se sigue trabajando.
+  // Antes, "no quedan tareas" cerraba la corrida y listo; ahora eso lo deciden
+  // los cuatro, y lo que encuentren abre otra ronda.
+  it('el veredicto de cierre encuentra algo y la corrida sigue', async () => {
+    const d = arnes({
+      // Para LLEGAR al cierre hay que pasar por una ronda del medio: si los
+      // cuatro de la ronda 1 no encuentran nada, la corrida cierra ahi mismo y
+      // ellos fueron el veredicto. Asi que la ronda 1 deja trabajo, la 2 no
+      // encuentra nada, y recien ahi corre el cierre.
+      analista: (ronda, eje) => {
+        if (ronda === 1 && eje === 'funcionamiento') return ['falta el endpoint de alta'];
+        if (ronda === 2 && eje === 'usuario') return ['no hay forma de cargar datos'];
+        return [];
+      },
+    });
+    await abrir(d);
+    const avisos = await correr(d);
+
+    const prompts = d.ask.mock.calls.map((c) => c[0].prompt);
+    // Hubo una revision de CIERRE, y se dijo que lo era.
+    expect(prompts.some((p) => p.includes('revision de CIERRE'))).toBe(true);
+    expect(avisos.some((a) => a.includes('Antes de cerrar lo miran los cuatro'))).toBe(true);
+    // Y lo que encontro se hizo, en vez de quedar como una linea del informe.
+    const tareas = await d.store.tareasDeChat(7);
+    const cargar = tareas.find((t) => t.texto === 'no hay forma de cargar datos');
+    expect(cargar?.estado).toBe('lista');
+  });
+
+  // Los cuatro de la ronda 1 son tambien el veredicto: volver a correrlos
+  // serian ocho turnos seguidos para preguntar dos veces lo mismo.
+  it('si los cuatro de la ronda 1 no encuentran nada, cierra sin repetirlos', async () => {
+    const d = arnes({ analista: () => [] });
+    await abrir(d);
+    const avisos = await correr(d);
+
+    const prompts = d.ask.mock.calls.map((c) => c[0].prompt);
+    expect(prompts).toHaveLength(4);
+    expect(prompts.some((p) => p.includes('revision de CIERRE'))).toBe(false);
+    expect(avisos[avisos.length - 1]).toContain('el analista no encontro huecos');
   });
 
   it('la hora de corte cierra la corrida antes de tomar una tarea', async () => {
@@ -716,6 +842,117 @@ describe('/corrida', () => {
 // Es la unica prueba de que la llamada existio, y de eso depende que una
 // corrida pueda cerrar como completa. El arnes del ciclo lo simula; aca se
 // prueba de verdad.
+
+describe('POST /interno/corrida/veredicto', () => {
+  const API_TOKEN = 'token-de-api-del-bridge';
+  const bot = { handleUpdate: vi.fn(async () => {}) };
+
+  async function conCorrida() {
+    const store = new InMemoryStore();
+    const app = buildWebhookServer(bot, 'secreto-de-webhook-largo', { store, apiToken: API_TOKEN });
+    await vincular(store, 7);
+    const corrida = await store.abrirCorrida({
+      chatId: 7,
+      proyecto: 'stock',
+      md: PLIEGO,
+      techoRondas: 3,
+      techoHora: '07:00',
+    });
+    const jobId = await store.createJob({
+      chatId: 7,
+      agent: 'c1' as const,
+      project: 'stock',
+      prompt: 'analisis',
+      messageId: 0,
+    });
+    return { app, store, corrida: corrida!, jobId };
+  }
+
+  function pedir(app: Awaited<ReturnType<typeof conCorrida>>['app'], payload: unknown) {
+    return app.inject({
+      method: 'POST',
+      url: '/interno/corrida/veredicto',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: payload as Record<string, unknown>,
+    });
+  }
+
+  it('guarda la firma del analista para el informe', async () => {
+    const { app, store, corrida, jobId } = await conCorrida();
+    const res = await pedir(app, {
+      jobId,
+      eje: 'visual',
+      cumple: false,
+      resumen: 'no hay estados de vacio ni de error',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const guardada = await store.corridaAbierta(7);
+    expect(guardada?.veredictos).toEqual([
+      { eje: 'visual', cumple: false, resumen: 'no hay estados de vacio ni de error' },
+    ]);
+    expect(corrida.id).toBe(guardada?.id);
+  });
+
+  // El del cierre pisa al de la ronda 1: lo que vale es lo ultimo que dijo.
+  // Guardar los dos obligaria al informe a elegir, que es la misma decision
+  // tomada en peor lugar.
+  it('el segundo veredicto del mismo eje pisa al primero', async () => {
+    const { app, store, jobId } = await conCorrida();
+    await pedir(app, { jobId, eje: 'usuario', cumple: false, resumen: 'no se puede cargar nada' });
+    await pedir(app, { jobId, eje: 'usuario', cumple: true, resumen: 'ya se puede cargar y editar' });
+
+    const guardada = await store.corridaAbierta(7);
+    expect(guardada?.veredictos).toEqual([
+      { eje: 'usuario', cumple: true, resumen: 'ya se puede cargar y editar' },
+    ]);
+  });
+
+  it('un eje inventado se rechaza y no ensucia el informe', async () => {
+    const { app, store, jobId } = await conCorrida();
+    const res = await pedir(app, { jobId, eje: 'seguridad', cumple: true, resumen: 'todo bien' });
+
+    expect(res.statusCode).toBe(400);
+    expect((await store.corridaAbierta(7))?.veredictos).toBeUndefined();
+  });
+
+  // El mensaje lo REPITE el modelo, asi que tiene que decir que hacer: sin el
+  // "no reintentes", el analista llama la herramienta en loop.
+  it('sin corrida contesta que no reintente', async () => {
+    const store = new InMemoryStore();
+    const app = buildWebhookServer(bot, 'secreto-de-webhook-largo', { store, apiToken: API_TOKEN });
+    await vincular(store, 7);
+    const jobId = await store.createJob({
+      chatId: 7,
+      agent: 'c1' as const,
+      project: 'stock',
+      prompt: 'analisis',
+      messageId: 0,
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/interno/corrida/veredicto',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { jobId, eje: 'testeos', cumple: true, resumen: 'todo verde' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toContain('No reintentes');
+  });
+
+  it('sin el bearer no guarda nada', async () => {
+    const { app, store, jobId } = await conCorrida();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/interno/corrida/veredicto',
+      payload: { jobId, eje: 'visual', cumple: true, resumen: 'impecable' },
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect((await store.corridaAbierta(7))?.veredictos).toBeUndefined();
+  });
+});
 
 describe('POST /interno/corrida/huecos', () => {
   const API_TOKEN = 'token-de-api-del-bridge';
@@ -1516,6 +1753,20 @@ describe('planificarCorrida', () => {
 });
 
 describe('promptDePlan', () => {
+  // El piso en el PLAN y no solo en la revision: una tarea que ya nace diciendo
+  // "con su formulario de alta" cuesta lo mismo que una que no lo dice, y
+  // descubrirlo en la ronda 3 cuesta una ronda entera.
+  it('exige el piso minimo aunque el pliego no lo pida', () => {
+    const p = promptDePlan('# Un panel de mesas', []);
+    for (const eje of EJES) expect(p).toContain(eje);
+    expect(p).toContain('CARGAR, EDITAR y BORRAR');
+    expect(p).toContain('VACIO, CARGANDO y ERROR');
+    expect(p).toContain('CORRIERON VERDES');
+    // Y que no se convierta en cuatro tareas de adorno: el piso es parte de
+    // cada tarea, no una lista aparte al final del plan.
+    expect(p).toContain('No son tareas aparte');
+  });
+
   it('lleva el pliego y exige la herramienta', () => {
     const p = promptDePlan('# Stock\nlotes', []);
     expect(p).toContain('# Stock\nlotes');
