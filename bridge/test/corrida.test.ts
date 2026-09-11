@@ -3525,3 +3525,24 @@ describe('el mensaje del commit de una tarea', () => {
     expect(p).not.toContain('tarea undefined');
   });
 });
+
+describe('como contesta una tarea desatendida', () => {
+  // El texto del turno es lo que llega al chat como "✅ <tarea>". Venia como un
+  // informe de ingenieria —listas de archivos, rutas con numero de linea,
+  // fragmentos de codigo— y a la mañana eso se lee en un telefono, una tarea
+  // atras de otra, tapando lo unico que se quiere saber: que quedo hecho.
+  it('pide un parrafo en palabras, sin codigo ni archivos', () => {
+    const p = promptDeTareaDesatendida('armar el tablero', 3);
+    expect(p).toContain('Un parrafo corto');
+    expect(p).toContain('Sin codigo, sin listas, sin nombres de archivo');
+  });
+
+  // El problema va DEBAJO y solo si lo hubo: una linea de "no hubo bloqueos" en
+  // cada una de quince tareas es ruido que hay que leer para descartar.
+  it('el problema va aparte, abajo, y solo si lo hubo', () => {
+    const p = promptDeTareaDesatendida('armar el tablero');
+    expect(p).toContain('DEBAJO del parrafo');
+    expect(p).toContain('"Problema:"');
+    expect(p).toContain('no escribas nada');
+  });
+});

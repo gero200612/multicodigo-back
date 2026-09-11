@@ -1013,8 +1013,25 @@ export function promptDeTareaDesatendida(texto: string, numero?: number): string
       : `  "tarea ${numero}: <que hiciste, en una oracion>"`,
     'Nada de listas ni parrafos ahi: el detalle va en tu respuesta, que es donde se lee.',
     '',
-    'Si algo te bloquea de verdad y no podes seguir, decilo en tu respuesta con el',
-    'detalle: eso SI lo va a leer una persona a la mañana.',
+    '',
+    // La respuesta del turno es lo que llega al chat como "✅ <tarea>". Venia
+    // como un informe de ingenieria: listas de archivos, rutas con numero de
+    // linea, fragmentos de codigo, la justificacion de cada decision. A la
+    // mañana eso se lee en un telefono, una tarea atras de otra, y tapa lo
+    // unico que se quiere saber de un vistazo: que quedo hecho.
+    //
+    // El detalle no hace falta pedirlo: esta en el commit y en el repo.
+    'CUANDO TERMINES, contesta asi:',
+    '',
+    'Un parrafo corto —tres o cuatro oraciones— contando QUE quedo hecho, en',
+    'castellano y en palabras. Sin codigo, sin listas, sin nombres de archivo ni',
+    'rutas, sin numeros de linea. Se lee en un telefono a la mañana, no es un',
+    'informe tecnico: lo que hiciste ya esta en el commit y en el repo.',
+    '',
+    'Y si algo te bloqueo de verdad, una linea aparte DEBAJO del parrafo, que',
+    'empiece con "Problema:". Solo si es algo que una persona tiene que resolver',
+    '—una credencial que falta, una decision que no te corresponde—. Si no hubo',
+    'ninguno, no escribas nada: no hace falta aclarar que salio todo bien.',
     '',
     'La tarea:',
     '',
