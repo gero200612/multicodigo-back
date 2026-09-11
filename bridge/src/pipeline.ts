@@ -2670,6 +2670,24 @@ export async function correrCola(
   // que el siguiente construya sobre una base incompleta, asi que se queda con
   // el que lo tiene en su disco.
   let clavarEn: string | undefined;
+  /**
+   * Cuantas veces seguidas fallo el merge del slot clavado.
+   *
+   * Clavarse esta bien UNA vez: el trabajo esta en ese disco y el que sigue
+   * tiene que construir arriba. Pero si el merge vuelve a fallar, el slot no se
+   * va a destrabar solo —lo tipico es que su rama quedo atras de main y el push
+   * sale rechazado por non-fast-forward, que ninguna tarea nueva arregla— y
+   * seguir clavado convierte el reparto en un solo agente haciendo todo.
+   *
+   * Paso en `despacho2` (2026-09-10): el merge de c2 fallo, se clavo ahi, y c2
+   * hizo TODA la corrida —US$ 18,47 contra US$ 2,83 del que rotaba— sin que
+   * nada de eso llegara a main. Los analistas, que miran el repo, lo reportaban
+   * como no hecho vuelta tras vuelta.
+   *
+   * Al segundo fallo se suelta y se vuelve a rotar. El trabajo de ese slot no
+   * se pierde: queda en su rama, y el informe ya dice cual es.
+   */
+  let mergesFallidosSeguidos = 0;
   // Para que el pendiente del merge fallido salga una vez y no una por tarea.
   let mergeAnotado = false;
   // Lo mismo para el slot que pide permiso.
@@ -2771,7 +2789,7 @@ export async function correrCola(
         // puede contestar: el modelo tiene el commit libre pero no tiene como
         // saber que del otro lado no hay nadie, y preguntar —que en un turno
         // normal de Telegram es lo correcto— ahi deja el trabajo sin guardar.
-        prompt: corrida ? promptDeTareaDesatendida(tarea.texto) : tarea.texto,
+        prompt: corrida ? promptDeTareaDesatendida(tarea.texto, tarea.posicion) : tarea.texto,
         modo,
         // Adentro de una corrida cada tarea arranca limpia; afuera, no. Un chat
         // normal necesita su hilo —es lo que hace que se pueda conversar— y una
@@ -2834,7 +2852,15 @@ export async function correrCola(
         const m = await deps
           .mergearTrabajo(tarea.proyecto, r.agente)
           .catch((err) => ({ ok: false, detalle: err instanceof Error ? err.message : 'error' }));
-        clavarEn = m.ok ? undefined : r.agente;
+        if (m.ok) {
+          clavarEn = undefined;
+          mergesFallidosSeguidos = 0;
+        } else {
+          mergesFallidosSeguidos += 1;
+          // Ver `mergesFallidosSeguidos`: clavarse una vez ayuda, quedarse
+          // clavado convierte el reparto en un solo agente haciendo todo.
+          clavarEn = mergesFallidosSeguidos >= 2 ? undefined : r.agente;
+        }
 
         // Y si fallo, se ANOTA. Sin esto el reparto se apaga en silencio: el
         // pipeline usa el resultado para dejar de rotar y el motivo se tira, asi

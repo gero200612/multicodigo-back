@@ -815,6 +815,25 @@ const POR_QUE: Record<MotivoDeCierre, string> = {
 };
 
 /**
+ * El texto de una tarea, acortado para el informe.
+ *
+ * Las tareas las redacta el analista y salen largas —parrafos con rutas de
+ * archivo, nombres de componentes y el por que— porque estan escritas para que
+ * otro AGENTE las tome sin contexto. En el informe eso se lee al reves: cinco
+ * tareas sin resolver ocupan la pantalla entera de un telefono y tapan lo unico
+ * que importa a la mañana, que es CUALES quedaron.
+ *
+ * El detalle no se pierde: sigue entero en la cola, y `/cola` lo muestra.
+ */
+function enUnaLinea(texto: string, tope = 120): string {
+  const plano = texto.replace(/\s+/g, ' ').trim();
+  if (plano.length <= tope) return plano;
+  // Se corta en el ultimo espacio para no partir una palabra al medio.
+  const corte = plano.lastIndexOf(' ', tope);
+  return `${plano.slice(0, corte > tope * 0.6 ? corte : tope)}…`;
+}
+
+/**
  * El informe de la mañana.
  *
  * La primera linea es el motivo, y ese orden no es estetico: si dice "se
@@ -852,7 +871,9 @@ export function textoDeInforme(
   if (t.sinResolver.length > 0) {
     lineas.push('', '<b>Quedo sin resolver:</b>');
     for (const s of t.sinResolver) {
-      lineas.push(` · ${escaparHtml(s.texto)}${s.ronda !== undefined ? ` (ronda ${s.ronda})` : ''}`);
+      lineas.push(
+        ` · ${escaparHtml(enUnaLinea(s.texto))}${s.ronda !== undefined ? ` (ronda ${s.ronda})` : ''}`,
+      );
     }
   }
 
@@ -888,7 +909,10 @@ export function textoDeInforme(
     lineas.push(
       '',
       '<b>Para que ande, falta que hagas esto:</b>',
-      ...pendientes.map((p) => ` · ${escaparHtml(p)}`),
+      // Acortados por lo mismo que los huecos: un pendiente que trae la salida
+      // cruda de git —con sus `hint:` y su "See the Note about fast-forwards"—
+      // ocupa media pantalla y no dice nada mas que la primera linea.
+      ...pendientes.map((p) => ` · ${escaparHtml(enUnaLinea(p))}`),
     );
   }
 
@@ -969,7 +993,7 @@ export function textoDeInforme(
  * La tarea va al FINAL, y no es estetico: es lo que hay que hacer, y lo ultimo
  * que se lee es lo que mas pesa. El aviso es contexto.
  */
-export function promptDeTareaDesatendida(texto: string): string {
+export function promptDeTareaDesatendida(texto: string, numero?: number): string {
   return [
     'Esto corre en una corrida desatendida: del otro lado no hay nadie despierto',
     'para contestarte, asi que una pregunta tuya no la va a leer nadie hasta la',
@@ -978,6 +1002,16 @@ export function promptDeTareaDesatendida(texto: string): string {
     'Tenes commit y push habilitados en este modo. Usalos: cuando el trabajo de la',
     'tarea este listo, commitealo vos y segui. NO pidas aprobacion para commitear',
     'ni preguntes si conviene hacerlo — si lo dejas sin commitear, se pierde.',
+    '',
+    // El mensaje del commit se escribia como un informe: parrafos, listas de
+    // archivos, el detalle de cada decision. Eso ya viaja en la respuesta del
+    // turno, que es donde se lee. En la historia del repo estorba: `git log`
+    // deja de servir para ver de un vistazo que paso.
+    'El mensaje del commit va CORTO, en una linea:',
+    numero === undefined
+      ? '  "<que hiciste, en una oracion>"'
+      : `  "tarea ${numero}: <que hiciste, en una oracion>"`,
+    'Nada de listas ni parrafos ahi: el detalle va en tu respuesta, que es donde se lee.',
     '',
     'Si algo te bloquea de verdad y no podes seguir, decilo en tu respuesta con el',
     'detalle: eso SI lo va a leer una persona a la mañana.',

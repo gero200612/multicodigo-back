@@ -3451,3 +3451,77 @@ describe('la sesion de los turnos de una corrida', () => {
     expect(await d.store.getSession(proyectoId, 'c1')).toBe('s');
   });
 });
+
+describe('el informe no tapa la pantalla con el detalle', () => {
+  const LARGA =
+    'En despacho2-front, TarjetaPedido.jsx (src/components/tablero/TarjetaPedido.jsx) es de ' +
+    'solo lectura: no tiene ninguna accion. Agregar botones segun el estado del pedido ' +
+    '-asignar, marcar en camino, marcar entregado, liberar y cancelar- que llamen a los ' +
+    'endpoints POST /api/pedidos/:id/asignar, /en-camino, /entregar, /liberar y /cancelar.';
+
+  // Las tareas las redacta el analista para que OTRO AGENTE las tome sin
+  // contexto, asi que salen largas. En el informe se lee al reves: cinco de
+  // estas ocupan la pantalla entera y tapan lo unico que importa, que es
+  // CUALES quedaron. El detalle sigue entero en /cola.
+  it('corta el texto de lo que quedo sin resolver', () => {
+    const t = textoDeInforme({ proyecto: 'despacho2', ronda: 3, techoRondas: 3 }, 'techo_rondas', {
+      hechas: 33,
+      fallidas: 0,
+      pendientes: 4,
+      sinResolver: [{ texto: LARGA, ronda: 3 }],
+    });
+    const linea = t.split('\n').find((l) => l.includes('TarjetaPedido'))!;
+    expect(linea.length).toBeLessThan(180);
+    expect(linea).toContain('…');
+    expect(linea).toContain('(ronda 3)');
+  });
+
+  // Un pendiente con la salida cruda de git —sus `hint:` y el "See the Note
+  // about fast-forwards"— ocupaba media pantalla sin decir nada mas que su
+  // primera linea.
+  it('corta tambien los pendientes largos', () => {
+    const gitCrudo =
+      'no pude mergear a main lo que hizo c2 (despacho2-front: To https://github.com/x.git\n' +
+      '! [rejected] claude/c2/trabajo -> main (non-fast-forward)\n' +
+      'hint: Updates were rejected because a pushed branch tip is behind its remote\n' +
+      'hint: See the Note about fast-forwards in git push --help for details.)';
+    const t = textoDeInforme(
+      { proyecto: 'despacho2', ronda: 3, techoRondas: 3 },
+      'techo_rondas',
+      { hechas: 1, fallidas: 0, pendientes: 0, sinResolver: [] },
+      undefined,
+      [gitCrudo],
+    );
+    const linea = t.split('\n').find((l) => l.includes('no pude mergear'))!;
+    expect(linea.length).toBeLessThan(200);
+    expect(linea).not.toContain('hint:');
+  });
+
+  it('un texto corto se deja tal cual', () => {
+    const t = textoDeInforme({ proyecto: 'x', ronda: 1, techoRondas: 3 }, 'techo_rondas', {
+      hechas: 0,
+      fallidas: 1,
+      pendientes: 0,
+      sinResolver: [{ texto: 'falta el endpoint de alta' }],
+    });
+    expect(t).toContain('falta el endpoint de alta');
+    expect(t).not.toContain('…');
+  });
+});
+
+describe('el mensaje del commit de una tarea', () => {
+  // Salian como informes: parrafos, listas de archivos, el detalle de cada
+  // decision. Eso ya viaja en la respuesta del turno; en `git log` estorba.
+  it('pide una linea corta y numerada', () => {
+    const p = promptDeTareaDesatendida('armar el tablero', 7);
+    expect(p).toContain('CORTO, en una linea');
+    expect(p).toContain('tarea 7:');
+    expect(p).toContain('Nada de listas ni parrafos');
+  });
+
+  it('sin numero de tarea igual pide una linea', () => {
+    const p = promptDeTareaDesatendida('armar el tablero');
+    expect(p).toContain('CORTO, en una linea');
+    expect(p).not.toContain('tarea undefined');
+  });
+});
