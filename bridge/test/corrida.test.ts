@@ -3546,3 +3546,40 @@ describe('como contesta una tarea desatendida', () => {
     expect(p).toContain('no escribas nada');
   });
 });
+
+describe('el piso visual', () => {
+  // Lo primero que se nota cuando falta: la pantalla arranca en el contenido,
+  // sin nada que diga de quien es ni que es. Se ve como una demo, por bien
+  // resuelto que este lo de abajo.
+  it('exige marca: header con datos y footer', () => {
+    const p = promptDeAnalisis('# x', 1, { eje: 'visual' });
+    expect(p).toContain('MARCA');
+    expect(p).toContain('header');
+    expect(p).toContain('footer');
+  });
+
+  // Sin pedirlo, todo sale igual: tarjeta blanca, bordecito de color al
+  // costado, cero movimiento. Se reconoce de lejos como plantilla.
+  it('exige que la pantalla reaccione, y nombra el molde a evitar', () => {
+    const p = promptDeAnalisis('# x', 1, { eje: 'visual' });
+    expect(p).toContain('VIVO');
+    expect(p).toContain('al pasar el mouse');
+    expect(p).toContain('franja de color al costado');
+  });
+
+  // Va en el plan tambien: una tarea que ya nace diciendo "con su header y su
+  // footer" cuesta lo mismo que una que no lo dice.
+  it('viaja al plan, no solo a la revision', () => {
+    const p = promptDePlan('# Un panel de mesas', []);
+    expect(p).toContain('MARCA');
+    expect(p).toContain('VIVO');
+  });
+
+  // Y no se le cuela a los otros tres: son cuatro turnos justamente para que
+  // cada uno entre hondo en lo suyo.
+  it('no se le pide al analista de testeos', () => {
+    const p = promptDeAnalisis('# x', 1, { eje: 'testeos' });
+    expect(p).not.toContain('MARCA');
+    expect(p).not.toContain('al pasar el mouse');
+  });
+});

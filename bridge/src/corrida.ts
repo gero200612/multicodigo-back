@@ -515,9 +515,23 @@ const PISO: Record<Eje, readonly string[]> = {
   ],
   visual: [
     'Hay una paleta y una tipografia elegidas, no el default del navegador.',
+    // Lo primero que se nota cuando falta: la pantalla arranca en el contenido,
+    // sin nada que diga de quien es ni que es. Una app sin marca se ve como una
+    // demo, por bien resuelto que este lo de abajo.
+    'Hay MARCA: un header con el nombre del producto y algo util al lado (el usuario, ' +
+      'la fecha, un buscador, lo que la pantalla pida), y un footer que cierre la pagina.',
     'Cada pantalla que trae datos tiene sus estados de VACIO, CARGANDO y ERROR.',
     'Se puede usar en un telefono.',
     'Algo confirma cuando guardaste.',
+    // Sin pedirlo, todo sale igual: tarjeta blanca, bordecito de color a la
+    // izquierda, cero movimiento. Se reconoce de lejos como "hecho por un
+    // modelo" y es justo lo que hace que no parezca un producto.
+    'Esta VIVO al usarlo: sombras y cambios al pasar el mouse, transiciones donde algo ' +
+      'aparece o cambia, foco visible al tabular. Una pantalla donde nada reacciona se ' +
+      'siente rota aunque funcione.',
+    'Y NO el molde de siempre: tarjetas blancas con una franja de color al costado, todo ' +
+      'del mismo tamaño, sin jerarquia ni movimiento. Eso se reconoce de lejos como ' +
+      'plantilla y no como producto.',
   ],
   funcionamiento: [
     'Cada cosa que pide el pliego existe y responde.',
