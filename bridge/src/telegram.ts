@@ -430,7 +430,7 @@ export function textoDePreguntas(preguntas: readonly string[]): string {
  * una cola de veinte tareas que salio mal se ve en treinta segundos leyendola, y
  * en ocho horas dejandola correr.
  */
-export function textoDePlan(proyecto: string, tareas: Tarea[]): string {
+export function textoDePlan(proyecto: string, tareas: Tarea[], conContrato = false): string {
   return [
     `📋 <b>El plan para ${escaparHtml(proyecto)}</b>`,
     '',
@@ -438,6 +438,9 @@ export function textoDePlan(proyecto: string, tareas: Tarea[]): string {
     '',
     ...tareas.map((t, i) => `${i + 1}. ${escaparHtml(t.texto)}`),
     '',
+    // Se dice porque cambia lo que se puede esperar: con el contrato fijado, el
+    // front y el back se construyen en paralelo contra las mismas rutas.
+    ...(conContrato ? ['🔗 Fije el contrato entre el front y el back antes de repartir.', ''] : []),
     '¿Arranco?',
   ].join('\n');
 }
@@ -1072,7 +1075,13 @@ async function planificarYMostrar(
   //
   // Este es el mensaje que se perdio en `despacho2`: ocho tareas, 5300
   // caracteres, rechazado entero por Telegram. Ver `partirParaTelegram`.
-  const partes = partirParaTelegram(textoDePlan(corrida.proyecto, plan.tareas));
+  // Se relee para saber si el planificador fijo el contrato: lo escribio el
+  // endpoint de la herramienta durante el turno, despues de que este objeto se
+  // leyera.
+  const ahora = await deps.store.corridaAbierta(corrida.chatId).catch(() => undefined);
+  const partes = partirParaTelegram(
+    textoDePlan(corrida.proyecto, plan.tareas, Boolean(ahora?.contrato)),
+  );
   for (const [i, parte] of partes.entries()) {
     const ultima = i === partes.length - 1;
     await ctx.reply(parte, {

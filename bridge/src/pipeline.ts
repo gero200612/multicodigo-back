@@ -2386,6 +2386,7 @@ async function tandaDeAnalisis(
         prompt: promptDeAnalisis(corrida.md, corrida.ronda, {
           ...(eje ? { eje } : {}),
           ...(cierre ? { cierre } : {}),
+          ...(corrida.contrato ? { contrato: corrida.contrato } : {}),
         }),
         // El analista no escribe —el prompt se lo prohibe— pero el modo va igual:
         // con `preguntar`, un intento de editar dejaria el turno colgado quince
@@ -2789,7 +2790,9 @@ export async function correrCola(
         // puede contestar: el modelo tiene el commit libre pero no tiene como
         // saber que del otro lado no hay nadie, y preguntar —que en un turno
         // normal de Telegram es lo correcto— ahi deja el trabajo sin guardar.
-        prompt: corrida ? promptDeTareaDesatendida(tarea.texto, tarea.posicion) : tarea.texto,
+        prompt: corrida
+          ? promptDeTareaDesatendida(tarea.texto, tarea.posicion, corrida.contrato)
+          : tarea.texto,
         modo,
         // Adentro de una corrida cada tarea arranca limpia; afuera, no. Un chat
         // normal necesita su hilo —es lo que hace que se pueda conversar— y una

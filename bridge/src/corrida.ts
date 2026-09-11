@@ -102,6 +102,19 @@ export interface Corrida {
    * revisar.
    */
   veredictos?: Veredicto[];
+  /**
+   * El contrato entre el front y el back: las rutas, que reciben y que devuelven.
+   *
+   * Lo fija el planificador ANTES de escribir las tareas, y se inyecta en el
+   * prompt de cada una. Existe porque en `despacho2` (2026-09-10) el front
+   * llamaba a `/pedidos` y el back exponia `/api/pedidos`, los dos con sus tests
+   * en verde: cada uno testeo contra lo que el mismo invento.
+   *
+   * Vive en la corrida y no en un archivo del repo: un archivo lo ve solo el
+   * slot que lo tiene, hasta que su merge entra — y que un merge no entre es
+   * justo lo que paso esa noche. Ver la migracion 033.
+   */
+  contrato?: string;
   /** Cuando se pregunto. Sin esto el tope no sobrevive a un reinicio. */
   preguntadoEn?: Date;
 }
@@ -562,6 +575,28 @@ export interface Veredicto {
 }
 
 /**
+ * El contrato front/back como lineas de prompt.
+ *
+ * Una sola forma de mostrarlo, para la tarea y para el analista: si cada uno lo
+ * encuadrara distinto, el dia que haya que ajustar como se presenta habria dos
+ * lugares donde acordarse.
+ */
+function bloqueDeContrato(contrato: string): string[] {
+  return [
+    'EL CONTRATO entre el front y el back de este proyecto. Lo fijo el planificador',
+    'antes de repartir el trabajo, y lo estan leyendo todos los agentes que',
+    'construyen en paralelo. Usá EXACTAMENTE estas rutas y estos nombres de campo:',
+    'no los cambies ni inventes otros, porque del otro lado alguien esta',
+    'construyendo contra esto mismo sin poder verte.',
+    '',
+    '--- CONTRATO ---',
+    contrato,
+    '--- FIN DEL CONTRATO ---',
+    '',
+  ];
+}
+
+/**
  * El prompt del turno de analisis.
  *
  * Arranca en sesion LIMPIA —el turno lleva `sesionLimpia`— y eso es la
@@ -584,9 +619,9 @@ export function promptDeAnalisis(
    * Ausente = el analista generico de las rondas del medio, que es el de
    * siempre y compara contra el pliego a secas.
    */
-  opciones: { eje?: Eje; cierre?: boolean } = {},
+  opciones: { eje?: Eje; cierre?: boolean; contrato?: string } = {},
 ): string {
-  const { eje, cierre } = opciones;
+  const { eje, cierre, contrato } = opciones;
   return [
     eje
       ? `Sos el analista de ${eje.toUpperCase()} de esta corrida: mirás ${QUE_MIRA[eje]}. No construis nada: revisas.`
@@ -639,6 +674,20 @@ export function promptDeAnalisis(
     // Visual y usuario MIRAN. Leyendo el codigo no se ve si algo "se ve mal" ni
     // si hay por donde cargar datos: `mesas` tenia CSS y tenia endpoints de
     // alta, y en la pantalla no habia ni color ni un solo formulario.
+    // El contrato lo verifica funcionamiento, y el generico de las rondas del
+    // medio. Es el cruce que hasta hoy no hacia nadie: cada lado tenia sus
+    // tests en verde contra lo que el mismo habia inventado, y nadie miraba si
+    // lo que el front llama existe en el back.
+    ...(contrato && (eje === 'funcionamiento' || eje === undefined)
+      ? [
+          ...bloqueDeContrato(contrato),
+          'Verifica que el FRONT llame exactamente estas rutas y que el BACK las',
+          'exponga con estos nombres y estos campos. Una ruta que uno llama y el otro',
+          'no expone —o con otro prefijo, u otro nombre de campo— es un hueco, aunque',
+          'los dos lados tengan sus tests en verde.',
+          '',
+        ]
+      : []),
     ...(eje === 'visual' || eje === 'usuario'
       ? [
           'Para esto NO alcanza con leer el codigo: MIRALO. Tenes la herramienta mirar,',
@@ -752,6 +801,21 @@ export function promptDePlan(
           'elegilo y segui. Preguntar cuesta que alguien te conteste a las tres de la',
           'mañana.',
         ]),
+    '',
+    // El contrato ANTES que las tareas, y por eso va aca y no al final.
+    //
+    // En `despacho2` el front y el back se construyeron en paralelo y cada uno
+    // invento sus rutas: el front llamaba a `/pedidos`, el back exponia
+    // `/api/pedidos`, y los dos pasaban sus tests. Repartir el trabajo entre
+    // agentes es lo que hace rapida la noche; sin un contrato fijado primero,
+    // es tambien lo que garantiza que las mitades no encajen.
+    'Si el proyecto tiene FRONT y BACK, antes de armar la lista fija el contrato',
+    'entre los dos llamando a fijar_contrato: cada ruta con su metodo, que recibe',
+    'y que devuelve, con los nombres exactos de los campos. Es lo que van a leer',
+    'TODOS los agentes que construyan, en paralelo y sin verse entre si: si una',
+    'ruta no esta ahi, cada uno la va a inventar distinta.',
+    '',
+    'Sin prefijos ambiguos: si las rutas van bajo /api, decilo en cada una.',
     '',
     'Despues llama a la herramienta reportar_huecos con las tareas, en el ORDEN en',
     'que hay que hacerlas: lo que otras cosas necesitan va primero.',
@@ -1007,7 +1071,12 @@ export function textoDeInforme(
  * La tarea va al FINAL, y no es estetico: es lo que hay que hacer, y lo ultimo
  * que se lee es lo que mas pesa. El aviso es contexto.
  */
-export function promptDeTareaDesatendida(texto: string, numero?: number): string {
+export function promptDeTareaDesatendida(
+  texto: string,
+  numero?: number,
+  /** El contrato front/back de la corrida, si el planificador lo fijo. */
+  contrato?: string,
+): string {
   return [
     'Esto corre en una corrida desatendida: del otro lado no hay nadie despierto',
     'para contestarte, asi que una pregunta tuya no la va a leer nadie hasta la',
@@ -1047,6 +1116,7 @@ export function promptDeTareaDesatendida(texto: string, numero?: number): string
     '—una credencial que falta, una decision que no te corresponde—. Si no hubo',
     'ninguno, no escribas nada: no hace falta aclarar que salio todo bien.',
     '',
+    ...(contrato ? bloqueDeContrato(contrato) : []),
     'La tarea:',
     '',
     texto,

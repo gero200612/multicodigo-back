@@ -845,6 +845,11 @@ export interface Store {
    */
   guardarVeredicto(corridaId: string, eje: Eje, cumple: boolean, resumen: string): Promise<void>;
   /**
+   * Guarda el contrato front/back de la corrida. Pisa el anterior: el
+   * planificador lo fija una vez, y si lo corrige, vale lo ultimo.
+   */
+  guardarContrato(corridaId: string, contrato: string): Promise<void>;
+  /**
    * Reabre la ultima corrida cerrada del chat y devuelve a la cola lo que no
    * se hizo. `undefined` si no hay ninguna que se pueda reanudar.
    *
@@ -1500,6 +1505,11 @@ export class InMemoryStore implements Store {
     if (!c) return;
     const otros = (c.veredictos ?? []).filter((v) => v.eje !== eje);
     c.veredictos = [...otros, { eje, cumple, resumen }];
+  }
+
+  async guardarContrato(corridaId: string, contrato: string): Promise<void> {
+    const c = this.corridas.get(corridaId);
+    if (c) c.contrato = contrato;
   }
 
   async reanudarCorrida(
@@ -2619,7 +2629,7 @@ export class PgStore implements Store {
   private static readonly CAMPOS_CORRIDA =
     'id, chat_id, proyecto, md, ronda, techo_rondas, techo_hora, ' +
     'fallos_seguidos, huecos_de_ronda, pendientes, preguntas, respuestas, ' +
-    'preguntado_en, estado, motivo_de_cierre, creado_en, veredictos';
+    'preguntado_en, estado, motivo_de_cierre, creado_en, veredictos, contrato';
 
   private aCorrida(f: Record<string, unknown>): Corrida {
     return {
@@ -2647,6 +2657,9 @@ export class PgStore implements Store {
         ? { motivoDeCierre: f.motivo_de_cierre as MotivoDeCierre }
         : {}),
       creadoEn: new Date(f.creado_en as string),
+      ...(typeof f.contrato === 'string' && f.contrato !== ''
+        ? { contrato: f.contrato }
+        : {}),
       ...(veredictosDeFila(f.veredictos).length > 0
         ? { veredictos: veredictosDeFila(f.veredictos) }
         : {}),
@@ -2802,6 +2815,14 @@ export class PgStore implements Store {
       // La columna es de la migracion 032. Contra una base que no la corrio,
       // perder una firma es menos grave que voltear el turno del analista.
       .catch(() => undefined);
+  }
+
+  async guardarContrato(corridaId: string, contrato: string): Promise<void> {
+    // SIN el `.catch` que tienen los veredictos, a proposito: un veredicto
+    // perdido es una linea menos en el informe, pero un contrato perdido es la
+    // noche entera construyendo dos mitades que no encajan. Si esto falla, el
+    // endpoint tiene que contestar error y el planificador enterarse.
+    await this.pool.query('UPDATE corridas SET contrato = $2 WHERE id = $1', [corridaId, contrato]);
   }
 
   async reanudarCorrida(

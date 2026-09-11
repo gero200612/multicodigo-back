@@ -3583,3 +3583,114 @@ describe('el piso visual', () => {
     expect(p).not.toContain('al pasar el mouse');
   });
 });
+
+/**
+ * El contrato entre el front y el back.
+ *
+ * En `despacho2` (2026-09-10) el front llamaba a `/pedidos` y el back exponia
+ * `/api/pedidos`, los dos con sus tests en verde: cada uno testeo contra lo que
+ * el mismo invento. El planificador ahora lo fija antes de repartir, y se
+ * inyecta en cada tarea y en el analista que lo verifica.
+ */
+describe('el contrato front/back', () => {
+  const CONTRATO = 'GET /api/pedidos?estado=... -> [{ id, cliente, estado }]';
+
+  it('el plan pide fijarlo antes de armar la lista', () => {
+    const p = promptDePlan('# Despacho', []);
+    expect(p).toContain('fijar_contrato');
+    // Y ANTES de reportar_huecos: el orden es lo que hace que sirva.
+    expect(p.indexOf('fijar_contrato')).toBeLessThan(p.indexOf('reportar_huecos con las tareas'));
+  });
+
+  it('cada tarea lo recibe, antes de la tarea', () => {
+    const p = promptDeTareaDesatendida('armar el tablero', 3, CONTRATO);
+    expect(p).toContain('--- CONTRATO ---');
+    expect(p).toContain(CONTRATO);
+    expect(p.indexOf(CONTRATO)).toBeLessThan(p.indexOf('La tarea:'));
+  });
+
+  it('sin contrato, la tarea no lleva el bloque', () => {
+    expect(promptDeTareaDesatendida('armar el tablero', 3)).not.toContain('--- CONTRATO ---');
+  });
+
+  // El cruce que no hacia nadie: cada lado tenia sus tests verdes contra lo
+  // que el mismo habia inventado.
+  it('funcionamiento lo verifica; visual no lo recibe', () => {
+    const f = promptDeAnalisis('# x', 1, { eje: 'funcionamiento', contrato: CONTRATO });
+    expect(f).toContain(CONTRATO);
+    expect(f).toContain('Verifica que el FRONT llame exactamente estas rutas');
+    const v = promptDeAnalisis('# x', 1, { eje: 'visual', contrato: CONTRATO });
+    expect(v).not.toContain(CONTRATO);
+  });
+
+  it('el ciclo se lo pasa a las tareas y al analista de funcionamiento', async () => {
+    const d = arnes({ analista: () => [] });
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await d.store.guardarContrato(c.id, CONTRATO);
+    await encolarEnLaCorrida(d, ['armar el tablero']);
+    await correr(d);
+
+    const prompts = d.ask.mock.calls.map((x) => x[0].prompt);
+    const tarea = prompts.find((p) => p.includes('La tarea:'))!;
+    expect(tarea).toContain(CONTRATO);
+    const func = prompts.find((p) => p.includes('Sos el analista de FUNCIONAMIENTO'))!;
+    expect(func).toContain(CONTRATO);
+  });
+});
+
+describe('POST /interno/corrida/contrato', () => {
+  const API_TOKEN = 'token-de-api-del-bridge';
+  const bot = { handleUpdate: vi.fn(async () => {}) };
+
+  async function conCorrida() {
+    const store = new InMemoryStore();
+    const app = buildWebhookServer(bot, 'secreto-de-webhook-largo', { store, apiToken: API_TOKEN });
+    await vincular(store, 7);
+    await store.abrirCorrida({ chatId: 7, proyecto: 'stock', md: PLIEGO, techoRondas: 3, techoHora: '07:00' });
+    const jobId = await store.createJob({
+      chatId: 7,
+      agent: 'c1' as const,
+      project: 'stock',
+      prompt: 'plan',
+      messageId: 0,
+    });
+    return { app, store, jobId };
+  }
+
+  function pedir(app: Awaited<ReturnType<typeof conCorrida>>['app'], payload: unknown, auth = true) {
+    return app.inject({
+      method: 'POST',
+      url: '/interno/corrida/contrato',
+      ...(auth ? { headers: { authorization: `Bearer ${API_TOKEN}` } } : {}),
+      payload: payload as Record<string, unknown>,
+    });
+  }
+
+  it('lo guarda en la corrida', async () => {
+    const { app, store, jobId } = await conCorrida();
+    const res = await pedir(app, { jobId, contrato: 'GET /pedidos' });
+    expect(res.statusCode).toBe(200);
+    expect((await store.corridaAbierta(7))?.contrato).toBe('GET /pedidos');
+  });
+
+  // Si el planificador lo corrige, vale lo ultimo.
+  it('el segundo pisa al primero', async () => {
+    const { app, store, jobId } = await conCorrida();
+    await pedir(app, { jobId, contrato: 'GET /pedidos' });
+    await pedir(app, { jobId, contrato: 'GET /api/pedidos' });
+    expect((await store.corridaAbierta(7))?.contrato).toBe('GET /api/pedidos');
+  });
+
+  it('sin bearer no guarda nada', async () => {
+    const { app, store, jobId } = await conCorrida();
+    const res = await pedir(app, { jobId, contrato: 'GET /pedidos' }, false);
+    expect(res.statusCode).toBe(401);
+    expect((await store.corridaAbierta(7))?.contrato).toBeUndefined();
+  });
+
+  it('un contrato vacio se rechaza', async () => {
+    const { app, jobId } = await conCorrida();
+    expect((await pedir(app, { jobId, contrato: '' })).statusCode).toBe(400);
+  });
+});

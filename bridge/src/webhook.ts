@@ -39,6 +39,7 @@ export interface ApiDeps {
     | 'corridaDeJob'
     | 'marcarHuecos'
     | 'guardarVeredicto'
+    | 'guardarContrato'
     | 'anotarPendiente'
     | 'guardarPreguntas'
     | 'guardarRespuestas'
@@ -661,6 +662,47 @@ export function buildWebhookServer(
       return reply
         .code(200)
         .send({ output: `anotado: tu veredicto de ${cuerpo.data.eje} va en el informe` });
+    });
+
+    /**
+     * El contrato entre el front y el back, que fija el planificador.
+     *
+     * Ver `Corrida.contrato`. Como en las otras, la corrida sale del jobId y no
+     * del cuerpo: un id de corrida que el modelo elige es uno con el que podria
+     * pisarle el contrato a otro chat.
+     */
+    const CuerpoContrato = z.object({
+      jobId: z.string().uuid(),
+      // Generoso: un contrato de quince rutas con sus campos entra holgado. El
+      // tope es para que un volcado accidental —un archivo entero pegado— no
+      // termine inyectado en el prompt de cada tarea de la noche.
+      contrato: z.string().min(1).max(20_000),
+    });
+
+    app.post('/interno/corrida/contrato', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      const cuerpo = CuerpoContrato.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply.code(400).send({
+          code: 'cuerpo_invalido',
+          message: 'el contrato tiene que ser texto, de hasta 20.000 caracteres',
+        });
+      }
+      const corrida = await api.store.corridaDeJob(cuerpo.data.jobId);
+      if (!corrida) {
+        return reply.code(400).send({
+          code: 'sin_corrida',
+          message:
+            'este turno no pertenece a ninguna corrida abierta, asi que no hay donde fijar el ' +
+            'contrato. No reintentes: segui con la lista.',
+        });
+      }
+      await api.store.guardarContrato(corrida.id, cuerpo.data.contrato);
+      return reply.code(200).send({
+        output: 'contrato fijado: lo van a leer todos los agentes que construyan. Ahora arma la lista.',
+      });
     });
 
     /**
