@@ -597,6 +597,30 @@ function bloqueDeContrato(contrato: string): string[] {
 }
 
 /**
+ * El stack con que se construye, como lineas de prompt.
+ *
+ * Sin decirlo, cada agente elige el suyo: una corrida con sincroresto de
+ * referencia —Angular y .NET— salio en Node, porque es lo que el modelo arma
+ * mas rapido. Y como el planificador, las tareas y el analista son turnos
+ * distintos sin memoria compartida, alcanza con que UNO no lo sepa para que el
+ * proyecto quede mitad y mitad. Por eso va en los tres.
+ *
+ * El pliego puede pedir otra cosa, y gana: es lo que pidio el cliente.
+ */
+export function bloqueDeStack(): string[] {
+  return [
+    'EL STACK es fijo, el mismo de los proyectos de referencia (sincroresto):',
+    ' · FRONT: Angular (la version estable actual, componentes standalone y signals), en el repo -front.',
+    ' · BACK: .NET 10 (ASP.NET Core Web API con controllers, EF Core), en el repo -back.',
+    ' · Tests: xUnit en el back; los del CLI de Angular en el front.',
+    'NO uses Node, Express, Nest, React, Next, Vue ni Python para el front o el back,',
+    'salvo que el pliego pida OTRO stack con todas las letras. Si el pliego no dice',
+    'nada del stack, es este. Si hay una referencia montada, copia su estructura.',
+    '',
+  ];
+}
+
+/**
  * El prompt del turno de analisis.
  *
  * Arranca en sesion LIMPIA —el turno lleva `sesionLimpia`— y eso es la
@@ -655,6 +679,10 @@ export function promptDeAnalisis(
     'punto. Buscas HUECOS: lo que el pliego pide y el codigo todavia no hace,',
     'lo que quedo a medias, y lo que esta escrito pero sin ninguna prueba que lo',
     'respalde.',
+    '',
+    ...bloqueDeStack(),
+    'Si algo esta hecho en OTRO stack sin que el pliego lo pida, eso es un hueco:',
+    'la tarea es rehacerlo en el que corresponde.',
     '',
     ...(eje
       ? [
@@ -801,6 +829,10 @@ export function promptDePlan(
           'elegilo y segui. Preguntar cuesta que alguien te conteste a las tres de la',
           'mañana.',
         ]),
+    '',
+    ...bloqueDeStack(),
+    'Cada tarea que crea un proyecto nuevo dice CON QUE lo crea (ng new, dotnet new',
+    'webapi), para que nadie tenga que elegir.',
     '',
     // El contrato ANTES que las tareas, y por eso va aca y no al final.
     //
@@ -1116,6 +1148,7 @@ export function promptDeTareaDesatendida(
     '—una credencial que falta, una decision que no te corresponde—. Si no hubo',
     'ninguno, no escribas nada: no hace falta aclarar que salio todo bien.',
     '',
+    ...bloqueDeStack(),
     ...(contrato ? bloqueDeContrato(contrato) : []),
     'La tarea:',
     '',

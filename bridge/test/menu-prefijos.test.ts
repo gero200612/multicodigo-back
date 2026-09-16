@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { PREFIJOS, parseMenuData, tecladoDePlan, tecladoDeOrgs } from '../src/menu.js';
+import {
+  PREFIJOS,
+  parseMenuData,
+  tecladoDePlan,
+  tecladoDeOrgs,
+  tecladoDeCorrida,
+} from '../src/menu.js';
 
 /**
  * Los prefijos de `callback_data`, que son letras sueltas.
@@ -46,6 +52,17 @@ describe('los prefijos de callback_data', () => {
         expect(leido?.kind).toBe('org');
       }
     }
+  });
+
+  it('los botones del primer paso de /corrida se parsean como proyecto o nuevo', () => {
+    const id = '3f2b8c1e-8a9d-4c1b-9e2a-1b2c3d4e5f60';
+    const filas = tecladoDeCorrida([{ id, nombre: 'mesas' } as never]);
+    expect(filas.flat().map((b) => parseMenuData(b.data))).toEqual([
+      { kind: 'corrida_proyecto', id },
+      { kind: 'corrida_proyecto', id: 'nuevo' },
+    ]);
+    // Cualquier otra cosa atras de `r:` es un boton que no salio de aca.
+    expect(parseMenuData('r:loquesea')).toBeNull();
   });
 
   it('los dos botones del plan dicen cosas distintas', () => {

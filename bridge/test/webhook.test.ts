@@ -654,3 +654,56 @@ describe('POST /interno/documentos/generado', () => {
     expect(r.json().message).toContain('no puede generar');
   });
 });
+
+describe('GET /corridas', () => {
+  const USUARIO = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const AJENO = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+  async function vincular(store: InMemoryStore, chatId: number, usuarioId: string) {
+    await store.canjearCodigo(await store.crearCodigoVinculacion(chatId, 10), usuarioId);
+  }
+
+  // La cola del pliego no se veia en el panel: solo la del gateway.
+  it('devuelve las corridas de la persona con sus tareas en orden', async () => {
+    const { app, store } = await servidor();
+    await vincular(store, 7, USUARIO);
+    const c = await store.abrirCorrida({ chatId: 7, proyecto: 'mesas', md: '# x', techoRondas: 3, techoHora: '07:00' });
+    await store.encolar(7, { agente: 'c1', proyecto: 'mesas', textos: ['el back', 'el front'], corridaId: c!.id, ronda: 0 });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/corridas?usuarioId=${USUARIO}`,
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const [corrida] = res.json().corridas;
+    expect(corrida).toMatchObject({ proyecto: 'mesas', estado: 'abierta', techoRondas: 3 });
+    expect(corrida.tareas.map((t: { texto: string }) => t.texto)).toEqual(['el back', 'el front']);
+    expect(corrida.tareas[0].estado).toBe('pendiente');
+  });
+
+  // Las corridas de otro chat son el trabajo de otro.
+  it('no muestra las de otra persona', async () => {
+    const { app, store } = await servidor();
+    await vincular(store, 8, AJENO);
+    await store.abrirCorrida({ chatId: 8, proyecto: 'ajeno', md: '# x', techoRondas: 3, techoHora: '07:00' });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/corridas?usuarioId=${USUARIO}`,
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+    });
+    expect(res.json().corridas).toEqual([]);
+  });
+
+  it('rechaza sin bearer y sin usuario', async () => {
+    const { app } = await servidor();
+    expect((await app.inject({ method: 'GET', url: `/corridas?usuarioId=${USUARIO}` })).statusCode).toBe(401);
+    const sinUsuario = await app.inject({
+      method: 'GET',
+      url: '/corridas',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+    });
+    expect(sinUsuario.statusCode).toBe(400);
+  });
+});

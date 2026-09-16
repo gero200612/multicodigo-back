@@ -83,7 +83,11 @@ export function renderOutcome(outcome: PipelineOutcome): string {
         outcome.creado,
       );
     case 'corrida_paso':
-      return textoDePaso(outcome.paso, outcome.error, outcome.creado);
+      return textoDePaso(outcome.paso, outcome.error, outcome.creado, {
+        hayProyectos: (outcome.botones?.length ?? 0) > 0,
+        ...(outcome.nuevo ? { nuevo: true } : {}),
+        ...(outcome.proyecto ? { proyecto: outcome.proyecto } : {}),
+      });
     case 'corrida_planificando':
       // Un placeholder: el plan de verdad llega cuando el turno termina, y eso
       // tarda minutos. Sin este mensaje, el chat queda mudo justo despues de
@@ -358,10 +362,25 @@ export function textoDePaso(
   paso: 'nombre' | 'pliego',
   error?: string,
   creado?: LoCreado,
+  extra: { hayProyectos?: boolean; nuevo?: boolean; proyecto?: string } = {},
 ): string {
+  if (paso === 'nombre' && extra.hayProyectos && !error) {
+    return [
+      '🌙 <b>Arrancamos una corrida.</b>',
+      '',
+      '¿Sobre que proyecto? Toca uno de los tuyos para seguir trabajando ahi,',
+      'o <b>➕ Proyecto nuevo</b> para armar uno desde cero.',
+      '',
+      'Si no querias arrancar una corrida, manda <b>/cancelar</b> y seguimos como siempre.',
+    ].join('\n');
+  }
   if (paso === 'nombre') {
     return [
-      ...(error ? [`⚠️ ${escaparHtml(error)}.`, ''] : ['🌙 <b>Arrancamos una corrida.</b>', '']),
+      ...(error
+        ? [`⚠️ ${escaparHtml(error)}.`, '']
+        : extra.nuevo
+          ? ['➕ <b>Proyecto nuevo.</b>', '']
+          : ['🌙 <b>Arrancamos una corrida.</b>', '']),
       '¿Como se llama el proyecto?',
       '',
       // Se dice QUE se va a hacer con el nombre: sin esto, "acme" parece una
@@ -380,6 +399,15 @@ export function textoDePaso(
   }
 
   const lineas: string[] = [];
+  // Un proyecto que ya existia no crea nada, y sin esta linea el paso del
+  // pliego no diria sobre cual se va a trabajar.
+  if (!creado?.proyecto && extra.proyecto && !error) {
+    lineas.push(
+      creado?.repos.length
+        ? `📁 Vamos sobre <b>${escaparHtml(extra.proyecto)}</b>.`
+        : `📁 Vamos sobre <b>${escaparHtml(extra.proyecto)}</b>, con los repos que ya tiene.`,
+    );
+  }
   if (creado?.proyecto) lineas.push(`✅ Cree el proyecto <b>${escaparHtml(creado.proyecto)}</b>.`);
   if (creado?.repos.length) {
     lineas.push(
@@ -754,7 +782,9 @@ function tecladoDe(outcome: PipelineOutcome): InlineKeyboard | undefined {
     outcome.kind === 'project_desconocido' ||
     // Solo cuando YA estaba vinculado trae el boton de desvincular.
     outcome.kind === 'sin_vincular' ||
-    outcome.kind === 'corrida_elegir_org'
+    outcome.kind === 'corrida_elegir_org' ||
+    // El primer paso de /corrida: los proyectos que ya hay, y el de crear uno.
+    outcome.kind === 'corrida_paso'
       ? outcome.botones
       : undefined;
   if (!botones || botones.length === 0) return undefined;
@@ -1797,6 +1827,33 @@ export async function manejarMenu(
     if (borrador?.proyecto) {
       await responderPaso(ctx as never, borrador.proyecto, deps);
     }
+    return;
+  }
+
+  if (menu.kind === 'corrida_proyecto') {
+    // Se toco un boton del primer paso. Si el borrador ya no esta —vencio, o se
+    // mando /cancelar— se lo vuelve a abrir: el toque dice claramente que se
+    // quiere una corrida.
+    if (!(await deps.store.borradorDeChat(chatId))) {
+      await deps.store.guardarBorrador(chatId, 'nombre');
+    }
+    if (menu.id === 'nuevo') {
+      await mostrar(
+        renderOutcome({ kind: 'corrida_paso', paso: 'nombre', nuevo: true }),
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+    // Contra los proyectos de ESTA persona: el id llega de la red.
+    const elegido = (await deps.store.proyectosDeUsuario(usuarioId)).find((p) => p.id === menu.id);
+    if (!elegido) {
+      await mostrar('Ese proyecto ya no esta. Volve a intentar con /corrida.', {});
+      return;
+    }
+    await mostrar(`📁 Corrida sobre <b>${escaparHtml(elegido.nombre)}</b>.`, { parse_mode: 'HTML' });
+    // El mismo camino que escribir el nombre: si al proyecto le faltan los
+    // repos se los crea, y si los tiene se sigue con esos.
+    await responderPaso(ctx as never, elegido.nombre, deps);
     return;
   }
 

@@ -1555,6 +1555,43 @@ describe('/corrida paso a paso', () => {
     expect(r.paso).toBe('nombre');
   });
 
+  // El paso previo: correr sobre algo que ya existe es lo comun.
+  it('ofrece los proyectos que ya hay como botones, y el de crear uno al final', async () => {
+    const d = await conTodoConectado();
+    const r = await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    if (r.kind !== 'corrida_paso') throw new Error('no es corrida_paso');
+    const etiquetas = (r.botones ?? []).flat().map((b) => b.label);
+    expect(etiquetas).toEqual(['📁 anterior', '➕ Proyecto nuevo']);
+    expect((r.botones ?? []).flat()[0]!.data).toMatch(/^r:[0-9a-f-]{36}$/);
+    expect(renderOutcome(r)).toContain('¿Sobre que proyecto?');
+  });
+
+  // Antes intentaba crear `<nombre>-front` de nuevo y moria con "ya existe".
+  it('sobre un proyecto que ya tiene repos no crea nada y pide el pliego', async () => {
+    const d = await conTodoConectado();
+    const id = (await d.store.proyectosDeUsuario(USUARIO)).find((p) => p.nombre === 'anterior')!.id;
+    await d.store.vincularRepo(id, 'anterior-back', 'Sincro-arg/anterior-back', false, true);
+
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida anterior' }, d);
+
+    if (r.kind !== 'corrida_paso') throw new Error(`no es corrida_paso: ${r.kind}`);
+    expect(r.paso).toBe('pliego');
+    expect(r.proyecto).toBe('anterior');
+    expect(r.creado?.repos).toEqual([]);
+    expect(d.crearRepo).not.toHaveBeenCalled();
+    expect(renderOutcome(r)).toContain('Vamos sobre <b>anterior</b>, con los repos que ya tiene');
+  });
+
+  it('un proyecto que existe pero sin repos propios si los recibe', async () => {
+    const d = await conTodoConectado();
+    await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
+    const r = await handleIncoming({ chatId: 7, messageId: 2, text: '/corrida anterior' }, d);
+
+    if (r.kind !== 'corrida_paso') throw new Error(`no es corrida_paso: ${r.kind}`);
+    expect(r.creado?.repos).toEqual(['Sincro-arg/anterior-front', 'Sincro-arg/anterior-back']);
+  });
+
   it('con el nombre crea el proyecto y los dos repos', async () => {
     const d = await conTodoConectado();
     await handleIncoming({ chatId: 7, messageId: 1, text: '/corrida' }, d);
@@ -1789,6 +1826,28 @@ describe('promptDePlan', () => {
   // corre, lo que falta ya no tiene un orden natural.
   it('pide orden por dependencias', () => {
     expect(promptDePlan('x', [])).toContain('ORDEN');
+  });
+});
+
+// Una corrida con sincroresto de referencia salio en Node: nadie le dijo el
+// stack a ninguno de los tres turnos. Va en los tres porque no comparten memoria.
+describe('el stack', () => {
+  it('lo fijan el plan, la tarea y el analista: Angular y .NET 10', () => {
+    for (const p of [
+      promptDePlan('x', []),
+      promptDeTareaDesatendida('hace el back'),
+      promptDeAnalisis('x', 1),
+    ]) {
+      expect(p).toContain('Angular');
+      expect(p).toContain('.NET 10');
+      expect(p).toContain('NO uses Node');
+    }
+  });
+
+  it('en la tarea va antes del texto de la tarea, que queda al final', () => {
+    const p = promptDeTareaDesatendida('hace el back');
+    expect(p.indexOf('.NET 10')).toBeLessThan(p.indexOf('La tarea:'));
+    expect(p.endsWith('hace el back')).toBe(true);
   });
 });
 

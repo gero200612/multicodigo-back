@@ -18,7 +18,8 @@ public sealed class PanoramaService(
 {
     private const int JobsAMostrar = 20;
 
-    public async Task<Panorama> VerAsync(string jwt, CancellationToken ct = default)
+    public async Task<Panorama> VerAsync(
+        string jwt, string? usuarioId = null, CancellationToken ct = default)
     {
         // El gateway NO se protege: sin él no hay nada que mostrar, y una lista
         // vacía se leería como "no tenés ningún agente". Ese error sube y el
@@ -28,6 +29,13 @@ public sealed class PanoramaService(
         var cola = await Degradar(() => gateway.ColaAsync(ct), Cola.Vacia, "la cola");
         var jobs = await Degradar(
             () => bridge.JobsAsync(JobsAMostrar, ct), [], "las últimas peticiones");
+
+        // La cola del PLIEGO de las corridas, que es distinta de la del gateway.
+        // Sin usuario no se pide: el bridge filtra por él.
+        IReadOnlyList<CorridaVista> corridas = string.IsNullOrWhiteSpace(usuarioId)
+            ? []
+            : await Degradar(
+                () => bridge.CorridasAsync(usuarioId, ct), [], "las corridas");
 
         // La asignación slot -> proyecto, de la tabla y no del contenedor. Una
         // sola consulta para todos los slots: pedirla por slot serían seis.
@@ -71,7 +79,7 @@ public sealed class PanoramaService(
         var slots = await Task.WhenAll(
             mios.Select(a => VerSlotAsync(jwt, a, porSlot, sinCuota, consumo, ct)));
 
-        return new Panorama(slots, cola, jobs);
+        return new Panorama(slots, cola, jobs, corridas);
     }
 
     private async Task<SlotVista> VerSlotAsync(

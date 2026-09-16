@@ -734,6 +734,11 @@ export interface Store {
    */
   corridasAbiertas(): Promise<Corrida[]>;
   /**
+   * Las ultimas corridas de los chats de una persona: primero la abierta, si
+   * hay, y despues las mas nuevas. Es lo que muestra el dashboard del panel.
+   */
+  corridasDeUsuario(usuarioId: string, limite: number): Promise<Corrida[]>;
+  /**
    * La corrida abierta a la que pertenece un turno, por su job.
    *
    * Existe para el endpoint de `reportar_huecos`: lo que llega del gateway es
@@ -1448,6 +1453,17 @@ export class InMemoryStore implements Store {
 
   async corridasAbiertas(): Promise<Corrida[]> {
     return [...this.corridas.values()].filter((c) => c.estado === 'abierta');
+  }
+
+  async corridasDeUsuario(usuarioId: string, limite: number): Promise<Corrida[]> {
+    return [...this.corridas.values()]
+      .filter((c) => this.vinculos.get(c.chatId) === usuarioId)
+      .sort(
+        (a, b) =>
+          Number(b.estado === 'abierta') - Number(a.estado === 'abierta') ||
+          b.creadoEn.getTime() - a.creadoEn.getTime(),
+      )
+      .slice(0, limite);
   }
 
   async corridaDeJob(jobId: string): Promise<Corrida | undefined> {
@@ -2704,6 +2720,19 @@ export class PgStore implements Store {
   async corridasAbiertas(): Promise<Corrida[]> {
     const r = await this.pool.query(
       `SELECT ${PgStore.CAMPOS_CORRIDA} FROM corridas WHERE estado = 'abierta'`,
+    );
+    return r.rows.map((f) => this.aCorrida(f));
+  }
+
+  async corridasDeUsuario(usuarioId: string, limite: number): Promise<Corrida[]> {
+    // Por los chats VINCULADOS a la persona: la corrida no guarda usuario, y el
+    // vinculo es lo mismo que autoriza a arrancarla.
+    const r = await this.pool.query(
+      `SELECT ${PgStore.CAMPOS_CORRIDA} FROM corridas
+        WHERE chat_id IN (SELECT chat_id FROM telegram_vinculos WHERE usuario_id = $1)
+        ORDER BY (estado = 'abierta') DESC, creado_en DESC
+        LIMIT $2`,
+      [usuarioId, limite],
     );
     return r.rows.map((f) => this.aCorrida(f));
   }

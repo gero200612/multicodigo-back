@@ -330,6 +330,16 @@ public sealed class BridgeFalso : IBridgeClient
     public List<JobResumen> Jobs { get; set; } = [];
     public bool Falla { get; set; }
 
+    public List<CorridaVista> Corridas { get; set; } = [];
+    public List<string> CorridasPedidas { get; } = [];
+
+    public Task<IReadOnlyList<CorridaVista>> CorridasAsync(string usuarioId, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        CorridasPedidas.Add(usuarioId);
+        return Task.FromResult<IReadOnlyList<CorridaVista>>(Corridas);
+    }
+
     public Task<IReadOnlyList<JobResumen>> JobsAsync(int limite, CancellationToken ct = default)
         => Falla
             ? throw new HttpRequestException("bridge caído")

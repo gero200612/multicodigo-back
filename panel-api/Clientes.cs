@@ -95,6 +95,10 @@ public interface IBridgeClient
     /// </remarks>
     Task<IReadOnlyDictionary<string, Consumo>> ConsumoAsync(CancellationToken ct = default);
     /// <summary>
+    /// Las últimas corridas del usuario con sus tareas. El usuario sale del JWT.
+    /// </summary>
+    Task<IReadOnlyList<CorridaVista>> CorridasAsync(string usuarioId, CancellationToken ct = default);
+    /// <summary>
     /// Canjea un codigo de vinculacion a nombre del usuario. Lo llamamos desde
     /// el endpoint POST /api/telegram/vincular que le expone el panel al front.
     ///
@@ -431,6 +435,16 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
             ? []
             : [.. r.Jobs.Select(j => new JobResumen(
                 j.Id, j.Agent, j.Project, j.Prompt, j.Status, j.CreatedAt, j.Error))];
+    }
+
+    private sealed record RespuestaCorridas(List<CorridaVista>? Corridas);
+
+    public async Task<IReadOnlyList<CorridaVista>> CorridasAsync(
+        string usuarioId, CancellationToken ct = default)
+    {
+        var r = await http.GetFromJsonAsync<RespuestaCorridas>(
+            $"/corridas?usuarioId={Uri.EscapeDataString(usuarioId)}", Json.Opciones, ct);
+        return r?.Corridas ?? [];
     }
 
     private sealed record RespuestaConsumo(Dictionary<string, Consumo>? Consumo);

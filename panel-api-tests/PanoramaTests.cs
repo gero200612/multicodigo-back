@@ -38,6 +38,41 @@ public class PanoramaTests
     }
 
     /// <summary>
+    /// La cola del pliego de las corridas llega al panorama, pedida con el
+    /// usuario del JWT.
+    /// </summary>
+    [Fact]
+    public async Task LasCorridasDelUsuarioLleganAlPanorama()
+    {
+        var (svc, g, _, b, _, _) = Armar();
+        g.Agentes = [];
+        b.Corridas =
+        [
+            new("c-1", "mesas", "abierta", null, 1, 3, "07:00", "2026-09-16T01:00:00Z",
+                [new(1, "c1", "el back", "lista"), new(2, "c1", "el front", "pendiente")]),
+        ];
+
+        var p = await svc.VerAsync("jwt", "u-1");
+
+        Assert.Equal(["u-1"], b.CorridasPedidas);
+        Assert.Equal("mesas", p.Corridas!.Single().Proyecto);
+        Assert.Equal(2, p.Corridas!.Single().Tareas.Count);
+    }
+
+    /// <summary>Sin usuario no se le pregunta al bridge: filtra por él.</summary>
+    [Fact]
+    public async Task SinUsuarioNoPideCorridas()
+    {
+        var (svc, g, _, b, _, _) = Armar();
+        g.Agentes = [];
+
+        var p = await svc.VerAsync("jwt");
+
+        Assert.Empty(b.CorridasPedidas);
+        Assert.Empty(p.Corridas!);
+    }
+
+    /// <summary>
     /// Un agente que no trabajó no trae consumo, y eso NO es cero.
     ///
     /// Null y cero se leen distinto: cero dice "corrió y no gastó nada", que es

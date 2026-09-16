@@ -86,6 +86,16 @@ const DESVINCULAR = 'd';
  */
 const ORG = 'o';
 
+/**
+ * Elegir sobre que proyecto va la corrida: uno de los que ya existen, o
+ * `nuevo`.
+ *
+ * Es el primer paso de `/corrida`. Antes solo se podia escribir un nombre, y
+ * escribir el de un proyecto que ya existia intentaba crearle los repos de
+ * nuevo y fallaba con "ya existe un repo".
+ */
+const CORRIDA = 'r';
+
 const ES_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function datosDeProyecto(id: string): string {
@@ -193,6 +203,7 @@ export const PREFIJOS = {
   PLAN,
   DESVINCULAR,
   ORG,
+  CORRIDA,
 } as const;
 
 export type MenuData =
@@ -207,7 +218,9 @@ export type MenuData =
   /** Desatar el chat: `confirmado` false solo pregunta. */
   | { kind: 'desvincular'; confirmado: boolean }
   /** La organizacion elegida para las corridas. */
-  | { kind: 'org'; cuenta: string };
+  | { kind: 'org'; cuenta: string }
+  /** El proyecto de la corrida: un id, o `nuevo` para crear uno. */
+  | { kind: 'corrida_proyecto'; id: string | 'nuevo' };
 
 /**
  * Lee lo que trae un boton.
@@ -264,6 +277,11 @@ export function parseMenuData(data: string): MenuData | null {
     // contra la lista mas adelante: este string llega de la red y termina en
     // una URL de git.
     return /^[A-Za-z0-9._-]{1,60}$/.test(resto) ? { kind: 'org', cuenta: resto } : null;
+  }
+
+  if (prefijo === CORRIDA) {
+    if (resto === 'nuevo') return { kind: 'corrida_proyecto', id: 'nuevo' };
+    return ES_UUID.test(resto) ? { kind: 'corrida_proyecto', id: resto } : null;
   }
 
   if (prefijo === DESVINCULAR) {
@@ -351,6 +369,19 @@ export function tecladoDePlan(): Boton[][] {
  */
 export function tecladoDeOrgs(cuentas: readonly string[]): Boton[][] {
   return cuentas.map((c) => [{ label: c, data: `${ORG}:${c}` }]);
+}
+
+/**
+ * Los proyectos sobre los que se puede correr, y el de crear uno.
+ *
+ * "Proyecto nuevo" va ULTIMO: lo comun, despues de la primera vez, es seguir
+ * trabajando sobre algo que ya existe.
+ */
+export function tecladoDeCorrida(proyectos: readonly Proyecto[]): Boton[][] {
+  return [
+    ...proyectos.map((p) => [{ label: `📁 ${p.nombre}`, data: `${CORRIDA}:${p.id}` }]),
+    [{ label: '➕ Proyecto nuevo', data: `${CORRIDA}:nuevo` }],
+  ];
 }
 
 /** El boton que ofrece desatar. Va con el mensaje de "ya estas vinculado". */

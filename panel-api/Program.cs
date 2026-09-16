@@ -465,7 +465,8 @@ api.MapGet("/panorama", async (HttpContext ctx, PanoramaService svc, Cancellatio
 {
     try
     {
-        return Results.Ok(await svc.VerAsync(await JwtDe(ctx), ct));
+        return Results.Ok(await svc.VerAsync(
+            await JwtDe(ctx), ctx.User.FindFirst("sub")?.Value, ct));
     }
     catch (Exception ex) when (ex is HttpRequestException or UpstreamException or TaskCanceledException)
     {

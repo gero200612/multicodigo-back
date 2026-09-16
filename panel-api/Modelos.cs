@@ -107,10 +107,34 @@ public sealed record SlotVista(
 public sealed record Consumo(long Tokens, decimal CostoUsd);
 
 /// <summary>Todo lo que la página muestra, en una sola respuesta.</summary>
+/// <summary>Una tarea del pliego de una corrida, como la ve el dashboard.</summary>
+public sealed record TareaDeCorrida(
+    int Posicion,
+    string Agente,
+    string Texto,
+    string Estado,
+    int? Ronda = null);
+
+/// <summary>
+/// Una corrida desatendida con su cola de tareas. Sale del bridge: la cola del
+/// gateway (<see cref="Cola"/>) solo dice qué build corre, no qué falta del pliego.
+/// </summary>
+public sealed record CorridaVista(
+    string Id,
+    string Proyecto,
+    string Estado,
+    string? MotivoDeCierre,
+    int Ronda,
+    int TechoRondas,
+    string TechoHora,
+    string CreadoEn,
+    IReadOnlyList<TareaDeCorrida> Tareas);
+
 public sealed record Panorama(
     IReadOnlyList<SlotVista> Slots,
     Cola Cola,
-    IReadOnlyList<JobResumen> Jobs);
+    IReadOnlyList<JobResumen> Jobs,
+    IReadOnlyList<CorridaVista>? Corridas = null);
 
 /// <param name="GoogleClientId">
 /// El client ID de OAuth para elegir archivos de Google Drive, o null si no está

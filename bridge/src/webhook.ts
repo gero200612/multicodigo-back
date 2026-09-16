@@ -37,6 +37,8 @@ export interface ApiDeps {
     | 'canjearPedidoDeDrive'
     | 'archivoAutorizadoReciente'
     | 'corridaDeJob'
+    | 'corridasDeUsuario'
+    | 'tareasDeCorrida'
     | 'marcarHuecos'
     | 'guardarVeredicto'
     | 'guardarContrato'
@@ -101,6 +103,11 @@ export interface ApiDeps {
   apiToken: string;
 }
 
+/** Cuantas corridas muestra el dashboard: la abierta y las ultimas. */
+const CORRIDAS_A_MOSTRAR = 5;
+/** Cuanto de cada tarea viaja al panel. */
+const TOPE_TEXTO_TAREA = 400;
+
 export function buildWebhookServer(
   bot: Pick<Bot, 'handleUpdate'>,
   webhookSecret: string,
@@ -162,6 +169,46 @@ export function buildWebhookServer(
       const limite = Number.isFinite(pedido) && pedido > 0 ? Math.min(pedido, MAX_JOBS) : JOBS_POR_DEFECTO;
 
       return reply.code(200).send({ jobs: await api.store.recentJobs(limite) });
+    });
+
+    /**
+     * Las corridas de una persona, con sus tareas: la cola del pliego.
+     *
+     * El dashboard mostraba solo la cola del GATEWAY —que build corre— y las
+     * tareas de una corrida no se veian en ningun lado fuera de Telegram. El
+     * `usuarioId` lo pone el panel desde el JWT, igual que en `/vinculos`.
+     */
+    app.get<{ Querystring: { usuarioId?: string } }>('/corridas', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      const usuario = z.string().uuid().safeParse(request.query.usuarioId);
+      if (!usuario.success) {
+        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta usuarioId' });
+      }
+      const corridas = await api.store.corridasDeUsuario(usuario.data, CORRIDAS_A_MOSTRAR);
+      const salida = await Promise.all(
+        corridas.map(async (c) => ({
+          id: c.id,
+          proyecto: c.proyecto,
+          estado: c.estado,
+          motivoDeCierre: c.motivoDeCierre ?? null,
+          ronda: c.ronda,
+          techoRondas: c.techoRondas,
+          techoHora: c.techoHora,
+          creadoEn: c.creadoEn.toISOString(),
+          tareas: (await api.store.tareasDeCorrida(c.id)).map((t) => ({
+            posicion: t.posicion,
+            agente: t.agente,
+            // Las redacta el planificador para otro agente y salen largas. El
+            // panel las muestra recortadas; el detalle esta en el repo.
+            texto: t.texto.length > TOPE_TEXTO_TAREA ? `${t.texto.slice(0, TOPE_TEXTO_TAREA)}…` : t.texto,
+            estado: t.estado,
+            ronda: t.ronda ?? null,
+          })),
+        })),
+      );
+      return reply.code(200).send({ corridas: salida });
     });
 
     const CuerpoVinculo = z.object({

@@ -22,6 +22,7 @@ import {
   tecladoDeAgentes,
   tecladoDeAcciones,
   tecladoDeDesvincular,
+  tecladoDeCorrida,
   tecladoDeOrgs,
   datosDeAgente,
   datosDeMenu,
@@ -295,6 +296,15 @@ export type PipelineOutcome =
       error?: string;
       /** Lo que se creo al pasar del nombre al pliego. */
       creado?: LoCreado;
+      /** El proyecto elegido, en el paso del pliego. */
+      proyecto?: string;
+      /**
+       * En el paso del nombre: los proyectos que ya hay, como botones, mas el
+       * de crear uno. Sin proyectos no viene, y se pide el nombre a secas.
+       */
+      botones?: Boton[][];
+      /** Se toco "Proyecto nuevo": se pide el nombre sin ofrecer la lista. */
+      nuevo?: boolean;
     }
   /**
    * La corrida se abrio y hay que planificarla.
@@ -1550,10 +1560,17 @@ export async function pasoDeCorrida(
     );
   }
 
-  // Paso 1: el nombre. Es lo unico que no se puede deducir.
+  // Paso 1: sobre QUE proyecto. Los que ya existen van como botones —correr
+  // de nuevo sobre algo hecho es lo comun— y escribir un nombre sigue andando:
+  // si es uno que existe se usa ese, y si no, se crea.
   if (!borrador) {
     await deps.store.guardarBorrador(input.chatId, 'nombre');
-    return { kind: 'corrida_paso', paso: 'nombre' };
+    const mios = await deps.store.proyectosDeUsuario(usuarioId);
+    return {
+      kind: 'corrida_paso',
+      paso: 'nombre',
+      ...(mios.length > 0 ? { botones: tecladoDeCorrida(mios) } : {}),
+    };
   }
 
   // Paso 'org': lo que se escriba es el nombre de la cuenta.
@@ -1709,7 +1726,7 @@ async function armarYPedirPliego(
     return { kind: 'corrida_sin_armar', motivo: armado.motivo };
   }
   await deps.store.guardarBorrador(chatId, 'pliego', armado.proyecto, org);
-  return { kind: 'corrida_paso', paso: 'pliego', creado: armado.creado };
+  return { kind: 'corrida_paso', paso: 'pliego', creado: armado.creado, proyecto: armado.proyecto };
 }
 
 /** La misma forma que valida el router para `/proyecto`. */
@@ -1810,6 +1827,18 @@ async function armarDesdeElNombre(
   }
 
   const referencias = await deps.store.referenciasConocidas(usuarioId);
+
+  // Un proyecto que YA tiene sus repos no se vuelve a armar: se corre sobre lo
+  // que hay. Antes esto intentaba crear `<nombre>-front` otra vez y la corrida
+  // moria con "ya existe un repo con ese nombre". Uno que existe pero sin repos
+  // propios —creado desde el panel— si recibe los dos.
+  const existente = (await deps.store.proyectosDeUsuario(usuarioId)).find(
+    (p) => p.nombre.toLowerCase() === nombre.toLowerCase(),
+  );
+  const yaTieneRepos =
+    existente !== undefined &&
+    (await deps.store.reposDeProyecto(existente.id)).some((r) => !r.solo_lectura);
+
   return armarProyecto(
     chatId,
     usuarioId,
@@ -1824,7 +1853,7 @@ async function armarDesdeElNombre(
       // La convencion de nombres. Dos repos y no uno: es como esta armado el
       // proyecto de referencia, y lo que el pliego describe casi siempre tiene
       // las dos mitades.
-      repos: [`${nombre}-front`, `${nombre}-back`],
+      repos: yaTieneRepos ? [] : [`${nombre}-front`, `${nombre}-back`],
       referencia: referencias,
       // Lo que dijo el comando, o privado. Contestando el nombre no hay forma
       // de pedir publico —el paso a paso no pregunta— asi que ese camino
