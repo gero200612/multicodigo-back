@@ -44,6 +44,7 @@ import {
   techoAlcanzado,
   textoDeInforme,
   promptDeTareaDesatendida,
+  esProyectoNuevo,
   EJES,
   QUE_MIRA,
   type Corrida,
@@ -1854,7 +1855,10 @@ async function armarDesdeElNombre(
       // proyecto de referencia, y lo que el pliego describe casi siempre tiene
       // las dos mitades.
       repos: yaTieneRepos ? [] : [`${nombre}-front`, `${nombre}-back`],
-      referencia: referencias,
+      // Las referencias son para ARMAR algo nuevo: en un proyecto que ya tiene
+      // sus repos no se montan. Copiarle patrones de sincroresto a un proyecto
+      // hecho es empujarlo a otra estructura.
+      referencia: yaTieneRepos ? [] : referencias,
       // Lo que dijo el comando, o privado. Contestando el nombre no hay forma
       // de pedir publico —el paso a paso no pregunta— asi que ese camino
       // siempre cae en privado, que es el default seguro.
@@ -2416,6 +2420,7 @@ async function tandaDeAnalisis(
           ...(eje ? { eje } : {}),
           ...(cierre ? { cierre } : {}),
           ...(corrida.contrato ? { contrato: corrida.contrato } : {}),
+          nuevo: esProyectoNuevo(ctx.repos),
         }),
         // El analista no escribe —el prompt se lo prohibe— pero el modo va igual:
         // con `preguntar`, un intento de editar dejaria el turno colgado quince
@@ -2530,7 +2535,7 @@ export async function planificarCorrida(
       proyecto: corrida.proyecto,
       agente: agente as AgentId,
       usuarioId,
-      prompt: promptDePlan(corrida.md, referencias, respuestas),
+      prompt: promptDePlan(corrida.md, referencias, respuestas, esProyectoNuevo(ctx.repos)),
       // El planificador no escribe: solo lee y llama la herramienta. El modo va
       // igual porque con `preguntar` un intento de editar colgaria el turno
       // quince minutos esperando un OK.
@@ -2820,7 +2825,12 @@ export async function correrCola(
         // saber que del otro lado no hay nadie, y preguntar —que en un turno
         // normal de Telegram es lo correcto— ahi deja el trabajo sin guardar.
         prompt: corrida
-          ? promptDeTareaDesatendida(tarea.texto, tarea.posicion, corrida.contrato)
+          ? promptDeTareaDesatendida(
+              tarea.texto,
+              tarea.posicion,
+              corrida.contrato,
+              esProyectoNuevo(ctx.repos),
+            )
           : tarea.texto,
         modo,
         // Adentro de una corrida cada tarea arranca limpia; afuera, no. Un chat

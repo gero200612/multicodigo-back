@@ -12,6 +12,7 @@ import {
   TOPE_DE_PLIEGO,
   promptDePlan,
   promptDeTareaDesatendida,
+  esProyectoNuevo,
   cuandoReintentar,
   SIN_RESPUESTA,
   EJES,
@@ -1580,6 +1581,8 @@ describe('/corrida paso a paso', () => {
     expect(r.proyecto).toBe('anterior');
     expect(r.creado?.repos).toEqual([]);
     expect(d.crearRepo).not.toHaveBeenCalled();
+    // Las referencias son para armar algo nuevo, no para uno que ya existe.
+    expect(r.creado?.referencia).toEqual([]);
     expect(renderOutcome(r)).toContain('Vamos sobre <b>anterior</b>, con los repos que ya tiene');
   });
 
@@ -1831,12 +1834,13 @@ describe('promptDePlan', () => {
 
 // Una corrida con sincroresto de referencia salio en Node: nadie le dijo el
 // stack a ninguno de los tres turnos. Va en los tres porque no comparten memoria.
+// Y SOLO en un proyecto nuevo: a uno armado se le pide respetar el suyo.
 describe('el stack', () => {
-  it('lo fijan el plan, la tarea y el analista: Angular y .NET 10', () => {
+  it('en un proyecto nuevo lo fijan el plan, la tarea y el analista: Angular y .NET 10', () => {
     for (const p of [
-      promptDePlan('x', []),
-      promptDeTareaDesatendida('hace el back'),
-      promptDeAnalisis('x', 1),
+      promptDePlan('x', [], undefined, true),
+      promptDeTareaDesatendida('hace el back', 1, undefined, true),
+      promptDeAnalisis('x', 1, { nuevo: true }),
     ]) {
       expect(p).toContain('Angular');
       expect(p).toContain('.NET 10');
@@ -1844,10 +1848,32 @@ describe('el stack', () => {
     }
   });
 
+  // MultiCodigo es Node: ordenarle "no uses Node" es pedirle que se reescriba.
+  it('en un proyecto armado pide respetar el stack que ya tiene', () => {
+    for (const p of [
+      promptDePlan('x', []),
+      promptDeTareaDesatendida('hace el back'),
+      promptDeAnalisis('x', 1),
+    ]) {
+      expect(p).toContain('YA EXISTE');
+      expect(p).not.toContain('NO uses Node');
+      expect(p).not.toContain('.NET 10');
+    }
+  });
+
   it('en la tarea va antes del texto de la tarea, que queda al final', () => {
-    const p = promptDeTareaDesatendida('hace el back');
+    const p = promptDeTareaDesatendida('hace el back', 1, undefined, true);
     expect(p.indexOf('.NET 10')).toBeLessThan(p.indexOf('La tarea:'));
     expect(p.endsWith('hace el back')).toBe(true);
+  });
+
+  it('nuevo = repos propios y todos creados por el bot', () => {
+    expect(esProyectoNuevo([{ creado_por_el_bot: true }, { solo_lectura: true }])).toBe(true);
+    // Vinculados a mano desde el panel: Punchi, sincro.
+    expect(esProyectoNuevo([{ creado_por_el_bot: false }])).toBe(false);
+    // Solo referencias, o nada: no hay proyecto propio que diga que es nuevo.
+    expect(esProyectoNuevo([{ solo_lectura: true }])).toBe(false);
+    expect(esProyectoNuevo(undefined)).toBe(false);
   });
 });
 

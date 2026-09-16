@@ -605,9 +605,21 @@ function bloqueDeContrato(contrato: string): string[] {
  * distintos sin memoria compartida, alcanza con que UNO no lo sepa para que el
  * proyecto quede mitad y mitad. Por eso va en los tres.
  *
+ * SOLO en un proyecto NUEVO. Uno que ya existe —MultiCodigo, sincroresto— tiene
+ * su stack, y ordenarle "no uses Node" a un repo hecho en Node es pedirle que lo
+ * reescriba. Ahi la regla es la contraria: respetar lo que hay.
+ *
  * El pliego puede pedir otra cosa, y gana: es lo que pidio el cliente.
  */
-export function bloqueDeStack(): string[] {
+export function bloqueDeStack(nuevo: boolean): string[] {
+  if (!nuevo) {
+    return [
+      'EL STACK: este proyecto YA EXISTE. Respetá el lenguaje, los frameworks y la',
+      'estructura que ya tiene. No migres nada ni sumes otro lenguaje u otro framework',
+      'salvo que el pliego lo pida con todas las letras.',
+      '',
+    ];
+  }
   return [
     'EL STACK es fijo, el mismo de los proyectos de referencia (sincroresto):',
     ' · FRONT: Angular (la version estable actual, componentes standalone y signals), en el repo -front.',
@@ -618,6 +630,19 @@ export function bloqueDeStack(): string[] {
     'nada del stack, es este. Si hay una referencia montada, copia su estructura.',
     '',
   ];
+}
+
+/**
+ * Si el proyecto lo armo una corrida: tiene repos propios y los creo el bot.
+ *
+ * Es la marca que ya existia para el merge automatico, y separa justo lo que
+ * hace falta: los que vinculo una persona desde el panel son proyectos armados.
+ */
+export function esProyectoNuevo(
+  repos: readonly { solo_lectura?: boolean; creado_por_el_bot?: boolean }[] | undefined,
+): boolean {
+  const propios = (repos ?? []).filter((r) => !r.solo_lectura);
+  return propios.length > 0 && propios.every((r) => r.creado_por_el_bot === true);
 }
 
 /**
@@ -643,9 +668,9 @@ export function promptDeAnalisis(
    * Ausente = el analista generico de las rondas del medio, que es el de
    * siempre y compara contra el pliego a secas.
    */
-  opciones: { eje?: Eje; cierre?: boolean; contrato?: string } = {},
+  opciones: { eje?: Eje; cierre?: boolean; contrato?: string; nuevo?: boolean } = {},
 ): string {
-  const { eje, cierre, contrato } = opciones;
+  const { eje, cierre, contrato, nuevo = false } = opciones;
   return [
     eje
       ? `Sos el analista de ${eje.toUpperCase()} de esta corrida: mirás ${QUE_MIRA[eje]}. No construis nada: revisas.`
@@ -680,10 +705,14 @@ export function promptDeAnalisis(
     'lo que quedo a medias, y lo que esta escrito pero sin ninguna prueba que lo',
     'respalde.',
     '',
-    ...bloqueDeStack(),
-    'Si algo esta hecho en OTRO stack sin que el pliego lo pida, eso es un hueco:',
-    'la tarea es rehacerlo en el que corresponde.',
-    '',
+    ...bloqueDeStack(nuevo),
+    ...(nuevo
+      ? [
+          'Si algo esta hecho en OTRO stack sin que el pliego lo pida, eso es un hueco:',
+          'la tarea es rehacerlo en el que corresponde.',
+          '',
+        ]
+      : []),
     ...(eje
       ? [
           // El piso va DESPUES del pliego-vs-codigo y no antes: primero lo que
@@ -788,6 +817,8 @@ export function promptDePlan(
   md: string,
   referencias: readonly string[],
   respuestas?: string,
+  /** Si el proyecto lo armo esta corrida. Ver `bloqueDeStack`. */
+  nuevo = false,
 ): string {
   return [
     'Vas a planificar un proyecto nuevo. Todavia no construis nada: armas la lista.',
@@ -830,10 +861,14 @@ export function promptDePlan(
           'mañana.',
         ]),
     '',
-    ...bloqueDeStack(),
-    'Cada tarea que crea un proyecto nuevo dice CON QUE lo crea (ng new, dotnet new',
-    'webapi), para que nadie tenga que elegir.',
-    '',
+    ...bloqueDeStack(nuevo),
+    ...(nuevo
+      ? [
+          'Cada tarea que crea un proyecto nuevo dice CON QUE lo crea (ng new, dotnet new',
+          'webapi), para que nadie tenga que elegir.',
+          '',
+        ]
+      : []),
     // El contrato ANTES que las tareas, y por eso va aca y no al final.
     //
     // En `despacho2` el front y el back se construyeron en paralelo y cada uno
@@ -1108,6 +1143,8 @@ export function promptDeTareaDesatendida(
   numero?: number,
   /** El contrato front/back de la corrida, si el planificador lo fijo. */
   contrato?: string,
+  /** Si el proyecto lo armo esta corrida. Ver `bloqueDeStack`. */
+  nuevo = false,
 ): string {
   return [
     'Esto corre en una corrida desatendida: del otro lado no hay nadie despierto',
@@ -1148,7 +1185,7 @@ export function promptDeTareaDesatendida(
     '—una credencial que falta, una decision que no te corresponde—. Si no hubo',
     'ninguno, no escribas nada: no hace falta aclarar que salio todo bien.',
     '',
-    ...bloqueDeStack(),
+    ...bloqueDeStack(nuevo),
     ...(contrato ? bloqueDeContrato(contrato) : []),
     'La tarea:',
     '',
