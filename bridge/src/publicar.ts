@@ -253,7 +253,7 @@ export async function publicar(
       continue;
     }
 
-    await deps.store.guardarRenderServiceId(proyectoId, repo.nombre, r.serviceId);
+    await deps.store.guardarRenderServiceId(proyectoId, repo.nombre, r.serviceId, r.url);
     publicados.push({ repo: repo.nombre, url: r.url });
     // El id del servicio se guarda aparte para poder conectarlos al final: el
     // informe muestra la URL, pero para tocar el servicio hace falta el id.

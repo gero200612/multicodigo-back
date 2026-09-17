@@ -31,6 +31,7 @@ import type { Boton } from './render.js';
 import type { Store, Proyecto, ModoPermiso, ModoDeTurno, ClaveDeModelo } from './store.js';
 import { partirEnTareas, type Tarea } from './cola.js';
 import { horaArgentinaDe } from './horas.js';
+import { conDespliegue } from './despliegue.js';
 import {
   parseOpcionesDeCorrida,
   cuandoReintentar,
@@ -821,7 +822,10 @@ export async function handleIncoming(
       proyecto: project,
       agente: agent,
       usuarioId,
-      prompt: command.text,
+      // Con el estado del despliegue adelante: "no me diste el link" es una
+      // pregunta como cualquier otra y se contesta hablando, sin un comando
+      // aparte. Ver `despliegue.ts`.
+      prompt: conDespliegue(command.text, repos),
       modo,
       modelo,
       repos,

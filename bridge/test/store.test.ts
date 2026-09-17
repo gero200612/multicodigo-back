@@ -1009,6 +1009,9 @@ describe('repos creados por el bot', () => {
         github_repo: 'Sincro-arg/propinas-back',
         creado_por_el_bot: true,
         render_service_id: null,
+        // La URL del servicio, de la migracion 034: se guarda para poder darla
+        // despues, cuando alguien pregunte por el link.
+        render_url: null,
       },
     ]);
   });

@@ -177,6 +177,14 @@ export interface RepoDelProyecto {
    * puede depender de si el campo vino o no en la respuesta.
    */
   render_service_id: string | null;
+  /**
+   * La URL publica de ese servicio, o null.
+   *
+   * Se guarda para poder DARLA despues. Antes vivia solo en el informe del
+   * cierre: si ese mensaje se corto —o el deploy salio en un reintento— no
+   * habia forma de contestar "cual era el link" sin entrar al dashboard.
+   */
+  render_url: string | null;
 }
 
 export const MODOS_PERMISO = ['preguntar', 'ediciones', 'todo'] as const;
@@ -555,7 +563,12 @@ export interface Store {
     creadoPorElBot?: boolean,
   ): Promise<void>;
   /** El servicio de Render ya creado para ese repo. Da idempotencia. */
-  guardarRenderServiceId(proyectoId: string, nombre: string, serviceId: string): Promise<void>;
+  guardarRenderServiceId(
+    proyectoId: string,
+    nombre: string,
+    serviceId: string,
+    url?: string,
+  ): Promise<void>;
   /** El id del proyecto por nombre, o null si no existe. */
   idDeProyecto(nombre: string): Promise<string | null>;
   /** Los agentes del proyecto, por slot. */
@@ -1232,6 +1245,7 @@ export class InMemoryStore implements Store {
         // volvio a vincular el mismo repo.
         creado_por_el_bot: existente?.creado_por_el_bot ?? creadoPorElBot,
         render_service_id: existente?.render_service_id ?? null,
+        render_url: existente?.render_url ?? null,
       },
     ]);
   }
@@ -1240,10 +1254,21 @@ export class InMemoryStore implements Store {
     return this.reposPorProyecto.get(proyectoId) ?? [];
   }
 
-  async guardarRenderServiceId(proyectoId: string, nombre: string, serviceId: string): Promise<void> {
+  async guardarRenderServiceId(
+    proyectoId: string,
+    nombre: string,
+    serviceId: string,
+    url?: string,
+  ): Promise<void> {
     const repos = this.reposPorProyecto.get(proyectoId) ?? [];
     const i = repos.findIndex((r) => r.nombre === nombre);
-    if (i >= 0) repos[i] = { ...repos[i]!, render_service_id: serviceId };
+    if (i >= 0) {
+      repos[i] = {
+        ...repos[i]!,
+        render_service_id: serviceId,
+        render_url: url ?? repos[i]!.render_url ?? null,
+      };
+    }
   }
 
   async idDeProyecto(nombre: string): Promise<string | null> {
@@ -2190,6 +2215,7 @@ export class PgStore implements Store {
         solo_lectura: boolean;
         creado_por_el_bot: boolean;
         render_service_id: string | null;
+        render_url: string | null;
       }>(
         // `COALESCE` en `solo_lectura` porque la columna es de la migracion
         // 024: contra una base que todavia no la corrio, el SELECT fallaria
@@ -2198,8 +2224,12 @@ export class PgStore implements Store {
         // son de la migracion 031 y no llevan COALESCE: si faltan, es porque
         // esa migracion no corrio, y ahi SI conviene que el SELECT completo
         // falle e informe [] en vez de mentir que ningun repo es del bot.
+        // `render_url` es de la 034 y SI lleva COALESCE a null: un bridge
+        // nuevo contra una base sin esa migracion tiene que seguir dando los
+        // repos —el link es una comodidad, los repos son el trabajo—.
         `SELECT nombre, github_repo, COALESCE(solo_lectura, false) solo_lectura,
-                creado_por_el_bot, render_service_id
+                creado_por_el_bot, render_service_id,
+                (to_jsonb(repos) ->> 'render_url') render_url
            FROM repos WHERE proyecto_id = $1 ORDER BY nombre`,
         [proyectoId],
       );
@@ -2216,6 +2246,7 @@ export class PgStore implements Store {
         // deploy, y un campo ausente ahi seria un bug disfrazado de dato.
         creado_por_el_bot: f.creado_por_el_bot,
         render_service_id: f.render_service_id,
+        render_url: f.render_url,
       }));
     } catch {
       return [];
@@ -2226,10 +2257,14 @@ export class PgStore implements Store {
     proyectoId: string,
     nombre: string,
     serviceId: string,
+    url?: string,
   ): Promise<void> {
+    // La URL solo se pisa si viene: un reintento que no la trae no puede borrar
+    // la que ya se habia guardado.
     await this.pool.query(
-      `UPDATE repos SET render_service_id = $3 WHERE proyecto_id = $1 AND nombre = $2`,
-      [proyectoId, nombre, serviceId],
+      `UPDATE repos SET render_service_id = $3, render_url = COALESCE($4, render_url)
+         WHERE proyecto_id = $1 AND nombre = $2`,
+      [proyectoId, nombre, serviceId, url ?? null],
     );
   }
 
