@@ -130,13 +130,21 @@ export function renderOutcome(outcome: PipelineOutcome): string {
           : `Listo, saque ${outcome.cuantas} tarea(s) de la cola. Lo que ya estaba corriendo sigue.`;
       return outcome.corridaCerrada ? `${cola}\n\nY cerre la corrida: no voy a seguir sola.` : cola;
     }
-    case 'reanudada':
-      return (
-        `▶ Sigo con <b>${escaparHtml(outcome.proyecto)}</b> desde donde quedo.
+    case 'reanudada': {
+      const cabeza = outcome.seguiaAbierta
+        ? `▶ Destrabo <b>${escaparHtml(outcome.proyecto)}</b> y sigo.`
+        : `▶ Sigo con <b>${escaparHtml(outcome.proyecto)}</b> desde donde quedo.`;
+      // Cero reencoladas en una corrida que seguia abierta no es un error: es
+      // que no habia nada trabado. Decirlo evita que se lea como que no hizo
+      // nada y se mande /reanudar cinco veces.
+      const cuerpo =
+        outcome.seguiaAbierta && outcome.reencoladas === 0
+          ? 'No habia nada trabado, asi que sigue como estaba. Con /status te digo en que anda.'
+          : `Devolvi ${outcome.reencoladas} tarea(s) a la cola. Lo que ya estaba hecho no se repite.`;
+      return `${cabeza}
 
-` +
-        `Devolvi ${outcome.reencoladas} tarea(s) a la cola. Lo que ya estaba hecho no se repite.`
-      );
+${cuerpo}`;
+    }
     case 'sin_reanudar':
       // Los dos casos dicen QUE hacer en su lugar. "No hay nada que reanudar" a
       // secas deja a alguien mirando el chat sin saber si el problema es que no
@@ -1164,7 +1172,19 @@ export function retomarCorridas(bot: Bot, deps: BridgeDeps): void {
             .catch(() => undefined);
         }
       };
-      await avisar('Me reinicie. Retomo la corrida donde habia quedado.');
+      // Lo primero: destrabar. Si el proceso murio con una tarea `corriendo`,
+      // esa tarea quedo tomada y `tomarProxima` no la mira nunca; sin esto la
+      // corrida se retoma y se queda sin nada que hacer, con una tarea del
+      // pliego perdida en el camino.
+      const rescatada = await deps.store
+        .rescatarCorridaAbierta(c.chatId)
+        .catch(() => undefined);
+      const trabadas = rescatada?.reencoladas ?? 0;
+      await avisar(
+        trabadas > 0
+          ? `Me reinicie. Retomo la corrida y vuelvo a encolar ${trabadas} tarea(s) que quedaron a medias.`
+          : 'Me reinicie. Retomo la corrida donde habia quedado.',
+      );
       void arrancarCola(c.chatId, deps, avisar);
     }
   })();

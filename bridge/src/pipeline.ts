@@ -324,7 +324,14 @@ export type PipelineOutcome =
    * reabrir la corrida sin correr la cola la dejaria abierta y quieta, que es
    * peor que no haber reanudado.
    */
-  | { kind: 'reanudada'; proyecto: string; reencoladas: number; arrancar: true }
+  | {
+      kind: 'reanudada';
+      proyecto: string;
+      reencoladas: number;
+      arrancar: true;
+      /** La corrida seguia ABIERTA y colgada: se destrabo, no se reabrio. */
+      seguiaAbierta?: boolean;
+    }
   /** No habia ninguna corrida que se pueda reanudar, y por que. */
   | { kind: 'sin_reanudar'; motivo: 'hay_una_abierta' | 'ninguna' }
   /**
@@ -685,11 +692,23 @@ export async function handleIncoming(
   }
 
   if (command.kind === 'reanudar') {
-    // Una corrida abierta se dice aparte y NO se reanuda: si el chat ya tiene
-    // una andando, lo que quiere quien escribe /reanudar es saber que sigue
-    // viva, no abrir otra.
+    // Una corrida ABIERTA no se reabre: se DESTRABA. Puede estar viva y
+    // avanzando —y entonces esto no le saca nada, porque no hay tareas
+    // colgadas— o puede haberse roto en el medio: el bridge que se reinicia
+    // con una tarea `corriendo` la deja tomada para siempre, `tomarProxima`
+    // solo toma `pendiente`, y la corrida queda abierta sin avanzar nunca.
+    // Antes se contestaba "esa corrida sigue viva" y no habia forma de
+    // insistir; ahora `/reanudar` es esa forma.
     if (await deps.store.corridaAbierta(input.chatId)) {
-      return { kind: 'sin_reanudar', motivo: 'hay_una_abierta' };
+      const r = await deps.store.rescatarCorridaAbierta(input.chatId).catch(() => undefined);
+      if (!r) return { kind: 'sin_reanudar', motivo: 'hay_una_abierta' };
+      return {
+        kind: 'reanudada',
+        proyecto: r.corrida.proyecto,
+        reencoladas: r.reencoladas,
+        arrancar: true,
+        seguiaAbierta: true,
+      };
     }
     const r = await deps.store.reanudarCorrida(input.chatId).catch(() => undefined);
     if (!r) return { kind: 'sin_reanudar', motivo: 'ninguna' };

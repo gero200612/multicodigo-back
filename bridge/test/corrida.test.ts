@@ -3434,6 +3434,58 @@ describe('/reanudar', () => {
     if (out.kind === 'sin_reanudar') expect(out.motivo).toBe('ninguna');
   });
 
+  /**
+   * La corrida que se rompe SIN cerrarse.
+   *
+   * El bridge se reinicia con una tarea `corriendo` y esa tarea queda tomada
+   * para siempre: `tomarProxima` solo mira las `pendiente`. La corrida sigue
+   * abierta y no avanza mas. Antes `/reanudar` contestaba "esa corrida sigue
+   * viva" y no habia forma de insistir.
+   */
+  it('destraba una corrida abierta con una tarea colgada en corriendo', async () => {
+    const d = arnes({});
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: c.proyecto,
+      textos: ['una', 'otra'],
+      corridaId: c.id,
+      ronda: 1,
+    });
+    // Una queda tomada, como cuando el proceso muere a mitad del turno.
+    const tomada = await d.store.tomarProxima(7, c.id);
+    expect(tomada?.estado).toBe('corriendo');
+
+    const out = await handleIncoming({ chatId: 7, messageId: 1, text: '/reanudar' }, d);
+    expect(out.kind).toBe('reanudada');
+    if (out.kind === 'reanudada') {
+      expect(out.seguiaAbierta).toBe(true);
+      expect(out.reencoladas).toBe(1);
+    }
+    const tareas = await d.store.tareasDeCorrida(c.id);
+    expect(tareas.every((t) => t.estado === 'pendiente')).toBe(true);
+  });
+
+  // Insistir sobre una corrida que anda bien no puede romperla: no hay nada
+  // trabado, no se reencola nada, y se dice asi.
+  it('sobre una corrida sana no reencola nada', async () => {
+    const d = arnes({});
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: c.proyecto,
+      textos: ['una'],
+      corridaId: c.id,
+      ronda: 1,
+    });
+
+    const out = await handleIncoming({ chatId: 7, messageId: 1, text: '/reanudar' }, d);
+    expect(out.kind).toBe('reanudada');
+    if (out.kind === 'reanudada') expect(out.reencoladas).toBe(0);
+  });
+
   it('reanudado, la cola vuelve a correr y termina el trabajo que faltaba', async () => {
     const d = arnes({ analista: () => [] });
     const c = await comoDespacho2(d);

@@ -882,6 +882,22 @@ export interface Store {
     chatId: number,
   ): Promise<{ corrida: Corrida; reencoladas: number } | undefined>;
   /**
+   * Destraba la corrida ABIERTA del chat y devuelve a la cola lo que quedo a
+   * medio camino. `undefined` si el chat no tiene ninguna abierta.
+   *
+   * Existe porque una corrida se puede romper SIN cerrarse: el bridge se
+   * reinicia justo cuando una tarea esta `corriendo`, o el gateway se cae a
+   * mitad de un turno. Esa tarea no la rescata nadie —`tomarProxima` solo toma
+   * `pendiente`— y la corrida sigue abierta pero ya no avanza. Desde afuera se
+   * ve como colgada, y `/reanudar` contestaba "esa corrida sigue viva".
+   *
+   * Vuelven a `pendiente` las `corriendo`, las `fallida` y las `cancelada`:
+   * reintentar una que fallo es justamente lo que se quiere al insistir.
+   */
+  rescatarCorridaAbierta(
+    chatId: number,
+  ): Promise<{ corrida: Corrida; reencoladas: number } | undefined>;
+  /**
    * Desata un chat de una cuenta. Devuelve si habia algo que desatar.
    *
    * `usuarioId` no es opcional y se usa en el WHERE: es lo que impide que
@@ -1561,6 +1577,27 @@ export class InMemoryStore implements Store {
     for (const t of this.cola) {
       if (t.corridaId !== c.id) continue;
       if (t.estado !== 'fallida' && t.estado !== 'cancelada') continue;
+      t.estado = 'pendiente';
+      reencoladas += 1;
+    }
+    return { corrida: c, reencoladas };
+  }
+
+  async rescatarCorridaAbierta(
+    chatId: number,
+  ): Promise<{ corrida: Corrida; reencoladas: number } | undefined> {
+    const c = [...this.corridas.values()].find(
+      (x) => x.chatId === chatId && x.estado === 'abierta',
+    );
+    if (!c) return undefined;
+
+    c.fallosSeguidos = 0;
+    c.creadoEn = new Date();
+
+    let reencoladas = 0;
+    for (const t of this.cola) {
+      if (t.corridaId !== c.id) continue;
+      if (t.estado !== 'corriendo' && t.estado !== 'fallida' && t.estado !== 'cancelada') continue;
       t.estado = 'pendiente';
       reencoladas += 1;
     }
@@ -2924,6 +2961,52 @@ export class PgStore implements Store {
         `UPDATE cola_tareas SET estado = 'pendiente', cerrado_en = NULL, resultado = NULL,
                 empezado_en = NULL
            WHERE corrida_id = $1 AND estado IN ('fallida', 'cancelada')`,
+        [corrida.id],
+      );
+      await cliente.query('COMMIT');
+      return { corrida, reencoladas: t.rowCount ?? 0 };
+    } catch (err) {
+      await cliente.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      cliente.release();
+    }
+  }
+
+  async rescatarCorridaAbierta(
+    chatId: number,
+  ): Promise<{ corrida: Corrida; reencoladas: number } | undefined> {
+    const cliente = await this.pool.connect();
+    try {
+      await cliente.query('BEGIN');
+
+      // `creado_en = now()` por lo mismo que en `reanudarCorrida`: el techo de
+      // hora se calcula desde esa fecha, y una corrida que se colgo anoche
+      // tendria su limite en el pasado y cerraria en la primera vuelta.
+      // `fallos_seguidos = 0` porque insistir empieza otra tanda.
+      const r = await cliente.query(
+        `UPDATE corridas SET fallos_seguidos = 0, creado_en = now()
+           WHERE id = (
+             SELECT id FROM corridas
+              WHERE chat_id = $1 AND estado = 'abierta'
+              ORDER BY creado_en DESC LIMIT 1
+           )
+         RETURNING ${PgStore.CAMPOS_CORRIDA}`,
+        [chatId],
+      );
+      if (!r.rows[0]) {
+        await cliente.query('ROLLBACK');
+        return undefined;
+      }
+      const corrida = this.aCorrida(r.rows[0]);
+
+      // `corriendo` entra en la lista, y es la razon de ser de todo esto: una
+      // tarea que quedo tomada cuando el proceso murio no vuelve sola. Las
+      // otras dos van por lo mismo que en `reanudarCorrida`.
+      const t = await cliente.query(
+        `UPDATE cola_tareas SET estado = 'pendiente', cerrado_en = NULL, resultado = NULL,
+                empezado_en = NULL
+           WHERE corrida_id = $1 AND estado IN ('corriendo', 'fallida', 'cancelada')`,
         [corrida.id],
       );
       await cliente.query('COMMIT');
