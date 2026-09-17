@@ -280,10 +280,10 @@ const pipelineDeps = {
             panelUrl: env.PANEL_URL!,
             token: env.BRIDGE_API_TOKEN,
           },
-          // `?? false`: si el llamador no lo dice, privado. El default de un
-          // dato que expone el trabajo de un cliente no puede salir de un
-          // `undefined`.
-          publico ?? false,
+          // `?? true`: si el llamador no lo dice, publico. Privado deja la
+          // corrida sin poder desplegar, que es lo que se mira a la mañana;
+          // para eso esta `publico=no`, escrito a proposito.
+          publico ?? true,
         )
     : undefined,
   /**

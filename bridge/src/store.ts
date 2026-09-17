@@ -855,6 +855,13 @@ export interface Store {
    */
   guardarContrato(corridaId: string, contrato: string): Promise<void>;
   /**
+   * Mueve el techo de rondas de una corrida ya abierta.
+   *
+   * Lo usa el plan: el tamaño real recien se conoce cuando salieron las tareas,
+   * y hasta ahi la corrida vive con el default. Ver `techoPorTamano`.
+   */
+  ajustarTechoRondas(corridaId: string, techo: number): Promise<void>;
+  /**
    * Reabre la ultima corrida cerrada del chat y devuelve a la cola lo que no
    * se hizo. `undefined` si no hay ninguna que se pueda reanudar.
    *
@@ -1526,6 +1533,11 @@ export class InMemoryStore implements Store {
   async guardarContrato(corridaId: string, contrato: string): Promise<void> {
     const c = this.corridas.get(corridaId);
     if (c) c.contrato = contrato;
+  }
+
+  async ajustarTechoRondas(corridaId: string, techo: number): Promise<void> {
+    const c = this.corridas.get(corridaId);
+    if (c) c.techoRondas = techo;
   }
 
   async reanudarCorrida(
@@ -2852,6 +2864,15 @@ export class PgStore implements Store {
     // noche entera construyendo dos mitades que no encajan. Si esto falla, el
     // endpoint tiene que contestar error y el planificador enterarse.
     await this.pool.query('UPDATE corridas SET contrato = $2 WHERE id = $1', [corridaId, contrato]);
+  }
+
+  async ajustarTechoRondas(corridaId: string, techo: number): Promise<void> {
+    // Solo si sigue ABIERTA: una corrida cerrada no vuelve a correr rondas, y
+    // moverle el techo despues solo cambiaria lo que dice el informe.
+    await this.pool.query(
+      `UPDATE corridas SET techo_rondas = $2 WHERE id = $1 AND estado = 'abierta'`,
+      [corridaId, techo],
+    );
   }
 
   async reanudarCorrida(

@@ -6,6 +6,7 @@ import {
   promptDeAnalisis,
   textoDeInforme,
   TECHO_RONDAS_POR_DEFECTO,
+  techoPorTamano,
   TECHO_HORA_POR_DEFECTO,
   TOPE_DE_FALLOS,
   pliegoDeArchivo,
@@ -3198,25 +3199,26 @@ describe('el reparto se queda en los slots de la persona', () => {
  * expone.
  */
 describe('parseOpcionesDeCorrida: publico', () => {
-  it('sin la opcion, los repos son privados', () => {
-    expect(parseOpcionesDeCorrida('# Stock').publico).toBe(false);
+  it('sin la opcion, los repos son publicos', () => {
+    expect(parseOpcionesDeCorrida('# Stock').publico).toBe(true);
   });
 
   it('publico=si los hace publicos', () => {
     expect(parseOpcionesDeCorrida('publico=si\n# Stock').publico).toBe(true);
   });
 
-  // `no` explicito vale lo mismo que no decir nada: sirve para escribirlo en un
-  // pliego guardado y que se lea sin ambiguedad.
-  it('publico=no es lo mismo que no decirlo', () => {
+  // `no` explicito es la unica forma de dejarlos privados, y esta pensado para
+  // el trabajo de un cliente que no se puede exponer.
+  it('publico=no los deja privados', () => {
     expect(parseOpcionesDeCorrida('publico=no\n# Stock').publico).toBe(false);
   });
 
-  // Cualquier otra cosa NO prende la opcion. Un `publico=quizas` que se
-  // interprete como si expondria el trabajo de un cliente por un typo.
-  it('un valor que no se entiende deja los repos privados', () => {
-    expect(parseOpcionesDeCorrida('publico=quizas\n# Stock').publico).toBe(false);
-    expect(parseOpcionesDeCorrida('publico=true\n# Stock').publico).toBe(false);
+  // Solo `no` apaga. Un valor que no se entiende deja el default: si apagara,
+  // un typo dejaria la corrida sin desplegar y eso recien se ve a la mañana.
+  // Privado se escribe bien, que es la decision que cuesta deshacer.
+  it('un valor que no se entiende deja el default, que es publico', () => {
+    expect(parseOpcionesDeCorrida('publico=quizas\n# Stock').publico).toBe(true);
+    expect(parseOpcionesDeCorrida('publico=false\n# Stock').publico).toBe(true);
   });
 
   it('la opcion no queda en el pliego', () => {
@@ -3258,10 +3260,19 @@ describe('publico=si llega a crearRepo', () => {
     expect(pedidos.every((p) => p.publico)).toBe(true);
   });
 
-  // El default, y el que importa: sin decirlo, nada se expone.
-  it('sin la opcion, se piden privados', async () => {
+  // El default, y el que importa: sin decirlo salen publicos, que es lo que
+  // deja que Render los tome y la corrida termine con un link.
+  it('sin la opcion, se piden publicos', async () => {
     const { d, pedidos } = conCrearRepo();
     await abrirCon(d, 'proyecto=acme2 org=Sincro-arg repos=front,back');
+    expect(pedidos.length).toBeGreaterThan(0);
+    expect(pedidos.every((p) => p.publico)).toBe(true);
+  });
+
+  // Y al reves: privado ahora se pide a proposito.
+  it('publico=no los pide privados', async () => {
+    const { d, pedidos } = conCrearRepo();
+    await abrirCon(d, 'proyecto=acme3 org=Sincro-arg repos=front,back publico=no');
     expect(pedidos.length).toBeGreaterThan(0);
     expect(pedidos.some((p) => p.publico)).toBe(false);
   });
@@ -3305,7 +3316,7 @@ describe('publico=si sin pliego', () => {
     expect(pedidos.every((p) => p)).toBe(true);
   });
 
-  it('sin la opcion sigue creando privados', async () => {
+  it('sin la opcion tambien los crea publicos', async () => {
     const pedidos: boolean[] = [];
     const d = arnes();
     const crearRepo = vi.fn(
@@ -3324,7 +3335,7 @@ describe('publico=si sin pliego', () => {
       d,
     );
     expect(pedidos.length).toBeGreaterThan(0);
-    expect(pedidos.some((p) => p)).toBe(false);
+    expect(pedidos.every((p) => p)).toBe(true);
   });
 });
 
@@ -3777,5 +3788,64 @@ describe('POST /interno/corrida/contrato', () => {
   it('un contrato vacio se rechaza', async () => {
     const { app, jobId } = await conCorrida();
     expect((await pedir(app, { jobId, contrato: '' })).statusCode).toBe(400);
+  });
+});
+
+/**
+ * El techo de rondas por tamaño del plan.
+ *
+ * Tres rondas fijas trataban igual a una pantalla sola y a un sistema entero.
+ * Los cortes son por cantidad de tareas, que es lo unico medido que hay antes
+ * de arrancar.
+ */
+describe('techoPorTamano', () => {
+  it('un plan chico se lleva cinco rondas', () => {
+    expect(techoPorTamano(1)).toBe(5);
+    expect(techoPorTamano(7)).toBe(5);
+    expect(techoPorTamano(8)).toBe(5);
+  });
+
+  it('uno grande, diez', () => {
+    expect(techoPorTamano(9)).toBe(10);
+    expect(techoPorTamano(20)).toBe(10);
+  });
+
+  it('uno gigante, veinte', () => {
+    expect(techoPorTamano(21)).toBe(20);
+    expect(techoPorTamano(60)).toBe(20);
+  });
+
+  // Nunca por debajo del default viejo: el cambio sube el techo, no lo baja.
+  it('siempre da mas que las tres de antes', () => {
+    for (const n of [0, 1, 8, 9, 20, 21, 100]) {
+      expect(techoPorTamano(n)).toBeGreaterThan(TECHO_RONDAS_POR_DEFECTO);
+    }
+  });
+});
+
+/**
+ * Lo que el analista de visual tiene que mirar y no miraba.
+ *
+ * En `turnos` (2026-09-17) dictamino que cumplia sin haber abierto nunca el
+ * modal de editar, donde el input de fecha estaba con el estilo crudo del
+ * navegador. El prompt tiene que nombrar los lugares que no se ven al abrir.
+ */
+describe('promptDeAnalisis: visual entra a los formularios', () => {
+  const p = promptDeAnalisis('# Pliego', 1, { eje: 'visual' });
+
+  it('le pide abrir el alta y la edicion', () => {
+    expect(p).toMatch(/ALTA/);
+    expect(p).toMatch(/EDICION/);
+  });
+
+  it('nombra los campos que el navegador dibuja por su cuenta', () => {
+    expect(p).toMatch(/date/);
+    expect(p).toMatch(/select/);
+  });
+
+  // El de testeos no tiene por que recibir nada de esto: son cuatro turnos
+  // justamente para que cada uno entre hondo en lo suyo.
+  it('eso no le llega al de testeos', () => {
+    expect(promptDeAnalisis('# Pliego', 1, { eje: 'testeos' })).not.toMatch(/EDICION/);
   });
 });

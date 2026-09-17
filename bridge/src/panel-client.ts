@@ -86,10 +86,10 @@ export async function crearRepo(
    * Si el repo nace PUBLICO. Por defecto no.
    *
    * El panel es el que decide de verdad —tiene la instalacion de la App— y su
-   * default tambien es privado: esto le pide una excepcion explicita, no le
-   * cambia la politica. Ver `OpcionesDeCorrida.publico` y `GitHubApp.cs`.
+   * default es privado: esto le dice siempre cual quiere el bridge, sin
+   * depender de esa politica. Ver `OpcionesDeCorrida.publico` y `GitHubApp.cs`.
    */
-  publico = false,
+  publico = true,
 ): Promise<{ ok: true; nombre: string; github: string } | { ok: false; code: string }> {
   const doFetch = deps.fetchImpl ?? fetch;
   try {

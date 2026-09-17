@@ -37,6 +37,7 @@ import {
   limiteDeHora,
   promptDePlan,
   TECHO_RONDAS_POR_DEFECTO,
+  techoPorTamano,
   TECHO_HORA_POR_DEFECTO,
   SIN_RESPUESTA,
   type OpcionesDeCorrida,
@@ -1557,7 +1558,7 @@ export async function pasoDeCorrida(
       nombreDado,
       org,
       deps,
-      input.publico === true,
+      input.publico !== false,
     );
   }
 
@@ -1698,8 +1699,8 @@ async function armarYPedirPliego(
   nombre: string,
   org: string | undefined,
   deps: PipelineDeps,
-  /** Lo que dijo `publico=si` en el comando, si lo dijo. */
-  publico = false,
+  /** Lo que dijo `publico=` en el comando; sin comando, publicos. */
+  publico = true,
 ): Promise<PipelineOutcome> {
   const armado = await armarDesdeElNombre(chatId, usuarioId, nombre, org, deps, publico);
 
@@ -1767,8 +1768,11 @@ async function armarDesdeElNombre(
    * escribio en el comando, ignorarlo no es un default seguro: es desobedecer
    * en silencio. Visto al probarlo en produccion — los repos salieron privados
    * con `publico=si` puesto.
+   *
+   * El default es publico: un repo privado no lo puede fetchear Render y la
+   * corrida termina sin link. Ver `OpcionesDeCorrida.publico`.
    */
-  publico = false,
+  publico = true,
 ): Promise<
   | { ok: true; proyecto: string; creado: LoCreado }
   | { ok: false; motivo: string }
@@ -2596,6 +2600,18 @@ export async function planificarCorrida(
       motivo: 'no pude sacar ninguna tarea de ese pliego. Proba con uno mas concreto.',
     };
   }
+
+  // El techo de rondas, AHORA que se sabe el tamaño: un pliego de veinte tareas
+  // no entra en las mismas tres rondas que uno de cinco. Solo si la corrida
+  // quedo con el default; un `rondas=` distinto de 3 es una decision y se
+  // respeta. Ver `techoPorTamano`.
+  if (corrida.techoRondas === TECHO_RONDAS_POR_DEFECTO) {
+    const techo = techoPorTamano(tareas.length);
+    if (techo !== corrida.techoRondas) {
+      await deps.store.ajustarTechoRondas(corrida.id, techo).catch(() => undefined);
+    }
+  }
+
   return { ok: true, tareas };
 }
 

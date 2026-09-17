@@ -160,6 +160,38 @@ export const TECHO_RONDAS_POR_DEFECTO = 3;
 export const TECHO_HORA_POR_DEFECTO = '07:00';
 
 /**
+ * El techo de rondas que le toca a un plan por su TAMAÑO, en tareas.
+ *
+ * Tres rondas fijas trataban igual a una pantalla sola que a un sistema
+ * entero. En `turnos` (2026-09-17, 7 tareas) las tres alcanzaron y sobro; un
+ * pliego de veinte tareas gasta la primera ronda solo construyendo el
+ * esqueleto, y las dos que quedan no llegan ni a cerrar los huecos que el
+ * analista encuentra al final. El techo tiene que crecer con el trabajo.
+ *
+ * Los cortes son por cantidad de tareas del plan, que es lo unico medido que
+ * hay antes de arrancar:
+ *
+ * · chico   — hasta 8 tareas  → 5 rondas
+ * · grande  — hasta 20        → 10
+ * · gigante — mas de 20       → 20
+ *
+ * El techo de HORA no se toca y sigue mandando: veinte rondas no significan
+ * veinte rondas siempre, significan que la corrida no corta por contador antes
+ * de que corte el reloj.
+ *
+ * `rondas=` en el comando le gana a esto, con una salvedad: el ajuste se aplica
+ * cuando el techo quedo en `TECHO_RONDAS_POR_DEFECTO`, asi que escribir
+ * `rondas=3` —justo el default— se lee como "no dijo nada" y el plan lo mueve
+ * igual. Cualquier otro numero se respeta. Es el precio de no meter una columna
+ * nueva en la base para distinguir "no lo dijo" de "dijo el default".
+ */
+export function techoPorTamano(cantidadDeTareas: number): number {
+  if (cantidadDeTareas <= 8) return 5;
+  if (cantidadDeTareas <= 20) return 10;
+  return 20;
+}
+
+/**
  * Cuantas tareas seguidas pueden fallar antes de cortar.
  *
  * Es el techo que hace que "seguir con la siguiente" no sea una forma elegante
@@ -305,21 +337,19 @@ export interface OpcionesDeCorrida {
   /** Los repos a crear, en el orden en que se nombraron. */
   repos: string[];
   /**
-   * Si los repos a crear nacen PUBLICOS. Por defecto no.
+   * Si los repos a crear nacen PUBLICOS. Por defecto SI.
    *
-   * Los repos del bot son privados, y eso no cambia: la razon esta en
-   * `panel-api/GitHubApp.cs` y sigue valiendo —privado a publico es un click,
-   * publico a privado no borra lo que ya se indexo, se clono y quedo en caches
-   * que nadie controla— y lo que se crea es el trabajo de un cliente.
+   * Nacian privados, con el argumento de que privado a publico es un click y al
+   * reves no borra lo que ya se indexo. El argumento sigue siendo cierto, pero
+   * el costo era mas alto: un repo privado no lo puede fetchear Render sin su
+   * proveedor conectado al workspace, y ese vinculo pide un click que no se
+   * puede automatizar —verificado el 2026-09-09, con la app instalada en la org
+   * y acceso a todos los repos, el workspace igual no ve ninguno—. O sea que
+   * cada corrida terminaba sin desplegar y sin link, que es lo unico que se
+   * mira a la mañana. Con el repo publico, `POST /v1/services` funciona.
    *
-   * Existe porque un repo privado no lo puede fetchear Render sin su proveedor
-   * conectado al workspace, y ese vinculo pide un click que no se puede
-   * automatizar: verificado el 2026-09-09, con la app instalada en la org y
-   * acceso a todos los repos, el workspace igual no ve ninguno. Con el repo
-   * publico, `POST /v1/services` funciona —probado, 201—.
-   *
-   * Asi que la decision es explicita y por corrida. Sin la opcion, nada se
-   * expone.
+   * `publico=no` en el comando lo deja privado, para el trabajo de un cliente
+   * que no se puede exponer. Esa corrida cierra sin link y esta bien.
    */
   publico: boolean;
   /**
@@ -426,7 +456,7 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
   let org: string | undefined;
   let repos: string[] = [];
   let referencia: string[] = [];
-  let publico = false;
+  let publico = true;
   let consumidos = 0;
   for (const t of tokens) {
     const m = OPCION.exec(t);
@@ -443,11 +473,12 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
     } else if (m[1] === 'org') {
       if (nombreSano(valor)) org = valor;
     } else if (m[1] === 'publico') {
-      // SOLO `si` prende. Un `publico=quizas` —o un `publico=true` de quien
-      // piensa en ingles— deja los repos privados en vez de exponer el trabajo
-      // de un cliente por un typo. El default nunca puede salir de un valor que
-      // no se entendio.
-      publico = valor.toLowerCase() === 'si';
+      // SOLO `no` apaga. Un `publico=quizas` —o un `publico=false` de quien
+      // piensa en ingles— deja el default, que es publico: el valor que no se
+      // entendio no puede dejar la corrida sin poder desplegar. Para que un
+      // repo quede privado hay que escribirlo bien, que es la decision que
+      // cuesta deshacer.
+      publico = valor.toLowerCase() !== 'no';
     } else {
       // Los invalidos se descartan UNO POR UNO en vez de tirar la lista
       // entera: un `repos=front,back,` con una coma de mas no puede costar los
@@ -534,6 +565,16 @@ const PISO: Record<Eje, readonly string[]> = {
     'Hay MARCA: un header con el nombre del producto y algo util al lado (el usuario, ' +
       'la fecha, un buscador, lo que la pantalla pida), y un footer que cierre la pagina.',
     'Cada pantalla que trae datos tiene sus estados de VACIO, CARGANDO y ERROR.',
+    // Lo que se saltea siempre: el analista mira la pantalla de lista, la ve
+    // prolija y da por hecho el resto. En `turnos` (2026-09-17) dictamino que
+    // cumplia sin haber abierto nunca el modal de editar, donde el input de
+    // fecha estaba con el estilo crudo del navegador. Lo que no se abre, no se
+    // revisa.
+    'Los FORMULARIOS y MODALES tambien cuentan: hay que abrir el de alta y el de ' +
+      'edicion y mirarlos, no solo la pantalla de lista.',
+    'TODOS los campos tienen el estilo del producto, incluidos los que el navegador ' +
+      'dibuja por su cuenta: date, time, select, checkbox y file. Un date con el ' +
+      'estilo crudo al lado de inputs cuidados canta mas que si no hubiera estilo.',
     'Se puede usar en un telefono.',
     'Algo confirma cuando guardaste.',
     // Sin pedirlo, todo sale igual: tarjeta blanca, bordecito de color a la
@@ -751,6 +792,15 @@ export function promptDeAnalisis(
           'que levanta el front —y el back del proyecto, si hay— y te devuelve capturas',
           'de pantalla en tamaño computadora y telefono. Pasale el repo del front y las',
           'rutas principales. Juzga por lo que VES en las capturas.',
+          '',
+          // La pantalla de lista es la que sale sola en la primera captura, y
+          // con esa sola el veredicto sale "cumple" aunque el alta y la edicion
+          // esten crudas. Hay que nombrar los lugares que no se ven de entrada.
+          'Y no te quedes en la primera pantalla: lo que abre al tocar un boton tambien',
+          'es la app. Entra al ALTA, a la EDICION y a los avisos de confirmar o borrar,',
+          'y mira cada campo del formulario. Si no podes abrirlos con la herramienta, leé',
+          'su codigo y su CSS, y decilo en el informe: un eje revisado a medias vale',
+          'menos que uno que avisa hasta donde llego.',
           '',
           'Si no arranca, eso ya es un hueco: reportalo igual, y segui revisando el',
           'codigo como puedas.',
