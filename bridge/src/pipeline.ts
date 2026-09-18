@@ -1039,6 +1039,21 @@ async function botonesDeRelevo(
 export type PromptConToken = PromptRequest & {
   githubToken?: string;
   /**
+   * Si este turno es una REVISION y no una construccion.
+   *
+   * Cambia una sola cosa: el techo de tiempo. Un analista tiene una hora
+   * (`ANALISIS_TIMEOUT_MS` en el gateway) y un turno normal dieciocho minutos.
+   * Medido en la corrida `padel` del 2026-09-18: de los cuatro ejes, USUARIO y
+   * TESTEOS se cortaron los dos a los 18 exactos, y VISUAL y FUNCIONAMIENTO
+   * entraron en 8 y 2. La mitad de la revision no se hacia nunca.
+   *
+   * Como el token y el modo, se extiende aca y no en `@multicodigo/shared`: es
+   * cosa del transporte bridge -> gateway. Y a diferencia de esos dos, ni
+   * siquiera llega al cuerpo — `askAgent` lo saca y lo manda como header, para
+   * que el agente no lo vea. Ver `headersDeQuien`.
+   */
+  analisis?: boolean;
+  /**
    * El modo de permisos del turno.
    *
    * Se extiende aca y no en `@multicodigo/shared` por lo mismo que el token:
@@ -1095,6 +1110,13 @@ export interface Turno {
   modo?: ModoDeTurno;
   /** Con que modelo corre. Ausente = el default del CLI de Claude. */
   modelo?: ClaveDeModelo;
+  /**
+   * Que este turno es una REVISION, no una construccion.
+   *
+   * Solo cambia el techo de tiempo: una hora en vez de dieciocho minutos. Ver
+   * `analisis` en `PromptConToken` y `ANALISIS_TIMEOUT_MS` en el gateway.
+   */
+  analisis?: boolean;
   /**
    * Que este turno NO herede la conversacion del proyecto ni la pise.
    *
@@ -1380,6 +1402,10 @@ export async function ejecutarTurno(
         // gateway le reenvia el cuerpo, asi que llega sin que nadie lo copie.
         modo: t.modo,
         modelo: t.modelo,
+        // Este NO llega al agente: `askAgent` lo saca del cuerpo y lo manda
+        // como header, porque lo unico que decide es el techo de tiempo del
+        // gateway. Ver `analisis` en `PromptConToken`.
+        ...(t.analisis ? { analisis: true as const } : {}),
       },
       { usuarioId: t.usuarioId, chatId: t.chatId },
     );
@@ -2465,14 +2491,44 @@ async function tandaDeAnalisis(
   const chatId = corrida.chatId;
   const ctx = await contextoDeCola(chatId, corrida.proyecto, usuarioId, deps);
 
+  // Los que YA firmaron no se vuelven a correr.
+  //
+  // Un analista que falla corta la tanda entera y devuelve `reintentar` —bien:
+  // si fallo por el entorno, los que siguen van a fallar igual—. Pero el bucle
+  // volvia a llamar a esta funcion con los CUATRO ejes, asi que los que ya
+  // habian dejado su veredicto se revisaban de nuevo. Un fallo en el cuarto eje
+  // costaba ocho turnos para cuatro revisiones.
+  //
+  // Paso en `padel` el 2026-09-18: USUARIO y TESTEOS se cortaron por tiempo y
+  // dispararon un reintento cada uno, con VISUAL y FUNCIONAMIENTO ya
+  // contestados. Es el mismo trabajo doble que la corrida venia haciendo con
+  // las tareas, en el unico lugar donde todavia quedaba.
+  //
+  // `cierre` NO se filtra: esa tanda es la revision final contra el pliego
+  // entero y tiene que mirar los cuatro ejes con el proyecto terminado, aunque
+  // ya los hayan mirado en la ronda 1.
+  const yaFirmaron = new Set((corrida.veredictos ?? []).map((v) => v.eje));
+  const porRevisar = cierre ? ejes : ejes.filter((e) => !e || !yaFirmaron.has(e));
+
+
   if (cierre) {
     await avisar(
       '🧐 Parece terminado. Antes de cerrar lo miran los cuatro analistas: ' +
         `${EJES.join(', ')}.`,
     );
-  } else if (ejes.length > 1) {
+  } else if (porRevisar.length > 1 && yaFirmaron.size === 0) {
     await avisar(
       `🔎 No queda nada pendiente. Lo revisan los cuatro analistas (ronda ${corrida.ronda}).`,
+    );
+  } else if (porRevisar.length >= 1 && yaFirmaron.size > 0) {
+    // Un reintento, y se DICE que lo es. Antes se reimprimia el mismo cartel de
+    // "lo revisan los cuatro", asi que desde afuera el sistema parecia repetirse
+    // solo: no habia forma de saber que un analista se habia caido en el medio
+    // salvo mirando la base. Paso en `padel` el 2026-09-18 y costo un rato
+    // entender que el mensaje duplicado era la firma de un fallo.
+    await avisar(
+      `🔁 Retomo la revision (ronda ${corrida.ronda}): ya firmaron ` +
+        `${[...yaFirmaron].join(', ')}. Falta ${porRevisar.map((e) => e ?? 'general').join(', ')}.`,
     );
   } else {
     await avisar(`🔎 No queda nada pendiente. Reviso contra el pliego (ronda ${corrida.ronda}).`);
@@ -2485,7 +2541,7 @@ async function tandaDeAnalisis(
   const mios = (await deps.store.agentesDeUsuario(usuarioId).catch(() => [])).map((a) => a.slot);
   let ultimo: string | undefined;
 
-  for (const eje of ejes) {
+  for (const eje of porRevisar) {
     const agente = await slotDeRevision(corrida.proyecto, mios, ultimo, deps);
     if (agente) ultimo = agente;
     const elegido = (agente ??
@@ -2510,6 +2566,10 @@ async function tandaDeAnalisis(
         // con `preguntar`, un intento de editar dejaria el turno colgado quince
         // minutos esperando un OK que nadie va a dar a las tres de la mañana.
         modo: 'desatendido',
+        // Una hora en vez de dieciocho minutos. Revisar cuesta mas que
+        // construir: TESTEOS corre las suites de los dos repos y USUARIO
+        // recorre la app entera. Ver `ANALISIS_TIMEOUT_MS` en el gateway.
+        analisis: true,
         // La mitad del diseño del analisis, y hasta hoy no se cumplia: si
         // hereda la conversacion del constructor hereda sus puntos ciegos, y
         // lee su propio trabajo con los mismos anteojos.

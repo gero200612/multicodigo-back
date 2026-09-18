@@ -785,6 +785,45 @@ describe('correrCola dentro de una corrida', () => {
     expect(await d.store.corridaAbierta(7)).toBeUndefined();
   });
 
+  /**
+   * El reintento de la tanda no rehace los ejes que ya firmaron.
+   *
+   * Cuando un analista falla, `tandaDeAnalisis` corta la tanda entera y
+   * devuelve `reintentar` —bien, porque si fallo por el entorno los que siguen
+   * van a fallar igual—. Pero volvia a correr los CUATRO desde cero, incluidos
+   * los que ya habian dejado su veredicto. Un fallo en el cuarto eje costaba
+   * ocho turnos para cuatro revisiones.
+   *
+   * Visto en `padel` el 2026-09-18: USUARIO y TESTEOS se cortaron por tiempo,
+   * cada uno disparo un reintento, y VISUAL y FUNCIONAMIENTO —que ya habian
+   * contestado en 8 y 2 minutos— se corrieron de nuevo.
+   */
+  it('el reintento de la tanda saltea los ejes que ya firmaron', async () => {
+    const d = arnes({ analista: () => [] });
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+
+    // Dos ejes ya revisados, como los deja una tanda que se corto en el tercero.
+    await d.store.guardarVeredicto(c.id, 'visual', true, 'ya revisado');
+    await d.store.guardarVeredicto(c.id, 'funcionamiento', true, 'ya revisado');
+
+    await correr(d);
+
+    // De los prompts de analisis, ninguno puede ser de un eje ya firmado.
+    const analisis = d.ask.mock.calls
+      .map((x) => x[0].prompt)
+      .filter((p: string) => p.includes('--- PLIEGO ---'));
+    const ejesPedidos = analisis
+      .map((p: string) => /Sos el analista de ([A-Z]+) de esta corrida/.exec(p)?.[1]?.toLowerCase())
+      .filter(Boolean);
+
+    expect(ejesPedidos).not.toContain('visual');
+    expect(ejesPedidos).not.toContain('funcionamiento');
+    // Y los que faltaban si se piden.
+    expect(ejesPedidos).toContain('usuario');
+    expect(ejesPedidos).toContain('testeos');
+  });
+
   it('tres cortes por tiempo NO cierran la corrida', async () => {
     const d = arnes({
       analista: () => [],

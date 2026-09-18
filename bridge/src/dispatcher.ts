@@ -51,7 +51,12 @@ import { Agent, setGlobalDispatcher } from 'undici';
  * espera un poco mas que el de adentro, asi que el error que llega es el del
  * eslabon que de verdad se colgo.
  */
-const TECHO_MS = 22 * 60 * 1000;
+// 65 minutos. Eran 22, por encima de los 20 que esperaba el bridge por un turno
+// normal. Con el techo de una hora para los analistas ese numero paso a estar
+// ABAJO del turno mas largo que el sistema permite, y ahi el bug de los "302
+// segundos exactos" volvia con otro numero: undici cortando a los 22 minutos un
+// analisis que tenia permitido llegar a 62. Se mide contra el turno MAS largo.
+const TECHO_MS = 65 * 60 * 1000;
 
 setGlobalDispatcher(
   new Agent({

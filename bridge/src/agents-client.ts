@@ -39,14 +39,19 @@ export async function askAgent(
   quien?: Quien,
 ): Promise<PromptResponse & { tokens?: number; costoUsd?: number }> {
   const doFetch = deps.fetchImpl ?? fetch;
+  // `analisis` sale del cuerpo y viaja como header, por lo mismo que `quien`:
+  // el gateway le reenvia el cuerpo al hijo por descarte, y este campo es para
+  // el gateway —elige el techo de tiempo— no para el agente.
+  const { analisis, ...cuerpo } = req;
   const response = await doFetch(`${deps.gatewayUrl.replace(/\/$/, '')}/agents/${req.agent}/prompt`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${deps.token}`,
       ...headersDeQuien(quien),
+      ...(analisis ? { 'x-mc-analisis': '1' } : {}),
     },
-    body: JSON.stringify(req),
+    body: JSON.stringify(cuerpo),
     // 20 minutos, y el numero no es libre: tiene que ser mayor que el
     // AGENT_TIMEOUT_MS del gateway (18 min), que a su vez es mayor que los 15
     // que el agente espera una aprobacion. El de afuera aguanta mas que el de
@@ -55,7 +60,11 @@ export async function askAgent(
     // Con 11 min este era el segundo eslabon en rendirse: un turno frenado
     // esperando un OK moria aca o en el gateway —los dos por debajo de los 15—
     // y llegaba como "fetch failed".
-    signal: AbortSignal.timeout(20 * 60 * 1000),
+    // El de un analista es mas largo, y el numero sigue la misma regla: tiene
+    // que aguantar mas que el techo del gateway para ese tipo de turno (60 min
+    // para analisis, 18 para el resto), o el de afuera convierte un turno
+    // legitimo en un error de red. Ver `ANALISIS_TIMEOUT_MS` alla.
+    signal: AbortSignal.timeout(analisis ? 62 * 60 * 1000 : 20 * 60 * 1000),
   });
 
   const text = await response.text();
