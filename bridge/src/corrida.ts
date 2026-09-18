@@ -1051,10 +1051,20 @@ export function promptDePlan(
     '   no encolando una tarea para hacerlo.',
     'Una tarea deja CODIGO nuevo o cambiado. Si no lo deja, no va.',
     '',
-    'Entre 4 y 15 tareas para un pliego de una o dos pantallas. Uno grande puede',
-    'llevar 30: lo que no vale es juntar dos pantallas en una tarea para que la',
-    'lista quede corta. Menos de 4 es que te falto abrir el pliego; una tarea que',
-    'no se puede entregar sola tampoco va.',
+    // SIN tope de tareas, a proposito.
+    //
+    // Habia uno de 15 y era el que producia las tareas gigantes: con un pliego
+    // de diez pantallas, la unica forma de entrar en quince era meter el CRUD
+    // entero de cada una en una tarea, que es justo lo que se corta a los 18
+    // minutos. Muchas chicas es mejor que pocas encapsuladas: una chica que
+    // falla cuesta un turno, una grande cuesta el turno y deja la pantalla a
+    // medias.
+    'NO hay tope de tareas: cuantas salgan. Con un pliego grande son cuarenta, y',
+    'esta bien. Preferi muchas chicas antes que pocas grandes — una tarea que no',
+    'entra en un turno se corta por tiempo y deja la pantalla a medio hacer.',
+    '',
+    'El minimo si existe: menos de 4 es que te falto abrir el pliego. Y una tarea',
+    'que no se puede entregar sola tampoco va.',
     '',
     'Es OBLIGATORIO llamar la herramienta: si escribis la lista en prosa, nadie la',
     'recibe y no hay con que arrancar.',

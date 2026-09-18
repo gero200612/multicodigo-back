@@ -2775,6 +2775,16 @@ export async function correrCola(
   let mergesFallidosSeguidos = 0;
   // Para que el pendiente del merge fallido salga una vez y no una por tarea.
   let mergeAnotado = false;
+  /**
+   * Si ya se publico y se mando el link.
+   *
+   * El link salia recien al cerrar, o sea a las seis horas: la corrida entera
+   * pasaba sin que nadie pudiera abrir nada. Ahora se publica apenas la PRIMERA
+   * tarea entra a main —que por el plan es el esqueleto que anda de punta a
+   * punta— y despues cada merge redespliega, asi lo que se construye se ve
+   * llegar.
+   */
+  let yaPublico = false;
   // Lo mismo para el slot que pide permiso.
   let permisoAnotado = false;
 
@@ -2979,6 +2989,43 @@ export async function correrCola(
       // Una que sale bien vuelve el contador a cero: lo que corta la corrida
       // son tres fallos SEGUIDOS, no tres en toda la noche.
       if (corrida) await deps.store.contarFallo(corrida.id, false);
+
+      // Y se PUBLICA, con el trabajo ya en main.
+      //
+      // `publicar` es idempotente: la primera vez crea los servicios y las
+      // siguientes solo disparan un deploy —los servicios se crean con
+      // `autoDeploy: 'no'` porque con un repo publico Render no se entera de
+      // los push—. Asi la primera tarea deja el link y cada una que sigue
+      // actualiza lo que se ve.
+      //
+      // El aviso con el link sale UNA vez: un link repetido en cada tarea tapa
+      // el resto del chat, y a partir de la segunda no es una novedad.
+      //
+      // Un fallo aca no toca la corrida: el codigo esta mergeado igual, y el
+      // cierre vuelve a intentar publicar.
+      if (corrida && deps.publicar) {
+        try {
+          const pub = await deps.publicar(corrida, [r.agente]);
+          if (!yaPublico && pub.publicados.length > 0) {
+            yaPublico = true;
+            await avisar(
+              [
+                '🏗 Estructura armada, ya se puede mirar:',
+                '',
+                ...pub.publicados.map((p) => `· ${escaparHtml(p.repo)}: ${escaparHtml(p.url)}`),
+                '',
+                'Cada tarea que termine desde ahora se despliega sola ahi.',
+                'La primera carga puede tardar un minuto: el plan free duerme los servicios.',
+              ].join('\n'),
+            );
+          }
+          for (const p of pub.pendientes) {
+            await deps.store.anotarPendiente(corrida.id, p).catch(() => undefined);
+          }
+        } catch (err) {
+          console.error('[bridge] publicar temprano fallo:', err);
+        }
+      }
       // El texto de la tarea se escapa; la respuesta del agente NO, porque
       // `conCodigoParaTelegram` ya la escapo entera antes de meterle sus
       // `<pre>`. Escaparla de nuevo dejaria los `&amp;lt;` a la vista.

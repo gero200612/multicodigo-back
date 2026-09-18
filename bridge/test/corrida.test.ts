@@ -2494,8 +2494,12 @@ describe('promptDePlan: lo que no es una tarea', () => {
     expect(p).toContain('deja CODIGO nuevo o cambiado');
   });
 
-  it('el rango bajo de 25 a 15', () => {
-    expect(p).toContain('Entre 4 y 15 tareas');
+  // El tope se saco: era el que producia las tareas gigantes (ver la regla de
+  // tamaño). Queda el minimo, que es el que detecta un plan que no leyo el
+  // pliego.
+  it('conserva el minimo de 4 y ya no pone techo', () => {
+    expect(p).toContain('menos de 4');
+    expect(p).not.toContain('Entre 4 y 15 tareas');
   });
 });
 
@@ -2591,6 +2595,76 @@ describe('una corrida no hereda las tareas de otra', () => {
  *
  * Ver `multicodigo-vm/docs/superpowers/specs/2026-09-08-deploy-render-design.md`.
  */
+/**
+ * El link no puede esperar al cierre.
+ *
+ * Salia recien en el informe, o sea a las seis horas: la corrida entera pasaba
+ * sin que nadie pudiera abrir nada, y un contrato mal se descubria con todo
+ * construido encima. Ahora se publica apenas la primera tarea entra a main —que
+ * por el plan es el esqueleto que anda de punta a punta— y cada merge que sigue
+ * redespliega.
+ */
+describe('publicar apenas termina la primera tarea', () => {
+  function conPublicar() {
+    const llamadas: string[][] = [];
+    const d = arnes({
+      analista: () => [],
+      mergearTrabajo: async () => ({ ok: true }),
+      publicar: async (_c, agentes) => {
+        llamadas.push([...agentes]);
+        return {
+          publicados: [{ repo: 'padel-front', url: 'https://padel-front.onrender.com' }],
+          pendientes: [],
+        };
+      },
+    });
+    return { d, llamadas };
+  }
+
+  it('manda el link con la primera, sin esperar al cierre', async () => {
+    const { d, llamadas } = conPublicar();
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    const avisos = await correr(d);
+
+    const link = avisos.findIndex((a) => a.includes('padel-front.onrender.com'));
+    const informe = avisos.findIndex((a) => a.includes('Corrida terminada'));
+    expect(link).toBeGreaterThanOrEqual(0);
+    expect(link).toBeLessThan(informe);
+    expect(avisos[link]).toContain('Estructura armada');
+    expect(llamadas.length).toBeGreaterThan(1);
+  });
+
+  // Un link repetido en cada tarea tapa el resto del chat.
+  it('el aviso del link sale una sola vez', async () => {
+    const { d } = conPublicar();
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    const avisos = await correr(d);
+
+    expect(avisos.filter((a) => a.includes('Estructura armada'))).toHaveLength(1);
+  });
+
+  // Publicar es lo ultimo que puede voltear una corrida: el codigo ya esta en
+  // main y el cierre vuelve a intentar.
+  it('si publicar explota, la corrida sigue', async () => {
+    const d = arnes({
+      analista: () => [],
+      mergearTrabajo: async () => ({ ok: true }),
+      publicar: async () => {
+        throw new Error('render caido');
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    const avisos = await correr(d);
+
+    const tareas = await d.store.tareasDeChat(7);
+    expect(tareas.every((t) => t.estado === 'lista')).toBe(true);
+    expect(avisos[avisos.length - 1]).toContain('Corrida terminada');
+  });
+});
+
 describe('cerrarConInforme publica', () => {
   it('una corrida completa publica', async () => {
     let publico = false;
@@ -4009,8 +4083,13 @@ describe('la regla de tamaño de las tareas', () => {
     expect(p).toMatch(/configuracion/);
   });
 
-  it('un pliego grande puede pasar de 15 tareas', () => {
-    expect(promptDePlan('# Una app', [])).toMatch(/puede/);
-    expect(promptDePlan('# Una app', [])).toMatch(/30/);
+  // El tope de 15 era el que producia las tareas gigantes: con diez pantallas,
+  // la unica forma de entrar en quince era meter el CRUD entero de cada una en
+  // una tarea.
+  it('el plan no tiene tope de tareas y prefiere muchas chicas', () => {
+    const p = promptDePlan('# Una app', []);
+    expect(p).toMatch(/NO hay tope de tareas/);
+    expect(p).toMatch(/muchas chicas/);
+    expect(p).not.toMatch(/Entre 4 y 15/);
   });
 });
