@@ -865,6 +865,13 @@ export function promptDeAnalisis(
     '',
     'No arregles nada. No escribas ni edites archivos. Solo mira y reporta.',
     '',
+    // La misma regla que el plan. El analista escribe las tareas de las rondas
+    // que siguen, y en `padel` (2026-09-18) las suyas fueron las que mas se
+    // cortaron por tiempo: "crear la pantalla de Socios con listado, alta,
+    // edicion, baja, pago de cuota y aviso de atrasados" se paso de los 18
+    // minutos cuatro veces seguidas.
+    ...reglaDeTamano(),
+    '',
     'Cuando termines de revisar, llama a la herramienta reportar_huecos con la',
     'lista. Es OBLIGATORIO: si escribis los huecos en prosa y no llamas la',
     'herramienta, nadie los recibe y la corrida cierra como si estuviera',
@@ -983,6 +990,26 @@ export function promptDePlan(
     'Despues llama a la herramienta reportar_huecos con las tareas, en el ORDEN en',
     'que hay que hacerlas: lo que otras cosas necesitan va primero.',
     '',
+    // La primera tarea decide cuando se puede MIRAR el proyecto.
+    //
+    // Con el front y el back conectados recien al final, la corrida entera pasa
+    // sin que nadie pueda abrir nada: en `padel` (2026-09-18) a las tres horas
+    // habia veinte tareas hechas, tests en verde y ninguna pantalla que
+    // mostrara un dato del back. Y si algo del contrato esta mal, se descubre
+    // en la ronda 3 con todo construido encima.
+    //
+    // Un esqueleto que anda cuesta una tarea y cambia las dos cosas: se puede
+    // ver desde temprano y el contrato queda probado antes de apoyarse en el.
+    'La PRIMERA tarea es siempre el esqueleto que ANDA de punta a punta, y es una',
+    'sola tarea: crear los dos proyectos, una ruta del back devolviendo datos de',
+    'ejemplo, y una pantalla del front que los muestre llamando a esa ruta de',
+    'verdad —con la URL del back saliendo de la configuracion, no escrita en el',
+    'medio del codigo—. Chica: una lista, sin alta ni edicion.',
+    '',
+    'Recien despues van las pantallas y las rutas del pliego, una a una. Asi el',
+    'proyecto se puede abrir y mirar desde la primera hora, y si el contrato',
+    'quedo mal se ve ahi y no en la ultima ronda con todo construido encima.',
+    '',
     // El piso, en el plan y no solo en la revision.
     //
     // Es lo mismo que van a exigir los cuatro analistas, dicho ANTES de que se
@@ -996,8 +1023,11 @@ export function promptDePlan(
     '',
     ...pisoCompleto(),
     '',
-    'No son tareas aparte: son parte de las tareas que armes. Una pantalla se',
-    'entrega con su forma de cargar datos y sus estados, no en dos tareas.',
+    'No son tareas aparte: son parte de las tareas que armes. Lo que no puede',
+    'pasar es que una pantalla quede de solo lectura porque el alta quedo sin',
+    'hacer: si la partis, las partes van juntas en esta misma lista.',
+    '',
+    ...reglaDeTamano(),
     '',
     'Cada tarea tiene que poder tomarla otro agente sin volver a leer el pliego:',
     'decí que hay que hacer y donde. Cuando algo ya exista en la referencia,',
@@ -1021,9 +1051,10 @@ export function promptDePlan(
     '   no encolando una tarea para hacerlo.',
     'Una tarea deja CODIGO nuevo o cambiado. Si no lo deja, no va.',
     '',
-    'Entre 4 y 15 tareas. Menos es que te falto abrir el pliego; mas es que estas',
-    'partiendo en pedazos que no se pueden entregar solos, o contando como tareas',
-    'cosas que son parte de hacer una.',
+    'Entre 4 y 15 tareas para un pliego de una o dos pantallas. Uno grande puede',
+    'llevar 30: lo que no vale es juntar dos pantallas en una tarea para que la',
+    'lista quede corta. Menos de 4 es que te falto abrir el pliego; una tarea que',
+    'no se puede entregar sola tampoco va.',
     '',
     'Es OBLIGATORIO llamar la herramienta: si escribis la lista en prosa, nadie la',
     'recibe y no hay con que arrancar.',
@@ -1031,6 +1062,41 @@ export function promptDePlan(
     '--- PLIEGO ---',
     md,
   ].join('\n');
+}
+
+/**
+ * El tamaño de una tarea: tiene que entrar en UN turno.
+ *
+ * Un turno se corta a los 18 minutos. Una tarea mas grande no falla por estar
+ * mal: se queda sin tiempo, y lo que dejo a medias lo tiene que retomar otro.
+ *
+ * Medido en `padel` (2026-09-18): de 16 turnos seguidos, SIETE se cortaron a
+ * los 18 minutos exactos, todos de pantallas de front con el CRUD entero en una
+ * tarea. Las de back —un controller, unos tests— salieron en 1 a 3 minutos, y
+ * las de front que si entraron tardaron entre 9 y 17. O sea que el limite no es
+ * el modelo ni la maquina: es cuanto se le pide a una tarea.
+ *
+ * Por eso la regla no dice "hace tareas chicas", que no es revisable, sino
+ * DONDE partir: una pantalla con listado, alta, edicion, baja y estados es al
+ * menos dos entregas.
+ */
+export function reglaDeTamano(): string[] {
+  return [
+    'TAMAÑO: cada tarea tiene que poder terminarse en UN turno de 15 minutos,',
+    'incluyendo correr los tests. Una tarea que no entra no falla: se queda sin',
+    'tiempo a la mitad y otro tiene que adivinar donde quedo.',
+    '',
+    'Lo que siempre hay que PARTIR:',
+    ' · Una pantalla con listado + alta + edicion + baja + estados va en DOS tareas',
+    '   seguidas: primero la pantalla con el listado, sus estados y el servicio que',
+    '   habla con el back; despues el alta, la edicion y la baja sobre esa pantalla.',
+    ' · Una pantalla que ademas tiene algo aparte —pagos, cuotas, avisos, filtros',
+    '   con reglas— eso es una TERCERA tarea, no un renglon de las otras dos.',
+    ' · Un controller con mas de cinco rutas va en dos: las de leer y las de escribir.',
+    '',
+    'Las partes van juntas y en orden en la misma lista, no en rondas distintas:',
+    'la primera deja algo que se puede abrir, y la segunda lo completa.',
+  ];
 }
 
 /** Lo que el informe necesita saber de las tareas de la corrida. */

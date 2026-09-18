@@ -3965,3 +3965,52 @@ describe('promptDeAnalisis: visual entra a los formularios', () => {
     expect(promptDeAnalisis('# Pliego', 1, { eje: 'testeos' })).not.toMatch(/EDICION/);
   });
 });
+
+/**
+ * El tamaño de las tareas, que es lo que decide si entran en un turno.
+ *
+ * Medido en `padel` (2026-09-18): de 16 turnos seguidos, SIETE se cortaron a los
+ * 18 minutos, todos de pantallas de front con el CRUD entero en una tarea. Las
+ * de back salieron en 1 a 3 minutos.
+ */
+describe('la regla de tamaño de las tareas', () => {
+  it('el plan dice donde partir una pantalla con CRUD', () => {
+    const p = promptDePlan('# Una app', []);
+    expect(p).toMatch(/TAMAÑO/);
+    expect(p).toMatch(/DOS tareas/);
+    expect(p).toMatch(/listado/);
+  });
+
+  // El analista escribe las tareas de las rondas que siguen, y las suyas fueron
+  // las que mas se cortaron.
+  it('el analista recibe la misma regla', () => {
+    for (const eje of EJES) {
+      expect(promptDeAnalisis('# Una app', 2, { eje })).toMatch(/TAMAÑO/);
+    }
+  });
+
+  // Y el plan ya no empuja a lo contrario: la linea que pedia entregar la
+  // pantalla entera en una sola tarea era justo la que producia las de 18 min.
+  it('el plan ya no pide la pantalla entera en una tarea', () => {
+    expect(promptDePlan('# Una app', [])).not.toMatch(/no en dos tareas/);
+  });
+
+  /**
+   * Lo primero tiene que ser algo que se pueda ABRIR.
+   *
+   * Con el front y el back conectados recien al final, la corrida pasa entera
+   * sin que nadie pueda mirar nada: en `padel` (2026-09-18), a las tres horas
+   * habia veinte tareas hechas y ninguna pantalla mostrando un dato del back.
+   */
+  it('el plan pide un esqueleto conectado como primera tarea', () => {
+    const p = promptDePlan('# Una app', []);
+    expect(p).toMatch(/PRIMERA tarea/);
+    expect(p).toMatch(/punta a punta/);
+    expect(p).toMatch(/configuracion/);
+  });
+
+  it('un pliego grande puede pasar de 15 tareas', () => {
+    expect(promptDePlan('# Una app', [])).toMatch(/puede/);
+    expect(promptDePlan('# Una app', [])).toMatch(/30/);
+  });
+});
