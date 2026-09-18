@@ -156,3 +156,50 @@ export async function listarAgentes(
     ocupado: a.ocupado !== undefined && a.ocupado !== null,
   }));
 }
+
+/**
+ * Espera a que el gateway conteste, antes de pedirle nada.
+ *
+ * `actualizar.sh` reconstruye el stack entero y los contenedores no vuelven
+ * todos juntos. El bridge es de los primeros, y `retomarCorridas` se pone a
+ * trabajar apenas arranca: le pide un turno a un gateway que todavia no existe.
+ *
+ * Medido en el deploy del 2026-09-18:
+ *
+ *   22:10:45  mc-bridge      arranca y retoma la corrida
+ *   22:11:01  mc-dockerproxy todavia recreandose
+ *   22:11:15  el bridge pide el primer turno
+ *   22:11:21  mc-gateway     se recrea SEIS SEGUNDOS DESPUES del turno
+ *   22:11:24  corrida cerrada por demasiados_fallos
+ *
+ * Tres fallos de entorno —`agent_start_failed` y dos `unknown_agent`— en nueve
+ * segundos, y la noche entera perdida por catorce segundos de arranque.
+ *
+ * Con tope, y por eso devuelve un booleano en vez de esperar para siempre: un
+ * gateway que no vuelve es algo que hay que ir a mirar, y el que llama tiene
+ * que poder DECIRLO en vez de quedarse callado hasta la mañana.
+ */
+export async function esperarAlGateway(
+  deps: AgentsClientDeps,
+  opciones: { intentos?: number; esperaMs?: number } = {},
+): Promise<boolean> {
+  const intentos = opciones.intentos ?? 30;
+  const esperaMs = opciones.esperaMs ?? 2000;
+  const doFetch = deps.fetchImpl ?? fetch;
+
+  for (let i = 0; i < intentos; i++) {
+    try {
+      // `/health` y no `/agents`: no necesita el bearer ni toca los slots, asi
+      // que contesta apenas el proceso escucha. Es justo lo que se pregunta.
+      const r = await doFetch(`${deps.gatewayUrl.replace(/\/$/, '')}/health`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (r.ok) return true;
+    } catch {
+      // Todavia no esta. No se loguea cada intento: el arranque normal tiene
+      // varios y llenarian el log de ruido que no dice nada.
+    }
+    if (i < intentos - 1) await new Promise((r) => setTimeout(r, esperaMs));
+  }
+  return false;
+}

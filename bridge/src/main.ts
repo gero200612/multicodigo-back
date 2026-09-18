@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
 import { PgStore, type FilaDeDocumento } from './store.js';
-import { askAgent, listarAgentes } from './agents-client.js';
+import { askAgent, listarAgentes, esperarAlGateway } from './agents-client.js';
 import { firmarToken, crearRepo } from './panel-client.js';
 import { publicar } from './publicar.js';
 import { dispararDeploy, setearEnvVar } from './render-api.js';
@@ -486,6 +486,9 @@ const pipelineDeps = {
 const botDeps = {
   ...pipelineDeps,
   botToken: env.TELEGRAM_BOT_TOKEN,
+  // Se consulta al arrancar, antes de retomar una corrida: un deploy recrea
+  // el stack y el bridge vuelve antes que el gateway. Ver `esperarAlGateway`.
+  gatewayListo: () => esperarAlGateway(gatewayDeps),
   fetchPending: (agent: AgentId) => fetchPending(agent, gatewayDeps),
   sendDecision: (
     agent: AgentId,

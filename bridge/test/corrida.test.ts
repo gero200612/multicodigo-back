@@ -277,6 +277,8 @@ function arnes(opciones: {
   analista?: (ronda: number, eje?: string) => string[] | null;
   /** Tareas cuyo turno tira. La clave es el texto de la tarea. */
   fallan?: Record<string, string>;
+  /** Fallos que se AGOTAN: fallan `veces` y despues el turno sale bien. */
+  fallanVeces?: Record<string, { codigo: string; veces: number }>;
   /** El publicar del cierre. Sin esto no se cablea, como en un server sin Render. */
   publicar?: (
     corrida: unknown,
@@ -352,6 +354,11 @@ function arnes(opciones: {
       ? req.prompt.slice(req.prompt.lastIndexOf(MARCA) + MARCA.length).trim()
       : req.prompt;
 
+    const seAgota = opciones.fallanVeces?.[texto];
+    if (seAgota && seAgota.veces > 0) {
+      seAgota.veces -= 1;
+      throw new Error(seAgota.codigo);
+    }
     const codigo = opciones.fallan?.[texto];
     if (codigo) throw new Error(codigo);
     const aMedida = opciones.respuestas?.[texto];
@@ -366,6 +373,8 @@ function arnes(opciones: {
     ask,
     ...(opciones.publicar ? { publicar: opciones.publicar } : {}),
     transcribe: vi.fn(async () => ''),
+    // Las esperas del ciclo no tardan de verdad en los tests.
+    dormir: async () => undefined,
     ...(opciones.mergearTrabajo ? { mergearTrabajo: opciones.mergearTrabajo } : {}),
     ...(opciones.guardarTrabajo ? { guardarTrabajo: opciones.guardarTrabajo } : {}),
     listarAgentes: async () =>
@@ -859,6 +868,57 @@ describe('correrCola dentro de una corrida', () => {
     // La cancelada NO: es una decision de una persona, no una tarea a medias.
     expect(despues[1]!.estado).toBe('cancelada');
     expect(r?.reencoladas).toBe(2);
+  });
+
+  /**
+   * Un fallo de ENTORNO no cuenta contra el techo como uno de trabajo.
+   *
+   * `agent_start_failed` y `unknown_agent` no dicen que la tarea este mal:
+   * dicen que del otro lado no hay con quien hablar. Y como no cuestan tiempo
+   * —fallan en milisegundos— tres de esos entran en nueve segundos y cierran la
+   * corrida antes de que el stack termine de levantarse.
+   *
+   * Es lo que paso el 2026-09-18 despues de un deploy: el bridge volvio antes
+   * que el gateway, tiro tres turnos contra la nada, y la corrida murio con la
+   * noche entera por delante y nada roto.
+   */
+  it('un entorno que vuelve no le cuesta la corrida', async () => {
+    const d = arnes({
+      analista: () => [],
+      // Falla dos veces y despues anda: un gateway que se estaba recreando.
+      fallanVeces: { uno: { codigo: 'agent_start_failed', veces: 2 } },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    const avisos = await correr(d);
+
+    // No murio por el techo, y la tarea termino haciendose.
+    expect(avisos.some((a) => a.includes('tareas seguidas'))).toBe(false);
+    const tareas = await d.store.tareasDeChat(7);
+    expect(tareas.some((t) => t.texto === 'uno' && t.estado === 'lista')).toBe(true);
+    // Y se dijo que era el entorno, no la tarea.
+    expect(avisos.some((a) => a.includes('No es la tarea: es el entorno'))).toBe(true);
+  });
+
+  /**
+   * Y el tope, que es lo que evita el bucle infinito.
+   *
+   * Perdonar un fallo de entorno sin limite deja al ciclo reencolando la misma
+   * tarea hasta la mañana contra un gateway que no vuelve, con el informe
+   * diciendo que la corrida sigue viva. Despues de `PERDONES_DE_ENTORNO`, un
+   * fallo de entorno cuenta como cualquier otro y el techo hace su trabajo.
+   */
+  it('si el entorno no vuelve nunca, la corrida termina cerrando', async () => {
+    const d = arnes({
+      analista: () => [],
+      fallan: { uno: 'agent_start_failed', dos: 'agent_start_failed', tres: 'agent_start_failed' },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    await correr(d);
+
+    // Cerro: no se quedo girando.
+    expect(await d.store.corridaAbierta(7)).toBeUndefined();
   });
 
   it('tres cortes por tiempo NO cierran la corrida', async () => {

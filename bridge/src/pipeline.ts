@@ -177,6 +177,14 @@ export interface PipelineDeps {
    * bridge se conecta a la misma base como `postgres`, asi que ese rodeo
    * costaba una clave y una llamada de red para nada.
    */
+  /**
+   * Como se espera. Existe para que los tests no tarden de verdad.
+   *
+   * Ausente = `setTimeout`, que es lo que corre en produccion. Es la unica
+   * forma de probar la espera de entorno sin que la suite tarde un minuto y
+   * medio por caso.
+   */
+  dormir?: (ms: number) => Promise<void>;
   transcribe: (bytes: Uint8Array, mimeType: string) => Promise<string>;
   /**
    * El estado de los agentes, del gateway.
@@ -476,6 +484,43 @@ async function hayCortadasSinTerminar(
 }
 
 const ES_POR_TIEMPO = new Set(['agent_timeout', 'fetch failed', 'agent_unavailable_timeout']);
+
+/**
+ * Los codigos que significan "del otro lado no hay con quien hablar".
+ *
+ * No dicen que la tarea este mal: dicen que el gateway o el slot no estan. Y a
+ * diferencia de un fallo de trabajo, no cuestan tiempo — fallan en
+ * milisegundos— asi que tres entran en nueve segundos y alcanzan el techo antes
+ * de que nadie pueda reaccionar.
+ *
+ * Paso el 2026-09-18 despues de un deploy: `actualizar.sh` recreo el stack, el
+ * bridge volvio a las 22:10:45 y el gateway a las 22:11:21, y en el medio la
+ * corrida tiro tres turnos contra la nada y se cerro por `demasiados_fallos` a
+ * las 22:11:24. Nada estaba roto y quedaba la noche entera.
+ *
+ * `fetch failed` NO esta aca aunque tambien sea de red: ya vive en
+ * `ES_POR_TIEMPO`, donde significa un turno que tardo mas que la espera. El
+ * mismo texto con dos causas es una trampa vieja de este sistema, y se resuelve
+ * donde ya estaba resuelta.
+ */
+const ES_DE_ENTORNO = new Set(['agent_start_failed', 'unknown_agent', 'agent_unavailable']);
+
+/** Lo que se espera antes de seguir, cuando el entorno todavia no esta. */
+const ESPERA_DE_ENTORNO_MS = 30_000;
+
+/**
+ * Cuantas veces se perdona un fallo de entorno antes de tratarlo como uno real.
+ *
+ * Tiene que haber un tope. Sin el, un gateway que no vuelve nunca deja al ciclo
+ * reencolando la misma tarea hasta la mañana, y el informe dice que la corrida
+ * sigue viva cuando hace horas que no hace nada. Con tope, tres intentos dan
+ * noventa segundos —de sobra para un deploy— y despues el fallo cuenta como
+ * cualquier otro y el techo hace su trabajo.
+ */
+const PERDONES_DE_ENTORNO = 3;
+
+const porDefectoDormir = (ms: number): Promise<void> =>
+  new Promise((r) => setTimeout(r, ms));
 
 const ERROR_TEXT: Record<string, string> = {
   auth_expired: 'Ese agente necesita re-login: su credencial vencio.',
@@ -2878,6 +2923,9 @@ export async function correrCola(
    * Al segundo fallo se suelta y se vuelve a rotar. El trabajo de ese slot no
    * se pierde: queda en su rama, y el informe ya dice cual es.
    */
+  // Cuantas veces seguidas fallo el ENTORNO. Se resetea con cualquier turno que
+  // no sea de entorno: lo que interesa es una racha, no el total de la noche.
+  let fallosDeEntorno = 0;
   let mergesFallidosSeguidos = 0;
   // Para que el pendiente del merge fallido salga una vez y no una por tarea.
   let mergeAnotado = false;
@@ -3095,6 +3143,9 @@ export async function correrCola(
       // Una que sale bien vuelve el contador a cero: lo que corta la corrida
       // son tres fallos SEGUIDOS, no tres en toda la noche.
       if (corrida) await deps.store.contarFallo(corrida.id, false);
+      // Y lo mismo con el del entorno: un turno que salio bien prueba que el
+      // gateway volvio, asi que la racha anterior ya no dice nada.
+      fallosDeEntorno = 0;
 
       // Y se PUBLICA, con el trabajo ya en main.
       //
@@ -3249,6 +3300,35 @@ export async function correrCola(
                 ? 'Lo que escribio quedo commiteado y en main, y la sigo en otro turno desde ahi.'
                 : 'No pude guardar lo que escribio: quedo en el worktree del slot.'),
           );
+          continue;
+        }
+
+        // Un fallo de ENTORNO no cuenta contra el techo, y se espera antes de
+        // seguir. No es que la tarea este mal: es que del otro lado no hay con
+        // quien hablar, casi siempre porque el stack se esta reconstruyendo.
+        // Sin esto, tres de estos entran en nueve segundos y cierran la corrida
+        // — ver `ES_DE_ENTORNO`.
+        //
+        // La espera es la mitad del arreglo: da tiempo a que el gateway vuelva,
+        // que es lo que convierte el reintento en util en vez de en tres fallos
+        // mas rapidos.
+        if (ES_DE_ENTORNO.has(codigo) && ++fallosDeEntorno <= PERDONES_DE_ENTORNO) {
+          await deps.store
+            .encolar(chatId, {
+              agente: tarea.agente,
+              proyecto: tarea.proyecto,
+              textos: [tarea.texto],
+              ...(tarea.corridaId ? { corridaId: tarea.corridaId } : {}),
+              ...(tarea.ronda !== undefined ? { ronda: tarea.ronda } : {}),
+            })
+            .catch(() => undefined);
+          await avisar(
+            `⏳ ${escaparHtml(ERROR_TEXT[codigo] ?? codigo)}
+
+` +
+              'No es la tarea: es el entorno. Espero y la vuelvo a intentar.',
+          );
+          await (deps.dormir ?? porDefectoDormir)(ESPERA_DE_ENTORNO_MS);
           continue;
         }
 

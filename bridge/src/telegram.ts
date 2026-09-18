@@ -851,6 +851,14 @@ export async function decidirAprobacion(
 
 export interface BridgeDeps extends PipelineDeps {
   botToken: string;
+  /**
+   * Si el gateway ya esta escuchando. Se consulta ANTES de retomar una corrida.
+   *
+   * Opcional para no romper a quien arme los deps a mano —sin esto se retoma
+   * como antes— pero en produccion va siempre: sin la espera, un deploy con una
+   * corrida abierta la mata. Ver `esperarAlGateway`.
+   */
+  gatewayListo?: () => Promise<boolean>;
   fetchPending: (agent: AgentId) => Promise<ApprovalRequest[]>;
   sendDecision: (agent: AgentId, approvalId: string, decision: ApprovalDecision) => Promise<void>;
   /**
@@ -1156,6 +1164,37 @@ export function retomarCorridas(bot: Bot, deps: BridgeDeps): void {
       return;
     }
     if (abiertas.length === 0) return;
+
+    // Antes de tocar nada: que el gateway este vivo.
+    //
+    // `actualizar.sh` reconstruye el stack entero y los contenedores no vuelven
+    // todos juntos; el bridge es de los primeros. Sin esta espera, retomar una
+    // corrida significa pedirle un turno a un gateway que todavia no existe, y
+    // eso no falla una vez: falla tres seguidas en nueve segundos, alcanza el
+    // techo de fallos y cierra la corrida.
+    //
+    // Paso el 2026-09-18: el bridge arranco 22:10:45, pidio turno 22:11:15, el
+    // gateway se recreo 22:11:21 —seis segundos DESPUES— y a las 22:11:24 la
+    // corrida estaba cerrada por `demasiados_fallos`, con la noche entera por
+    // delante y nada roto.
+    if (deps.gatewayListo && !(await deps.gatewayListo())) {
+      // No se retoma a ciegas: si el gateway no vuelve, el problema es del
+      // servidor y hay que ir a mirarlo. Retomar igual solo cambiaria "no se
+      // hizo nada" por "se cerro sola por fallos", que es peor porque miente
+      // sobre la causa.
+      console.error('[bridge] el gateway no responde: NO retomo las corridas abiertas');
+      for (const c of abiertas) {
+        await bot.api
+          .sendMessage(
+            c.chatId,
+            'Me reinicie pero el gateway no responde, asi que no retomo la corrida todavia. ' +
+              'Cuando vuelva, mandame /reanudar.',
+          )
+          .catch(() => undefined);
+      }
+      return;
+    }
+
     console.log(`[bridge] retomando ${abiertas.length} corrida(s) abierta(s)`);
 
     for (const c of abiertas) {
