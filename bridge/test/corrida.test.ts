@@ -9,6 +9,8 @@ import {
   techoPorTamano,
   TECHO_HORA_POR_DEFECTO,
   TOPE_DE_FALLOS,
+  MARCA_DE_CONTINUACION,
+  marcarContinuacion,
   pliegoDeArchivo,
   TOPE_DE_PLIEGO,
   promptDePlan,
@@ -615,6 +617,68 @@ describe('correrCola dentro de una corrida', () => {
     const tareas = await d.store.tareasDeChat(7);
     expect(tareas.map((t) => t.estado)).toEqual(['lista', 'fallida', 'lista']);
     expect(avisos.some((a) => a.includes('Sigo con la que viene'))).toBe(true);
+  });
+
+  /**
+   * Cortarse por TIEMPO no es fallar.
+   *
+   * El turno tiene 18 minutos y una tarea grande se pasa. Lo que el agente
+   * alcanzo a escribir queda en el worktree —los agentes comparten el
+   * directorio del proyecto— asi que la tarea vuelve a la cola marcada, y no
+   * cuenta contra el techo de tres fallos.
+   *
+   * Paso en `padel` (2026-09-17) con la pantalla de Socios.
+   */
+  it('una tarea cortada por tiempo vuelve a la cola marcada, y no como fallo', async () => {
+    const d = arnes({ analista: () => [], fallan: { dos: 'agent_timeout' } });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    const avisos = await correr(d);
+
+    // La continuacion se encolo y se corrio: el aviso lo dice y el texto lleva
+    // la marca que el modelo lee antes de escribir nada.
+    expect(avisos.some((a) => a.includes('Sin tiempo'))).toBe(true);
+    const pedidas = tareasPedidas(d);
+    expect(pedidas.some((t) => t.includes(MARCA_DE_CONTINUACION))).toBe(true);
+    expect(pedidas.some((t) => t.includes('No la rehagas de cero'))).toBe(true);
+  });
+
+  it('tres cortes por tiempo NO cierran la corrida', async () => {
+    const d = arnes({
+      analista: () => [],
+      fallan: { uno: 'agent_timeout', dos: 'agent_timeout', tres: 'agent_timeout' },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    const avisos = await correr(d);
+
+    expect(avisos[avisos.length - 1]).not.toContain('tareas seguidas');
+  });
+
+  // Y el tope: si la CONTINUACION tambien se pasa, ahi si es un fallo. Sin
+  // esto, una tarea imposible se reencola sola hasta que corte el reloj.
+  it('la continuacion que se vuelve a pasar cuenta como fallo', async () => {
+    // La clave es el texto YA marcado: el arnes compara el texto completo de la
+    // tarea, y el de una continuacion lleva la marca adelante.
+    const d = arnes({
+      analista: () => [],
+      fallan: { [marcarContinuacion('uno')]: 'agent_timeout' },
+    });
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: c.proyecto,
+      textos: [marcarContinuacion('uno')],
+      corridaId: c.id,
+      ronda: 1,
+    });
+    await correr(d);
+
+    const tareas = await d.store.tareasDeChat(7);
+    expect(tareas.filter((t) => t.estado === 'fallida')).toHaveLength(1);
+    // Y no se encolo una tercera vuelta.
+    expect(tareas).toHaveLength(1);
   });
 
   it('el informe lista la tarea que fallo', async () => {

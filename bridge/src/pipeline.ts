@@ -33,6 +33,8 @@ import { partirEnTareas, type Tarea } from './cola.js';
 import { horaArgentinaDe } from './horas.js';
 import { conDespliegue } from './despliegue.js';
 import {
+  esContinuacion,
+  marcarContinuacion,
   parseOpcionesDeCorrida,
   cuandoReintentar,
   limiteDeHora,
@@ -419,6 +421,15 @@ export type PipelineOutcome =
        */
       botones?: Boton[][];
     };
+
+/**
+ * Los codigos que significan "se acabo el tiempo del turno", no "salio mal".
+ *
+ * `fetch failed` esta porque es lo que tira undici cuando el gateway no
+ * contesta a tiempo: el turno sigue corriendo del otro lado, igual que con
+ * `agent_timeout`.
+ */
+const ES_POR_TIEMPO = new Set(['agent_timeout', 'fetch failed', 'agent_unavailable_timeout']);
 
 const ERROR_TEXT: Record<string, string> = {
   auth_expired: 'Ese agente necesita re-login: su credencial vencio.',
@@ -3004,6 +3015,32 @@ export async function correrCola(
           await cerrarConInforme(corrida, 'cuentas_agotadas', deps, avisar);
           return;
         }
+        // Cortada por TIEMPO: no es un fracaso, es una tarea que no entro en un
+        // turno. El trabajo que alcanzo a escribir esta en el worktree, asi que
+        // se reencola marcada para que el que la tome siga desde ahi, y NO
+        // cuenta contra el techo de fallos: cerrar la corrida por tareas
+        // largas seria castigar el tamaño del pliego.
+        //
+        // Una sola vez: si la continuacion tambien se pasa, ahi si es fallo. Lo
+        // dice la marca, que viaja en el texto y sobrevive a un reinicio.
+        if (ES_POR_TIEMPO.has(codigo) && !esContinuacion(tarea.texto)) {
+          await deps.store
+            .encolar(chatId, {
+              agente: tarea.agente,
+              proyecto: tarea.proyecto,
+              textos: [marcarContinuacion(tarea.texto)],
+              ...(tarea.corridaId ? { corridaId: tarea.corridaId } : {}),
+              ...(tarea.ronda !== undefined ? { ronda: tarea.ronda } : {}),
+            })
+            .catch(() => undefined);
+          await avisar(
+            `⏸ Sin tiempo: ${escaparHtml(tarea.texto)}\n\n` +
+              'Se paso de los 18 minutos del turno. Lo que escribio queda, y la sigo ' +
+              'en otro turno desde donde quedo.',
+          );
+          continue;
+        }
+
         await deps.store.contarFallo(corrida.id, true);
         // Y se SIGUE con la siguiente. El techo de fallos seguidos —que se mira
         // arriba, en la proxima vuelta— es lo que evita que esto queme la noche

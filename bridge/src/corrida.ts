@@ -201,6 +201,52 @@ export function techoPorTamano(cantidadDeTareas: number): number {
  */
 export const TOPE_DE_FALLOS = 3;
 
+/**
+ * La marca de una tarea que viene de un turno cortado por tiempo.
+ *
+ * ## Por que existe
+ *
+ * Un turno tiene 18 minutos. Cuando una tarea grande se pasa, el trabajo que el
+ * agente alcanzo a escribir QUEDA en el worktree —los agentes comparten el
+ * directorio del proyecto— pero la tarea se cerraba como `fallida` y contaba
+ * contra el techo de tres fallos seguidos. Dos cosas mal en la misma linea:
+ * dice "fracaso" sobre trabajo que existe, y acerca el cierre de la corrida por
+ * algo que no salio mal, solo largo.
+ *
+ * Paso en `padel` (2026-09-17): la pantalla de Socios —listado, alta, edicion,
+ * baja, pago de cuota y aviso de atrasados, todo en una tarea— se corto a los
+ * 18 minutos exactos.
+ *
+ * ## Por que la marca va en el TEXTO
+ *
+ * Porque sobrevive al reinicio del bridge y no necesita una columna nueva. Y
+ * porque la lee el modelo: el que toma la tarea tiene que saber que hay codigo
+ * a medias antes de escribir la primera linea, o la rehace de cero al lado de
+ * lo que ya estaba.
+ *
+ * Una sola vez por tarea: si la continuacion tambien se pasa de tiempo, ahi si
+ * es un fallo. Sin ese tope, una tarea imposible se reencola sola hasta que
+ * corte el reloj.
+ */
+export const MARCA_DE_CONTINUACION = '[continua un turno cortado por tiempo]';
+
+/** Si esta tarea ya es la continuacion de una que se corto. */
+export function esContinuacion(texto: string): boolean {
+  return texto.startsWith(MARCA_DE_CONTINUACION);
+}
+
+/** El texto de la tarea, marcado para que el que la tome sepa que sigue algo. */
+export function marcarContinuacion(texto: string): string {
+  return [
+    MARCA_DE_CONTINUACION,
+    'El turno anterior se quedo sin tiempo, no sin trabajo: lo que alcanzo a',
+    'escribir ESTA en el worktree. Antes de tocar nada, mira que archivos hay y',
+    'segui desde ahi. No la rehagas de cero.',
+    '',
+    texto,
+  ].join('\n');
+}
+
 const HORA = /^([01][0-9]|2[0-3]):([0-5][0-9])$/;
 
 const UN_DIA = 24 * 60 * 60 * 1000;
