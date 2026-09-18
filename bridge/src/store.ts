@@ -1622,7 +1622,7 @@ export class InMemoryStore implements Store {
     let reencoladas = 0;
     for (const t of this.cola) {
       if (t.corridaId !== c.id) continue;
-      if (t.estado !== 'corriendo' && t.estado !== 'fallida' && t.estado !== 'cancelada') continue;
+      if (t.estado !== 'corriendo' && t.estado !== 'fallida') continue;
       t.estado = 'pendiente';
       reencoladas += 1;
     }
@@ -3037,11 +3037,24 @@ export class PgStore implements Store {
 
       // `corriendo` entra en la lista, y es la razon de ser de todo esto: una
       // tarea que quedo tomada cuando el proceso murio no vuelve sola. Las
-      // otras dos van por lo mismo que en `reanudarCorrida`.
+      // `fallida` van por lo mismo que en `reanudarCorrida`: se intentaron y
+      // salieron mal, pero siguen siendo trabajo del pliego.
+      //
+      // Las `cancelada` NO, y es lo contrario de lo que hacia antes. Una tarea
+      // cancelada es una DECISION de una persona —miro la tarea y dijo que no
+      // va— y revivirla es deshacersela sin avisar. `reanudarCorrida` si las
+      // revive, y esta bien: ahi el cierre las corto sin que nadie las mirara.
+      // Aca el proceso se murio, y lo que alguien decidio antes de morirse
+      // sigue valiendo.
+      //
+      // Visto en `padel` el 2026-09-18: se podaron 21 tareas obsoletas —cosas
+      // que el veredicto pedia y que main ya tenia—, el bridge se reinicio, y
+      // las 21 volvieron a la cola. Cada una cuesta entre 2 y 16 minutos en
+      // confirmar "ya estaba hecho": la noche entera contra el operador.
       const t = await cliente.query(
         `UPDATE cola_tareas SET estado = 'pendiente', cerrado_en = NULL, resultado = NULL,
                 empezado_en = NULL
-           WHERE corrida_id = $1 AND estado IN ('corriendo', 'fallida', 'cancelada')`,
+           WHERE corrida_id = $1 AND estado IN ('corriendo', 'fallida')`,
         [corrida.id],
       );
       await cliente.query('COMMIT');

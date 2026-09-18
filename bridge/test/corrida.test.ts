@@ -824,6 +824,43 @@ describe('correrCola dentro de una corrida', () => {
     expect(ejesPedidos).toContain('testeos');
   });
 
+  /**
+   * El rescate del arranque NO revive lo que una persona cancelo.
+   *
+   * `retomarCorridas` destraba una corrida que quedo a medias cuando el proceso
+   * murio, y para eso devuelve a la cola lo que estaba `corriendo` o `fallida`:
+   * eso se corto solo y sigue siendo trabajo del pliego. Pero tambien revivia
+   * las `cancelada`, y esas son lo contrario — alguien miro la tarea y decidio
+   * que no va.
+   *
+   * En la corrida `padel` del 2026-09-18 eso peleo contra el operador: se
+   * podaron 21 tareas obsoletas (cosas que el veredicto pedia y que main ya
+   * tenia), el bridge se reinicio, y las 21 volvieron a la cola. Cada una cuesta
+   * entre 2 y 16 minutos en confirmar "ya estaba hecho": la noche entera.
+   */
+  it('el rescate revive lo cortado pero no lo cancelado', async () => {
+    const d = arnes({ analista: () => [] });
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+
+    const tareas = await d.store.tareasDeChat(7);
+    await d.store.cerrarTarea(tareas[0]!.id, 'fallida', 'internal');
+    await d.store.cerrarTarea(tareas[1]!.id, 'cancelada');
+    // La tercera queda tomada, como la deja un proceso que se murio en el medio.
+    await d.store.tomarProxima(7, c.id);
+
+    const r = await d.store.rescatarCorridaAbierta(7);
+
+    const despues = await d.store.tareasDeChat(7);
+    // La fallida y la que quedo corriendo vuelven.
+    expect(despues[0]!.estado).toBe('pendiente');
+    expect(despues[2]!.estado).toBe('pendiente');
+    // La cancelada NO: es una decision de una persona, no una tarea a medias.
+    expect(despues[1]!.estado).toBe('cancelada');
+    expect(r?.reencoladas).toBe(2);
+  });
+
   it('tres cortes por tiempo NO cierran la corrida', async () => {
     const d = arnes({
       analista: () => [],
