@@ -519,6 +519,15 @@ const ESPERA_DE_ENTORNO_MS = 30_000;
  */
 const PERDONES_DE_ENTORNO = 3;
 
+/**
+ * Los fallos de entorno seguidos DE LA TANDA DE ANALISIS.
+ *
+ * Es de modulo y no local porque cada reintento entra por una llamada nueva a
+ * `tandaDeAnalisis`: un contador local volveria a cero en cada vuelta y el tope
+ * no existiria. Se resetea cuando una tanda llega al final sin fallar.
+ */
+let fallosDeEntornoEnAnalisis = 0;
+
 const porDefectoDormir = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
@@ -2636,6 +2645,26 @@ async function tandaDeAnalisis(
         await cerrarConInforme(corrida, 'cuentas_agotadas', deps, avisar);
         return 'cerrada';
       }
+      // Un fallo de ENTORNO no cuenta contra el techo, igual que en la cola.
+      // Este camino se me paso la primera vez, y es el que mas importa: con la
+      // cola vacia la corrida va DERECHO al analisis, asi que un deploy la
+      // encuentra justo aca. Paso dos veces seguidas el 2026-09-18, 22:11 y
+      // 22:26, con los mismos tres codigos.
+      //
+      // Se devuelve `reintentar` sin contar: el bucle vuelve, la cola sigue
+      // vacia y la tanda se corre de nuevo —ahora salteando los ejes que ya
+      // firmaron—. El tope lo pone `PERDONES_DE_ENTORNO`.
+      if (ES_DE_ENTORNO.has(codigo) && ++fallosDeEntornoEnAnalisis <= PERDONES_DE_ENTORNO) {
+        await avisar(
+          `⏳ ${escaparHtml(ERROR_TEXT[codigo] ?? codigo)}
+
+` +
+            'No es la revision: es el entorno. Espero y la vuelvo a intentar.',
+        );
+        await (deps.dormir ?? porDefectoDormir)(ESPERA_DE_ENTORNO_MS);
+        return 'reintentar';
+      }
+
       const fallos = await deps.store.contarFallo(corrida.id, true);
       if (techoAlcanzado({ ...corrida, fallosSeguidos: fallos }, new Date()) !== null) {
         await cerrarConInforme(corrida, 'demasiados_fallos', deps, avisar);
@@ -2652,6 +2681,7 @@ async function tandaDeAnalisis(
     }
   }
 
+  fallosDeEntornoEnAnalisis = 0;
   return 'ok';
 }
 

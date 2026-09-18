@@ -279,6 +279,8 @@ function arnes(opciones: {
   fallan?: Record<string, string>;
   /** Fallos que se AGOTAN: fallan `veces` y despues el turno sale bien. */
   fallanVeces?: Record<string, { codigo: string; veces: number }>;
+  /** El turno del ANALISTA falla `veces` y despues anda. Para probar el entorno. */
+  analistaFallaVeces?: { codigo: string; veces: number };
   /** El publicar del cierre. Sin esto no se cablea, como en un server sin Render. */
   publicar?: (
     corrida: unknown,
@@ -306,6 +308,11 @@ function arnes(opciones: {
     if (req.agent && opciones.sinTokens?.includes(req.agent)) throw new Error('usage_limit');
     const esAnalisis = req.prompt.includes('--- PLIEGO ---');
     if (esAnalisis) {
+      const falla = opciones.analistaFallaVeces;
+      if (falla && falla.veces > 0) {
+        falla.veces -= 1;
+        throw new Error(falla.codigo);
+      }
       const corrida = await store.corridaAbierta(7);
       if (!corrida) throw new Error('el analista corrio sin corrida abierta');
       // Cual de los cuatro es, sacado del prompt como lo leeria el modelo.
@@ -919,6 +926,33 @@ describe('correrCola dentro de una corrida', () => {
 
     // Cerro: no se quedo girando.
     expect(await d.store.corridaAbierta(7)).toBeUndefined();
+  });
+
+  /**
+   * Y lo mismo en la TANDA DE ANALISTAS, que es el camino que se me paso.
+   *
+   * Con la cola vacia la corrida va derecho al analisis, asi que un deploy la
+   * encuentra justo ahi. `tandaDeAnalisis` tiene su propio `catch` y contaba el
+   * fallo de entorno como uno de trabajo.
+   *
+   * Paso dos veces seguidas el 2026-09-18, a las 22:11 y a las 22:26: el mismo
+   * deploy, los mismos tres codigos, la misma corrida cerrada por
+   * `demasiados_fallos` en menos de diez segundos.
+   */
+  it('un fallo de entorno en la tanda de analistas no cierra la corrida', async () => {
+    const d = arnes({
+      // El analista falla por entorno las dos primeras veces y despues anda.
+      analistaFallaVeces: { codigo: 'agent_start_failed', veces: 2 },
+      analista: () => [],
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    const avisos = await correr(d);
+
+    // No se cerro por el techo de fallos: el entorno no cuenta como trabajo.
+    expect(avisos.some((a) => a.includes('tareas seguidas'))).toBe(false);
+    // Y se dijo que era el entorno.
+    expect(avisos.some((a) => a.includes('es el entorno'))).toBe(true);
   });
 
   it('tres cortes por tiempo NO cierran la corrida', async () => {
