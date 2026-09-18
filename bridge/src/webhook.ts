@@ -107,6 +107,15 @@ export interface ApiDeps {
 const CORRIDAS_A_MOSTRAR = 5;
 /** Cuanto de cada tarea viaja al panel. */
 const TOPE_TEXTO_TAREA = 400;
+/**
+ * Cuanto del resultado de una tarea FALLIDA viaja al panel.
+ *
+ * Solo el de las fallidas: el de una tarea que salio bien es la respuesta
+ * entera del agente —parrafos— y multiplicado por sesenta tareas convierte el
+ * panorama en un megabyte. El de una fallida es un codigo de error o un mensaje
+ * corto, y es lo unico con lo que se puede ir a mirar que paso.
+ */
+const TOPE_RESULTADO = 300;
 
 export function buildWebhookServer(
   bot: Pick<Bot, 'handleUpdate'>,
@@ -205,6 +214,13 @@ export function buildWebhookServer(
             texto: t.texto.length > TOPE_TEXTO_TAREA ? `${t.texto.slice(0, TOPE_TEXTO_TAREA)}…` : t.texto,
             estado: t.estado,
             ronda: t.ronda ?? null,
+            // El motivo, para el log de la corrida. Sin esto el panel muestra
+            // "falló" y hay que ir a la base para saber si fue tiempo, tokens o
+            // la sesion vencida — que son tres arreglos distintos.
+            resultado:
+              t.estado === 'fallida' && t.resultado
+                ? t.resultado.slice(0, TOPE_RESULTADO)
+                : null,
           })),
         })),
       );

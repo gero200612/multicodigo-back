@@ -113,7 +113,13 @@ public sealed record TareaDeCorrida(
     string Agente,
     string Texto,
     string Estado,
-    int? Ronda = null);
+    int? Ronda = null,
+    /// <summary>
+    /// Por qué falló, cuando falló. Null en las demás: el resultado de una tarea
+    /// que salió bien es la respuesta entera del agente, y sesenta de esas
+    /// convierten el panorama en un megabyte.
+    /// </summary>
+    string? Resultado = null);
 
 /// <summary>
 /// Una corrida desatendida con su cola de tareas. Sale del bridge: la cola del
