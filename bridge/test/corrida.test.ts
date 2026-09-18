@@ -290,6 +290,12 @@ function arnes(opciones: {
   respuestas?: Record<string, string>;
   /** El merge por tarea. Sin esto no se cablea, como en un server sin el token de admin. */
   mergearTrabajo?: (proyecto: string, agente: string) => Promise<{ ok: boolean; detalle?: string }>;
+  /** El rescate de un turno cortado por tiempo. Misma puerta que el merge. */
+  guardarTrabajo?: (
+    proyecto: string,
+    agente: string,
+    mensaje: string,
+  ) => Promise<{ ok: boolean; detalle?: string; commiteo: boolean }>;
 } = {}) {
   const store = new InMemoryStore();
   const ask = vi.fn(async (req: { prompt: string; agent?: string; sessionId?: string }) => {
@@ -361,6 +367,7 @@ function arnes(opciones: {
     ...(opciones.publicar ? { publicar: opciones.publicar } : {}),
     transcribe: vi.fn(async () => ''),
     ...(opciones.mergearTrabajo ? { mergearTrabajo: opciones.mergearTrabajo } : {}),
+    ...(opciones.guardarTrabajo ? { guardarTrabajo: opciones.guardarTrabajo } : {}),
     listarAgentes: async () =>
       (opciones.slots ?? []).map((id) => ({ id, cuenta: true, arriba: false })),
   } as unknown as PipelineDeps & { store: InMemoryStore; ask: typeof ask };
@@ -641,6 +648,141 @@ describe('correrCola dentro de una corrida', () => {
     const pedidas = tareasPedidas(d);
     expect(pedidas.some((t) => t.includes(MARCA_DE_CONTINUACION))).toBe(true);
     expect(pedidas.some((t) => t.includes('No la rehagas de cero'))).toBe(true);
+  });
+
+  /**
+   * Lo que el corte de tiempo TIENE que dejar guardado.
+   *
+   * Sin esto, lo que el agente escribio se queda sin commitear en el worktree
+   * del slot — y el problema no es el codigo perdido, es que el gateway se
+   * saltea el rebase sobre main mientras el worktree este sucio. El slot queda
+   * clavado sobre un main viejo, sus merges se rechazan por non-fast-forward
+   * para siempre, y el ciclo vuelve a encolar lo que ya estaba hecho.
+   *
+   * La corrida `padel` del 2026-09-18 construyo el mismo DashboardController
+   * tres veces por esto.
+   */
+  it('al cortarse por tiempo commitea y mergea antes de reencolar', async () => {
+    const guardadas: string[] = [];
+    const mergeadas: string[] = [];
+    const d = arnes({
+      analista: () => [],
+      fallan: { dos: 'agent_timeout' },
+      guardarTrabajo: async (_p, agente, mensaje) => {
+        guardadas.push(`${agente}: ${mensaje}`);
+        return { ok: true, commiteo: true };
+      },
+      mergearTrabajo: async (_p, agente) => {
+        mergeadas.push(agente);
+        return { ok: true };
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    await correr(d);
+
+    // Se guardo, y el mensaje del commit nombra la tarea: a la mañana el
+    // `git log` tiene que decir de donde salio ese commit.
+    expect(guardadas.some((g) => g.includes('dos'))).toBe(true);
+    // Y entro a main, igual que el trabajo terminado. Esa es la mitad que hace
+    // que el que la retome arranque de lo que ya hay.
+    expect(mergeadas.length).toBeGreaterThan(0);
+  });
+
+  // Cortada NO es fallida, y la diferencia no es cosmetica: el informe de la
+  // mañana cuenta las fallidas como trabajo que salio mal, y esto es trabajo
+  // que no entro en un turno.
+  it('la tarea cortada queda como cortada, no como fallida', async () => {
+    const d = arnes({
+      analista: () => [],
+      fallan: { dos: 'agent_timeout' },
+      guardarTrabajo: async () => ({ ok: true, commiteo: true }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    await correr(d);
+
+    const tareas = await d.store.tareasDeChat(7);
+    expect(tareas.some((t) => t.estado === 'cortada')).toBe(true);
+    expect(tareas.some((t) => t.estado === 'fallida')).toBe(false);
+  });
+
+  // El aviso que no existia: si el worktree quedo sucio igual, el slot esta
+  // clavado y nadie se entera hasta que alguien mire los logs del gateway.
+  it('si no se pudo guardar, queda anotado como pendiente de la corrida', async () => {
+    const d = arnes({
+      analista: () => [],
+      fallan: { dos: 'agent_timeout' },
+      guardarTrabajo: async () => ({
+        ok: false,
+        detalle: 'padel-front: dubious ownership',
+        commiteo: false,
+      }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    const avisos = await correr(d);
+
+    // El informe de la mañana es donde se lee: un `console.error` del gateway
+    // no lo ve nadie, que es exactamente por lo que esto tardo una noche en
+    // salir a la luz.
+    expect(avisos.some((a) => a.includes('quedo sin guardar'))).toBe(true);
+  });
+
+  /**
+   * El techo de RONDAS no cierra con una cortada a medio terminar.
+   *
+   * Es la parte que faltaba del mismo arreglo: una tarea cortada no fallo, no
+   * entro en un turno, asi que cerrar con su continuacion en la cola es tirar
+   * trabajo empezado — y peor, dejarlo a mitad de camino en main. El techo de
+   * HORA sigue cortando igual: para eso existe.
+   */
+  it('el techo de rondas espera a que se terminen las cortadas', async () => {
+    const d = arnes({ analista: () => [], guardarTrabajo: async () => ({ ok: true, commiteo: true }) });
+    await abrir(d, 'rondas=1');
+    const c = (await d.store.corridaAbierta(7))!;
+
+    // El estado exacto que dejaba trabajo tirado: una continuacion en la cola y
+    // el contador de rondas ya pasado del techo. Antes de esto, la primera
+    // vuelta del bucle miraba el techo, cerraba, y esa continuacion se
+    // cancelaba sin correr nunca — con su mitad del trabajo ya en main.
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: c.proyecto,
+      textos: [marcarContinuacion('dos')],
+      corridaId: c.id,
+      ronda: 1,
+    });
+    await d.store.avanzarRonda(c.id);
+    await d.store.avanzarRonda(c.id);
+
+    await correr(d);
+
+    expect(tareasPedidas(d).some((t) => t.includes(MARCA_DE_CONTINUACION))).toBe(true);
+    const tareas = await d.store.tareasDeChat(7);
+    expect(tareas.some((t) => t.estado === 'lista' && t.texto.includes(MARCA_DE_CONTINUACION))).toBe(
+      true,
+    );
+  });
+
+  // Pero el de HORA sigue cortando con cortadas adentro: para eso existe. Sin
+  // este limite, una continuacion que se pasa otra vez dejaria la corrida
+  // abierta hasta la mañana.
+  it('el techo de hora corta igual aunque queden cortadas', async () => {
+    const d = arnes({ analista: () => [], guardarTrabajo: async () => ({ ok: true, commiteo: true }) });
+    await abrir(d, 'hasta=00:01');
+    const c = (await d.store.corridaAbierta(7))!;
+    await d.store.encolar(7, {
+      agente: 'c1',
+      proyecto: c.proyecto,
+      textos: [marcarContinuacion('dos')],
+      corridaId: c.id,
+      ronda: 1,
+    });
+
+    await correr(d);
+
+    expect(await d.store.corridaAbierta(7)).toBeUndefined();
   });
 
   it('tres cortes por tiempo NO cierran la corrida', async () => {

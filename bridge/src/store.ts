@@ -702,7 +702,7 @@ export interface Store {
    */
   cerrarTarea(
     id: string,
-    estado: 'lista' | 'fallida',
+    estado: 'lista' | 'fallida' | 'cortada' | 'cancelada',
     resultado?: string,
     agenteReal?: string,
   ): Promise<void>;
@@ -1443,7 +1443,7 @@ export class InMemoryStore implements Store {
 
   async cerrarTarea(
     id: string,
-    estado: 'lista' | 'fallida',
+    estado: 'lista' | 'fallida' | 'cortada' | 'cancelada',
     resultado?: string,
     agenteReal?: string,
   ): Promise<void> {
@@ -2688,7 +2688,7 @@ export class PgStore implements Store {
 
   async cerrarTarea(
     id: string,
-    estado: 'lista' | 'fallida',
+    estado: 'lista' | 'fallida' | 'cortada' | 'cancelada',
     resultado?: string,
     agenteReal?: string,
   ): Promise<void> {

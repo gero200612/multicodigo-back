@@ -69,6 +69,54 @@ export async function mergearEnGateway(
 }
 
 /**
+ * Guarda y pushea lo que dejo un turno cortado por tiempo.
+ *
+ * El bridge llama a esto cuando el turno se paso de los 18 minutos. Va por la
+ * puerta de admin y no por `/git/commit` + `/git/push` porque esas dos van con
+ * el token del TURNO, y el turno ya se solto.
+ *
+ * Lo que se rescata no es tanto el codigo como el ESTADO del worktree: mientras
+ * tenga cambios sin commitear, el gateway se saltea el rebase sobre main en
+ * cada turno siguiente y el slot queda clavado sobre un main viejo. Ver
+ * `gitGuardar` en el gateway.
+ */
+export async function guardarEnGateway(
+  req: { agent: string; project: string; repo: string; message: string },
+  githubToken: string | undefined,
+  deps: GatewayAdminDeps,
+): Promise<{ ok: boolean; output: string; commiteo: boolean }> {
+  try {
+    const r = await pedir('/git/guardar', { ...req, githubToken }, deps);
+    if (r.ok) {
+      try {
+        const j = JSON.parse(r.texto) as { commiteo?: unknown; output?: unknown };
+        return {
+          ok: true,
+          output: typeof j.output === 'string' ? j.output : r.texto,
+          commiteo: j.commiteo === true,
+        };
+      } catch {
+        return { ok: true, output: r.texto, commiteo: false };
+      }
+    }
+    // Un gateway viejo no tiene la ruta: 404. No es un fallo del trabajo, es un
+    // despliegue a medias, y decirlo asi evita mandar a mirar el repo.
+    if (r.status === 404) {
+      return { ok: false, output: 'este gateway todavia no sabe guardar turnos cortados', commiteo: false };
+    }
+    try {
+      const j = JSON.parse(r.texto) as { message?: string };
+      return { ok: false, output: j.message ?? r.texto, commiteo: false };
+    } catch {
+      return { ok: false, output: r.texto, commiteo: false };
+    }
+  } catch (err) {
+    // Igual que el merge: que el gateway no conteste no puede tirar la corrida.
+    return { ok: false, output: err instanceof Error ? err.message : String(err), commiteo: false };
+  }
+}
+
+/**
  * Que hay en el worktree del repo.
  *
  * Ante cualquier duda contesta que SI tiene package.json: el que decide con

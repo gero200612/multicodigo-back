@@ -21,7 +21,7 @@ import { dispararDeploy, setearEnvVar } from './render-api.js';
 import { reescribirConfig } from './conectar.js';
 import { escribirArchivo, leerArchivo } from './github-contenido.js';
 import type { Corrida } from './corrida.js';
-import { mergearEnGateway, inspeccionarRepo } from './gateway-admin.js';
+import { mergearEnGateway, guardarEnGateway, inspeccionarRepo } from './gateway-admin.js';
 import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
 import {
@@ -419,6 +419,48 @@ const pipelineDeps = {
         return fallos.length === 0
           ? { ok: true }
           : { ok: false, detalle: fallos.join(' · ') };
+      }
+    : undefined,
+  /**
+   * Guardar lo que dejo un turno cortado por tiempo.
+   *
+   * Mismo cableado y misma puerta que `mergearTrabajo`: sale por
+   * `GATEWAY_ADMIN_TOKEN` porque commitea y pushea con el token de GitHub que
+   * firma el bridge, no con el del turno —que a esa altura ya no existe—.
+   */
+  guardarTrabajo: env.GATEWAY_ADMIN_TOKEN
+    ? async (proyecto: string, agente: string, mensaje: string) => {
+        const proyectoId = await store.idDeProyecto(proyecto);
+        if (!proyectoId) return { ok: false, detalle: 'el proyecto no esta en la base', commiteo: false };
+
+        const admin = { gatewayUrl: env.GATEWAY_URL, adminToken: env.GATEWAY_ADMIN_TOKEN! };
+        const instalacion = await store.instalacionDeProyecto(proyectoId);
+        const githubToken =
+          instalacion !== undefined && env.PANEL_URL
+            ? await firmarToken(instalacion, {
+                panelUrl: env.PANEL_URL,
+                token: env.BRIDGE_API_TOKEN,
+              })
+            : undefined;
+
+        // Todos los repos del bot, como en el merge: el bridge no sabe en cual
+        // escribio el modelo, y sobre uno que no cambio esto es un status
+        // limpio y un push que no manda nada.
+        const fallos: string[] = [];
+        let commiteo = false;
+        for (const repo of await store.reposDeProyecto(proyectoId)) {
+          if (!repo.creado_por_el_bot) continue;
+          const g = await guardarEnGateway(
+            { agent: agente, project: proyecto, repo: repo.nombre, message: mensaje },
+            githubToken,
+            admin,
+          );
+          if (g.commiteo) commiteo = true;
+          if (!g.ok) fallos.push(`${repo.nombre}: ${g.output}`);
+        }
+        return fallos.length === 0
+          ? { ok: true, commiteo }
+          : { ok: false, detalle: fallos.join(' · '), commiteo };
       }
     : undefined,
   transcribe: (bytes: Uint8Array, mimeType: string) =>

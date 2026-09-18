@@ -149,6 +149,25 @@ export interface PipelineDeps {
     agente: string,
   ) => Promise<{ ok: boolean; detalle?: string }>;
   /**
+   * Rescata lo que dejo un turno cortado por tiempo: commitea, pushea la rama.
+   *
+   * Se llama cuando el turno se paso de `AGENT_TIMEOUT_MS`, ANTES de reencolar
+   * la continuacion. Sin esto lo escrito se queda sin commitear en el worktree
+   * del slot, y ahi el problema deja de ser el trabajo perdido: el gateway se
+   * saltea el rebase sobre main mientras el worktree este sucio, asi que el
+   * slot queda clavado sobre el main del dia del primer timeout, sus merges se
+   * rechazan por non-fast-forward para siempre, y el ciclo vuelve a encolar lo
+   * que ya estaba hecho. La corrida `padel` del 2026-09-18 hizo tres veces el
+   * mismo DashboardController por esto.
+   *
+   * OPCIONAL, como `mergearTrabajo` y por la misma puerta (`GATEWAY_ADMIN_TOKEN`).
+   */
+  guardarTrabajo?: (
+    proyecto: string,
+    agente: string,
+    mensaje: string,
+  ) => Promise<{ ok: boolean; detalle?: string; commiteo: boolean }>;
+  /**
    * De donde salen los documentos del proyecto.
    *
    * Ya no es una dependencia opcional: se leen del store, que siempre esta.
@@ -429,6 +448,33 @@ export type PipelineOutcome =
  * contesta a tiempo: el turno sigue corriendo del otro lado, igual que con
  * `agent_timeout`.
  */
+/**
+ * Si el cierre por RONDAS tiene que esperar a una tarea cortada por tiempo.
+ *
+ * Una cortada no fallo: no entro en los 18 minutos del turno, y su continuacion
+ * quedo en la cola con la mitad del trabajo ya commiteada en main. Cerrar ahi
+ * es dejar el trabajo por la mitad y —peor— volver a encolarlo entero la
+ * proxima corrida, que es de donde salio el trabajo doble de `padel`
+ * (2026-09-18).
+ *
+ * Solo frena a `techo_rondas`. `techo_hora` y `demasiados_fallos` cortan igual:
+ * el primero es el limite duro de la noche y el segundo dice que algo anda mal,
+ * y en los dos casos seguir es peor que parar. Sin esa distincion, una
+ * continuacion que se vuelve a pasar dejaria la corrida abierta hasta la mañana.
+ */
+async function hayCortadasSinTerminar(
+  motivo: MotivoDeCierre,
+  corrida: Corrida,
+  chatId: number,
+  deps: PipelineDeps,
+): Promise<boolean> {
+  if (motivo !== 'techo_rondas') return false;
+  const tareas = await deps.store.tareasDeChat(chatId).catch(() => []);
+  return tareas.some(
+    (t) => t.estado === 'pendiente' && t.corridaId === corrida.id && esContinuacion(t.texto),
+  );
+}
+
 const ES_POR_TIEMPO = new Set(['agent_timeout', 'fetch failed', 'agent_unavailable_timeout']);
 
 const ERROR_TEXT: Record<string, string> = {
@@ -2799,7 +2845,7 @@ export async function correrCola(
     // una ronda, que es justo para lo que existen.
     if (corrida) {
       const motivo = techoAlcanzado(corrida, new Date());
-      if (motivo) {
+      if (motivo && !(await hayCortadasSinTerminar(motivo, corrida, chatId, deps))) {
         await cerrarConInforme(corrida, motivo, deps, avisar);
         return;
       }
@@ -3071,6 +3117,60 @@ export async function correrCola(
         // Una sola vez: si la continuacion tambien se pasa, ahi si es fallo. Lo
         // dice la marca, que viaja en el texto y sobrevive a un reinicio.
         if (ES_POR_TIEMPO.has(codigo) && !esContinuacion(tarea.texto)) {
+          // No es `fallida`: no salio mal, no entro en un turno. La diferencia
+          // la leen el informe —que cuenta fallidas como trabajo roto— y el
+          // cierre, que no baja la persiana con cortadas sin terminar.
+          await deps.store.cerrarTarea(tarea.id, 'cortada', codigo);
+
+          // PRIMERO se guarda, despues se reencola.
+          //
+          // Sin esto, lo que el agente alcanzo a escribir se queda sin
+          // commitear en el worktree del slot, y ahi el problema deja de ser el
+          // trabajo perdido: el gateway se saltea el rebase sobre main mientras
+          // el worktree este sucio (`prepararWorktreeDeRepo`), asi que el slot
+          // queda clavado sobre el main del dia del primer corte, sus merges se
+          // rechazan por non-fast-forward para siempre, y el ciclo vuelve a
+          // encolar lo que ya estaba hecho.
+          //
+          // La corrida `padel` del 2026-09-18 construyo el mismo
+          // DashboardController tres veces por este agujero, y el aviso de
+          // worktree sucio moria en un `console.error` del gateway.
+          let guardado = true;
+          if (deps.guardarTrabajo) {
+            const g = await deps
+              .guardarTrabajo(
+                tarea.proyecto,
+                tarea.agente,
+                // Una linea y corto: es el `git log` de la mañana, no el pliego.
+                `${tarea.texto.replace(/\s+/g, ' ').slice(0, 60)} (cortada por tiempo)`,
+              )
+              .catch((err) => ({
+                ok: false,
+                detalle: err instanceof Error ? err.message : 'error',
+                commiteo: false,
+              }));
+            guardado = g.ok;
+            // Y si se guardo, entra a main como cualquier trabajo terminado: es
+            // lo que hace que el que la retome —este slot u otro, da igual—
+            // arranque de lo que ya hay en vez de escribirlo de nuevo.
+            if (g.ok && corrida && deps.mergearTrabajo) {
+              await deps.mergearTrabajo(tarea.proyecto, tarea.agente).catch(() => undefined);
+            }
+            if (!g.ok && corrida) {
+              // Al informe, porque es lo unico que alguien lee a la mañana. Un
+              // worktree que queda sucio deja al slot clavado, y eso hoy no se
+              // ve en ningun lado hasta que una corrida entera sale mal.
+              await deps.store
+                .anotarPendiente(
+                  corrida.id,
+                  `el trabajo de ${tarea.agente} quedo sin guardar al cortarse por tiempo ` +
+                    `(${g.detalle ?? 'sin detalle'}): mientras su worktree este sucio ese slot ` +
+                    'no se rebasa sobre main y va a repetir trabajo',
+                )
+                .catch(() => undefined);
+            }
+          }
+
           await deps.store
             .encolar(chatId, {
               agente: tarea.agente,
@@ -3081,9 +3181,13 @@ export async function correrCola(
             })
             .catch(() => undefined);
           await avisar(
-            `⏸ Sin tiempo: ${escaparHtml(tarea.texto)}\n\n` +
-              'Se paso de los 18 minutos del turno. Lo que escribio queda, y la sigo ' +
-              'en otro turno desde donde quedo.',
+            `⏸ Sin tiempo: ${escaparHtml(tarea.texto)}
+
+` +
+              'Se paso de los 18 minutos del turno. ' +
+              (guardado
+                ? 'Lo que escribio quedo commiteado y en main, y la sigo en otro turno desde ahi.'
+                : 'No pude guardar lo que escribio: quedo en el worktree del slot.'),
           );
           continue;
         }

@@ -47,7 +47,12 @@ export interface Tarea {
   proyecto: string;
   texto: string;
   posicion: number;
-  estado: 'pendiente' | 'corriendo' | 'lista' | 'fallida' | 'cancelada';
+  /**
+   * `cortada` es aparte de `fallida` a proposito: la tarea no salio mal, no
+   * entro en los 18 minutos del turno. El informe las cuenta distinto y el
+   * cierre por techo espera a que no queden cortadas sin terminar.
+   */
+  estado: 'pendiente' | 'corriendo' | 'lista' | 'fallida' | 'cortada' | 'cancelada';
   resultado?: string;
   /**
    * De que corrida desatendida salio, si salio de una.
