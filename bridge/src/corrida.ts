@@ -1142,6 +1142,42 @@ const POR_QUE: Record<MotivoDeCierre, string> = {
  *
  * El detalle no se pierde: sigue entero en la cola, y `/cola` lo muestra.
  */
+/**
+ * Un pendiente sin la salida cruda de git adentro.
+ *
+ * Los pendientes de merge traen el error entero entre parentesis: el `To
+ * https://...`, el `! [rejected]`, cuatro `hint:` y el "See the Note about
+ * fast-forwards". Son diez lineas para decir lo que dice la primera frase, y
+ * en el informe de `padel` del 2026-09-19 ocuparon la pantalla entera.
+ *
+ * Se saca el parentesis largo y NO se corta por el final, que es donde vive lo
+ * accionable: "...: conectalo a mano", "...: mergealo a mano". Cortar a ciegas
+ * dejaba el diagnostico y se comia que hacer.
+ */
+function sinRuidoDeGit(texto: string): string {
+  // Del PRIMER parentesis al ULTIMO, y no con una expresion regular: la salida
+  // de git trae parentesis adentro —el `(e.g. 'git pull ...')` de su propio
+  // hint— asi que un `[^)]*` corta en el de adentro y deja la mitad del ruido.
+  const abre = texto.indexOf(' (');
+  const cierra = texto.lastIndexOf(')');
+  if (abre === -1 || cierra <= abre || cierra - abre < 40) return texto;
+  return `${texto.slice(0, abre)}${texto.slice(cierra + 1)}`.replace(/ +/g, ' ').trim();
+}
+
+/**
+ * Cuanto entra en el informe antes de que deje de leerse.
+ *
+ * El informe de `padel` del 2026-09-19 traia doce pendientes, cinco huecos y
+ * cuatro veredictos largos: en un telefono son varias pantallas, y lo que se
+ * hace a la mañana esta en las primeras cinco lineas. Lo que se corta no se
+ * pierde —los huecos siguen en `/cola` y los pendientes en la corrida— pero el
+ * informe deja de competir consigo mismo.
+ */
+const TOPE_DE_LISTA = 5;
+const TOPE_DE_LINEA = 70;
+const TOPE_DE_VEREDICTO = 110;
+const TOPE_DE_PENDIENTE = 110;
+
 function enUnaLinea(texto: string, tope = 120): string {
   const plano = texto.replace(/\s+/g, ' ').trim();
   if (plano.length <= tope) return plano;
@@ -1187,11 +1223,13 @@ export function textoDeInforme(
 
   if (t.sinResolver.length > 0) {
     lineas.push('', '<b>Quedo sin resolver:</b>');
-    for (const s of t.sinResolver) {
-      lineas.push(
-        ` · ${escaparHtml(enUnaLinea(s.texto))}${s.ronda !== undefined ? ` (ronda ${s.ronda})` : ''}`,
-      );
+    // Sin el numero de ronda: a la mañana no cambia nada de lo que uno hace, y
+    // el detalle entero sigue en `/cola`.
+    for (const s of t.sinResolver.slice(0, TOPE_DE_LISTA)) {
+      lineas.push(` · ${escaparHtml(enUnaLinea(s.texto, TOPE_DE_LINEA))}`);
     }
+    const resto = t.sinResolver.length - TOPE_DE_LISTA;
+    if (resto > 0) lineas.push(` · y ${resto} mas`);
   }
 
   // Los cables sueltos, ANTES de la rama.
@@ -1225,12 +1263,16 @@ export function textoDeInforme(
   if (pendientes && pendientes.length > 0) {
     lineas.push(
       '',
-      '<b>Para que ande, falta que hagas esto:</b>',
+      '<b>Falta esto:</b>',
       // Acortados por lo mismo que los huecos: un pendiente que trae la salida
       // cruda de git —con sus `hint:` y su "See the Note about fast-forwards"—
       // ocupa media pantalla y no dice nada mas que la primera linea.
-      ...pendientes.map((p) => ` · ${escaparHtml(enUnaLinea(p))}`),
+      ...pendientes
+        .slice(0, TOPE_DE_LISTA)
+        .map((p) => ` · ${escaparHtml(enUnaLinea(sinRuidoDeGit(p), TOPE_DE_PENDIENTE))}`),
     );
+    const restoP = pendientes.length - TOPE_DE_LISTA;
+    if (restoP > 0) lineas.push(` · y ${restoP} mas`);
   }
 
   // Lo que dijeron los cuatro, firmado.
@@ -1244,14 +1286,19 @@ export function textoDeInforme(
   // desaparece del informe se lee como aprobado, y esa es exactamente la falla
   // silenciosa que los cuatro existen para evitar.
   if (veredictos && veredictos.length > 0) {
-    lineas.push('', '<b>Los cuatro analistas:</b>');
+    lineas.push('', '<b>Como quedo:</b>');
     for (const eje of EJES) {
       const v = veredictos.find((x) => x.eje === eje);
       if (!v) {
-        lineas.push(` · ❔ ${eje} — no llego a dar su veredicto`);
+        lineas.push(` · ❔ ${eje} — sin revisar`);
         continue;
       }
-      lineas.push(` · ${v.cumple ? '✅' : '⚠️'} ${eje} — ${escaparHtml(v.resumen)}`);
+      // 🔸 y no ⚠️: son cuatro ejes y casi siempre alguno tiene algo que decir.
+      // Tres triangulos de peligro a la mañana se leen como un incendio cuando
+      // en realidad es una lista de mejoras.
+      lineas.push(
+        ` · ${v.cumple ? '✅' : '🔸'} ${eje} — ${escaparHtml(enUnaLinea(v.resumen, TOPE_DE_VEREDICTO))}`,
+      );
     }
   }
 
@@ -1273,18 +1320,13 @@ export function textoDeInforme(
     );
   }
 
-  // La rama es lo unico que hace accionable el informe: sin ella, "18 hechas"
-  // no dice donde mirar.
-  if (rama) {
-    lineas.push('', `El trabajo esta en <code>${escaparHtml(rama)}</code>`);
-    // Y donde VERLO andando, que es lo que uno quiere a la mañana.
-    //
-    // NO se arma una URL: el preview lo publica Vercel o Render cuando el push
-    // llega, con un nombre que este proceso no conoce y que depende de como se
-    // configuro el proyecto alla. Inventarlo seria mandar a alguien a un 404.
-    // Nombrar donde buscarlo es cierto y alcanza.
-    lineas.push('Si el repo esta conectado a Vercel o Render, el preview de esa rama sale ahi.');
-  }
+  // La rama y el "si esta conectado a Vercel o Render" se sacaron del pie.
+  //
+  // Nombraban un lugar donde mirar, no un resultado: a la mañana nadie abre
+  // `claude/c2/*` a mano, y la frase del preview era un condicional que no
+  // prometia nada. Lo que de verdad se toca es la URL de `Publicado`, que sigue
+  // mas arriba y sola en su linea. Menos texto al pie es mas chance de que se
+  // lea lo de arriba.
   return lineas.join('\n');
 }
 

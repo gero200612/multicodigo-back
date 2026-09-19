@@ -9,6 +9,54 @@ import { conApiUrl, frontYBackDe } from '../src/conectar.js';
  * tocar. Un archivo que no matchea lo esperado se deja como esta y queda un
  * pendiente; nadie prefiere un config.js "arreglado" a medias.
  */
+/**
+ * El front de Angular, que es el que el sistema genera hoy.
+ *
+ * `reescribirConfig` buscaba UN solo archivo —`public/config.js`, del patron
+ * viejo de express— asi que en un Angular devolvia `sin_config` y nadie
+ * escribia nada. En `padel` eso llego a produccion como
+ * `apiUrl: 'https://CAMBIAR-URL-DEL-BACK/api'`.
+ */
+describe('reescribir el apiUrl de un environment.ts', () => {
+  const ANTES = [
+    'export const environment = {',
+    '  production: true,',
+    '  // Ajustar en despliegue: URL publica del back, con el sufijo /api.',
+    "  apiUrl: 'https://CAMBIAR-URL-DEL-BACK/api',",
+    '};',
+  ].join('\n');
+
+  it('escribe la URL del back conservando el /api', () => {
+    const r = conApiUrl(ANTES, 'https://padel-back-8my9.onrender.com');
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // El sufijo NO se pierde: sin el, todas las llamadas irian a la raiz del
+    // back y darian 404.
+    expect(r.texto).toContain("apiUrl: 'https://padel-back-8my9.onrender.com/api',");
+    expect(r.texto).toContain('production: true,');
+    expect(r.texto).not.toContain('CAMBIAR-URL-DEL-BACK');
+  });
+
+  it('si ya apunta ahi, no cambia nada', () => {
+    const ya = ANTES.replace('https://CAMBIAR-URL-DEL-BACK/api', 'https://b.onrender.com/api');
+    const r = conApiUrl(ya, 'https://b.onrender.com');
+
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.razon).toBe('igual');
+  });
+
+  it('un valor sin ruta no inventa sufijo', () => {
+    const sinRuta = ANTES.replace('https://CAMBIAR-URL-DEL-BACK/api', 'http://localhost:5000');
+    const r = conApiUrl(sinRuta, 'https://b.onrender.com');
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.texto).toContain("apiUrl: 'https://b.onrender.com',");
+  });
+});
+
 describe('reescribir window.API_URL', () => {
   it('cambia la URL y no toca el resto', () => {
     const antes = [

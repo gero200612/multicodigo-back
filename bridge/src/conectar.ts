@@ -17,12 +17,15 @@ import type { Leido } from './github-contenido.js';
 /**
  * La asignacion de la URL en el config del front.
  *
- * Cubre `window.API_URL`, `const API_URL` y `var/let`, con comillas simples o
+ * Cubre `window.API_URL`, `const API_URL` y `var/let`, y tambien el
+ * `apiUrl: '...'` de un `environment.ts` de Angular, que es lo que el sistema
+ * genera hoy. Con comillas simples o
  * dobles y espacios de por medio, porque el archivo lo escribe un modelo y esas
  * variantes son todas naturales. Lo que NO cubre —una URL armada, leida de otro
  * lado, o partida en dos lineas— cae en "no lo toco", que es el default seguro.
  */
-const ASIGNACION = /((?:window\.|(?:const|let|var)\s+)API_URL\s*=\s*)(['"])([^'"]*)\2/;
+const ASIGNACION =
+  /((?:window\.|(?:const|let|var)\s+)API_URL\s*=\s*|apiUrl\s*:\s*)(['"])([^'"]*)\2/;
 
 /**
  * Por que no se pudo reescribir, como codigo y no solo como texto.
@@ -32,6 +35,21 @@ const ASIGNACION = /((?:window\.|(?:const|let|var)\s+)API_URL\s*=\s*)(['"])([^'"
  * texto del motivo se rompe el dia que alguien lo corrige de redaccion.
  */
 export type RazonDeNoCambio = 'url_invalida' | 'sin_asignacion' | 'igual';
+
+/**
+ * La ruta que traia el valor anterior, si traia alguna.
+ *
+ * `https://CAMBIAR-URL-DEL-BACK/api` -> `/api`. Una URL sin ruta, un valor que
+ * no es URL o una barra sola no aportan nada y devuelven ''.
+ */
+function sufijoDeRuta(valor: string): string {
+  try {
+    const { pathname } = new URL(valor);
+    return pathname === '/' ? '' : pathname.replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+}
 
 /**
  * El config del front, con la URL del back adentro.
@@ -68,7 +86,15 @@ export function conApiUrl(
       razon: 'sin_asignacion',
     };
   }
-  if (m[3] === url) {
+  // El valor viejo manda el SUFIJO: un Angular apunta a `.../api`, no a la raiz.
+  //
+  // Sin esto, conectar el front lo dejaba pidiendo a la raiz del back y todas
+  // las llamadas daban 404. El placeholder que genera el sistema es
+  // `https://CAMBIAR-URL-DEL-BACK/api`, asi que el sufijo esta a la vista y lo
+  // unico que hay que hacer es no tirarlo.
+  const destino = `${url}${sufijoDeRuta(m[3] ?? '')}`;
+
+  if (m[3] === destino) {
     // Nada que hacer: un commit vacio ensucia la historia y dispara un deploy
     // que no cambia nada.
     return { ok: false, motivo: 'ya apunta a esa URL', razon: 'igual' };
@@ -76,7 +102,7 @@ export function conApiUrl(
 
   // Se reemplaza SOLO el tramo que matcheo, con `$1` intacto: el resto del
   // archivo —comentarios, otras variables, el formato— queda igual.
-  return { ok: true, texto: texto.replace(ASIGNACION, `$1$2${url}$2`) };
+  return { ok: true, texto: texto.replace(ASIGNACION, `$1$2${destino}$2`) };
 }
 
 /**
@@ -105,6 +131,20 @@ export function frontYBackDe(
  * que nadie pidio tocar.
  */
 export const CONFIG_DEL_FRONT = 'public/config.js';
+
+/**
+ * Donde puede vivir la URL del back, en orden.
+ *
+ * Eran UNO solo —`public/config.js`, el patron del express que servia
+ * `public/`— y el sistema hace rato que genera Angular, donde eso no existe.
+ * El resultado: `reescribirConfig` devolvia `sin_config`, nadie escribia nada,
+ * y el front quedaba con el placeholder que le puso el modelo. En `padel` eso
+ * fue `apiUrl: 'https://CAMBIAR-URL-DEL-BACK/api'` desplegado a produccion.
+ *
+ * Se prueban en orden y gana el PRIMERO que existe. Sigue sin adivinar: son
+ * dos rutas fijas, las dos del patron que este sistema construye.
+ */
+export const CONFIGS_DEL_FRONT = [CONFIG_DEL_FRONT, 'src/environments/environment.ts'] as const;
 
 /** Que paso con el config del front. */
 export type ResultadoDeConfig =
@@ -142,10 +182,19 @@ export async function reescribirConfig(
   url: string,
   archivos: ArchivosDelRepo,
 ): Promise<ResultadoDeConfig> {
-  const leido = await archivos.leer(githubRepo, CONFIG_DEL_FRONT);
-  if (!leido.ok) {
-    return leido.noExiste ? { estado: 'sin_config' } : { estado: 'error', motivo: leido.motivo };
+  // El primero que exista. Un `noExiste` no es un error: es el otro patron.
+  let ruta = '';
+  let leido: Leido | undefined;
+  for (const candidata of CONFIGS_DEL_FRONT) {
+    const r = await archivos.leer(githubRepo, candidata);
+    if (r.ok) {
+      ruta = candidata;
+      leido = r;
+      break;
+    }
+    if (!r.noExiste) return { estado: 'error', motivo: r.motivo };
   }
+  if (!leido || !leido.ok) return { estado: 'sin_config' };
 
   const r = conApiUrl(leido.texto, url);
   if (!r.ok) {
@@ -156,7 +205,7 @@ export async function reescribirConfig(
 
   const escrito = await archivos.escribir(
     githubRepo,
-    CONFIG_DEL_FRONT,
+    ruta,
     r.texto,
     leido.sha,
     `chore(config): apuntar API_URL al back publicado\n\n` +

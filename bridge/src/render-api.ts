@@ -30,6 +30,41 @@ const PLAN = 'free';
 const BUILD = 'npm install';
 const START = 'npm start';
 
+/**
+ * De que es el repo, que decide COMO se crea el servicio.
+ *
+ * Una sola receta para todo era lo que hacia fallar el despliegue, y en
+ * silencio: el 2026-09-19 `padel-front` se creo como web service de Node y
+ * arranco con `npm start`, que en un Angular es `ng serve` —el servidor de
+ * DESARROLLO—. Cuatro deploys seguidos en `update_failed` y un informe que
+ * mandaba a "cargar las env vars", que no era el problema. Y `padel-back` no
+ * se creo nunca: es .NET, y Render no trae ese runtime.
+ *
+ * Se decide por el sufijo del repo, el mismo que ya usa `frontYBackDe` en
+ * conectar.ts. Es convencion del sistema —los repos los nombra el bot— asi que
+ * no hay que adivinar mirando adentro.
+ */
+export type TipoDeRepo = 'front' | 'back' | 'node';
+
+export function tipoDeRepo(nombre: string): TipoDeRepo {
+  if (nombre.endsWith('-front')) return 'front';
+  if (nombre.endsWith('-back')) return 'back';
+  return 'node';
+}
+
+/** Un Angular se sirve compilado, no con `ng serve`. */
+const BUILD_FRONT = 'npm ci && npm run build';
+const SALIDA_FRONT = 'dist';
+
+/**
+ * El back va por Docker porque Render no trae runtime de .NET.
+ *
+ * El Dockerfile lo tiene que traer el repo. Si no esta, el build falla y se ve
+ * en el deploy: es mejor que un servicio que arranca con el comando equivocado
+ * y se cae a los tres minutos sin decir por que.
+ */
+const DOCKERFILE = './Dockerfile';
+
 export interface RenderDeps {
   apiKey?: string;
   ownerId?: string;
@@ -45,6 +80,47 @@ export type ResultadoDeServicio =
 function sinClave(texto: string, apiKey: string | undefined): string {
   if (!apiKey) return texto;
   return texto.split(apiKey).join('***');
+}
+
+/**
+ * El `type` y el `serviceDetails` que le toca a cada repo.
+ *
+ * El front es un SITIO ESTATICO: se compila una vez y se sirven los archivos.
+ * Ademas lleva la regla de reescritura `/*` -> `/index.html`, sin la cual una
+ * SPA da 404 al entrar directo a `/reservas` o al refrescar adentro de la app.
+ */
+function detalleDeServicio(nombre: string): Record<string, unknown> {
+  switch (tipoDeRepo(nombre)) {
+    case 'front':
+      return {
+        type: 'static_site',
+        serviceDetails: {
+          buildCommand: BUILD_FRONT,
+          publishPath: SALIDA_FRONT,
+          routes: [{ type: 'rewrite', source: '/*', destination: '/index.html' }],
+        },
+      };
+    case 'back':
+      return {
+        type: 'web_service',
+        serviceDetails: {
+          env: 'docker',
+          plan: PLAN,
+          region: REGION,
+          envSpecificDetails: { dockerfilePath: DOCKERFILE, dockerContext: '.' },
+        },
+      };
+    default:
+      return {
+        type: 'web_service',
+        serviceDetails: {
+          env: 'node',
+          plan: PLAN,
+          region: REGION,
+          envSpecificDetails: { buildCommand: BUILD, startCommand: START },
+        },
+      };
+  }
 }
 
 export async function crearServicio(
@@ -65,7 +141,6 @@ export async function crearServicio(
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        type: 'web_service',
         name: nombre,
         ownerId: deps.ownerId,
         repo: `https://github.com/${github}`,
@@ -84,12 +159,7 @@ export async function crearServicio(
         // propia doc desmiente es depender de nada. Y ademas evita el deploy
         // duplicado si algun dia empezara a funcionar.
         autoDeploy: 'no',
-        serviceDetails: {
-          env: 'node',
-          plan: PLAN,
-          region: REGION,
-          envSpecificDetails: { buildCommand: BUILD, startCommand: START },
-        },
+        ...detalleDeServicio(nombre),
       }),
     });
 

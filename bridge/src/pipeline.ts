@@ -1242,6 +1242,20 @@ export interface Turno {
 }
 
 /**
+ * El texto de una tarea, en una linea corta para el chat.
+ *
+ * Las tareas las redacta el analista para que otro AGENTE las tome sin
+ * contexto: traen ruta de archivo, nombre de componente y el por que. Eso esta
+ * bien para trabajar y mal para avisar — en el telefono una sola tapa la
+ * pantalla, y lo unico que se mira mientras la corrida corre es que avanza.
+ */
+function enUnaLineaDeTarea(texto: string, tope = 70): string {
+  const plano = texto.replace(/\s+/g, ' ').trim();
+  if (plano.length <= tope) return plano;
+  const corte = plano.lastIndexOf(' ', tope);
+  return `${plano.slice(0, corte > tope * 0.6 ? corte : tope)}…`;
+}
+/**
  * El error de un turno, con el job al que corresponde.
  *
  * El jobId hace falta para poder mostrar el detalle despues, y una excepcion
@@ -3213,10 +3227,25 @@ export async function correrCola(
           console.error('[bridge] publicar temprano fallo:', err);
         }
       }
+      // Adentro de una corrida, una linea y nada mas: que termino, y cual.
+      //
+      // Iba tambien la respuesta ENTERA del agente, que en una corrida de
+      // ciento veinte tareas son ciento veinte paredes de texto en el chat. Lo
+      // que se mira mientras corre es que avanza; el detalle esta en el panel y
+      // en el repo, y el informe resume lo que quedo.
+      //
+      // AFUERA de una corrida es al reves: la tarea la pidio alguien que esta
+      // mirando, y la respuesta es lo unico que pidio. Ahi va entera —incluido
+      // un "¿aprobas el commit?", que sin la respuesta nadie podria contestar.
+      //
       // El texto de la tarea se escapa; la respuesta del agente NO, porque
       // `conCodigoParaTelegram` ya la escapo entera antes de meterle sus
       // `<pre>`. Escaparla de nuevo dejaria los `&amp;lt;` a la vista.
-      await avisar(`✅ ${escaparHtml(tarea.texto)}\n\n${conCodigoParaTelegram(r.texto)}`);
+      await avisar(
+        corrida
+          ? `✅ ${escaparHtml(enUnaLineaDeTarea(tarea.texto))}`
+          : `✅ ${escaparHtml(tarea.texto)}\n\n${conCodigoParaTelegram(r.texto)}`,
+      );
     } catch (err) {
       const codigo = err instanceof Error ? err.message : 'internal';
       await deps.store.cerrarTarea(tarea.id, 'fallida', codigo);

@@ -9,19 +9,19 @@ const OK = {
 describe('crearServicio', () => {
   it('crea un web service de Node en main y devuelve la URL', async () => {
     let visto: any = null;
-    const r = await crearServicio('propinas-back', 'Sincro-arg/propinas-back', {
+    const r = await crearServicio('propinas', 'Sincro-arg/propinas', {
       ...OK,
       fetchImpl: (async (_url: string, init: any) => {
         visto = JSON.parse(init.body);
         return new Response(
-          JSON.stringify({ service: { id: 'srv-abc', serviceDetails: { url: 'https://propinas-back.onrender.com' } } }),
+          JSON.stringify({ service: { id: 'srv-abc', serviceDetails: { url: 'https://propinas.onrender.com' } } }),
           { status: 201 },
         );
       }) as any,
     });
 
-    expect(r).toEqual({ estado: 'creado', serviceId: 'srv-abc', url: 'https://propinas-back.onrender.com' });
-    expect(visto.repo).toBe('https://github.com/Sincro-arg/propinas-back');
+    expect(r).toEqual({ estado: 'creado', serviceId: 'srv-abc', url: 'https://propinas.onrender.com' });
+    expect(visto.repo).toBe('https://github.com/Sincro-arg/propinas');
     expect(visto.branch).toBe('main');
     // `no`: el deploy lo dispara el bridge al mergear. Antes iba en `yes`,
     // cuando la feature asumia un proveedor de Git conectado; con repos
@@ -32,6 +32,61 @@ describe('crearServicio', () => {
     expect(visto.serviceDetails.envSpecificDetails.startCommand).toBe('npm start');
     expect(visto.serviceDetails.plan).toBe('free');
     expect(visto.serviceDetails.region).toBe('oregon');
+  });
+
+
+  /**
+   * La receta depende del repo, y una sola para todo era lo que rompia el
+   * despliegue en silencio.
+   *
+   * El 2026-09-19 `padel-front` se creo como web service de Node y arranco con
+   * `npm start`, que en un Angular es `ng serve` —el servidor de DESARROLLO—:
+   * cuatro deploys seguidos en `update_failed`. Y `padel-back` no se creo
+   * nunca, porque es .NET y Render no trae ese runtime.
+   */
+  it('el front se crea como sitio estatico, compilado y con la regla de SPA', async () => {
+    let visto: any = null;
+    const r = await crearServicio('padel-front', 'Sincro-arg/padel-front', {
+      ...OK,
+      fetchImpl: (async (_url: string, init: any) => {
+        visto = JSON.parse(init.body);
+        return new Response(
+          JSON.stringify({ service: { id: 'srv-f', serviceDetails: { url: 'https://padel-front.onrender.com' } } }),
+          { status: 201 },
+        );
+      }) as any,
+    });
+
+    expect(r.estado).toBe('creado');
+    expect(visto.type).toBe('static_site');
+    expect(visto.serviceDetails.buildCommand).toBe('npm ci && npm run build');
+    expect(visto.serviceDetails.publishPath).toBe('dist');
+    // Sin esto, entrar directo a /reservas o refrescar adentro de la app da 404.
+    expect(visto.serviceDetails.routes).toEqual([
+      { type: 'rewrite', source: '/*', destination: '/index.html' },
+    ]);
+    // Y nunca mas `ng serve`.
+    expect(JSON.stringify(visto)).not.toContain('npm start');
+  });
+
+  it('el back se crea por Docker, que es lo unico con lo que anda .NET', async () => {
+    let visto: any = null;
+    const r = await crearServicio('padel-back', 'Sincro-arg/padel-back', {
+      ...OK,
+      fetchImpl: (async (_url: string, init: any) => {
+        visto = JSON.parse(init.body);
+        return new Response(
+          JSON.stringify({ service: { id: 'srv-b', serviceDetails: { url: 'https://padel-back.onrender.com' } } }),
+          { status: 201 },
+        );
+      }) as any,
+    });
+
+    expect(r.estado).toBe('creado');
+    expect(visto.type).toBe('web_service');
+    expect(visto.serviceDetails.env).toBe('docker');
+    expect(visto.serviceDetails.envSpecificDetails.dockerfilePath).toBe('./Dockerfile');
+    expect(JSON.stringify(visto)).not.toContain('npm start');
   });
 
   // Un servidor sin configurar sigue andando, solo que sin esta parte.

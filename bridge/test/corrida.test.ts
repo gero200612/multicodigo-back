@@ -220,7 +220,9 @@ describe('textoDeInforme', () => {
     expect(t).not.toContain('Publicado:');
   });
 
-  it('nombra lo que quedo sin resolver con su ronda', () => {
+  // La ronda se saco del informe: a la mañana no cambia nada de lo que uno
+  // hace, y el detalle entero sigue en `/cola`.
+  it('nombra lo que quedo sin resolver, sin el numero de ronda', () => {
     const t = textoDeInforme(c, 'completo', {
       hechas: 1,
       fallidas: 1,
@@ -228,7 +230,7 @@ describe('textoDeInforme', () => {
       sinResolver: [{ texto: 'el stock no descuenta al facturar', ronda: 2 }],
     });
     expect(t).toContain('el stock no descuenta al facturar');
-    expect(t).toContain('ronda 2');
+    expect(t).not.toContain('ronda 2');
   });
 
   // El contador se pasa uno de largo justo cuando corta el techo. Un informe
@@ -519,7 +521,7 @@ describe('correrCola dentro de una corrida', () => {
     const avisos = await correr(d);
 
     const informe = avisos[avisos.length - 1]!;
-    expect(informe).toContain('Los cuatro analistas:');
+    expect(informe).toContain('Como quedo:');
     for (const eje of EJES) expect(informe).toContain(`${eje} —`);
   });
 
@@ -2331,7 +2333,7 @@ describe('pendientes en el informe', () => {
       'claude/c1/*',
       ['conectar Sincro-arg/acme-front a Vercel', 'copiar las claves de la base "acme"'],
     );
-    expect(t).toContain('falta que hagas esto');
+    expect(t).toContain('Falta esto:');
     expect(t).toContain('a Vercel');
     expect(t).toContain('las claves de la base');
   });
@@ -2346,7 +2348,7 @@ describe('pendientes en el informe', () => {
       undefined,
       ['poner MERCADOPAGO_TOKEN en el env'],
     );
-    expect(t.indexOf('hechas')).toBeLessThan(t.indexOf('falta que hagas'));
+    expect(t.indexOf('hechas')).toBeLessThan(t.indexOf('Falta esto'));
     expect(t.indexOf('falta el stock')).toBeLessThan(t.indexOf('MERCADOPAGO_TOKEN'));
   });
 
@@ -3058,69 +3060,25 @@ describe('cerrarConInforme publica', () => {
 });
 
 /**
- * De quien es el trabajo cuando hubo un relevo.
+ * El informe ya no nombra la rama.
  *
- * El bug que estos tests fijan estuvo en produccion y el informe lo mostraba
- * sin poder explicarlo: en la corrida `gastos` del 2026-09-09 el trabajo real
- * quedo en `claude/c1/trabajo` —los dos commits, el `node_modules`, todo— y el
- * informe decia "El trabajo esta en claude/c2/*", una rama con un
- * "Initial commit" y nada mas.
- *
- * La causa: `cola_tareas.agente` guardaba el ASIGNADO y `getActiveAgent`
- * devuelve el ultimo slot activo, que suele ser el del analista. Ninguno de los
- * dos dice quien trabajo. Ver `multicodigo-vm/docs/RETOMAR-relevo-agente.md`.
+ * Nombraba un lugar donde mirar, no un resultado: a la mañana nadie abre
+ * `claude/c2/*` a mano. Lo que se toca es la URL de `Publicado`, que sigue
+ * arriba. Los tres tests que fijaban de QUIEN era la rama —el bug del relevo de
+ * la corrida `gastos` del 2026-09-09, donde el informe nombraba al slot
+ * asignado y no al que trabajo— se fueron con la seccion: ya no hay nada
+ * observable que fijar.
  */
-describe('el informe nombra la rama donde esta el trabajo', () => {
-  it('despues de un relevo nombra el slot que trabajo, no el asignado', async () => {
-    const d = arnes({ analista: () => [], slots: ['c1', 'c2'], sinTokens: ['c1'] });
-    await abrir(d);
-    await encolarEnLaCorrida(d, ['uno']);
-    const avisos = await correr(d);
-    const informe = avisos[avisos.length - 1]!;
-    expect(informe).toContain('claude/c2/*');
-    expect(informe).not.toContain('claude/c1/*');
-  });
-
-  // Cowork: los dos tienen commits y las dos ramas van a main, asi que el
-  // informe nombra las dos. Nombrar una sola manda a buscar la otra a ciegas.
-  it('con dos slots que trabajaron, nombra las dos ramas', async () => {
-    const d = arnes({ analista: () => [], slots: ['c1', 'c2'], sinTokens: [] });
-    await abrir(d);
-    const c = await d.store.corridaAbierta(7);
-    await d.store.encolar(7, {
-      agente: 'c1',
-      proyecto: c!.proyecto,
-      textos: ['uno'],
-      corridaId: c!.id,
-    });
-    await d.store.encolar(7, {
-      agente: 'c2',
-      proyecto: c!.proyecto,
-      textos: ['dos'],
-      corridaId: c!.id,
-    });
-    const avisos = await correr(d);
-    const informe = avisos[avisos.length - 1]!;
-    expect(informe).toContain('claude/c1/*');
-    expect(informe).toContain('claude/c2/*');
-  });
-
-  // Sin nada hecho no hay rama con trabajo, y el informe no puede inventar una.
-  // Cae al comportamiento de antes: el slot activo, o el default.
-  it('sin ninguna tarea hecha, el prefijo es el de siempre', async () => {
-    const d = arnes({ analista: () => [], fallan: { uno: 'internal' } });
-    await abrir(d);
-    await encolarEnLaCorrida(d, ['uno']);
-    const avisos = await correr(d);
-    expect(avisos[avisos.length - 1]!).toContain('claude/c1/*');
-  });
+it('no nombra ninguna rama en el informe', () => {
+  const t = textoDeInforme(
+    { proyecto: 'stock', ronda: 1, techoRondas: 3 },
+    'completo',
+    { hechas: 1, fallidas: 0, pendientes: 0, sinResolver: [] },
+    'claude/c1/*',
+  );
+  expect(t).not.toContain('claude/c1/*');
+  expect(t).not.toContain('preview');
 });
-
-/**
- * Y lo mismo para publicar, que es donde el bug costaba trabajo hecho: le
- * preguntaba por el worktree del slot equivocado, no encontraba `package.json`
- * y salteaba el repo en silencio.
- */
 describe('publicar recibe los slots que trabajaron', () => {
   it('despues de un relevo recibe el que trabajo', async () => {
     let recibidos: readonly string[] = [];
@@ -3423,7 +3381,10 @@ describe('el fallo del merge por tarea se ve', () => {
     const avisos = await correr(d);
     const informe = avisos[avisos.length - 1]!;
     expect(informe).toContain('c1');
-    expect(informe).toContain('already checked out');
+    // El volcado de git YA NO va: el informe dice que fallo y con cual slot, y
+    // el detalle queda en la corrida. Diez lineas de `hint:` tapaban la
+    // pantalla para decir lo mismo que la primera frase.
+    expect(informe).not.toContain('already checked out');
   });
 
   // Un solo pendiente por corrida y no uno por tarea: con diez tareas fallando
@@ -4069,9 +4030,10 @@ describe('el informe no tapa la pantalla con el detalle', () => {
       sinResolver: [{ texto: LARGA, ronda: 3 }],
     });
     const linea = t.split('\n').find((l) => l.includes('TarjetaPedido'))!;
-    expect(linea.length).toBeLessThan(180);
+    // Mas corto que antes —el tope bajo de 120 a 70— y sin el numero de ronda.
+    expect(linea.length).toBeLessThan(110);
     expect(linea).toContain('…');
-    expect(linea).toContain('(ronda 3)');
+    expect(linea).not.toContain('ronda 3');
   });
 
   // Un pendiente con la salida cruda de git —sus `hint:` y el "See the Note
