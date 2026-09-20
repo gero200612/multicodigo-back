@@ -206,7 +206,7 @@ export const TOPE_DE_FALLOS = 3;
  *
  * ## Por que existe
  *
- * Un turno tiene 18 minutos. Cuando una tarea grande se pasa, el trabajo que el
+ * Un turno tiene 30 minutos. Cuando una tarea grande se pasa, el trabajo que el
  * agente alcanzo a escribir QUEDA en el worktree —los agentes comparten el
  * directorio del proyecto— pero la tarea se cerraba como `fallida` y contaba
  * contra el techo de tres fallos seguidos. Dos cosas mal en la misma linea:
@@ -1077,7 +1077,7 @@ export function promptDePlan(
 /**
  * El tamaño de una tarea: tiene que entrar en UN turno.
  *
- * Un turno se corta a los 18 minutos. Una tarea mas grande no falla por estar
+ * Un turno se corta a los 30 minutos. Una tarea mas grande no falla por estar
  * mal: se queda sin tiempo, y lo que dejo a medias lo tiene que retomar otro.
  *
  * Medido en `padel` (2026-09-18): de 16 turnos seguidos, SIETE se cortaron a

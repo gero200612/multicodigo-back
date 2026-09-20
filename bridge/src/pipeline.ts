@@ -477,7 +477,7 @@ export type PipelineOutcome =
 /**
  * Si el cierre por RONDAS tiene que esperar a una tarea cortada por tiempo.
  *
- * Una cortada no fallo: no entro en los 18 minutos del turno, y su continuacion
+ * Una cortada no fallo: no entro en los 30 minutos del turno, y su continuacion
  * quedo en la cola con la mitad del trabajo ya commiteada en main. Cerrar ahi
  * es dejar el trabajo por la mitad y —peor— volver a encolarlo entero la
  * proxima corrida, que es de donde salio el trabajo doble de `padel`
@@ -1113,7 +1113,7 @@ export type PromptConToken = PromptRequest & {
   /**
    * Si este turno es una REVISION y no una construccion.
    *
-   * Cambia una sola cosa: el techo de tiempo. Un analista tiene una hora
+   * Cambia una sola cosa: el techo de tiempo. Un analista tiene hora y media
    * (`ANALISIS_TIMEOUT_MS` en el gateway) y un turno normal dieciocho minutos.
    * Medido en la corrida `padel` del 2026-09-18: de los cuatro ejes, USUARIO y
    * TESTEOS se cortaron los dos a los 18 exactos, y VISUAL y FUNCIONAMIENTO
@@ -1185,7 +1185,7 @@ export interface Turno {
   /**
    * Que este turno es una REVISION, no una construccion.
    *
-   * Solo cambia el techo de tiempo: una hora en vez de dieciocho minutos. Ver
+   * Solo cambia el techo de tiempo: hora y media en vez de treinta minutos. Ver
    * `analisis` en `PromptConToken` y `ANALISIS_TIMEOUT_MS` en el gateway.
    */
   analisis?: boolean;
@@ -2683,7 +2683,7 @@ async function tandaDeAnalisis(
         // con `preguntar`, un intento de editar dejaria el turno colgado quince
         // minutos esperando un OK que nadie va a dar a las tres de la mañana.
         modo: 'desatendido',
-        // Una hora en vez de dieciocho minutos. Revisar cuesta mas que
+        // Hora y media en vez de treinta minutos. Revisar cuesta mas que
         // construir: TESTEOS corre las suites de los dos repos y USUARIO
         // recorre la app entera. Ver `ANALISIS_TIMEOUT_MS` en el gateway.
         analisis: true,
@@ -3403,7 +3403,7 @@ export async function correrCola(
             `⏸ Sin tiempo: ${escaparHtml(tarea.texto)}
 
 ` +
-              'Se paso de los 18 minutos del turno. ' +
+              'Se paso de los 30 minutos del turno. ' +
               (guardado
                 ? 'Lo que escribio quedo commiteado y en main, y la sigo en otro turno desde ahi.'
                 : 'No pude guardar lo que escribio: quedo en el worktree del slot.'),

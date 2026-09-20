@@ -49,7 +49,7 @@ export interface Tarea {
   posicion: number;
   /**
    * `cortada` es aparte de `fallida` a proposito: la tarea no salio mal, no
-   * entro en los 18 minutos del turno. El informe las cuenta distinto y el
+   * entro en los 30 minutos del turno. El informe las cuenta distinto y el
    * cierre por techo espera a que no queden cortadas sin terminar.
    */
   estado: 'pendiente' | 'corriendo' | 'lista' | 'fallida' | 'cortada' | 'cancelada';

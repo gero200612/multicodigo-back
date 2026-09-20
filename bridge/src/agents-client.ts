@@ -52,8 +52,8 @@ export async function askAgent(
       ...(analisis ? { 'x-mc-analisis': '1' } : {}),
     },
     body: JSON.stringify(cuerpo),
-    // 20 minutos, y el numero no es libre: tiene que ser mayor que el
-    // AGENT_TIMEOUT_MS del gateway (18 min), que a su vez es mayor que los 15
+    // 33 minutos, y el numero no es libre: tiene que ser mayor que el
+    // AGENT_TIMEOUT_MS del gateway (30 min), que a su vez es mayor que los 15
     // que el agente espera una aprobacion. El de afuera aguanta mas que el de
     // adentro, o el de afuera convierte una espera legitima en un error de red.
     //
@@ -61,10 +61,10 @@ export async function askAgent(
     // esperando un OK moria aca o en el gateway —los dos por debajo de los 15—
     // y llegaba como "fetch failed".
     // El de un analista es mas largo, y el numero sigue la misma regla: tiene
-    // que aguantar mas que el techo del gateway para ese tipo de turno (60 min
-    // para analisis, 18 para el resto), o el de afuera convierte un turno
+    // que aguantar mas que el techo del gateway para ese tipo de turno (95 min
+    // para analisis, 30 para el resto), o el de afuera convierte un turno
     // legitimo en un error de red. Ver `ANALISIS_TIMEOUT_MS` alla.
-    signal: AbortSignal.timeout(analisis ? 62 * 60 * 1000 : 20 * 60 * 1000),
+    signal: AbortSignal.timeout(analisis ? 98 * 60 * 1000 : 33 * 60 * 1000),
   });
 
   const text = await response.text();
