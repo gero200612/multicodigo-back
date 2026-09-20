@@ -168,6 +168,24 @@ export interface PipelineDeps {
     mensaje: string,
   ) => Promise<{ ok: boolean; detalle?: string; commiteo: boolean }>;
   /**
+   * Le pide la pagina a la app DESPLEGADA y devuelve lo que no anda.
+   *
+   * Los tests en verde y el analista mirando codigo pueden dar por buena una
+   * app que no levanta: en `Hoteleria` (2026-09-20) las tareas del login, del
+   * CORS y del despliegue figuraban TODAS como hechas y no se podia entrar.
+   * Nadie se entero hasta que una persona lo probo, doce horas despues.
+   *
+   * Corre al final de cada ronda, con la cola vacia y antes de que opinen los
+   * cuatro: si algo no responde, entra como trabajo y la corrida sigue en vez
+   * de cerrar sobre algo roto.
+   *
+   * OPCIONAL: sin esto el ciclo queda como estaba.
+   */
+  verificarApp?: (
+    proyectoId: string,
+    proyecto: string,
+  ) => Promise<{ resumen: string; tarea: string }[]>;
+  /**
    * De donde salen los documentos del proyecto.
    *
    * Ya no es una dependencia opcional: se leen del store, que siempre esta.
@@ -2504,6 +2522,37 @@ async function rondaDeAnalisis(
   // Salvo que ACABEN de opinar: en la ronda 1 la revision que corrio recien ya
   // fue de los cuatro, y volver a correrlos serian ocho turnos seguidos para
   // preguntar dos veces lo mismo.
+  // La app desplegada, antes de opinar sobre ella.
+  //
+  // Va ACA y no al cerrar: al cerrar ya no hay quien lo arregle. Con la cola
+  // vacia, lo que encuentre entra como trabajo y la corrida sigue.
+  const proyectoIdParaVerificar = deps.verificarApp
+    ? await deps.store.idDeProyecto(corrida.proyecto).catch(() => null)
+    : null;
+  if (deps.verificarApp && proyectoIdParaVerificar) {
+    const problemas = await deps
+      .verificarApp(proyectoIdParaVerificar, corrida.proyecto)
+      .catch(() => [] as { resumen: string; tarea: string }[]);
+    if (problemas.length > 0) {
+      const agente = (await deps.store.getActiveAgent(chatId)) ?? deps.defaultAgent;
+      await deps.store
+        .encolar(chatId, {
+          agente,
+          proyecto: corrida.proyecto,
+          textos: problemas.map((p) => p.tarea),
+          corridaId: corrida.id,
+          ronda: corrida.ronda,
+        })
+        .catch(() => undefined);
+      const ronda = await deps.store.avanzarRonda(corrida.id);
+      await avisar(
+        `🔎 La app desplegada no responde bien. Arranco la ronda ${ronda}.\n\n` +
+          problemas.map((p) => ` · ${escaparHtml(p.resumen)}`).join('\n'),
+      );
+      return true;
+    }
+  }
+
   if (corrida.ronda === 1) {
     await cerrarConInforme(despues, 'completo', deps, avisar);
     return false;

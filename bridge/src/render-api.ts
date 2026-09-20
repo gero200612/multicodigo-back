@@ -334,3 +334,87 @@ export async function setearEnvVar(
     return { ok: false, motivo: sinClave(msg, deps.apiKey) };
   }
 }
+
+/**
+ * Como salio el ultimo deploy de un servicio, y por que si salio mal.
+ *
+ * Existe porque `dispararDeploy` devuelve "se pidio", no "anduvo": Render
+ * contesta 201 y despues construye. Con eso solo, el sistema daba por
+ * desplegado algo que podia estar fallando en loop — `padel-front` acumulo
+ * CUATRO `update_failed` seguidos arrancando con `ng serve`, y el informe de la
+ * mañana mandaba a "cargar las env vars", que no tenia nada que ver.
+ */
+export type EstadoDeDeploy =
+  | { estado: 'vivo' }
+  | { estado: 'construyendo' }
+  | { estado: 'fallo'; motivo: string; log: string[] }
+  | { estado: 'sin_render' }
+  | { estado: 'error'; motivo: string };
+
+/** Los estados de Render que cuentan como "termino bien". */
+const VIVOS = new Set(['live', 'deactivated']);
+/** Los que cuentan como "termino mal". Lo que no esta en ninguna lista, sigue. */
+const FALLIDOS = new Set([
+  'build_failed',
+  'update_failed',
+  'canceled',
+  'pre_deploy_failed',
+]);
+
+export async function ultimoDeploy(
+  serviceId: string,
+  deps: RenderDeps,
+  lineasDeLog = 20,
+): Promise<EstadoDeDeploy> {
+  if (!deps.apiKey) return { estado: 'sin_render' };
+  const doFetch = deps.fetchImpl ?? fetch;
+  try {
+    const res = await doFetch(`${API}/services/${serviceId}/deploys?limit=1`, {
+      headers: { authorization: `Bearer ${deps.apiKey}` },
+    });
+    const texto = await res.text();
+    if (!res.ok) return { estado: 'error', motivo: sinClave(texto.slice(0, 300), deps.apiKey) };
+
+    const lista = JSON.parse(texto) as Array<{ deploy?: { status?: string } }>;
+    const status = lista[0]?.deploy?.status;
+    if (!status) return { estado: 'error', motivo: 'Render no devolvio el estado del deploy' };
+    if (VIVOS.has(status)) return { estado: 'vivo' };
+    if (!FALLIDOS.has(status)) return { estado: 'construyendo' };
+
+    // Lo que importa del fallo no es el estado sino POR QUE, y eso esta en el
+    // log. Sin esto el pendiente decia "el deploy fallo" y habia que entrar al
+    // dashboard a mirar.
+    return { estado: 'fallo', motivo: status, log: await logsDeServicio(serviceId, deps, lineasDeLog) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { estado: 'error', motivo: sinClave(msg, deps.apiKey) };
+  }
+}
+
+/**
+ * Las ultimas lineas de log de un servicio.
+ *
+ * Se recortan y se limpian los codigos de color de la terminal: esto termina en
+ * un mensaje de Telegram, no en una consola.
+ */
+export async function logsDeServicio(
+  serviceId: string,
+  deps: RenderDeps,
+  limite = 20,
+): Promise<string[]> {
+  if (!deps.apiKey || !deps.ownerId) return [];
+  const doFetch = deps.fetchImpl ?? fetch;
+  try {
+    const url = `${API}/logs?ownerId=${encodeURIComponent(deps.ownerId)}&resource=${encodeURIComponent(serviceId)}&limit=${limite}&direction=backward`;
+    const res = await doFetch(url, { headers: { authorization: `Bearer ${deps.apiKey}` } });
+    if (!res.ok) return [];
+    const j = (await res.json()) as { logs?: Array<{ message?: unknown }> };
+    return (j.logs ?? [])
+      .map((l) => (typeof l.message === 'string' ? l.message : ''))
+      .map((m) => m.replace(/\[[0-9;]*[A-Za-z]/g, '').trim())
+      .filter((m) => m.length > 0)
+      .slice(0, limite);
+  } catch {
+    return [];
+  }
+}

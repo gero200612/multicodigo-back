@@ -17,10 +17,11 @@ import { PgStore, type FilaDeDocumento } from './store.js';
 import { askAgent, listarAgentes, esperarAlGateway } from './agents-client.js';
 import { firmarToken, crearRepo } from './panel-client.js';
 import { publicar } from './publicar.js';
-import { dispararDeploy, setearEnvVar } from './render-api.js';
+import { dispararDeploy, setearEnvVar, ultimoDeploy } from './render-api.js';
 import { reescribirConfig } from './conectar.js';
 import { escribirArchivo, leerArchivo } from './github-contenido.js';
 import { asegurarDockerfile } from './dockerfile-back.js';
+import { verificarDespliegue, tareaDeProblema } from './verificar.js';
 import type { Corrida } from './corrida.js';
 import { mergearEnGateway, guardarEnGateway, inspeccionarRepo } from './gateway-admin.js';
 import { fetchPending, sendDecision } from './approvals.js';
@@ -484,6 +485,34 @@ const pipelineDeps = {
   // conecta a la misma base como `postgres`. Antes iban por la API REST de
   // Supabase con la service_role, y sin esa clave quedaban apagados enteros.
   listarAgentes: () => listarAgentes(gatewayDeps),
+  /**
+   * La app desplegada, al final de cada ronda.
+   *
+   * Los tests en verde no dicen que la app levante: en `Hoteleria`
+   * (2026-09-20) las tareas del login, del CORS y del despliegue figuraban
+   * todas hechas y no se podia entrar. Esto le pide la pagina a la URL
+   * publica y, si no responde, lo devuelve como trabajo.
+   */
+  verificarApp: async (proyectoId: string) => {
+    const repos = await store.reposDeProyecto(proyectoId).catch(() => []);
+    const problemas = await verificarDespliegue(
+      repos
+        .filter((r) => r.render_service_id || r.render_url)
+        .map((r) => ({
+          nombre: r.nombre,
+          ...(r.render_service_id ? { serviceId: r.render_service_id } : {}),
+          ...(r.render_url ? { url: r.render_url } : {}),
+        })),
+      {
+        estadoDeDeploy: (serviceId: string) =>
+          ultimoDeploy(serviceId, {
+            apiKey: env.RENDER_API_KEY,
+            ownerId: env.RENDER_OWNER_ID,
+          }),
+      },
+    );
+    return problemas.map((p) => ({ resumen: p.resumen, tarea: tareaDeProblema(p) }));
+  },
   // Para poder decir POR QUE un slot esta ocupado: un turno frenado esperando
   // un OK se destraba con un toque de la otra persona, y uno trabajando hay que
   // esperarlo. Es el mismo fetchPending del poller de aprobaciones.
