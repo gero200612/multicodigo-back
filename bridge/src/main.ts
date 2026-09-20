@@ -346,6 +346,9 @@ const pipelineDeps = {
                     asegurarDockerfile(githubRepo, { token: githubToken }),
                 }
               : {}),
+            // La conexion a la base la escribio el bridge al crear el proyecto
+            // de Supabase; aca se la carga al servicio del back.
+            conexionDeBase: (proyectoId: string) => store.conexionDeBase(proyectoId),
             // Sin script `start`, Render no puede arrancar el servicio: mejor
             // no crearlo y decirlo, que dejar uno roto ocupando el nombre.
             puedeArrancar: async (agent, project, repo) =>

@@ -11,7 +11,13 @@ const JOB = '00000000-0000-4000-8000-000000000001';
  * Lo que se prueba es sobre todo lo que NO se puede hacer: la ruta de borrar no
  * existe, y una migracion que borra se rechaza antes de salir a la red.
  */
-async function servidor(opciones: { fetchImpl?: typeof fetch; conToken?: boolean } = {}) {
+async function servidor(
+  opciones: {
+    fetchImpl?: typeof fetch;
+    conToken?: boolean;
+    guardarConexion?: (jobId: string, conexion: string) => Promise<void>;
+  } = {},
+) {
   const app = Fastify();
   registrarSupabase(app, {
     apiToken: API_TOKEN,
@@ -19,6 +25,7 @@ async function servidor(opciones: { fetchImpl?: typeof fetch; conToken?: boolean
       ? {}
       : { accessToken: 'sbp_falso', orgId: 'org_falsa' }),
     ...(opciones.fetchImpl ? { fetchImpl: opciones.fetchImpl } : {}),
+    ...(opciones.guardarConexion ? { guardarConexion: opciones.guardarConexion } : {}),
   });
   await app.ready();
   return app;
@@ -199,4 +206,116 @@ describe('las rutas que no existen', () => {
       expect(res.statusCode).toBe(404);
     });
   }
+});
+
+/**
+ * La conexion a la base, guardada del lado del servidor.
+ *
+ * Es el tramo que faltaba: la base quedaba creada y migrada, y la connection
+ * string la tenia que copiar una persona —el pendiente "configurar en
+ * produccion" de todos los informes—. Ahora la guarda el bridge, que es el
+ * unico que tiene la contraseña, y `publicar()` se la escribe al back.
+ *
+ * La regla que no cambia: la contraseña NO vuelve en la respuesta ni llega al
+ * modelo.
+ */
+describe('la conexion a la base queda guardada, sin pasar por el modelo', () => {
+  function supabaseFalso(guardadas: Array<{ jobId: string; conexion: string }>) {
+    let creado: Record<string, unknown> = {};
+    const f = vi.fn(async (url: string, init: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/config/database/pooler')) {
+        return new Response(
+          JSON.stringify({
+            db_host: 'aws-0-sa-east-1.pooler.supabase.com',
+            db_port: 5432,
+            db_name: 'postgres',
+            db_user: 'postgres.abcdef',
+          }),
+          { status: 200 },
+        );
+      }
+      creado = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ref: 'abcdef' }), { status: 201 });
+    });
+    return {
+      f,
+      creado: () => creado,
+      guardar: async (jobId: string, conexion: string) => {
+        guardadas.push({ jobId, conexion });
+      },
+    };
+  }
+
+  it('arma la cadena del POOLER con la clave que genero', async () => {
+    const guardadas: Array<{ jobId: string; conexion: string }> = [];
+    const falso = supabaseFalso(guardadas);
+    const app = await servidor({
+      fetchImpl: falso.f as unknown as typeof fetch,
+      guardarConexion: falso.guardar,
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/interno/supabase/crear',
+      headers: auth,
+      payload: { jobId: JOB, nombre: 'acme' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(guardadas).toHaveLength(1);
+    expect(guardadas[0]!.jobId).toBe(JOB);
+    // Por el pooler y no por `db.<ref>.supabase.co`: la conexion directa es
+    // IPv6 y las plataformas donde esto se despliega salen por IPv4.
+    expect(guardadas[0]!.conexion).toContain('Host=aws-0-sa-east-1.pooler.supabase.com');
+    expect(guardadas[0]!.conexion).toContain('Username=postgres.abcdef');
+    // Es la MISMA clave que se le mando a Supabase al crear el proyecto.
+    expect(guardadas[0]!.conexion).toContain(`Password=${String(falso.creado().db_pass)}`);
+  });
+
+  it('la clave sigue sin volver en la respuesta', async () => {
+    const guardadas: Array<{ jobId: string; conexion: string }> = [];
+    const falso = supabaseFalso(guardadas);
+    const app = await servidor({
+      fetchImpl: falso.f as unknown as typeof fetch,
+      guardarConexion: falso.guardar,
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/interno/supabase/crear',
+      headers: auth,
+      payload: { jobId: JOB, nombre: 'acme' },
+    });
+
+    expect(res.payload).not.toContain(String(falso.creado().db_pass));
+  });
+
+  // Si el pooler no contesta, la base igual queda creada: lo que se pierde es
+  // la comodidad, no el trabajo.
+  it('si no se puede averiguar el pooler, no rompe el crear', async () => {
+    const guardadas: Array<{ jobId: string; conexion: string }> = [];
+    const f = vi.fn(async (url: string) => {
+      if (String(url).includes('/config/database/pooler')) {
+        return new Response('nope', { status: 500 });
+      }
+      return new Response(JSON.stringify({ ref: 'abcdef' }), { status: 201 });
+    });
+    const app = await servidor({
+      fetchImpl: f as unknown as typeof fetch,
+      guardarConexion: async (jobId, conexion) => {
+        guardadas.push({ jobId, conexion });
+      },
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/interno/supabase/crear',
+      headers: auth,
+      payload: { jobId: JOB, nombre: 'acme' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(guardadas).toHaveLength(0);
+  });
 });

@@ -101,6 +101,15 @@ export interface PublicarDeps {
    * OPCIONAL: sin esto el flujo queda como estaba.
    */
   asegurarDockerfile?: (githubRepo: string) => Promise<ResultadoDockerfile>;
+  /**
+   * La conexion a la base del proyecto, si alguna corrida la creo en Supabase.
+   *
+   * La contraseña la genero el bridge al crear la base y nunca viajo al
+   * agente; esto la trae del store para escribirla como variable de entorno
+   * del back. Es lo que cierra el "configurar en produccion:
+   * ConnectionStrings__DefaultConnection" que salia en todos los informes.
+   */
+  conexionDeBase?: (proyectoId: string) => Promise<string | undefined>;
 }
 
 /**
@@ -281,6 +290,24 @@ export async function publicar(
     }
 
     await deps.store.guardarRenderServiceId(proyectoId, repo.nombre, r.serviceId, r.url);
+
+    // La base, si hay. Va ACA —recien creado el servicio y antes de
+    // desplegarlo— porque una variable que se escribe despues del deploy no la
+    // ve el proceso que ya arranco.
+    if (deps.conexionDeBase && deps.setearEnvVar && tipoDeRepo(repo.nombre) === 'back') {
+      const conexion = await deps.conexionDeBase(proyectoId).catch(() => undefined);
+      if (conexion) {
+        const puesta = await deps
+          .setearEnvVar(r.serviceId, 'ConnectionStrings__DefaultConnection', conexion)
+          .catch((err) => ({ ok: false, motivo: err instanceof Error ? err.message : 'error' }));
+        if (!puesta.ok) {
+          pendientes.push(
+            `no pude cargarle la conexion a la base a ${repo.nombre} ` +
+              `(${puesta.motivo ?? 'sin detalle'}): ponela a mano en Render`,
+          );
+        }
+      }
+    }
     publicados.push({ repo: repo.nombre, url: r.url });
     // El id del servicio se guarda aparte para poder conectarlos al final: el
     // informe muestra la URL, pero para tocar el servicio hace falta el id.

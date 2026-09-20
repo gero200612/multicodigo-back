@@ -569,6 +569,18 @@ export interface Store {
     serviceId: string,
     url?: string,
   ): Promise<void>;
+  /**
+   * Guarda la conexion a la base del proyecto, a partir del job que la creo.
+   *
+   * Existe para cerrar el unico tramo que este sistema no automatizaba: la base
+   * quedaba creada y migrada, y la connection string la tenia que copiar una
+   * persona. La contraseña la genera el bridge y NO viaja al agente —ver
+   * `supabase-api.ts`—, asi que el unico lugar donde puede quedar guardada para
+   * el despliegue es este, del lado del servidor.
+   */
+  guardarConexionDeBase(jobId: string, conexion: string): Promise<void>;
+  /** La conexion a la base del proyecto, si alguna corrida la creo. */
+  conexionDeBase(proyectoId: string): Promise<string | undefined>;
   /** El id del proyecto por nombre, o null si no existe. */
   idDeProyecto(nombre: string): Promise<string | null>;
   /** Los agentes del proyecto, por slot. */
@@ -1252,6 +1264,17 @@ export class InMemoryStore implements Store {
 
   async reposDeProyecto(proyectoId: string): Promise<RepoDelProyecto[]> {
     return this.reposPorProyecto.get(proyectoId) ?? [];
+  }
+
+  private readonly conexiones = new Map<string, string>();
+
+  async guardarConexionDeBase(jobId: string, conexion: string): Promise<void> {
+    const ctx = this.contextos.get(jobId);
+    if (ctx?.proyectoId) this.conexiones.set(ctx.proyectoId, conexion);
+  }
+
+  async conexionDeBase(proyectoId: string): Promise<string | undefined> {
+    return this.conexiones.get(proyectoId);
   }
 
   async guardarRenderServiceId(
@@ -2266,6 +2289,24 @@ export class PgStore implements Store {
          WHERE proyecto_id = $1 AND nombre = $2`,
       [proyectoId, nombre, serviceId, url ?? null],
     );
+  }
+
+  async guardarConexionDeBase(jobId: string, conexion: string): Promise<void> {
+    // El proyecto sale del job: el endpoint de Supabase solo conoce el jobId,
+    // igual que `anotarPendiente`.
+    await this.pool.query(
+      `UPDATE proyectos SET db_conexion = $2
+         WHERE id = (SELECT proyecto_id FROM jobs WHERE id = $1)`,
+      [jobId, conexion],
+    );
+  }
+
+  async conexionDeBase(proyectoId: string): Promise<string | undefined> {
+    const r = await this.pool.query<{ db_conexion: string | null }>(
+      'SELECT db_conexion FROM proyectos WHERE id = $1',
+      [proyectoId],
+    );
+    return r.rows[0]?.db_conexion ?? undefined;
   }
 
   async idDeProyecto(nombre: string): Promise<string | null> {

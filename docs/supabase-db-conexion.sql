@@ -1,0 +1,11 @@
+-- La conexion a la base del proyecto, guardada por el bridge.
+--
+-- La contraseña la genera el bridge al crear el proyecto de Supabase y NO
+-- viaja al agente: si viajara quedaria en la transcripcion del turno. Pero sin
+-- guardarla en ningun lado, la connection string la tenia que copiar una
+-- persona a mano, que es el pendiente "configurar en produccion:
+-- ConnectionStrings__DefaultConnection" que salia en todos los informes.
+--
+-- Aca queda del lado del servidor, que es el unico que ya tiene los dos
+-- tokens, y de aca la lee `publicar()` para escribirsela al servicio del back.
+ALTER TABLE proyectos ADD COLUMN IF NOT EXISTS db_conexion text;

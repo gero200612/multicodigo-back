@@ -37,6 +37,7 @@ export interface ApiDeps {
     | 'canjearPedidoDeDrive'
     | 'archivoAutorizadoReciente'
     | 'corridaDeJob'
+    | 'guardarConexionDeBase'
     | 'corridasDeUsuario'
     | 'tareasDeCorrida'
     | 'marcarHuecos'
@@ -798,6 +799,11 @@ export function buildWebhookServer(
         const corrida = await api.store.corridaDeJob(jobId);
         if (corrida) await api.store.anotarPendiente(corrida.id, texto);
       },
+      // La conexion a la base queda guardada del lado del servidor, para que
+      // `publicar()` se la escriba al back como variable de entorno. La
+      // contraseña sigue sin pasar por el modelo: nace y muere en el bridge.
+      guardarConexion: (jobId: string, conexion: string) =>
+        api.store.guardarConexionDeBase(jobId, conexion),
     });
 
     /**

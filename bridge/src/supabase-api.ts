@@ -44,6 +44,18 @@ export interface SupabaseApiDeps {
    * existe pero nunca puede funcionar es peor que una que no esta.
    */
   accessToken?: string;
+  /**
+   * Guarda la conexion a la base, para que el despliegue la use.
+   *
+   * La contraseña sigue SIN viajar al agente: se genera aca, se guarda aca, y
+   * de aca la lee `publicar()` para escribirla como variable de entorno del
+   * servicio. El modelo nunca la ve, que es la regla que este archivo protege.
+   *
+   * Sin esto, la base quedaba creada y migrada y la connection string la tenia
+   * que copiar una persona: es el pendiente "configurar en produccion" que
+   * salia en TODOS los informes.
+   */
+  guardarConexion?: (jobId: string, conexion: string) => Promise<void>;
   /** La organizacion de Supabase donde nacen los proyectos. */
   orgId?: string;
   /** El bearer del par gateway-bridge, el mismo que el resto de `/interno`. */
@@ -152,6 +164,33 @@ const Migrar = z.object({
   sql: z.string().min(1).max(200 * 1024),
 });
 
+/**
+ * La connection string del pooler, en el formato que entiende Npgsql.
+ *
+ * Se le pregunta a Supabase por el host en vez de armarlo con la region: la
+ * region no alcanza para saber cual de los pooler le toco al proyecto.
+ */
+async function conexionDePooler(
+  ref: string,
+  clave: string,
+  deps: SupabaseApiDeps,
+): Promise<string | undefined> {
+  const r = (await pedir(`/v1/projects/${ref}/config/database/pooler`, { method: 'GET' }, deps)) as
+    | { db_host?: string; db_port?: number; db_name?: string; db_user?: string }
+    | Array<{ db_host?: string; db_port?: number; db_name?: string; db_user?: string }>;
+  const c = Array.isArray(r) ? r[0] : r;
+  if (!c?.db_host) return undefined;
+  return [
+    `Host=${c.db_host}`,
+    `Port=${c.db_port ?? 5432}`,
+    `Database=${c.db_name ?? 'postgres'}`,
+    `Username=${c.db_user ?? `postgres.${ref}`}`,
+    `Password=${clave}`,
+    'SSL Mode=Require',
+    'Trust Server Certificate=true',
+  ].join(';');
+}
+
 export function registrarSupabase(app: FastifyInstance, deps: SupabaseApiDeps): void {
   const autorizado = (auth: string | undefined) => isTokenValid(auth, deps.apiToken);
 
@@ -180,6 +219,12 @@ export function registrarSupabase(app: FastifyInstance, deps: SupabaseApiDeps): 
     }
 
     try {
+      // La clave se genera ACA y se queda aca: no vuelve en la respuesta del
+      // endpoint, no se loguea, y no la ve el agente. Lo unico que cambia
+      // respecto de antes es que ahora tambien se GUARDA, para que el
+      // despliegue pueda escribirla como variable de entorno del servicio.
+      const clave = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString('base64url');
+
       const r = (await pedir(
         '/v1/projects',
         {
@@ -189,7 +234,7 @@ export function registrarSupabase(app: FastifyInstance, deps: SupabaseApiDeps): 
             organization_id: deps.orgId,
             region: REGION,
             // 32 bytes de aleatorio real. No se devuelve ni se loguea.
-            db_pass: Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString('base64url'),
+            db_pass: clave,
           }),
         },
         deps,
@@ -197,6 +242,24 @@ export function registrarSupabase(app: FastifyInstance, deps: SupabaseApiDeps): 
 
       const ref = r.ref ?? r.id;
       if (!ref) throw new ErrorDeSupabase('supabase_sin_ref', 'Supabase no devolvio la referencia');
+
+      // La conexion, armada y guardada, si se puede.
+      //
+      // Por el POOLER y no por la conexion directa: `db.<ref>.supabase.co`
+      // resuelve solo a IPv6, y las plataformas donde esto se despliega
+      // —Render entre ellas— salen por IPv4. Medido el 2026-09-19 con el back
+      // de `Hoteleria`: "Failed to connect to [2600:1f1e:...]: Network is
+      // unreachable".
+      //
+      // El host del pooler se PREGUNTA y no se arma con la region: hay mas de
+      // uno por region (aws-0, aws-1...) y el que no es contesta "tenant not
+      // found". Tambien medido esa noche, probando los dos.
+      //
+      // Si algo de esto falla, no pasa nada: queda el pendiente de siempre.
+      if (deps.guardarConexion) {
+        const conexion = await conexionDePooler(ref, clave, deps).catch(() => undefined);
+        if (conexion) await deps.guardarConexion(cuerpo.data.jobId, conexion).catch(() => undefined);
+      }
 
       // El cable que queda, anotado para el informe de la mañana.
       //
