@@ -64,6 +64,34 @@ export async function leerArchivo(repo: string, ruta: string, deps: GithubDeps):
 }
 
 /**
+ * Los nombres de archivo de la raiz del repo.
+ *
+ * Hace falta para saber COMO desplegar un back: un `.csproj` en la raiz dice
+ * que es .NET y da el nombre del ensamblado, que es lo que el Dockerfile tiene
+ * que compilar y ejecutar. Adivinar el nombre por el del repo no sirve:
+ * `Hoteleria-back` tiene adentro `Hoteleria.Api.csproj`.
+ *
+ * Una lista vacia es la respuesta valida para "no se pudo mirar": el que
+ * pregunta decide, y ninguno de sus caminos rompe nada por no saber.
+ */
+export async function listarRaiz(repo: string, deps: GithubDeps): Promise<string[]> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  try {
+    const res = await doFetch(`${API}/repos/${repo}/contents?ref=main`, {
+      headers: cabeceras(deps.token),
+    });
+    if (!res.ok) return [];
+    const j = (await res.json()) as unknown;
+    if (!Array.isArray(j)) return [];
+    return j
+      .map((x) => (x as { name?: unknown })?.name)
+      .filter((n): n is string => typeof n === 'string');
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Escribe el archivo en main.
  *
  * El `sha` es obligatorio y no un detalle: es lo que hace que GitHub rechace la

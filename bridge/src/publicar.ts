@@ -1,4 +1,5 @@
-import { crearServicio, type RenderDeps } from './render-api.js';
+import { crearServicio, tipoDeRepo, type RenderDeps } from './render-api.js';
+import type { ResultadoDockerfile } from './dockerfile-back.js';
 import { CONFIG_DEL_FRONT, frontYBackDe, type ResultadoDeConfig } from './conectar.js';
 import type { Store } from './store.js';
 
@@ -88,6 +89,18 @@ export interface PublicarDeps {
    * que es lo de antes.
    */
   reescribirConfig?: (githubRepo: string, url: string) => Promise<ResultadoDeConfig>;
+  /**
+   * Se asegura de que un back .NET tenga Dockerfile ANTES de crear el servicio.
+   *
+   * Render no trae runtime de .NET: sin Dockerfile el servicio no se puede
+   * crear y el proyecto queda sin back. El generador no lo escribe y nadie se
+   * lo pide, asi que lo escribe el sistema —la misma clase de cosa que
+   * `reescribirConfig`: infraestructura que se sabe exactamente como tiene que
+   * ser, no una decision de producto—.
+   *
+   * OPCIONAL: sin esto el flujo queda como estaba.
+   */
+  asegurarDockerfile?: (githubRepo: string) => Promise<ResultadoDockerfile>;
 }
 
 /**
@@ -239,6 +252,20 @@ export async function publicar(
           'arrancar: agregalo (por ejemplo "start": "node src/server.js") y volve a publicar',
       );
       continue;
+    }
+
+    // El Dockerfile del back, antes de crear el servicio: Render clona el repo
+    // al desplegar, asi que si se escribe despues el primer deploy sale sin el.
+    if (deps.asegurarDockerfile && tipoDeRepo(repo.nombre) === 'back') {
+      const d = await deps
+        .asegurarDockerfile(repo.github_repo)
+        .catch((err) => ({ estado: 'error' as const, motivo: err instanceof Error ? err.message : 'error' }));
+      if (d.estado === 'error') {
+        pendientes.push(
+          `no pude escribirle el Dockerfile a ${repo.nombre} (${d.motivo}): sin el, Render no ` +
+            'puede desplegar un back .NET',
+        );
+      }
     }
 
     const r = await crearServicio(repo.nombre, repo.github_repo, deps.render);

@@ -20,6 +20,7 @@ import { publicar } from './publicar.js';
 import { dispararDeploy, setearEnvVar } from './render-api.js';
 import { reescribirConfig } from './conectar.js';
 import { escribirArchivo, leerArchivo } from './github-contenido.js';
+import { asegurarDockerfile } from './dockerfile-back.js';
 import type { Corrida } from './corrida.js';
 import { mergearEnGateway, guardarEnGateway, inspeccionarRepo } from './gateway-admin.js';
 import { fetchPending, sendDecision } from './approvals.js';
@@ -334,6 +335,17 @@ const pipelineDeps = {
               (await inspeccionarRepo({ agent, project, repo }, admin)).tienePackageJson,
             usaSqlite: async (agent, project, repo) =>
               (await inspeccionarRepo({ agent, project, repo }, admin)).usaSqlite,
+            // Render no trae runtime de .NET: sin Dockerfile el back no se
+            // puede desplegar. Lo escribe el sistema, que sabe exactamente como
+            // tiene que ser, en vez de pedirselo al modelo en un turno.
+            // Sin token no hay a quien pedirle: se omite y el flujo queda como
+            // estaba, igual que `reescribirConfig` mas abajo.
+            ...(githubToken
+              ? {
+                  asegurarDockerfile: (githubRepo: string) =>
+                    asegurarDockerfile(githubRepo, { token: githubToken }),
+                }
+              : {}),
             // Sin script `start`, Render no puede arrancar el servicio: mejor
             // no crearlo y decirlo, que dejar uno roto ocupando el nombre.
             puedeArrancar: async (agent, project, repo) =>
