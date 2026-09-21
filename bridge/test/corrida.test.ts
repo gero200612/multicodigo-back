@@ -969,9 +969,19 @@ describe('correrCola dentro de una corrida', () => {
     expect(avisos[avisos.length - 1]).not.toContain('tareas seguidas');
   });
 
-  // Y el tope: si la CONTINUACION tambien se pasa, ahi si es un fallo. Sin
-  // esto, una tarea imposible se reencola sola hasta que corte el reloj.
-  it('la continuacion que se vuelve a pasar cuenta como fallo', async () => {
+  /**
+   * Y el tope: una CONTINUACION que se vuelve a pasar no se reencola mas. Pero
+   * tampoco es un fallo.
+   *
+   * Antes contaba contra el techo de tres fallos seguidos, que esta pensado
+   * para errores que no van a mejorar solos —una credencial vencida, un build
+   * roto—. Una tarea grande no es eso.
+   *
+   * La corrida `taller` del 2026-09-21 se cerro asi: tres cortes seguidos de c1
+   * en tareas de specs del front, `demasiados_fallos` a las 04:19, con
+   * CUARENTA Y OCHO tareas hechas y sin un solo error de codigo.
+   */
+  it('la continuacion que se vuelve a pasar se deja anotada, no cuenta como fallo', async () => {
     // La clave es el texto YA marcado: el arnes compara el texto completo de la
     // tarea, y el de una continuacion lleva la marca adelante.
     const d = arnes({
@@ -990,9 +1000,47 @@ describe('correrCola dentro de una corrida', () => {
     await correr(d);
 
     const tareas = await d.store.tareasDeChat(7);
-    expect(tareas.filter((t) => t.estado === 'fallida')).toHaveLength(1);
+    // `cortada` y no `fallida`: no salio mal, no entro.
+    expect(tareas.filter((t) => t.estado === 'fallida')).toHaveLength(0);
+    expect(tareas.filter((t) => t.estado === 'cortada')).toHaveLength(1);
     // Y no se encolo una tercera vuelta.
     expect(tareas).toHaveLength(1);
+    // Queda anotada para el informe: es lo unico que va a leer alguien.
+    const despues = (await d.store.corridaCerrada?.(c.id)) ?? c;
+    const pendientes = despues.pendientes ?? [];
+    expect(pendientes.some((p: string) => p.includes('no entra en un turno'))).toBe(true);
+  });
+
+  /**
+   * Lo que de verdad importa del cambio: tres tareas grandes seguidas no
+   * pueden cerrar una corrida que esta construyendo bien.
+   */
+  it('tres continuaciones cortadas NO cierran la corrida', async () => {
+    const d = arnes({
+      analista: () => [],
+      fallan: {
+        [marcarContinuacion('uno')]: 'agent_timeout',
+        [marcarContinuacion('dos')]: 'agent_timeout',
+        [marcarContinuacion('tres')]: 'agent_timeout',
+      },
+    });
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    for (const t of ['uno', 'dos', 'tres']) {
+      await d.store.encolar(7, {
+        agente: 'c1',
+        proyecto: c.proyecto,
+        textos: [marcarContinuacion(t)],
+        corridaId: c.id,
+        ronda: 1,
+      });
+    }
+    const avisos = await correr(d);
+
+    expect(avisos.some((a) => a.includes('tareas seguidas'))).toBe(false);
+    // Un aviso por cada una, mas la mencion en el informe del cierre.
+    expect(avisos.filter((a) => a.startsWith('⏸ Esta no entra'))).toHaveLength(3);
+    expect(avisos[avisos.length - 1]).toContain('no entra en un turno');
   });
 
   it('el informe lista la tarea que fallo', async () => {

@@ -3411,6 +3411,45 @@ export async function correrCola(
           continue;
         }
 
+        // Una tarea que YA se corto una vez y se vuelve a cortar no es un
+        // fallo: es una tarea que no entra en un turno.
+        //
+        // Antes caia al camino de abajo y contaba contra el techo de tres
+        // fallos seguidos, que esta pensado para errores de verdad —una
+        // credencial vencida, un build roto, algo que se repite y no va a
+        // mejorar solo—. Una tarea grande no es eso.
+        //
+        // La corrida `taller` del 2026-09-21 se cerro asi: tres cortes
+        // seguidos de c1 en tareas de specs del front, `demasiados_fallos`, a
+        // las 04:19 — con CUARENTA Y OCHO tareas hechas, sin un solo error de
+        // codigo y con el back y el front construidos. Matar la noche entera
+        // por una tarea que no entra es la respuesta equivocada.
+        //
+        // Se cierra como `cortada`, se deja anotado que no entra, y se sigue
+        // con la que viene. Lo que alcanzo a escribir ya se rescato arriba.
+        if (ES_POR_TIEMPO.has(codigo)) {
+          await deps.store.cerrarTarea(tarea.id, 'cortada', codigo);
+          if (corrida) {
+            await deps.store
+              .anotarPendiente(
+                corrida.id,
+                `esta tarea no entra en un turno, se corto dos veces por tiempo: ` +
+                  `${enUnaLineaDeTarea(tarea.texto, 90)}`,
+              )
+              .catch(() => undefined);
+          }
+          // Y NO cuenta como fallo: se resetea la racha, igual que una tarea
+          // que sale bien. Tres tareas grandes seguidas no pueden cerrar una
+          // corrida que esta construyendo.
+          await deps.store.contarFallo(corrida?.id ?? '', false).catch(() => undefined);
+          await avisar(
+            `⏸ Esta no entra en un turno: ${escaparHtml(enUnaLineaDeTarea(tarea.texto))}\n\n` +
+              'Ya se corto dos veces por tiempo, asi que la dejo anotada y sigo con la que viene. ' +
+              'Lo que alcanzo a escribir quedo guardado.',
+          );
+          continue;
+        }
+
         // Un fallo de ENTORNO no cuenta contra el techo, y se espera antes de
         // seguir. No es que la tarea este mal: es que del otro lado no hay con
         // quien hablar, casi siempre porque el stack se esta reconstruyendo.
