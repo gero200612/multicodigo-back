@@ -1,5 +1,6 @@
 import { crearServicio, tipoDeRepo, type RenderDeps } from './render-api.js';
 import type { ResultadoDockerfile } from './dockerfile-back.js';
+import type { ResultadoOutputPath } from './angular-output.js';
 import { CONFIG_DEL_FRONT, frontYBackDe, type ResultadoDeConfig } from './conectar.js';
 import type { Store } from './store.js';
 
@@ -101,6 +102,19 @@ export interface PublicarDeps {
    * OPCIONAL: sin esto el flujo queda como estaba.
    */
   asegurarDockerfile?: (githubRepo: string) => Promise<ResultadoDockerfile>;
+  /**
+   * Se asegura de que el `outputPath` del build de Angular calce con lo que
+   * Render publica.
+   *
+   * `@angular/build:application` -- el builder que trae `ng new` desde
+   * Angular 17 -- anida el sitio servible bajo `dist/<proyecto>/browser/`,
+   * pero `render-api.ts` publica `dist/` a secas. Paso con `taller` el
+   * 2026-09-22: la corrida cerro "completo" y el sitio no tenia nada
+   * publicado, sin que ningun deploy fallara. Ver `angular-output.ts`.
+   *
+   * OPCIONAL: sin esto el flujo queda como estaba.
+   */
+  asegurarOutputPathDeAngular?: (githubRepo: string) => Promise<ResultadoOutputPath>;
   /**
    * La conexion a la base del proyecto, si alguna corrida la creo en Supabase.
    *
@@ -273,6 +287,21 @@ export async function publicar(
         pendientes.push(
           `no pude escribirle el Dockerfile a ${repo.nombre} (${d.motivo}): sin el, Render no ` +
             'puede desplegar un back .NET',
+        );
+      }
+    }
+
+    // El outputPath del build de Angular, antes de crear el servicio: si
+    // Render ya publico con el valor viejo, corregirlo despues pide un
+    // redeploy aparte para que el sitio deje de estar vacio.
+    if (deps.asegurarOutputPathDeAngular && tipoDeRepo(repo.nombre) === 'front') {
+      const o = await deps
+        .asegurarOutputPathDeAngular(repo.github_repo)
+        .catch((err) => ({ estado: 'error' as const, motivo: err instanceof Error ? err.message : 'error' }));
+      if (o.estado === 'error') {
+        pendientes.push(
+          `no pude corregir el outputPath de Angular en ${repo.nombre} (${o.motivo}): sin eso, ` +
+            'Render puede publicar un sitio vacio',
         );
       }
     }

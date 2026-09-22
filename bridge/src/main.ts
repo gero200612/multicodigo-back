@@ -21,6 +21,7 @@ import { dispararDeploy, setearEnvVar, ultimoDeploy } from './render-api.js';
 import { reescribirConfig } from './conectar.js';
 import { escribirArchivo, leerArchivo } from './github-contenido.js';
 import { asegurarDockerfile } from './dockerfile-back.js';
+import { asegurarOutputPathDeAngular } from './angular-output.js';
 import { verificarDespliegue, tareaDeProblema } from './verificar.js';
 import type { Corrida } from './corrida.js';
 import { mergearEnGateway, guardarEnGateway, inspeccionarRepo } from './gateway-admin.js';
@@ -345,6 +346,12 @@ const pipelineDeps = {
               ? {
                   asegurarDockerfile: (githubRepo: string) =>
                     asegurarDockerfile(githubRepo, { token: githubToken }),
+                  // `@angular/build:application` anida el sitio bajo
+                  // `dist/<proyecto>/browser/` y Render publica `dist/` a
+                  // secas: sin esto el front puede quedar publicado y vacio.
+                  // Mismo criterio que el Dockerfile de arriba.
+                  asegurarOutputPathDeAngular: (githubRepo: string) =>
+                    asegurarOutputPathDeAngular(githubRepo, { token: githubToken }),
                 }
               : {}),
             // La conexion a la base la escribio el bridge al crear el proyecto
