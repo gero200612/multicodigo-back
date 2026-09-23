@@ -2161,7 +2161,14 @@ async function armarProyecto(
   // esto replica esa misma condicion para el camino directo.
   const instalacionPrevia =
     proyectoId && deps.crearRepo ? await deps.store.instalacionConCuenta(proyectoId) : undefined;
-  const hayGithubDisponible = Boolean(proyectoId && deps.crearRepo && (instalacionPrevia || opciones.org));
+  // La org que la persona ya dejo elegida (se guarda la primera vez): sin esto
+  // el pliego pegado de una, que casi nunca trae `org=`, jamas defaultea.
+  const org =
+    opciones.org ??
+    (proyectoId && deps.crearRepo && !instalacionPrevia
+      ? await deps.store.orgDeCorridas(usuarioId).catch(() => undefined)
+      : undefined);
+  const hayGithubDisponible = Boolean(proyectoId && deps.crearRepo && (instalacionPrevia || org));
 
   // `yaTieneRepos` sin `proyectoId` se toma como `true` (no tocar nada): sin
   // saber a que proyecto mirar no hay nada que defaultear, y ese es
@@ -2196,9 +2203,9 @@ async function armarProyecto(
   // —pedirla dos veces seria la misma consulta dos veces por turno.
   const yaTiene = instalacionPrevia;
   let instalacion = yaTiene?.installationId;
-  let cuenta = yaTiene?.cuenta ?? opciones.org ?? '';
+  let cuenta = yaTiene?.cuenta ?? org ?? '';
   if (!instalacion) {
-    if (!opciones.org) {
+    if (!org) {
       return {
         ok: false,
         motivo:
@@ -2207,7 +2214,7 @@ async function armarProyecto(
           'o conectala desde el panel.',
       };
     }
-    const heredada = await deps.store.instalacionDeCuenta(usuarioId, opciones.org);
+    const heredada = await deps.store.instalacionDeCuenta(usuarioId, org);
     if (!heredada) {
       // Se dice que hay que conectarla UNA vez desde el panel: es la unica
       // parte de esto que no se puede hacer desde Telegram, porque instalar una
@@ -2215,7 +2222,7 @@ async function armarProyecto(
       return {
         ok: false,
         motivo:
-          `no encontre la organizacion "${opciones.org}" entre las que conectaste. ` +
+          `no encontre la organizacion "${org}" entre las que conectaste. ` +
           'Conectala una vez desde el panel, en Configuracion, y despues la reuso sola.',
       };
     }

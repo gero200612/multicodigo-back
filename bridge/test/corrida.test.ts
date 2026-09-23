@@ -1694,6 +1694,20 @@ describe('/corrida armando el proyecto', () => {
     ]);
   });
 
+  // El caso real: nadie escribe `org=` en cada pliego, la org ya quedo guardada.
+  it('sin org= usa la org guardada para armar front/back', async () => {
+    const d = conRepos((n) => ({ ok: true, nombre: n, github: `Sincro-arg/${n}` }));
+    await conOrgConectada(d);
+    await d.store.setOrgDeCorridas(USUARIO, 'Sincro-arg');
+
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=acme\n${PLIEGO}` },
+      d,
+    );
+    if (r.kind !== 'corrida') throw new Error(`no es corrida: ${r.kind}`);
+    expect(r.creado?.repos).toEqual(['Sincro-arg/acme-front', 'Sincro-arg/acme-back']);
+  });
+
   // Sin org= y sin instalacion previa no hay a que cuenta pedirle los repos:
   // se sigue yendo con las manos vacias en vez de fallar con "falta la org",
   // que es un error nuevo que nadie pidio para quien solo queria anotar un
