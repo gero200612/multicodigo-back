@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { crearServicio, tipoDeRepo, type RenderDeps } from './render-api.js';
 import type { ResultadoDockerfile } from './dockerfile-back.js';
 import type { ResultadoOutputPath } from './angular-output.js';
@@ -134,6 +135,21 @@ export interface PublicarDeps {
  */
 const PENDIENTE_A_MANO = (github: string) =>
   `conectar ${github} a Vercel o a Render (la primera vez es a mano; despues cada push hace un preview solo)`;
+
+/**
+ * Una clave para firmar JWT, generada en vez de pedida.
+ *
+ * Todo back .NET que este sistema publico hasta ahora --`taller`,
+ * `veterinaria`-- quedo con el mismo pendiente: "cargar Jwt__Key en Render,
+ * sin ella el proceso arranca y muere". No es una decision de producto, es un
+ * dato que no le importa a nadie cual sea con tal de que sea largo y al azar:
+ * la misma clase de cosa que la contraseña de la base en `supabase-api.ts`, y
+ * la misma razon para generarla aca en vez de dejar que alguien la escriba a
+ * mano a las cuatro de la mañana.
+ */
+function claveJwtAleatoria(): string {
+  return randomBytes(48).toString('base64');
+}
 
 /**
  * @param agentes Los slots que TIENEN trabajo de esta corrida, en el orden en
@@ -319,6 +335,23 @@ export async function publicar(
     }
 
     await deps.store.guardarRenderServiceId(proyectoId, repo.nombre, r.serviceId, r.url);
+
+    // El Jwt__Key, para todo back .NET, ANTES del primer deploy: el mismo
+    // motivo que la conexion a la base, un ratito mas abajo. Sin decision de
+    // producto de por medio -- cualquier clave larga y al azar sirve -- asi
+    // que no hay razon para dejarlo como pendiente si el sistema la puede
+    // generar solo.
+    if (deps.setearEnvVar && tipoDeRepo(repo.nombre) === 'back') {
+      const puesta = await deps
+        .setearEnvVar(r.serviceId, 'Jwt__Key', claveJwtAleatoria())
+        .catch((err) => ({ ok: false, motivo: err instanceof Error ? err.message : 'error' }));
+      if (!puesta.ok) {
+        pendientes.push(
+          `no pude generarle Jwt__Key a ${repo.nombre} ` +
+            `(${puesta.motivo ?? 'sin detalle'}): cargala a mano en Render`,
+        );
+      }
+    }
 
     // La base, si hay. Va ACA —recien creado el servicio y antes de
     // desplegarlo— porque una variable que se escribe despues del deploy no la

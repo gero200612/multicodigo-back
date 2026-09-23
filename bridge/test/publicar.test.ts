@@ -566,11 +566,13 @@ describe('conectar el front con el back', () => {
       },
     });
 
-    expect(seteadas).toHaveLength(1);
-    expect(seteadas[0]!.clave).toBe('API_URL');
+    // El back tambien recibe su Jwt__Key -- ver el describe de mas abajo --
+    // asi que se filtra por clave en vez de contar todas las llamadas.
+    const apiUrl = seteadas.filter((s) => s.clave === 'API_URL');
+    expect(apiUrl).toHaveLength(1);
     // El front es srv-1 (se publica primero) y el back srv-2.
-    expect(seteadas[0]!.serviceId).toBe('srv-1');
-    expect(seteadas[0]!.valor).toBe('https://servicio-2.onrender.com');
+    expect(apiUrl[0]!.serviceId).toBe('srv-1');
+    expect(apiUrl[0]!.valor).toBe('https://servicio-2.onrender.com');
     expect(r.publicados).toHaveLength(2);
   });
 
@@ -600,21 +602,57 @@ describe('conectar el front con el back', () => {
     expect(pend).toContain('no pude leer');
   });
 
-  // Un proyecto de un solo servicio no tiene a quien conectarse.
-  it('un proyecto sin front no intenta conectar nada', async () => {
-    let llamo = false;
+  // Un proyecto de un solo servicio no tiene a quien conectarse -- pero el
+  // back igual recibe su Jwt__Key, que no depende de que haya front.
+  it('un proyecto sin front no intenta conectar API_URL', async () => {
+    const claves: string[] = [];
     await publicar('p1', 'propinas', ['c2'], {
       ...deps(),
-      setearEnvVar: async () => {
-        llamo = true;
+      setearEnvVar: async (_id, clave) => {
+        claves.push(clave);
         return { ok: true };
       },
     });
-    expect(llamo).toBe(false);
+    expect(claves).not.toContain('API_URL');
+    expect(claves).toContain('Jwt__Key');
   });
 
   it('sin la dependencia cableada, publica igual que antes', async () => {
     const r = await publicar('p1', 'mesas', ['c2'], conDosRepos());
     expect(r.publicados).toHaveLength(2);
+  });
+
+  // El bug real: `taller` y `veterinaria` quedaron con el mismo pendiente
+  // repetido en casi todas sus rondas -- "cargar Jwt__Key en Render, sin ella
+  // el proceso arranca y muere" -- porque nada lo generaba solo. No es una
+  // decision de producto, asi que el sistema la genera y la carga.
+  it('le genera Jwt__Key a un back .NET sin que nadie la pida', async () => {
+    const claves: Array<{ serviceId: string; clave: string; valor: string }> = [];
+    await publicar('p1', 'propinas', ['c2'], {
+      ...deps(),
+      setearEnvVar: async (serviceId, clave, valor) => {
+        claves.push({ serviceId, clave, valor });
+        return { ok: true };
+      },
+    });
+
+    const jwt = claves.find((c) => c.clave === 'Jwt__Key');
+    expect(jwt).toBeDefined();
+    expect(jwt!.serviceId).toBe('srv-1');
+    // Larga y al azar: no importa el valor exacto, importa que no sea vacia
+    // ni un placeholder previsible.
+    expect(jwt!.valor.length).toBeGreaterThanOrEqual(32);
+  });
+
+  it('si no se pudo generar Jwt__Key, queda como pendiente con el nombre del repo', async () => {
+    const r = await publicar('p1', 'propinas', ['c2'], {
+      ...deps(),
+      setearEnvVar: async () => ({ ok: false, motivo: 'Render dijo que no' }),
+    });
+
+    const pend = r.pendientes.join(' ');
+    expect(pend).toContain('propinas-back');
+    expect(pend).toContain('Jwt__Key');
+    expect(pend).toContain('Render dijo que no');
   });
 });
