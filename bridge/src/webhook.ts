@@ -6,7 +6,7 @@ import { ejecutarTurnoConRelevo, type PipelineDeps } from './pipeline.js';
 import { z } from 'zod';
 import type { Store } from './store.js';
 import { FORMATOS_GENERABLES } from './documentos.js';
-import { EJES } from './corrida.js';
+import { EJES, sinRepetidas } from './corrida.js';
 import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
 
@@ -560,11 +560,22 @@ export function buildWebhookServer(
         return reply.code(200).send({ output: 'anotado: no quedan huecos. Cierro la corrida.' });
       }
 
+      // Lo que otro analista (o el plan) ya dejo encolado no se vuelve a anotar:
+      // en AH los cuatro ejes de la ronda 1 encolaron la misma pantalla tres veces.
+      const yaEncoladas = (await api.store.tareasDeCorrida(corrida.id).catch(() => []))
+        .filter((t) => t.estado === 'pendiente' || t.estado === 'corriendo')
+        .map((t) => t.texto);
+      const textos = sinRepetidas(cuerpo.data.huecos, yaEncoladas);
+      if (textos.length === 0) {
+        return reply.code(200).send({
+          output: 'anotado: todo lo que reportaste ya estaba en la cola. No repitas tareas.',
+        });
+      }
       const agente = (await api.store.getActiveAgent(corrida.chatId)) ?? 'c1';
       const n = await api.store.encolar(corrida.chatId, {
         agente,
         proyecto: corrida.proyecto,
-        textos: cuerpo.data.huecos,
+        textos,
         corridaId: corrida.id,
         ronda: corrida.ronda,
       });

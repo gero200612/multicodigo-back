@@ -4,6 +4,7 @@ import {
   techoAlcanzado,
   parseOpcionesDeCorrida,
   promptDeAnalisis,
+  sinRepetidas,
   textoDeInforme,
   TECHO_RONDAS_POR_DEFECTO,
   techoPorTamano,
@@ -4467,5 +4468,49 @@ describe('la regla de tamaño de las tareas', () => {
     expect(p).toMatch(/NO hay tope de tareas/);
     expect(p).toMatch(/muchas chicas/);
     expect(p).not.toMatch(/Entre 4 y 15/);
+  });
+});
+
+// --- Los analistas no repiten lo que ya esta encolado -----------------------
+//
+// En la corrida AH (2026-09-23) los cuatro ejes de la ronda 1 revisaron el mismo
+// repo casi vacio y encolaron 46 tareas con Login, Registro y Home tres y cuatro
+// veces cada una.
+
+describe('promptDeAnalisis: lo ya encolado', () => {
+  it('lista lo encolado y pide no repetirlo', () => {
+    const p = promptDeAnalisis('# x', 1, {
+      eje: 'usuario',
+      encoladas: ['Front: crear la pantalla de Login', 'Back: POST /api/auth/login'],
+    });
+    expect(p).toContain('YA ESTA ENCOLADO');
+    expect(p).toContain('- Front: crear la pantalla de Login');
+    expect(p).toContain('NO repitas nada de esta lista');
+  });
+
+  it('sin nada encolado no agrega el bloque', () => {
+    expect(promptDeAnalisis('# x', 1, { eje: 'usuario' })).not.toContain('YA ESTA ENCOLADO');
+  });
+});
+
+describe('sinRepetidas', () => {
+  const login =
+    'Front: crear la pantalla de Login (ruta /login) con formulario email y password que llame al login del back y guarde el token';
+
+  it('descarta lo casi igual a algo ya encolado', () => {
+    const repetida =
+      'Front: crear la pantalla de Login (ruta /login) con formulario de email y password, llama al login del back y guarda el token';
+    expect(sinRepetidas([repetida], [login])).toEqual([]);
+  });
+
+  it('deja pasar una tarea distinta', () => {
+    const otra = 'Back: sembrar el usuario de prueba admin@cuentas.com con contrasena hasheada en la migracion inicial';
+    expect(sinRepetidas([otra], [login])).toEqual([otra]);
+  });
+
+  it('con la cola vacia deja pasar todo, tambien lo parecido entre si', () => {
+    const a = 'Front: pantalla de Registro con formulario nombre apellido email telefono password';
+    const b = 'Front: pantalla de Registro con formulario nombre apellido email telefono password y avisos';
+    expect(sinRepetidas([a, b], [])).toEqual([a, b]);
   });
 });

@@ -2494,6 +2494,14 @@ async function cerrarConInforme(
  * manera — un "parece que falta el modulo de stock" se traduciria en cero
  * tareas encoladas y una corrida que cierra diciendo que esta completa.
  */
+/** Lo que la corrida ya tiene por hacer, para que un analista no lo repita. */
+async function textosEncolados(corridaId: string, deps: PipelineDeps): Promise<string[]> {
+  const tareas = await deps.store.tareasDeCorrida(corridaId).catch(() => []);
+  return tareas
+    .filter((t) => t.estado === 'pendiente' || t.estado === 'corriendo')
+    .map((t) => t.texto);
+}
+
 async function rondaDeAnalisis(
   corrida: Corrida,
   usuarioId: string,
@@ -2713,6 +2721,7 @@ async function tandaDeAnalisis(
           ...(cierre ? { cierre } : {}),
           ...(corrida.contrato ? { contrato: corrida.contrato } : {}),
           nuevo: esProyectoNuevo(ctx.repos),
+          encoladas: await textosEncolados(corrida.id, deps),
         }),
         // El analista no escribe —el prompt se lo prohibe— pero el modo va igual:
         // con `preguntar`, un intento de editar dejaria el turno colgado quince

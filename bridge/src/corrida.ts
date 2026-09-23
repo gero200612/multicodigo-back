@@ -733,6 +733,63 @@ export function esProyectoNuevo(
 }
 
 /**
+ * Las tareas que ya estan en la cola, para que el analista no las repita.
+ *
+ * Visto en la corrida AH (2026-09-23): los cuatro analistas de la ronda 1
+ * revisaron el mismo repo casi vacio, cada uno encontro que faltaban el login,
+ * el registro y el home, y encolaron cuarenta y seis tareas con Login, Registro
+ * y Home tres y cuatro veces. Ninguno sabia lo que los otros ya habian pedido.
+ */
+export function bloqueDeEncoladas(encoladas: string[]): string[] {
+  if (encoladas.length === 0) return [];
+  const TOPE = 60;
+  const lineas = encoladas
+    .slice(0, TOPE)
+    .map((t) => `- ${t.replace(/\s+/g, ' ').trim().slice(0, 160)}`);
+  return [
+    'YA ESTA ENCOLADO (por otros analistas o por el plan, y todavia sin hacer):',
+    ...lineas,
+    'NO repitas nada de esta lista, ni con otras palabras: si un hueco ya esta cubierto',
+    'por una de estas tareas, dejalo afuera. Reporta SOLO lo que falta y no esta aca.',
+    '',
+  ];
+}
+
+/**
+ * Saca de `nuevos` los textos que ya estan en la cola, por parecido de palabras.
+ *
+ * Es la red de seguridad de `bloqueDeEncoladas`: el prompt le pide al modelo que
+ * no repita y este filtro descarta lo que igual llego repetido. Conservador a
+ * proposito (0.6): descartar una tarea distinta pierde trabajo en silencio, y
+ * dejar pasar una repetida solo cuesta un turno.
+ */
+export function sinRepetidas(nuevos: string[], existentes: string[]): string[] {
+  const palabras = (t: string) =>
+    new Set(
+      t
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .split(/[^a-z0-9]+/)
+        .filter((w) => w.length > 3),
+    );
+  const parecido = (a: Set<string>, b: Set<string>) => {
+    if (a.size === 0 || b.size === 0) return 0;
+    let comunes = 0;
+    for (const w of a) if (b.has(w)) comunes += 1;
+    return comunes / (a.size + b.size - comunes);
+  };
+  const vistas = existentes.map(palabras);
+  const salen: string[] = [];
+  for (const t of nuevos) {
+    const p = palabras(t);
+    if (vistas.some((v) => parecido(p, v) >= 0.6)) continue;
+    salen.push(t);
+  }
+  return salen;
+}
+
+/**
  * El prompt del turno de analisis.
  *
  * Arranca en sesion LIMPIA —el turno lleva `sesionLimpia`— y eso es la
@@ -755,9 +812,16 @@ export function promptDeAnalisis(
    * Ausente = el analista generico de las rondas del medio, que es el de
    * siempre y compara contra el pliego a secas.
    */
-  opciones: { eje?: Eje; cierre?: boolean; contrato?: string; nuevo?: boolean } = {},
+  opciones: {
+    eje?: Eje;
+    cierre?: boolean;
+    contrato?: string;
+    nuevo?: boolean;
+    /** Lo que YA esta en la cola de esta corrida (pendiente o corriendo). */
+    encoladas?: string[];
+  } = {},
 ): string {
-  const { eje, cierre, contrato, nuevo = false } = opciones;
+  const { eje, cierre, contrato, nuevo = false, encoladas = [] } = opciones;
   return [
     eje
       ? `Sos el analista de ${eje.toUpperCase()} de esta corrida: mirás ${QUE_MIRA[eje]}. No construis nada: revisas.`
@@ -863,6 +927,7 @@ export function promptDeAnalisis(
     'DECILO en la tarea: "falta X; en la referencia esta resuelto en <archivo>".',
     'Eso es lo que hace que quien lo construya copie en vez de inventar.',
     '',
+    ...bloqueDeEncoladas(encoladas),
     'No arregles nada. No escribas ni edites archivos. Solo mira y reporta.',
     '',
     // La misma regla que el plan. El analista escribe las tareas de las rondas
