@@ -623,7 +623,7 @@ export function textoDeCorrida(
     `Techos: ${c.techoRondas} ronda(s) · hasta las ${c.techoHora}.`,
     '',
     recienAbierta
-      ? 'Ahora mandame la cola con <b>/cola</b> y una tarea por linea. Cuando se vacie, reviso contra el pliego y sigo sola.'
+      ? 'Arranco solo: el primer paso es un analisis del pliego que arma las tareas iniciales, y despues sigo ronda a ronda. Si queres sumar tareas tuyas, mandalas con <b>/cola</b> (una por linea).'
       : 'Con /cola ves lo que falta. Con /cancelar cierro la corrida.',
   );
   return lineas.join('\n');
