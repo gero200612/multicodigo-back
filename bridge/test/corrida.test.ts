@@ -1671,6 +1671,46 @@ describe('/corrida armando el proyecto', () => {
     ]);
   });
 
+  // El caso que motivo el arreglo: pegar un pliego entero de una, con
+  // `org=` pero SIN `repos=` ni `referencia=`, tiene que armar el proyecto
+  // igual que el paso a paso — antes se iba con las manos vacias porque nadie
+  // habia escrito `repos=` a mano.
+  it('sin repos= ni referencia=, con la org conectada, arma front/back y hereda las referencias conocidas', async () => {
+    const d = conRepos((n) => ({ ok: true, nombre: n, github: `Sincro-arg/${n}` }));
+    await conOrgConectada(d);
+    const otro = (await d.store.proyectosDeUsuario(USUARIO)).find((p) => p.nombre === 'otro')!.id;
+    await d.store.vincularRepo(otro, 'referencia-sincroresto-front', 'Sincro-arg/referencia-sincroresto-front', true);
+    await d.store.vincularRepo(otro, 'referencia-sincroresto-back', 'Sincro-arg/referencia-sincroresto-back', true);
+
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=acme org=Sincro-arg\n${PLIEGO}` },
+      d,
+    );
+    if (r.kind !== 'corrida') throw new Error(`no es corrida: ${r.kind}`);
+    expect(r.creado?.repos).toEqual(['Sincro-arg/acme-front', 'Sincro-arg/acme-back']);
+    expect([...(r.creado?.referencia ?? [])].sort()).toEqual([
+      'Sincro-arg/referencia-sincroresto-back',
+      'Sincro-arg/referencia-sincroresto-front',
+    ]);
+  });
+
+  // Sin org= y sin instalacion previa no hay a que cuenta pedirle los repos:
+  // se sigue yendo con las manos vacias en vez de fallar con "falta la org",
+  // que es un error nuevo que nadie pidio para quien solo queria anotar un
+  // proyecto sin GitHub todavia.
+  it('sin repos=, sin referencia= y sin org conectada, no inventa nada', async () => {
+    const d = arnes();
+    await vincular(d.store, 7);
+
+    const r = await handleIncoming(
+      { chatId: 7, messageId: 1, text: `/corrida proyecto=stock-acme\n${PLIEGO}` },
+      d,
+    );
+    if (r.kind !== 'corrida') throw new Error(`no es corrida: ${r.kind}`);
+    expect(r.creado?.repos).toEqual([]);
+    expect(r.creado?.referencia).toEqual([]);
+  });
+
   // La instalacion se HEREDA: es de la cuenta, no del proyecto, y la persona ya
   // la consintio una vez desde el panel.
   it('hereda la instalacion de la org al proyecto nuevo', async () => {

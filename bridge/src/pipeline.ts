@@ -2023,19 +2023,6 @@ async function armarDesdeElNombre(
     await deps.store.setOrgDeCorridas(usuarioId, elegida.cuenta).catch(() => undefined);
   }
 
-  const referencias = await deps.store.referenciasConocidas(usuarioId);
-
-  // Un proyecto que YA tiene sus repos no se vuelve a armar: se corre sobre lo
-  // que hay. Antes esto intentaba crear `<nombre>-front` otra vez y la corrida
-  // moria con "ya existe un repo con ese nombre". Uno que existe pero sin repos
-  // propios —creado desde el panel— si recibe los dos.
-  const existente = (await deps.store.proyectosDeUsuario(usuarioId)).find(
-    (p) => p.nombre.toLowerCase() === nombre.toLowerCase(),
-  );
-  const yaTieneRepos =
-    existente !== undefined &&
-    (await deps.store.reposDeProyecto(existente.id)).some((r) => !r.solo_lectura);
-
   return armarProyecto(
     chatId,
     usuarioId,
@@ -2047,14 +2034,13 @@ async function armarDesdeElNombre(
       // La elegida, o la unica que hay. El `!` es seguro: si no hay elegida,
       // los dos `if` de arriba garantizan que `cuentas` tiene exactamente una.
       org: elegida.cuenta,
-      // La convencion de nombres. Dos repos y no uno: es como esta armado el
-      // proyecto de referencia, y lo que el pliego describe casi siempre tiene
-      // las dos mitades.
-      repos: yaTieneRepos ? [] : [`${nombre}-front`, `${nombre}-back`],
-      // Las referencias son para ARMAR algo nuevo: en un proyecto que ya tiene
-      // sus repos no se montan. Copiarle patrones de sincroresto a un proyecto
-      // hecho es empujarlo a otra estructura.
-      referencia: yaTieneRepos ? [] : referencias,
+      // `repos` y `referencia` van vacios: `armarProyecto` es quien decide
+      // ahora si el proyecto los necesita (mira si ya tiene los suyos), y lo
+      // hace igual para este camino paso a paso que para quien pega un
+      // pliego entero de una. Antes esa cuenta se hacia ACA, dos veces la
+      // misma logica en dos archivos que se iban a desincronizar.
+      repos: [],
+      referencia: [],
       // Lo que dijo el comando, o privado. Contestando el nombre no hay forma
       // de pedir publico —el paso a paso no pregunta— asi que ese camino
       // siempre cae en privado, que es el default seguro.
@@ -2152,7 +2138,48 @@ async function armarProyecto(
     proyectoId = mios.find((p) => p.nombre.toLowerCase() === proyecto.toLowerCase())?.id;
   }
 
-  if (opciones.repos.length === 0 && opciones.referencia.length === 0) {
+  // 1.5. Los defaults, para quien pega un pliego entero de una en vez de
+  // seguir el paso a paso.
+  //
+  // El paso a paso arma `repos` y `referencia` solo cuando el proyecto
+  // TODAVIA no tiene los suyos (`yaTieneRepos`, mas abajo en este archivo).
+  // El camino directo —`/corrida proyecto=x rondas=n` seguido del pliego en
+  // la misma linea— pasaba de largo esa cuenta: `opciones.repos` y
+  // `opciones.referencia` quedaban en `[]` porque nadie los escribio a mano,
+  // y el chequeo de aca abajo devolvia sin crear nada. La corrida arrancaba
+  // sin GitHub y sin repos de referencia, y el agente construia de cero sin
+  // saber que sincroresto —ya armado, con calendario, kanban, dashboard y
+  // configuracion de usuario resueltos— estaba disponible para copiarle la
+  // estructura.
+  //
+  // No se defaultea si no hay con que: sin proyectoId, sin `deps.crearRepo`,
+  // o sin forma de resolver una instalacion (ni una ya guardada ni un
+  // `org=` en el comando), crear `repos`/`referencia` de la nada solo
+  // cambiaria "no crea nada" por un error de "falta la org" en un pedido que
+  // antes ni pasaba por ahi. Eso es lo que ya hace `armarDesdeElNombre` mas
+  // arriba en este archivo —pregunta la org ANTES de intentar armar nada— y
+  // esto replica esa misma condicion para el camino directo.
+  const instalacionPrevia =
+    proyectoId && deps.crearRepo ? await deps.store.instalacionConCuenta(proyectoId) : undefined;
+  const hayGithubDisponible = Boolean(proyectoId && deps.crearRepo && (instalacionPrevia || opciones.org));
+
+  // `yaTieneRepos` sin `proyectoId` se toma como `true` (no tocar nada): sin
+  // saber a que proyecto mirar no hay nada que defaultear, y ese es
+  // exactamente el comportamiento de siempre.
+  const yaTieneRepos = proyectoId
+    ? (await deps.store.reposDeProyecto(proyectoId)).some((r) => !r.solo_lectura)
+    : true;
+  const debeDefaultear = hayGithubDisponible && !yaTieneRepos;
+  const repos =
+    opciones.repos.length === 0 && debeDefaultear
+      ? [`${proyecto}-front`, `${proyecto}-back`]
+      : opciones.repos;
+  const referencia =
+    opciones.referencia.length === 0 && debeDefaultear
+      ? await deps.store.referenciasConocidas(usuarioId).catch(() => [])
+      : opciones.referencia;
+
+  if (repos.length === 0 && referencia.length === 0) {
     return { ok: true, proyecto, creado };
   }
 
@@ -2165,8 +2192,9 @@ async function armarProyecto(
   }
 
   // Con la cuenta: es el `owner` de un repo de referencia, y lo que dice en
-  // que org se crean los nuevos.
-  const yaTiene = await deps.store.instalacionConCuenta(proyectoId);
+  // que org se crean los nuevos. Ya se leyo arriba para decidir si defaultear
+  // —pedirla dos veces seria la misma consulta dos veces por turno.
+  const yaTiene = instalacionPrevia;
   let instalacion = yaTiene?.installationId;
   let cuenta = yaTiene?.cuenta ?? opciones.org ?? '';
   if (!instalacion) {
@@ -2205,7 +2233,7 @@ async function armarProyecto(
   // los dos primeros ya existen y el mensaje puede decir exactamente cuales.
   // En paralelo, un 403 llegaria tres veces y el estado seria mas dificil de
   // contar que de arreglar.
-  for (const nombre of opciones.repos) {
+  for (const nombre of repos) {
     const r = await deps.crearRepo(
       instalacion,
       nombre,
@@ -2251,7 +2279,7 @@ async function armarProyecto(
   // No se verifica que existan en GitHub. El worktree lo va a decir en el
   // primer turno con un error de clone, y una verificacion aca seria una
   // llamada mas por repo para adelantar un error que igual se ve.
-  for (const nombre of opciones.referencia) {
+  for (const nombre of referencia) {
     await deps.store.vincularRepo(proyectoId, nombre, `${cuenta}/${nombre}`, true);
     creado.referencia.push(`${cuenta}/${nombre}`);
   }
