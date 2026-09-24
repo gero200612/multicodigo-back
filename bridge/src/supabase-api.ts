@@ -114,6 +114,18 @@ export class ErrorDeSupabase extends Error {
   }
 }
 
+/**
+ * Si el error de Supabase es el tope de proyectos del plan.
+ *
+ * Se mira el texto y no el status: Supabase lo manda como 403, igual que un
+ * token sin permiso, y lo unico que los distingue es el mensaje ("...reached
+ * their maximum limits for the number of active free projects"). El texto
+ * se lee pero NO se reenvia.
+ */
+export function esLimiteDeProyectos(cuerpo: string): boolean {
+  return /maximum limits?|project limit|limit of .*projects|active (free )?projects/i.test(cuerpo);
+}
+
 async function pedir(
   ruta: string,
   init: RequestInit,
@@ -133,6 +145,20 @@ async function pedir(
   });
   const texto = await res.text();
   if (!res.ok) {
+    // El limite de proyectos del plan se reconoce ANTES que el 403 generico.
+    // En AH (2026-09-24) la organizacion free ya tenia sus dos proyectos
+    // activos, Supabase contesto 403, y el agente leyo "el token no alcanza":
+    // lo repitio en el informe y la tarea quedo esperando un token nuevo que
+    // no hacia falta. Lo que habia que hacer era liberar un lugar.
+    if (esLimiteDeProyectos(texto)) {
+      throw new ErrorDeSupabase(
+        'supabase_limite_de_proyectos',
+        'la organizacion de Supabase llego al limite de proyectos activos de su plan ' +
+          '(el free permite 2). NO es un problema del token: una persona tiene que borrar ' +
+          'o pausar un proyecto en supabase.com, o pasar a un plan pago, y despues se ' +
+          'vuelve a correr esta tarea',
+      );
+    }
     // El cuerpo de Supabase NO se propaga tal cual: puede traer la connection
     // string del proyecto, y este texto termina en un chat de Telegram.
     throw new ErrorDeSupabase(

@@ -148,6 +148,48 @@ describe('POST /interno/supabase/crear', () => {
     expect(res.statusCode).toBe(502);
     expect(res.payload).not.toContain('secreto');
   });
+
+  // El caso de AH (2026-09-24): la organizacion free ya tenia dos proyectos y
+  // Supabase contesto 403. El agente leyo "el token no alcanza" y pidio un
+  // token nuevo, cuando lo que faltaba era liberar un lugar.
+  it('el limite de proyectos del plan se nombra, y no se confunde con el token', async () => {
+    const f = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            message:
+              'The following organization members have reached their maximum limits for the number of active free projects within organizations where they are an administrator or owner: gero (2 project limit).',
+          }),
+          { status: 403 },
+        ),
+    );
+    const app = await servidor({ fetchImpl: f as unknown as typeof fetch });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/interno/supabase/crear',
+      headers: auth,
+      payload: { jobId: JOB, nombre: 'acme' },
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().code).toBe('supabase_limite_de_proyectos');
+    expect(res.json().message).toContain('NO es un problema del token');
+    expect(res.json().message).toContain('borrar o pausar');
+  });
+
+  it('un 403 que no es el limite sigue diciendo que es el token', async () => {
+    const f = vi.fn(
+      async () => new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 403 }),
+    );
+    const app = await servidor({ fetchImpl: f as unknown as typeof fetch });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/interno/supabase/crear',
+      headers: auth,
+      payload: { jobId: JOB, nombre: 'acme' },
+    });
+    expect(res.json().code).toBe('supabase_403');
+    expect(res.json().message).toContain('token');
+  });
 });
 
 describe('POST /interno/supabase/migrar', () => {
