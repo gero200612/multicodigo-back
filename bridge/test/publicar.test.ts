@@ -431,6 +431,41 @@ describe('publicar en un repo que ya tiene servicio', () => {
     expect(r.pendientes.join(' ')).toContain('propinas-back');
   });
 
+  // El caso de AH (2026-09-23): el servicio se creo cuando el back todavia no
+  // tenia `.csproj` en la raiz, asi que el Dockerfile no aplicaba. Despues cada
+  // redeploy salteaba el chequeo y moria con "open Dockerfile: no such file".
+  // Tiene que escribirse ANTES del deploy, no despues.
+  it('escribe el Dockerfile que falta antes de redesplegar', async () => {
+    const orden: string[] = [];
+    await publicar('p1', 'propinas', ['c2'], {
+      ...conServicio(),
+      asegurarDockerfile: async (repo) => {
+        orden.push(`dockerfile ${repo}`);
+        return { estado: 'escrito' };
+      },
+      desplegar: async (id) => {
+        orden.push(`deploy ${id}`);
+        return { ok: true };
+      },
+    });
+    expect(orden).toEqual(['dockerfile Sincro-arg/propinas-back', 'deploy srv-viejo']);
+  });
+
+  it('si no puede escribir el Dockerfile lo nombra, y despliega igual', async () => {
+    const desplegados: string[] = [];
+    const r = await publicar('p1', 'propinas', ['c2'], {
+      ...conServicio(),
+      asegurarDockerfile: async () => ({ estado: 'error', motivo: '403' }),
+      desplegar: async (id) => {
+        desplegados.push(id);
+        return { ok: true };
+      },
+    });
+    expect(r.pendientes.join(' ')).toContain('Dockerfile');
+    expect(r.pendientes.join(' ')).toContain('403');
+    expect(desplegados).toEqual(['srv-viejo']);
+  });
+
   // Sin la dependencia cableada el sistema se comporta como antes: no se
   // dispara nada y tampoco se inventa un pendiente.
   it('sin desplegar cableado, no pasa nada', async () => {

@@ -3,7 +3,7 @@ import { crearServicio, tipoDeRepo, type RenderDeps } from './render-api.js';
 import type { ResultadoDockerfile } from './dockerfile-back.js';
 import type { ResultadoOutputPath } from './angular-output.js';
 import { CONFIG_DEL_FRONT, frontYBackDe, type ResultadoDeConfig } from './conectar.js';
-import type { Store } from './store.js';
+import type { RepoDelProyecto, Store } from './store.js';
 
 /**
  * Que se publica al cerrar una corrida, y que queda como cable suelto.
@@ -152,6 +152,52 @@ function claveJwtAleatoria(): string {
 }
 
 /**
+ * Los archivos de infraestructura que el sistema escribe solo: el Dockerfile
+ * del back y el outputPath del front.
+ *
+ * Corre en los DOS caminos —servicio nuevo y servicio que ya existe— y siempre
+ * antes de desplegar, porque Render clona el repo en ese momento. Antes corria
+ * solo al crear el servicio, y en AH (2026-09-23) eso no alcanzo: el servicio
+ * se creo con el back todavia sin `.csproj` en la raiz —`no_aplica`—, y cada
+ * redeploy despues salteaba el chequeo. Cinco deploys seguidos murieron con
+ * "open Dockerfile: no such file or directory" y ninguno lo arreglo.
+ *
+ * Es barato repetirlo: con el archivo ya puesto es una lectura a GitHub y nada
+ * mas (`ya_estaba`).
+ */
+async function asegurarInfraestructura(
+  repo: RepoDelProyecto,
+  deps: PublicarDeps,
+  pendientes: string[],
+): Promise<void> {
+  if (deps.asegurarDockerfile && tipoDeRepo(repo.nombre) === 'back') {
+    const d = await deps
+      .asegurarDockerfile(repo.github_repo)
+      .catch((err) => ({ estado: 'error' as const, motivo: err instanceof Error ? err.message : 'error' }));
+    if (d.estado === 'error') {
+      pendientes.push(
+        `no pude escribirle el Dockerfile a ${repo.nombre} (${d.motivo}): sin el, Render no ` +
+          'puede desplegar un back .NET',
+      );
+    }
+  }
+
+  // Si Render ya publico con el outputPath viejo, corregirlo despues pide un
+  // redeploy aparte para que el sitio deje de estar vacio.
+  if (deps.asegurarOutputPathDeAngular && tipoDeRepo(repo.nombre) === 'front') {
+    const o = await deps
+      .asegurarOutputPathDeAngular(repo.github_repo)
+      .catch((err) => ({ estado: 'error' as const, motivo: err instanceof Error ? err.message : 'error' }));
+    if (o.estado === 'error') {
+      pendientes.push(
+        `no pude corregir el outputPath de Angular en ${repo.nombre} (${o.motivo}): sin eso, ` +
+          'Render puede publicar un sitio vacio',
+      );
+    }
+  }
+}
+
+/**
  * @param agentes Los slots que TIENEN trabajo de esta corrida, en el orden en
  * que trabajaron. Salen de `agentesQueTrabajaron` y son un registro, no una
  * adivinanza. Van TODOS a main: con un relevo o con cowork el trabajo queda
@@ -195,6 +241,10 @@ export async function publicar(
       // servicio corriendo la version vieja, sin que nada lo diga.
       //
       // El merge ya paso: cada tarea mergea a main durante la corrida.
+      //
+      // Y el Dockerfile/outputPath se revisan de nuevo ACA: al crear el
+      // servicio el repo pudo no tenerlos todavia por no aplicar.
+      await asegurarInfraestructura(repo, deps, pendientes);
       if (deps.desplegar) {
         const d = await deps.desplegar(repo.render_service_id);
         if (!d.ok) {
@@ -293,34 +343,10 @@ export async function publicar(
       continue;
     }
 
-    // El Dockerfile del back, antes de crear el servicio: Render clona el repo
-    // al desplegar, asi que si se escribe despues el primer deploy sale sin el.
-    if (deps.asegurarDockerfile && tipoDeRepo(repo.nombre) === 'back') {
-      const d = await deps
-        .asegurarDockerfile(repo.github_repo)
-        .catch((err) => ({ estado: 'error' as const, motivo: err instanceof Error ? err.message : 'error' }));
-      if (d.estado === 'error') {
-        pendientes.push(
-          `no pude escribirle el Dockerfile a ${repo.nombre} (${d.motivo}): sin el, Render no ` +
-            'puede desplegar un back .NET',
-        );
-      }
-    }
-
-    // El outputPath del build de Angular, antes de crear el servicio: si
-    // Render ya publico con el valor viejo, corregirlo despues pide un
-    // redeploy aparte para que el sitio deje de estar vacio.
-    if (deps.asegurarOutputPathDeAngular && tipoDeRepo(repo.nombre) === 'front') {
-      const o = await deps
-        .asegurarOutputPathDeAngular(repo.github_repo)
-        .catch((err) => ({ estado: 'error' as const, motivo: err instanceof Error ? err.message : 'error' }));
-      if (o.estado === 'error') {
-        pendientes.push(
-          `no pude corregir el outputPath de Angular en ${repo.nombre} (${o.motivo}): sin eso, ` +
-            'Render puede publicar un sitio vacio',
-        );
-      }
-    }
+    // El Dockerfile del back y el outputPath del front, antes de crear el
+    // servicio: Render clona el repo al desplegar, asi que si se escriben
+    // despues el primer deploy sale sin ellos.
+    await asegurarInfraestructura(repo, deps, pendientes);
 
     const r = await crearServicio(repo.nombre, repo.github_repo, deps.render);
     if (r.estado === 'sin_render') {
