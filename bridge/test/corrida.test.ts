@@ -4,6 +4,8 @@ import {
   techoAlcanzado,
   parseOpcionesDeCorrida,
   promptDeAnalisis,
+  bloqueDeEstado,
+  tareaDeIntegracion,
   sinRepetidas,
   textoDeInforme,
   TECHO_RONDAS_POR_DEFECTO,
@@ -3439,7 +3441,8 @@ describe('el merge por tarea', () => {
     const slots = d.ask.mock.calls
       .filter((c) => !c[0].prompt.includes('--- PLIEGO ---'))
       .map((c) => (c[0] as { agent?: string }).agent);
-    expect(slots).toEqual(['c1', 'c1']);
+    // El tercer turno es la tarea de integracion que el fallo del merge encola.
+    expect(slots).toEqual(['c1', 'c1', 'c1']);
   });
 
   // Un servidor sin el token de admin no recibe la dependencia, y entonces no
@@ -4526,5 +4529,38 @@ describe('promptDePlan: la primera pagina dice "En construccion"', () => {
   it('prohibe el Cargando eterno y pide un indicador de conexion', () => {
     expect(p).toContain('NUNCA');
     expect(p).toContain('sin conexion');
+  });
+});
+
+describe('lo que falta se repara solo', () => {
+  it('un merge fallido encola UNA tarea de integracion', async () => {
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      mergearTrabajo: async () => ({ ok: false, detalle: 'CONFLICT' }),
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    await correr(d);
+    const todas = await d.store.tareasDeChat(7);
+    const integraciones = todas.filter((t) => t.texto.startsWith('Integrar a main el trabajo'));
+    expect(integraciones.length).toBe(1);
+  });
+
+  it('la tarea de integracion nombra al slot y pide resolver conflictos', () => {
+    const t = tareaDeIntegracion('c2', 'non-fast-forward');
+    expect(t).toContain('c2');
+    expect(t).toContain('non-fast-forward');
+    expect(t).toContain('resolver los');
+  });
+
+  it('el analista recibe los hechos del sistema como huecos', () => {
+    const p = promptDeAnalisis('# x', 1, {
+      eje: 'funcionamiento',
+      hechos: ['La base de datos NO esta creada'],
+    });
+    expect(p).toContain('ESTADO REAL DEL PROYECTO');
+    expect(p).toContain('- La base de datos NO esta creada');
+    expect(bloqueDeEstado([])).toEqual([]);
   });
 });

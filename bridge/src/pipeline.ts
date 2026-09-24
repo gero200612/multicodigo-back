@@ -45,6 +45,7 @@ import {
   SIN_RESPUESTA,
   type OpcionesDeCorrida,
   promptDeAnalisis,
+  tareaDeIntegracion,
   techoAlcanzado,
   textoDeInforme,
   promptDeTareaDesatendida,
@@ -2722,6 +2723,7 @@ async function tandaDeAnalisis(
           ...(corrida.contrato ? { contrato: corrida.contrato } : {}),
           nuevo: esProyectoNuevo(ctx.repos),
           encoladas: await textosEncolados(corrida.id, deps),
+          hechos: await hechosDelProyecto(corrida, ctx.proyectoId, deps),
         }),
         // El analista no escribe —el prompt se lo prohibe— pero el modo va igual:
         // con `preguntar`, un intento de editar dejaria el turno colgado quince
@@ -3066,6 +3068,7 @@ export async function correrCola(
   let mergesFallidosSeguidos = 0;
   // Para que el pendiente del merge fallido salga una vez y no una por tarea.
   let mergeAnotado = false;
+  let integracionEncolada = false;
   /**
    * Si ya se publico y se mando el link.
    *
@@ -3274,6 +3277,22 @@ export async function correrCola(
               `no pude mergear a main lo que hizo ${r.agente} (${m.detalle ?? 'sin detalle'}): ` +
                 'sigo con ese slot y lo reintento al cerrar',
             )
+            .catch(() => undefined);
+        }
+        // Y se ENCOLA el arreglo. En AH c1 y c2 crearon cada uno su AuthService,
+        // el merge a main fallo por non-fast-forward, quedo anotado y NADIE lo
+        // resolvio: la corrida cerro "completa" con el sitio desplegado viejo.
+        // Anotar no arregla nada; una tarea si.
+        if (!m.ok && !integracionEncolada) {
+          integracionEncolada = true;
+          await deps.store
+            .encolar(corrida.chatId, {
+              agente: r.agente,
+              proyecto: tarea.proyecto,
+              textos: [tareaDeIntegracion(r.agente, m.detalle)],
+              corridaId: corrida.id,
+              ronda: corrida.ronda,
+            })
             .catch(() => undefined);
         }
       }
@@ -3552,4 +3571,47 @@ export async function correrCola(
       return;
     }
   }
+}
+
+/**
+ * Lo que el sistema sabe del proyecto y un analista no ve leyendo el worktree.
+ *
+ * - Base: si el pliego pide Postgres/Supabase y `conexionDeBase` esta vacia, la
+ *   base nunca se creo. En AH el back registraba `AppDbContext` sin base alguna
+ *   y el login no podia andar, con los cuatro analistas diciendo "completo".
+ * - Pendientes de la corrida (un merge a main que fallo, por ejemplo).
+ * - Tareas cortadas por tiempo: trabajo que quedo a medias.
+ */
+async function hechosDelProyecto(
+  corrida: Corrida,
+  proyectoId: string | undefined,
+  deps: PipelineDeps,
+): Promise<string[]> {
+  const hechos: string[] = [];
+  if (proyectoId && /supabase|postgres/i.test(corrida.md)) {
+    const conexion = await deps.store.conexionDeBase(proyectoId).catch(() => 'desconocido');
+    if (!conexion) {
+      hechos.push(
+        'La base de datos NO esta creada: el pliego pide Postgres/Supabase y este proyecto no tiene conexion. ' +
+          'Falta crearla con la herramienta crear_base_supabase, aplicar el esquema con aplicar_migracion_supabase y sembrar los datos.',
+      );
+    }
+  }
+  for (const p of corrida.pendientes ?? []) {
+    if (/mergear a main/i.test(p)) {
+      hechos.push(`Hay trabajo sin integrar a main: ${p.replace(/\s+/g, ' ').slice(0, 220)}`);
+    }
+  }
+  const tareas = await deps.store.tareasDeCorrida(corrida.id).catch(() => []);
+  const cortadas = tareas.filter((t) => t.estado === 'cortada');
+  if (cortadas.length > 0) {
+    hechos.push(
+      `${cortadas.length} tarea(s) se cortaron por tiempo y pueden haber quedado a medias; verifica en el codigo si esta terminado lo que pedian: ` +
+        cortadas
+          .slice(0, 6)
+          .map((t) => `"${t.texto.replace(/\s+/g, ' ').slice(0, 80)}"`)
+          .join('; '),
+    );
+  }
+  return hechos;
 }

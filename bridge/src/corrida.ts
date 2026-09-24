@@ -814,6 +814,8 @@ export function promptDeAnalisis(
    */
   opciones: {
     eje?: Eje;
+    /** Hechos del sistema que no se ven en el codigo (base sin crear, merges, cortadas). */
+    hechos?: string[];
     cierre?: boolean;
     contrato?: string;
     nuevo?: boolean;
@@ -821,7 +823,7 @@ export function promptDeAnalisis(
     encoladas?: string[];
   } = {},
 ): string {
-  const { eje, cierre, contrato, nuevo = false, encoladas = [] } = opciones;
+  const { eje, cierre, contrato, nuevo = false, encoladas = [], hechos = [] } = opciones;
   return [
     eje
       ? `Sos el analista de ${eje.toUpperCase()} de esta corrida: mirás ${QUE_MIRA[eje]}. No construis nada: revisas.`
@@ -927,6 +929,7 @@ export function promptDeAnalisis(
     'DECILO en la tarea: "falta X; en la referencia esta resuelto en <archivo>".',
     'Eso es lo que hace que quien lo construya copie en vez de inventar.',
     '',
+    ...bloqueDeEstado(hechos),
     ...bloqueDeEncoladas(encoladas),
     'No arregles nada. No escribas ni edites archivos. Solo mira y reporta.',
     '',
@@ -1479,4 +1482,41 @@ export function promptDeTareaDesatendida(
     '',
     texto,
   ].join('\n');
+}
+
+/**
+ * La tarea que se encola sola cuando el merge de un slot a main falla.
+ *
+ * Anotar el fallo en el informe no lo arregla: en AH dos slots construyeron
+ * cada uno su version de las mismas pantallas, main y la rama divergieron, y
+ * lo desplegado quedo desactualizado sin que nadie tuviera la tarea de juntarlas.
+ */
+export function tareaDeIntegracion(slot: string, detalle?: string): string {
+  return [
+    `Integrar a main el trabajo de la rama de ${slot}: el merge automatico fallo` +
+      (detalle ? ` (${detalle.replace(/\s+/g, ' ').slice(0, 200)})` : '') +
+      '.',
+    'En cada repo donde main y la rama divergieron, traer main a la rama, resolver los',
+    'conflictos quedandote con UNA sola version de cada pieza (un solo servicio, una',
+    'sola pantalla) sin perder funcionalidad de ninguno de los dos lados, correr el',
+    'build y los tests, y pushear para que el merge a main entre.',
+  ].join(' ');
+}
+
+/**
+ * Los hechos del proyecto que un analista no ve leyendo codigo.
+ *
+ * Una base sin crear, un merge sin resolver o una tarea cortada no aparecen en
+ * el worktree, y en AH los analistas dijeron "completo" con las tres cosas
+ * pendientes. Se le dicen de entrada y las tiene que tratar como huecos.
+ */
+export function bloqueDeEstado(hechos: string[]): string[] {
+  if (hechos.length === 0) return [];
+  return [
+    'ESTADO REAL DEL PROYECTO (dato del sistema, no de los archivos). Cada uno de',
+    'estos puntos es un HUECO que tenes que reportar como tarea, salvo que el codigo',
+    'demuestre que ya no aplica:',
+    ...hechos.map((h) => `- ${h}`),
+    '',
+  ];
 }
