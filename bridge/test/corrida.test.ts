@@ -4514,3 +4514,17 @@ describe('sinRepetidas', () => {
     expect(sinRepetidas([a, b], [])).toEqual([a, b]);
   });
 });
+
+describe('promptDePlan: la primera pagina dice "En construccion"', () => {
+  const p = promptDePlan('# Un panel de mesas', []);
+
+  it('pide una pagina de En construccion que se ve aunque el back no responda', () => {
+    expect(p).toContain('PRIMERA PAGINA');
+    expect(p).toContain('En construccion');
+  });
+
+  it('prohibe el Cargando eterno y pide un indicador de conexion', () => {
+    expect(p).toContain('NUNCA');
+    expect(p).toContain('sin conexion');
+  });
+});

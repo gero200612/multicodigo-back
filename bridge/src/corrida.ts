@@ -1070,6 +1070,15 @@ export function promptDePlan(
     'ejemplo, y una pantalla del front que los muestre llamando a esa ruta de',
     'verdad —con la URL del back saliendo de la configuracion, no escrita en el',
     'medio del codigo—. Chica: una lista, sin alta ni edicion.',
+    // Visto en AH (2026-09-23): lo que quedo desplegado fue un "Usuarios de ejemplo
+    // / Cargando..." eterno, porque el back todavia no estaba conectado. Quien abre
+    // el link a la primera hora tiene que ver una pagina, no un error a medias.
+    'Esa pantalla es la PRIMERA PAGINA del sitio y tiene que verse bien aunque el',
+    'back no responda: un aviso claro de "En construccion" con el nombre del',
+    'proyecto, siempre visible. El dato de ejemplo va en un lugar chico aparte',
+    '—un indicador de conexion, "servidor conectado" o "sin conexion"— y NUNCA',
+    'un "Cargando..." que se queda para siempre: si el pedido falla, se muestra el',
+    'estado sin conexion. Esta pagina despues la reemplaza el login/home real.',
     '',
     'Recien despues van las pantallas y las rutas del pliego, una a una. Asi el',
     'proyecto se puede abrir y mirar desde la primera hora, y si el contrato',
