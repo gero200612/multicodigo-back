@@ -176,6 +176,30 @@ describe('POST /interno/supabase/crear', () => {
     expect(res.json().message).toContain('borrar o pausar');
   });
 
+  // El caso real de AH (2026-09-25): un token con alcance limitado.
+  it('nombra los permisos que le faltan al token', async () => {
+    const f = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            message: 'Missing required permission(s): organizations_read',
+            error: { missing_permissions: ['organizations_read', 'postgres://x:secreto@h/db'] },
+          }),
+          { status: 403 },
+        ),
+    );
+    const app = await servidor({ fetchImpl: f as unknown as typeof fetch });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/interno/supabase/crear',
+      headers: auth,
+      payload: { jobId: JOB, nombre: 'acme' },
+    });
+    expect(res.json().code).toBe('supabase_permisos');
+    expect(res.json().message).toContain('organizations_read');
+    expect(res.payload).not.toContain('secreto');
+  });
+
   it('un 403 que no es el limite sigue diciendo que es el token', async () => {
     const f = vi.fn(
       async () => new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 403 }),

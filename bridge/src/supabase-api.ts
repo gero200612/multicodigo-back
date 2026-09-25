@@ -126,6 +126,24 @@ export function esLimiteDeProyectos(cuerpo: string): boolean {
   return /maximum limits?|project limit|limit of .*projects|active (free )?projects/i.test(cuerpo);
 }
 
+/**
+ * Los permisos que Supabase dice que le faltan al token, o ninguno.
+ *
+ * Viene como `{"error":{"missing_permissions":["organizations_read"]}}`. Se
+ * quedan solo los que parecen un nombre de permiso, para que nada mas del
+ * cuerpo pueda colarse al mensaje.
+ */
+export function permisosQueFaltan(cuerpo: string): string[] {
+  try {
+    const j = JSON.parse(cuerpo) as { error?: { missing_permissions?: unknown } };
+    const lista = j.error?.missing_permissions;
+    if (!Array.isArray(lista)) return [];
+    return lista.filter((p): p is string => typeof p === 'string' && /^[a-z_]{1,60}$/.test(p));
+  } catch {
+    return [];
+  }
+}
+
 async function pedir(
   ruta: string,
   init: RequestInit,
@@ -157,6 +175,19 @@ async function pedir(
           '(el free permite 2). NO es un problema del token: una persona tiene que borrar ' +
           'o pausar un proyecto en supabase.com, o pasar a un plan pago, y despues se ' +
           'vuelve a correr esta tarea',
+      );
+    }
+    // Un token con alcance limitado: Supabase dice QUE permiso falta. En AH
+    // (2026-09-25) el token no tenia `organizations_read`, y cinco tareas
+    // repitieron "el token no alcanza" sin decir para que. Solo se reenvian
+    // los nombres de permiso, filtrados: el resto del cuerpo sigue sin salir.
+    const faltan = permisosQueFaltan(texto);
+    if (faltan.length > 0) {
+      throw new ErrorDeSupabase(
+        'supabase_permisos',
+        `al token de Supabase le faltan permisos: ${faltan.join(', ')}. Una persona tiene ` +
+          'que generar otro en supabase.com (Account > Access Tokens) con esos permisos o ' +
+          'con acceso completo, cargarlo en SUPABASE_ACCESS_TOKEN y reiniciar el bridge',
       );
     }
     // El cuerpo de Supabase NO se propaga tal cual: puede traer la connection
