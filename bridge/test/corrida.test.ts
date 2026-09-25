@@ -3925,6 +3925,20 @@ describe('/reanudar', () => {
     expect(techoAlcanzado(r!.corrida, new Date())).toBeNull();
   });
 
+  // El caso de AH (2026-09-25): cerro por techo de rondas en la ronda 6 de 5.
+  // Sin subir el techo, el /reanudar la reabria y el ciclo la volvia a cerrar
+  // a los dos segundos, cancelando otra vez lo que acababa de reencolar.
+  it('sube el techo de rondas, para que no corte al instante', async () => {
+    const d = arnes({});
+    const c = await comoDespacho2(d);
+    const techo = c.techoRondas;
+    for (let i = 0; i <= techo; i += 1) await d.store.avanzarRonda(c.id);
+
+    const r = await d.store.reanudarCorrida(7);
+    expect(r!.corrida.ronda).toBeGreaterThan(techo);
+    expect(techoAlcanzado(r!.corrida, new Date())).toBeNull();
+  });
+
   // No hay nada que seguir, y ofrecerlo seria ofrecer deshacer lo que la
   // persona acaba de pedir.
   it('no reanuda una corrida completa ni una cancelada', async () => {

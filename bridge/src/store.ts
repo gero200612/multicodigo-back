@@ -1620,6 +1620,9 @@ export class InMemoryStore implements Store {
     delete c.motivoDeCierre;
     c.fallosSeguidos = 0;
     c.creadoEn = new Date();
+    // Ver el comentario del UPDATE en PgStore: sin esto, una que cerro por
+    // techo de rondas se vuelve a cerrar en la primera vuelta.
+    c.techoRondas = Math.max(c.techoRondas, c.ronda);
 
     let reencoladas = 0;
     for (const t of this.cola) {
@@ -3010,8 +3013,15 @@ export class PgStore implements Store {
       //    chequearlo antes, y chequearlo no serviria contra dos /reanudar
       //    mandados juntos.
       const r = await cliente.query(
+        // `techo_rondas` sube hasta la ronda en la que quedo, por lo mismo que
+        // `creado_en` y `fallos_seguidos`: sin eso el techo que la cerro la
+        // vuelve a cerrar en la primera vuelta. Visto en AH (2026-09-25): el
+        // /reanudar reabrio la corrida, a los dos segundos cerro otra vez por
+        // techo_rondas (ronda 6 de 5) y cancelo de nuevo las tres tareas.
+        // Con techo = ronda corre la ronda en curso entera y cierra al terminarla.
         `UPDATE corridas SET estado = 'abierta', motivo_de_cierre = NULL, cerrado_en = NULL,
-                fallos_seguidos = 0, creado_en = now()
+                fallos_seguidos = 0, creado_en = now(),
+                techo_rondas = GREATEST(techo_rondas, ronda)
            WHERE id = (
              SELECT id FROM corridas
               WHERE chat_id = $1 AND estado = 'cerrada'
