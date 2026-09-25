@@ -3593,7 +3593,10 @@ async function hechosDelProyecto(
     if (!conexion) {
       hechos.push(
         'La base de datos NO esta creada: el pliego pide Postgres/Supabase y este proyecto no tiene conexion. ' +
-          'Falta crearla con la herramienta crear_base_supabase, aplicar el esquema con aplicar_migracion_supabase y sembrar los datos.',
+          'Falta crearla con la herramienta crear_base_supabase. Si el back es .NET con EF Core y corre ' +
+          'sus migraciones al arrancar, NO apliques el esquema a mano: lo aplica el back (con sus datos ' +
+          'sembrados) y una tabla creada antes lo hace fallar con "relation already exists". Si no, ' +
+          'aplicalo con aplicar_migracion_supabase y sembra los datos.',
       );
     }
   }
