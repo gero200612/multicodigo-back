@@ -289,6 +289,51 @@ describe('setear una env var', () => {
     expect(api?.value).toBe('https://back.onrender.com');
   });
 
+  // `Jwt__Key` no se regenera en cada deploy: una clave nueva cierra todas las
+  // sesiones abiertas.
+  it('con soloSiFalta no pisa una clave que ya tiene valor', async () => {
+    let escribio = false;
+    const r = await setearEnvVar(
+      'srv-1',
+      'Jwt__Key',
+      'nueva',
+      {
+        ...OK,
+        fetchImpl: (async (_u: string, init: RequestInit) => {
+          if (String(init.method ?? 'GET') === 'GET') {
+            return new Response(JSON.stringify([{ envVar: { key: 'Jwt__Key', value: 'vieja' } }]), {
+              status: 200,
+            });
+          }
+          escribio = true;
+          return new Response('[]', { status: 200 });
+        }) as unknown as typeof fetch,
+      },
+      { soloSiFalta: true },
+    );
+    expect(r).toEqual({ ok: true, yaEstaba: true });
+    expect(escribio).toBe(false);
+  });
+
+  it('con soloSiFalta la escribe si no estaba', async () => {
+    let enviado: unknown;
+    await setearEnvVar(
+      'srv-1',
+      'Jwt__Key',
+      'nueva',
+      {
+        ...OK,
+        fetchImpl: (async (_u: string, init: RequestInit) => {
+          if (String(init.method ?? 'GET') === 'GET') return new Response('[]', { status: 200 });
+          enviado = JSON.parse(String(init.body));
+          return new Response('[]', { status: 200 });
+        }) as unknown as typeof fetch,
+      },
+      { soloSiFalta: true },
+    );
+    expect(enviado).toEqual([{ key: 'Jwt__Key', value: 'nueva' }]);
+  });
+
   // Si ya estaba, se PISA y no se duplica: dos entradas con la misma clave es
   // un estado que Render no deberia recibir.
   it('si la variable ya existia, la reemplaza sin duplicarla', async () => {

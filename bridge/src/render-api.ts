@@ -284,7 +284,8 @@ export async function setearEnvVar(
   clave: string,
   valor: string,
   deps: RenderDeps,
-): Promise<{ ok: true } | { ok: false; motivo: string }> {
+  opciones: { soloSiFalta?: boolean } = {},
+): Promise<{ ok: true; yaEstaba?: boolean } | { ok: false; motivo: string }> {
   if (!deps.apiKey) return { ok: false, motivo: 'sin Render configurado' };
 
   const doFetch = deps.fetchImpl ?? fetch;
@@ -309,9 +310,17 @@ export async function setearEnvVar(
     // planas al escribir. El `?? f` cubre las dos formas sin tener que adivinar
     // cual version de la API contesto.
     const filas = JSON.parse(texto) as Array<{ envVar?: { key?: string; value?: string } }>;
-    const actuales = filas
+    const todas = filas
       .map((f) => f.envVar ?? (f as { key?: string; value?: string }))
-      .filter((v): v is { key: string; value: string } => typeof v.key === 'string')
+      .filter((v): v is { key: string; value: string } => typeof v.key === 'string');
+
+    // Una clave que no se puede regenerar sin romper algo -- `Jwt__Key`: una
+    // nueva invalida todas las sesiones abiertas -- se escribe solo si falta.
+    if (opciones.soloSiFalta && todas.some((v) => v.key === clave && (v.value ?? '') !== '')) {
+      return { ok: true, yaEstaba: true };
+    }
+
+    const actuales = todas
       // La que vamos a setear se saca de la lista: si ya estaba, se pisa; si
       // no, no cambia nada. Dos entradas con la misma clave es un estado que
       // Render no deberia recibir.

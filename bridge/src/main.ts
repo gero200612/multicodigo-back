@@ -372,11 +372,14 @@ const pipelineDeps = {
             // Para que el front sepa donde quedo el back. Lee las variables que
             // el servicio ya tiene antes de escribir: el PUT de Render reemplaza
             // la lista entera.
-            setearEnvVar: (serviceId, clave, valor) =>
-              setearEnvVar(serviceId, clave, valor, {
-                apiKey: env.RENDER_API_KEY,
-                ownerId: env.RENDER_OWNER_ID,
-              }),
+            setearEnvVar: (serviceId, clave, valor, opciones) =>
+              setearEnvVar(
+                serviceId,
+                clave,
+                valor,
+                { apiKey: env.RENDER_API_KEY, ownerId: env.RENDER_OWNER_ID },
+                opciones,
+              ),
             // El respaldo de la variable: el config.js del front. Con el mismo
             // token de la App que pushea main; sin token no hay con que
             // escribir, y se conecta solo por entorno, como antes.

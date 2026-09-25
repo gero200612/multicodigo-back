@@ -80,6 +80,8 @@ export interface PublicarDeps {
     serviceId: string,
     clave: string,
     valor: string,
+    /** `soloSiFalta`: no pisa una clave que ya tiene valor. Ver `Jwt__Key`. */
+    opciones?: { soloSiFalta?: boolean },
   ) => Promise<{ ok: boolean; motivo?: string }>;
   /**
    * Reescribe el `config.js` del front para que apunte al back.
@@ -149,6 +151,52 @@ const PENDIENTE_A_MANO = (github: string) =>
  */
 function claveJwtAleatoria(): string {
   return randomBytes(48).toString('base64');
+}
+
+/**
+ * `Jwt__Key` y la conexion a la base de un back .NET, en Render.
+ *
+ * Corre al crear el servicio y al redesplegar uno que ya existe: la base puede
+ * crearse en una corrida posterior a la que hizo el servicio, y es lo que paso
+ * en AH (2026-09-25).
+ *
+ * `Jwt__Key` va con `soloSiFalta`: regenerarla en cada deploy cerraria todas
+ * las sesiones abiertas. La conexion se escribe siempre: la guardo el bridge al
+ * crear la base, y es la fuente de verdad.
+ */
+async function cargarVariablesDelBack(
+  serviceId: string,
+  repo: RepoDelProyecto,
+  proyectoId: string,
+  deps: PublicarDeps,
+  pendientes: string[],
+): Promise<void> {
+  if (!deps.setearEnvVar || tipoDeRepo(repo.nombre) !== 'back') return;
+
+  // Sin decision de producto de por medio -- cualquier clave larga y al azar
+  // sirve -- asi que no hay razon para dejarlo como pendiente.
+  const jwt = await deps
+    .setearEnvVar(serviceId, 'Jwt__Key', claveJwtAleatoria(), { soloSiFalta: true })
+    .catch((err) => ({ ok: false, motivo: err instanceof Error ? err.message : 'error' }));
+  if (!jwt.ok) {
+    pendientes.push(
+      `no pude generarle Jwt__Key a ${repo.nombre} ` +
+        `(${jwt.motivo ?? 'sin detalle'}): cargala a mano en Render`,
+    );
+  }
+
+  if (!deps.conexionDeBase) return;
+  const conexion = await deps.conexionDeBase(proyectoId).catch(() => undefined);
+  if (!conexion) return;
+  const puesta = await deps
+    .setearEnvVar(serviceId, 'ConnectionStrings__DefaultConnection', conexion)
+    .catch((err) => ({ ok: false, motivo: err instanceof Error ? err.message : 'error' }));
+  if (!puesta.ok) {
+    pendientes.push(
+      `no pude cargarle la conexion a la base a ${repo.nombre} ` +
+        `(${puesta.motivo ?? 'sin detalle'}): ponela a mano en Render`,
+    );
+  }
 }
 
 /**
@@ -245,6 +293,10 @@ export async function publicar(
       // Y el Dockerfile/outputPath se revisan de nuevo ACA: al crear el
       // servicio el repo pudo no tenerlos todavia por no aplicar.
       await asegurarInfraestructura(repo, deps, pendientes);
+      // Y las variables del back, por lo mismo. En AH la base se creo con el
+      // servicio YA hecho, y esto solo corria al crearlo: la conexion quedaba
+      // guardada en el store y el back desplegado seguia sin saber donde estaba.
+      await cargarVariablesDelBack(repo.render_service_id, repo, proyectoId, deps, pendientes);
       if (deps.desplegar) {
         const d = await deps.desplegar(repo.render_service_id);
         if (!d.ok) {
@@ -362,40 +414,9 @@ export async function publicar(
 
     await deps.store.guardarRenderServiceId(proyectoId, repo.nombre, r.serviceId, r.url);
 
-    // El Jwt__Key, para todo back .NET, ANTES del primer deploy: el mismo
-    // motivo que la conexion a la base, un ratito mas abajo. Sin decision de
-    // producto de por medio -- cualquier clave larga y al azar sirve -- asi
-    // que no hay razon para dejarlo como pendiente si el sistema la puede
-    // generar solo.
-    if (deps.setearEnvVar && tipoDeRepo(repo.nombre) === 'back') {
-      const puesta = await deps
-        .setearEnvVar(r.serviceId, 'Jwt__Key', claveJwtAleatoria())
-        .catch((err) => ({ ok: false, motivo: err instanceof Error ? err.message : 'error' }));
-      if (!puesta.ok) {
-        pendientes.push(
-          `no pude generarle Jwt__Key a ${repo.nombre} ` +
-            `(${puesta.motivo ?? 'sin detalle'}): cargala a mano en Render`,
-        );
-      }
-    }
-
-    // La base, si hay. Va ACA —recien creado el servicio y antes de
-    // desplegarlo— porque una variable que se escribe despues del deploy no la
-    // ve el proceso que ya arranco.
-    if (deps.conexionDeBase && deps.setearEnvVar && tipoDeRepo(repo.nombre) === 'back') {
-      const conexion = await deps.conexionDeBase(proyectoId).catch(() => undefined);
-      if (conexion) {
-        const puesta = await deps
-          .setearEnvVar(r.serviceId, 'ConnectionStrings__DefaultConnection', conexion)
-          .catch((err) => ({ ok: false, motivo: err instanceof Error ? err.message : 'error' }));
-        if (!puesta.ok) {
-          pendientes.push(
-            `no pude cargarle la conexion a la base a ${repo.nombre} ` +
-              `(${puesta.motivo ?? 'sin detalle'}): ponela a mano en Render`,
-          );
-        }
-      }
-    }
+    // El Jwt__Key y la conexion a la base, ANTES del primer deploy: una
+    // variable que se escribe despues no la ve el proceso que ya arranco.
+    await cargarVariablesDelBack(r.serviceId, repo, proyectoId, deps, pendientes);
     publicados.push({ repo: repo.nombre, url: r.url });
     // El id del servicio se guarda aparte para poder conectarlos al final: el
     // informe muestra la URL, pero para tocar el servicio hace falta el id.

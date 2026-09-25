@@ -451,6 +451,44 @@ describe('publicar en un repo que ya tiene servicio', () => {
     expect(orden).toEqual(['dockerfile Sincro-arg/propinas-back', 'deploy srv-viejo']);
   });
 
+  // El caso de AH (2026-09-25): la base se creo en una corrida posterior a la
+  // que hizo el servicio. Antes la conexion solo se cargaba al CREARLO, asi que
+  // el back desplegado nunca se enteraba de donde estaba la base.
+  it('carga la conexion y el Jwt__Key antes de redesplegar', async () => {
+    const orden: string[] = [];
+    await publicar('p1', 'propinas', ['c2'], {
+      ...conServicio(),
+      conexionDeBase: async () => 'Host=pooler;Database=postgres',
+      setearEnvVar: async (id, clave, _valor, opciones) => {
+        orden.push(`${clave}${opciones?.soloSiFalta ? ' (solo si falta)' : ''} en ${id}`);
+        return { ok: true };
+      },
+      desplegar: async (id) => {
+        orden.push(`deploy ${id}`);
+        return { ok: true };
+      },
+    });
+    expect(orden).toEqual([
+      'Jwt__Key (solo si falta) en srv-viejo',
+      'ConnectionStrings__DefaultConnection en srv-viejo',
+      'deploy srv-viejo',
+    ]);
+  });
+
+  it('sin base creada no inventa una conexion', async () => {
+    const claves: string[] = [];
+    await publicar('p1', 'propinas', ['c2'], {
+      ...conServicio(),
+      conexionDeBase: async () => undefined,
+      setearEnvVar: async (_id, clave) => {
+        claves.push(clave);
+        return { ok: true };
+      },
+      desplegar: async () => ({ ok: true }),
+    });
+    expect(claves).toEqual(['Jwt__Key']);
+  });
+
   it('si no puede escribir el Dockerfile lo nombra, y despliega igual', async () => {
     const desplegados: string[] = [];
     const r = await publicar('p1', 'propinas', ['c2'], {
