@@ -30,12 +30,19 @@ function github(archivos: Record<string, unknown>, raiz: string[] = [], escritur
         escrituras.push({ url: u, body: JSON.parse(init.body) });
         return new Response('{}', { status: 201 });
       }
+      // Archivo si tiene una extension conocida; si no, carpeta. Por nombre con
+      // punto no alcanza: en .NET las carpetas se llaman `AH.Api`.
+      const tipo = (name: string) =>
+        /\.(csproj|cs|sln|md|json)$|^Dockerfile$/.test(name) ? 'file' : 'dir';
       if (u.endsWith('/contents?ref=main')) {
-        return new Response(JSON.stringify(raiz.map((name) => ({ name }))), { status: 200 });
+        return new Response(JSON.stringify(raiz.map((name) => ({ name, type: tipo(name) }))), { status: 200 });
       }
       const ruta = decodeURIComponent(u.split('/contents/')[1]!.split('?')[0]!);
       const hay = archivos[ruta];
       if (hay === undefined) return new Response('{}', { status: 404 });
+      if (Array.isArray(hay)) {
+        return new Response(JSON.stringify(hay.map((name: string) => ({ name, type: tipo(name) }))), { status: 200 });
+      }
       return new Response(
         JSON.stringify({ content: Buffer.from(String(hay)).toString('base64'), sha: 'sha1' }),
         { status: 200 },
@@ -79,6 +86,56 @@ describe('asegurarDockerfile', () => {
     );
 
     expect(r).toEqual({ estado: 'no_aplica' });
+    expect(escrituras).toHaveLength(0);
+  });
+
+  // El layout al que llego AH: la API en su carpeta, los tests al lado, un .sln.
+  it('encuentra la API en una subcarpeta, sin confundirla con la de tests', async () => {
+    const escrituras: any[] = [];
+    const r = await asegurarDockerfile(
+      'Sincro-arg/AH-back',
+      github(
+        { 'AH.Api': ['AH.Api.csproj', 'Program.cs'], 'AH.Tests': ['AH.Tests.csproj'] },
+        ['AH.Api', 'AH.Tests', 'AH.sln', 'README.md'],
+        escrituras,
+      ),
+    );
+    expect(r).toEqual({ estado: 'escrito' });
+    const texto = Buffer.from(escrituras[0].body.content, 'base64').toString('utf8');
+    expect(texto).toContain('COPY AH.Api/AH.Api.csproj AH.Api/');
+    expect(texto).toContain('RUN dotnet publish AH.Api/AH.Api.csproj -c Release');
+    expect(texto).toContain('ENTRYPOINT ["dotnet", "AH.Api.dll"]');
+  });
+
+  // El caso de AH: el Dockerfile del sistema apuntaba a la raiz y el proyecto
+  // se movio. "Ya estaba" lo dejaba roto.
+  it('reescribe el Dockerfile del sistema que quedo apuntando a un csproj viejo', async () => {
+    const escrituras: any[] = [];
+    const r = await asegurarDockerfile(
+      'Sincro-arg/AH-back',
+      github(
+        { Dockerfile: dockerfileDeNet('AH.Api.csproj'), 'AH.Api': ['AH.Api.csproj'], 'AH.Tests': ['AH.Tests.csproj'] },
+        ['AH.Api', 'AH.Tests', 'AH.sln', 'Dockerfile'],
+        escrituras,
+      ),
+    );
+    expect(r).toEqual({ estado: 'escrito' });
+    expect(escrituras[0].body.sha).toBe('sha1');
+    const texto = Buffer.from(escrituras[0].body.content, 'base64').toString('utf8');
+    expect(texto).toContain('RUN dotnet publish AH.Api/AH.Api.csproj');
+  });
+
+  it('el del sistema que ya apunta bien no se reescribe', async () => {
+    const escrituras: any[] = [];
+    const r = await asegurarDockerfile(
+      'Sincro-arg/AH-back',
+      github(
+        { Dockerfile: dockerfileDeNet('AH.Api/AH.Api.csproj'), 'AH.Api': ['AH.Api.csproj'] },
+        ['AH.Api', 'Dockerfile'],
+        escrituras,
+      ),
+    );
+    expect(r).toEqual({ estado: 'ya_estaba' });
     expect(escrituras).toHaveLength(0);
   });
 

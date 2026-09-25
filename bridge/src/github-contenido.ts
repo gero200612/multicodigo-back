@@ -92,6 +92,37 @@ export async function listarRaiz(repo: string, deps: GithubDeps): Promise<string
 }
 
 /**
+ * Lo que hay en una carpeta del repo, con su tipo.
+ *
+ * `listarRaiz` alcanzaba mientras el `.csproj` vivia en la raiz. En AH la
+ * corrida movio el API a `AH.Api/` —con `AH.Tests/` al lado y un `.sln`—, que
+ * es el layout normal de .NET con tests, y desde la raiz ya no se ve. Misma
+ * regla: una lista vacia es "no se pudo mirar".
+ */
+export async function listarCarpeta(
+  repo: string,
+  ruta: string,
+  deps: GithubDeps,
+): Promise<Array<{ name: string; type: string }>> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  const camino = ruta === '' ? '' : `/${ruta}`;
+  try {
+    const res = await doFetch(`${API}/repos/${repo}/contents${camino}?ref=main`, {
+      headers: cabeceras(deps.token),
+    });
+    if (!res.ok) return [];
+    const j = (await res.json()) as unknown;
+    if (!Array.isArray(j)) return [];
+    return j
+      .map((x) => x as { name?: unknown; type?: unknown })
+      .filter((x): x is { name: string; type: string } => typeof x.name === 'string')
+      .map((x) => ({ name: x.name, type: typeof x.type === 'string' ? x.type : 'file' }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Escribe el archivo en main.
  *
  * El `sha` es obligatorio y no un detalle: es lo que hace que GitHub rechace la
