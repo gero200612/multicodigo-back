@@ -850,6 +850,11 @@ export interface Store {
    */
   anotarPendiente(corridaId: string, texto: string): Promise<void>;
   /**
+   * Saca los pendientes que empiezan con `prefijo`. Para los que dejan de ser
+   * ciertos: un merge que fallo a mitad de corrida y despues entro.
+   */
+  quitarPendientes(corridaId: string, prefijo: string): Promise<void>;
+  /**
    * Guarda lo que el planificador quiere preguntar, y cuando.
    *
    * La hora se guarda para poder medir el tope despues de un reinicio: si
@@ -1587,6 +1592,12 @@ export class InMemoryStore implements Store {
     if (!c) return;
     const ya = c.pendientes ?? [];
     if (!ya.includes(texto)) c.pendientes = [...ya, texto];
+  }
+
+  async quitarPendientes(corridaId: string, prefijo: string): Promise<void> {
+    const c = this.corridas.get(corridaId);
+    if (!c?.pendientes) return;
+    c.pendientes = c.pendientes.filter((p) => !p.startsWith(prefijo));
   }
 
   async guardarVeredicto(
@@ -3131,6 +3142,17 @@ export class PgStore implements Store {
     } finally {
       cliente.release();
     }
+  }
+
+  async quitarPendientes(corridaId: string, prefijo: string): Promise<void> {
+    await this.pool
+      .query(
+        `UPDATE corridas
+            SET pendientes = ARRAY(SELECT p FROM unnest(pendientes) p WHERE NOT starts_with(p, $2))
+          WHERE id = $1`,
+        [corridaId, prefijo],
+      )
+      .catch(() => undefined);
   }
 
   async anotarPendiente(corridaId: string, texto: string): Promise<void> {

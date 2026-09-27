@@ -2415,6 +2415,9 @@ async function cerrarConInforme(
   // definicion a proposito, y arreglarla es su propio trabajo.
   let publicados: Publicado[] = [];
   let pendientesDePublicar: string[] = [];
+  // Los "no pude mergear" que el cierre dejo sin efecto: se sacan de la fila
+  // y TAMBIEN de la lista del informe, que se arma con la copia en memoria.
+  const prefijosResueltos: string[] = [];
   if (motivo === 'completo' && deps.publicar) {
     try {
       // `trabajaron` y no `paraNombrar`: sin trabajo no hay nada que mergear, y
@@ -2429,6 +2432,15 @@ async function cerrarConInforme(
       // informe saldria sin ellos. Guardarlos igual deja el registro completo
       // en la fila para cuando alguien mire la corrida despues.
       pendientesDePublicar = r.pendientes;
+      // El cierre reintenta los merges: el de un slot que ahora entro borra el
+      // "no pude mergear" que quedo de la mitad de la corrida.
+      for (const agente of trabajaron) {
+        if (!r.pendientes.some((p) => p.includes(` de ${agente} a main`))) {
+          const prefijo = `no pude mergear a main lo que hizo ${agente} `;
+          prefijosResueltos.push(prefijo);
+          await deps.store.quitarPendientes(corrida.id, prefijo).catch(() => undefined);
+        }
+      }
       for (const p of r.pendientes) {
         await deps.store.anotarPendiente(corrida.id, p).catch(() => undefined);
       }
@@ -2458,7 +2470,9 @@ async function cerrarConInforme(
       motivo,
       resumen,
       rama,
-      [...(ahora?.pendientes ?? corrida.pendientes ?? []), ...pendientesDePublicar],
+      [...(ahora?.pendientes ?? corrida.pendientes ?? []), ...pendientesDePublicar].filter(
+        (p) => !prefijosResueltos.some((q) => p.startsWith(q)),
+      ),
       publicados,
       // Las firmas salen de la corrida que recibio esta funcion, que es la que
       // el ciclo releyo DESPUES de los veredictos. `ahora` no sirve para esto:
@@ -3251,6 +3265,15 @@ export async function correrCola(
         if (m.ok) {
           clavarEn = undefined;
           mergesFallidosSeguidos = 0;
+          // Si antes habia fallado, el pendiente que lo anoto deja de ser cierto.
+          // En AH (2026-09-27) el informe decia "no pude mergear c1" con c1 ya
+          // entero en main: se anoto a mitad de corrida y nadie lo saco.
+          if (mergeAnotado) {
+            mergeAnotado = false;
+            await deps.store
+              .quitarPendientes(corrida.id, `no pude mergear a main lo que hizo ${r.agente} `)
+              .catch(() => undefined);
+          }
         } else {
           mergesFallidosSeguidos += 1;
           // Ver `mergesFallidosSeguidos`: clavarse una vez ayuda, quedarse

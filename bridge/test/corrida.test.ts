@@ -710,6 +710,29 @@ describe('correrCola dentro de una corrida', () => {
     expect(mergeadas.length).toBeGreaterThan(0);
   });
 
+  // AH (2026-09-27): el informe decia "no pude mergear a main lo que hizo c1"
+  // con c1 ya entero en main. El pendiente se anoto a mitad de corrida y el
+  // merge que entro despues no lo saco.
+  it('un merge que falla y despues entra no queda como pendiente', async () => {
+    let intentos = 0;
+    const d = arnes({
+      analista: () => [],
+      mergearTrabajo: async () => {
+        intentos += 1;
+        return intentos === 1 ? { ok: false, detalle: 'non-fast-forward' } : { ok: true };
+      },
+    });
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    await correr(d);
+
+    expect(intentos).toBeGreaterThan(1);
+    const fila = [...(d.store as unknown as { corridas: Map<string, { pendientes?: string[] }> }).corridas.values()]
+      .find((x) => (x as unknown as { id: string }).id === c.id);
+    expect((fila?.pendientes ?? []).some((p) => p.startsWith('no pude mergear a main'))).toBe(false);
+  });
+
   // Cortada NO es fallida, y la diferencia no es cosmetica: el informe de la
   // mañana cuenta las fallidas como trabajo que salio mal, y esto es trabajo
   // que no entro en un turno.
