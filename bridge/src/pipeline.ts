@@ -3634,6 +3634,19 @@ async function hechosDelProyecto(
       );
     }
   }
+  // Donde quedo publicado el front: con eso el analista visual mira lo que ve
+  // la persona, con su back y su base (ver `mirar` con `publicado`).
+  if (proyectoId) {
+    const repos = await deps.store.reposDeProyecto(proyectoId).catch(() => []);
+    for (const r of repos) {
+      if (r.render_url && /-front$/i.test(r.nombre)) {
+        hechos.push(
+          `El front ${r.nombre} esta publicado en ${r.render_url}. Para mirarlo con su back y su ` +
+            `base reales, pasale publicado=${r.render_url} a mirar (y login si tiene).`,
+        );
+      }
+    }
+  }
   for (const p of corrida.pendientes ?? []) {
     if (/mergear a main/i.test(p)) {
       hechos.push(`Hay trabajo sin integrar a main: ${p.replace(/\s+/g, ' ').slice(0, 220)}`);

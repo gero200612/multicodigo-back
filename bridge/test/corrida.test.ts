@@ -4601,3 +4601,32 @@ describe('lo que falta se repara solo', () => {
     expect(bloqueDeEstado([])).toEqual([]);
   });
 });
+
+/**
+ * Lo que en AH (2026-09-27) salio mal a la vista y nadie pedia: ocho anchos
+ * distintos, el carrusel copiado en dos pantallas, fotos externas adivinadas y
+ * dos homes que se mezclaban al entrar. Va en el PISO, asi lo pide el plan
+ * desde la primera tarea y lo exige el analista visual.
+ */
+describe('el piso visual de AH', () => {
+  it('el plan pide un contenedor, tokens, componentes compartidos, imagenes y navegacion', () => {
+    const p = promptDePlan('# PozoAuto', []);
+    expect(p).toContain('UN SOLO ancho de contenido');
+    expect(p).toContain('espaciados, radios y sombras');
+    expect(p).toContain('UN componente compartido');
+    expect(p).toContain('NUNCA links a fotos externas');
+    expect(p).toContain('el logo y el Inicio llevan al home de la cuenta');
+  });
+
+  it('el analista visual entra con login, mira lo publicado y no pide numeros sueltos', () => {
+    const p = promptDeAnalisis('# PozoAuto', 2, { eje: 'visual' });
+    expect(p).toContain('parametro login');
+    expect(p).toContain('usa publicado');
+    expect(p).toContain('del CONTENEDOR o de los TOKENS');
+  });
+
+  it('los ejes que no miran no reciben lo de mirar', () => {
+    const p = promptDeAnalisis('# PozoAuto', 2, { eje: 'testeos' });
+    expect(p).not.toContain('parametro login');
+  });
+});

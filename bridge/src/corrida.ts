@@ -632,6 +632,31 @@ const PISO: Record<Eje, readonly string[]> = {
     'Y NO el molde de siempre: tarjetas blancas con una franja de color al costado, todo ' +
       'del mismo tamaño, sin jerarquia ni movimiento. Eso se reconoce de lejos como ' +
       'plantilla y no como producto.',
+    // AH (2026-09-27): OCHO max-width distintos (640 a 1280) porque cada tarea
+    // parcho el ancho de su pantalla. El header, el hero, las secciones y el
+    // footer quedaron cada uno alineado a otra cosa.
+    'UN SOLO ancho de contenido para toda la app: un contenedor compartido, con su ' +
+      'max-width en una variable CSS, que usan el header, el footer y cada pantalla. Nada ' +
+      'de max-width sueltos por componente: si algo se ve corrido o mas angosto, se arregla ' +
+      'el contenedor, no esa pantalla.',
+    'Tokens, no solo colores: espaciados, radios y sombras en variables CSS globales, y ' +
+      'todas las pantallas los usan en vez de numeros sueltos.',
+    // AH tenia el carrusel copiado en la landing y en el home: cada arreglo
+    // tocaba una sola copia y las dos se fueron separando.
+    'Lo que se repite es UN componente compartido (carrusel, tarjeta, seccion): nunca el ' +
+      'mismo bloque copiado en dos pantallas.',
+    // El agente no tiene internet: no puede buscar ni ver una imagen. En AH
+    // escribio de memoria un link de Unsplash y salio una casa en vez de un
+    // auto, al lado de una ilustracion de linea y de placeholders de otro estilo.
+    'Imagenes de UN solo estilo en todo el producto, y NUNCA links a fotos externas ' +
+      'adivinados (no hay internet para verlas: salen fotos de otra cosa). Las fotos reales ' +
+      'las carga el usuario y vienen del back; mientras no hay, una ilustracion o un ' +
+      'placeholder propio, el mismo en todos lados.',
+    // AH: el login mandaba a /cuenta y el logo a /, la landing de marketing.
+    // Logueado caias en uno o en otro segun por donde entraras.
+    'Navegacion con sesion: logueado, el logo y el Inicio llevan al home de la cuenta, y ' +
+      'la landing publica es solo para visitantes (un logueado que entra a / va a su home). ' +
+      'Nunca dos homes que se mezclan ni secciones de la landing repetidas adentro.',
   ],
   funcionamiento: [
     'Cada cosa que pide el pliego existe y responde.',
@@ -916,6 +941,21 @@ export function promptDeAnalisis(
           '',
           'Si no arranca, eso ya es un hueco: reportalo igual, y segui revisando el',
           'codigo como puedas.',
+          '',
+          // AH (2026-09-27): sin esto las pantallas con guard salian como el
+          // login y lo de adentro no lo reviso nadie.
+          'Si la app tiene LOGIN, lo de adentro tambien se mira: pasale a mirar el',
+          'parametro login con el usuario de PRUEBA que siembra el propio back (buscalo',
+          'en el seeder) y pedi las pantallas de despues de entrar. Si en el ESTADO REAL',
+          'figura el front publicado, usa publicado con esa URL: es lo que ve la persona,',
+          'con su back y su base de verdad (lo local corre sin base y el login no entra).',
+          '',
+          // Los huecos por archivo ("en X.css poner 1100px como Home") son los
+          // que armaron los ocho anchos distintos de AH.
+          'Cuando algo se ve desparejo —anchos, margenes, colores, radios— el hueco es',
+          'del CONTENEDOR o de los TOKENS compartidos, no de una pantalla: no pidas un',
+          'numero suelto en un archivo. Y si el mismo bloque esta copiado en dos',
+          'pantallas, el hueco es extraerlo a un componente, no arreglar una copia.',
           '',
         ]
       : []),
