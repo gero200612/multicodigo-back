@@ -379,7 +379,7 @@ function arnes(opciones: {
     // La herramienta la llama el agente DURANTE el turno, con su jobId.
     const declara = opciones.declaran?.[texto];
     if (declara) {
-      await store.declararResultado((req as { jobId: string }).jobId, declara.resultado, declara.motivo);
+      await store.declararResultado((req as unknown as { jobId: string }).jobId, declara.resultado, declara.motivo);
     }
     return { jobId: 'j', sessionId: 's', text: aMedida ?? 'listo', turns: 1 };
   });
