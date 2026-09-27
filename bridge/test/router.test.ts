@@ -170,3 +170,30 @@ describe('/modelo', () => {
     });
   });
 });
+
+describe('seguir una corrida cerrada', () => {
+  it('/corridas', () => {
+    expect(parseCommand('/corridas')).toEqual({ kind: 'corridas' });
+  });
+
+  it('/consulta con numero y sin numero', () => {
+    expect(parseCommand('/consulta 2 por que no anda el login?')).toEqual({
+      kind: 'consulta',
+      numero: 2,
+      texto: 'por que no anda el login?',
+    });
+    expect(parseCommand('/consulta por que no anda?')).toEqual({
+      kind: 'consulta',
+      texto: 'por que no anda?',
+    });
+  });
+
+  it('/cambio multilinea, y sin texto', () => {
+    expect(parseCommand('/cambio 3 que el header\nsea blanco')).toEqual({
+      kind: 'cambio',
+      numero: 3,
+      texto: 'que el header\nsea blanco',
+    });
+    expect(parseCommand('/cambio')).toEqual({ kind: 'cambio', texto: '' });
+  });
+});

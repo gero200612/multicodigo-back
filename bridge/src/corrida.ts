@@ -1607,6 +1607,64 @@ export function promptDeTareaDesatendida(
  * cada uno su version de las mismas pantallas, main y la rama divergieron, y
  * lo desplegado quedo desactualizado sin que nadie tuviera la tarea de juntarlas.
  */
+/**
+ * El prompt de una consulta sobre una corrida cerrada. Ver `/consulta`.
+ *
+ * Lleva lo que el agente no puede ver leyendo el repo: el pliego, las fichas,
+ * que tareas se hicieron y como terminaron, los pendientes y las firmas. Con
+ * eso contesta sobre la corrida y no sobre un repo sin historia.
+ */
+export function promptDeConsulta(
+  c: Pick<Corrida, 'proyecto' | 'md' | 'fichas' | 'pendientes' | 'veredictos' | 'motivoDeCierre'>,
+  tareas: { texto: string; estado: string; resultado?: string }[],
+  pregunta: string,
+): string {
+  const corta = (t: string, n: number) => (t.length > n ? `${t.slice(0, n)}…` : t);
+  const una = (t: string) => t.replace(/\s+/g, ' ').trim();
+  return [
+    `CONSULTA sobre la corrida de ${c.proyecto}, que ya cerro` +
+      (c.motivoDeCierre ? ` (${c.motivoDeCierre})` : '') +
+      '. Contesta la pregunta de abajo leyendo el codigo del proyecto y lo que sigue.',
+    'NO cambies nada: no edites archivos, no commitees. Si para contestar hace falta un',
+    'cambio, decilo y sugeri pedirlo con /cambio. Contesta corto, en castellano, sin codigo.',
+    '',
+    '--- EL PLIEGO ---',
+    corta(c.md, 4000),
+    '',
+    ...(c.fichas ? ['--- LAS FICHAS ---', corta(c.fichas, 6000), ''] : []),
+    '--- LO QUE SE HIZO (tarea: como termino) ---',
+    ...tareas
+      .slice(-40)
+      .map(
+        (t) =>
+          `- [${t.estado}] ${corta(una(t.texto), 140)}` +
+          (t.resultado ? ` → ${corta(una(t.resultado), 160)}` : ''),
+      ),
+    '',
+    ...((c.pendientes ?? []).length > 0
+      ? ['--- PENDIENTES DEL INFORME ---', ...(c.pendientes ?? []).map((p) => `- ${corta(una(p), 200)}`), '']
+      : []),
+    ...((c.veredictos ?? []).length > 0
+      ? [
+          '--- LAS FIRMAS DE LOS ANALISTAS ---',
+          ...(c.veredictos ?? []).map((v) => `- ${v.eje}: ${v.cumple ? 'cumple' : 'no cumple'} — ${corta(una(v.resumen), 200)}`),
+          '',
+        ]
+      : []),
+    'LA PREGUNTA:',
+    pregunta,
+  ].join('\n');
+}
+
+/** Como entra a la cola un pedido de `/cambio`. */
+export function tareaDeCambio(pedido: string): string {
+  return (
+    'CAMBIO pedido por la persona sobre lo que ya se construyo. Hacelo entero —pantallas, ' +
+    'back, validaciones y tests que toque— respetando las fichas y el contrato de la ' +
+    `corrida:\n\n${pedido}`
+  );
+}
+
 export function tareaDeIntegracion(slot: string, detalle?: string): string {
   return [
     `Integrar a main el trabajo de la rama de ${slot}: el merge automatico fallo` +

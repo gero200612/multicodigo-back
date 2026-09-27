@@ -897,6 +897,13 @@ export interface Store {
   /** Las fichas de las caracteristicas. Pisa las anteriores, como el contrato. */
   guardarFichas(corridaId: string, fichas: string): Promise<void>;
   /**
+   * Reabre UNA corrida cerrada de este chat, cerrara como cerrara. Para
+   * `/cambio`. Como `reanudarCorrida`: fallos en cero, fecha nueva y el techo
+   * de rondas en la ronda actual, asi corre una ronda y cierra. Undefined si
+   * no es de este chat, no esta cerrada o el chat ya tiene una abierta.
+   */
+  reabrirCorrida(corridaId: string, chatId: number): Promise<Corrida | undefined>;
+  /**
    * Mueve el techo de rondas de una corrida ya abierta.
    *
    * Lo usa el plan: el tamaño real recien se conoce cuando salieron las tareas,
@@ -1642,6 +1649,20 @@ export class InMemoryStore implements Store {
   async guardarFichas(corridaId: string, fichas: string): Promise<void> {
     const c = this.corridas.get(corridaId);
     if (c) c.fichas = fichas;
+  }
+
+  async reabrirCorrida(corridaId: string, chatId: number): Promise<Corrida | undefined> {
+    if ([...this.corridas.values()].some((c) => c.chatId === chatId && c.estado === 'abierta')) {
+      return undefined;
+    }
+    const c = this.corridas.get(corridaId);
+    if (!c || c.chatId !== chatId || c.estado !== 'cerrada') return undefined;
+    c.estado = 'abierta';
+    delete c.motivoDeCierre;
+    c.fallosSeguidos = 0;
+    c.creadoEn = new Date();
+    c.techoRondas = Math.max(c.techoRondas, c.ronda);
+    return c;
   }
 
   async ajustarTechoRondas(corridaId: string, techo: number): Promise<void> {
@@ -3034,6 +3055,26 @@ export class PgStore implements Store {
     // noche entera construyendo dos mitades que no encajan. Si esto falla, el
     // endpoint tiene que contestar error y el planificador enterarse.
     await this.pool.query('UPDATE corridas SET contrato = $2 WHERE id = $1', [corridaId, contrato]);
+  }
+
+  async reabrirCorrida(corridaId: string, chatId: number): Promise<Corrida | undefined> {
+    // El indice unico de una abierta por chat es el que frena la carrera con
+    // otra que se abra al mismo tiempo: el UPDATE falla y se contesta undefined.
+    const r = await this.pool
+      .query(
+        `UPDATE corridas SET estado = 'abierta', motivo_de_cierre = NULL, cerrado_en = NULL,
+                fallos_seguidos = 0, creado_en = now(),
+                techo_rondas = GREATEST(techo_rondas, ronda)
+          WHERE id = $1 AND chat_id = $2 AND estado = 'cerrada'
+            AND NOT EXISTS (
+              SELECT 1 FROM corridas o WHERE o.chat_id = $2 AND o.estado = 'abierta'
+            )
+          RETURNING ${PgStore.CAMPOS_CORRIDA}`,
+        [corridaId, chatId],
+      )
+      .catch(() => undefined);
+    const f = r?.rows[0];
+    return f ? this.aCorrida(f) : undefined;
   }
 
   async guardarFichas(corridaId: string, fichas: string): Promise<void> {

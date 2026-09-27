@@ -60,6 +60,17 @@ export type ParsedCommand =
    * sin empezar. La unica salida era abrir otra corrida.
    */
   | { kind: 'reanudar' }
+  /**
+   * Seguir con una corrida YA cerrada, sea como sea que cerro.
+   *
+   * `/reanudar` solo sigue las que se cortaron, y nada deja volver sobre una
+   * que termino completa o se cancelo. Estas tres lo permiten: `/corridas`
+   * las lista numeradas, `/consulta` pregunta sobre una sin tocar nada y
+   * `/cambio` la reabre con un pedido. `numero` falta = la ultima.
+   */
+  | { kind: 'corridas' }
+  | { kind: 'consulta'; numero?: number; texto: string }
+  | { kind: 'cambio'; numero?: number; texto: string }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
   | { kind: 'vincular' }
   /**
@@ -108,6 +119,18 @@ export function parseCommand(raw: string): ParsedCommand {
   if (command === 'cancelar') return { kind: 'cola_cancelar' };
 
   if (command === 'reanudar') return { kind: 'reanudar' };
+
+  if (command === 'corridas') return { kind: 'corridas' };
+
+  // `/consulta 2 por que...` o `/consulta por que...`: el numero, si viene, es
+  // el de `/corridas`. Con `[\s\S]` por lo mismo que /cola: un pedido puede
+  // venir en varias lineas.
+  if (command === 'consulta' || command === 'cambio') {
+    const m = /^(\d{1,2})(?:\s+([\s\S]*))?$/.exec(rest);
+    const numero = m ? Number(m[1]) : undefined;
+    const texto = (m ? (m[2] ?? '') : rest).trim();
+    return { kind: command, ...(numero !== undefined ? { numero } : {}), texto };
+  }
 
   // Mismo `[\s\S]*` que /cola, y por lo mismo pero peor: lo que viene atras de
   // /corrida es un MD entero. Con `.*` llegaria solo la primera linea, o sea el

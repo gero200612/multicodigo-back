@@ -145,6 +145,43 @@ export function renderOutcome(outcome: PipelineOutcome): string {
 
 ${cuerpo}`;
     }
+    case 'corridas': {
+      if (outcome.lista.length === 0) return 'Todavia no hay corridas. Para arrancar una, /corrida con el pliego.';
+      const fecha = (d: Date) =>
+        d.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+      return [
+        '<b>Tus corridas</b>',
+        '',
+        ...outcome.lista.map(
+          (c) =>
+            `${c.numero}. <b>${escaparHtml(c.proyecto)}</b> — ` +
+            (c.estado === 'abierta' ? 'abierta' : `cerrada (${escaparHtml(c.motivo ?? '')})`) +
+            ` — ${fecha(c.creadoEn)} — ${c.hechas}/${c.total} hechas`,
+        ),
+        '',
+        '/consulta 2 &lt;pregunta&gt; — te contesto sobre la corrida 2 sin tocar nada',
+        '/cambio 2 &lt;pedido&gt; — la reabro con tu pedido y sigo',
+        'Sin numero, es la 1.',
+      ].join('\n');
+    }
+    case 'sin_seguir': {
+      const uso = outcome.comando === 'consulta' ? '/consulta 2 &lt;pregunta&gt;' : '/cambio 2 &lt;pedido&gt;';
+      switch (outcome.motivo) {
+        case 'sin_texto':
+          return `Me falta que me digas que. Asi: ${uso} (el numero sale de /corridas).`;
+        case 'no_existe':
+          return 'No hay una corrida con ese numero. Con /corridas te muestro cuales hay.';
+        case 'hay_una_abierta':
+          return 'Hay una corrida abierta en este chat: no reabro otra encima. Esperala o /cancelar.';
+        case 'otro_chat':
+          return 'Esa corrida es de otro chat: el cambio se pide desde ahi.';
+        default:
+          return 'No pude reabrir esa corrida. Probá de nuevo en un rato.';
+      }
+    }
+    case 'cambio_encolado':
+      return `▶ Reabri <b>${escaparHtml(outcome.proyecto)}</b> con tu pedido y arranco. Cuando termine, ` +
+        'un analista lo revisa y te llega el informe.';
     case 'sin_reanudar':
       // Los dos casos dicen QUE hacer en su lugar. "No hay nada que reanudar" a
       // secas deja a alguien mirando el chat sin saber si el problema es que no
@@ -722,6 +759,9 @@ export function usaHtml(outcome: PipelineOutcome): boolean {
     outcome.kind === 'corrida' ||
     // Lleva el nombre del proyecto en negrita.
     outcome.kind === 'reanudada' ||
+    outcome.kind === 'corridas' ||
+    outcome.kind === 'sin_seguir' ||
+    outcome.kind === 'cambio_encolado' ||
     outcome.kind === 'corrida_sin_armar' ||
     // Los dos pasos del `/corrida` conversacional. Se olvidaron al agregarlos y
     // el sintoma fue exactamente este: el mensaje llegaba con `<b>` y
@@ -931,6 +971,9 @@ const COMANDOS = [
   { command: 'corrida', description: 'Dejarme trabajando toda la noche sobre un pliego' },
   { command: 'cancelar', description: 'Cortar lo que queda en la cola' },
   { command: 'reanudar', description: 'Seguir una corrida que se corto sin terminar' },
+  { command: 'corridas', description: 'Tus ultimas corridas, numeradas' },
+  { command: 'consulta', description: 'Preguntar sobre una corrida: /consulta 2 <pregunta>' },
+  { command: 'cambio', description: 'Reabrir una corrida con un pedido: /cambio 2 <pedido>' },
   { command: 'agente', description: 'Elegir con qué agente hablar' },
   { command: 'proyecto', description: 'Ver o cambiar el proyecto activo' },
   { command: 'status', description: 'Con qué agentes estás trabajando' },
@@ -1714,7 +1757,7 @@ export function buildBot(deps: BridgeDeps): Bot {
       // Reanudar tiene que poner el bucle en marcha, igual que encolar: una
       // corrida reabierta y quieta es peor que no haberla reanudado — el chat
       // dice "sigo desde donde quedo" y no sigue nada.
-      if (outcome.kind === 'reanudada') {
+      if (outcome.kind === 'reanudada' || outcome.kind === 'cambio_encolado') {
         void arrancarCola(ctx.chat.id, deps, (t) => avisarPartido(ctx, t));
       }
 

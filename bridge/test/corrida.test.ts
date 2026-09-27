@@ -4725,3 +4725,79 @@ describe('fichas por caracteristica', () => {
     expect(promptDeTareaDesatendida('algo')).not.toContain('--- FICHAS ---');
   });
 });
+
+/**
+ * Seguir una corrida YA cerrada. `/reanudar` solo sigue las que se cortaron:
+ * sobre una que termino completa o se cancelo no habia forma de preguntar nada
+ * ni de pedir un cambio sin dictar otro pliego.
+ */
+describe('/corridas, /consulta y /cambio', () => {
+  async function cerradaCompleta(d: ReturnType<typeof arnes>) {
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await d.store.encolar(7, { agente: 'c1', proyecto: c.proyecto, textos: ['login'], corridaId: c.id, ronda: 1 });
+    const [t] = await d.store.tareasDeCorrida(c.id);
+    await d.store.cerrarTarea(t!.id, 'lista', 'hecho el login');
+    await d.store.cerrarCorrida(c.id, 'completo');
+    return c;
+  }
+
+  it('/corridas las lista numeradas', async () => {
+    const d = arnes({});
+    await cerradaCompleta(d);
+    const out = await handleIncoming({ chatId: 7, messageId: 2, text: '/corridas' }, d);
+    expect(out.kind).toBe('corridas');
+    if (out.kind === 'corridas') {
+      expect(out.lista[0]).toMatchObject({ numero: 1, estado: 'cerrada', motivo: 'completo', hechas: 1, total: 1 });
+    }
+  });
+
+  it('/cambio reabre una corrida COMPLETA y encola el pedido', async () => {
+    const d = arnes({});
+    const c = await cerradaCompleta(d);
+    const out = await handleIncoming({ chatId: 7, messageId: 2, text: '/cambio 1 que el header sea blanco' }, d);
+    expect(out.kind).toBe('cambio_encolado');
+    const abierta = await d.store.corridaAbierta(7);
+    expect(abierta?.id).toBe(c.id);
+    const tareas = await d.store.tareasDeCorrida(c.id);
+    expect(tareas.some((t) => t.estado === 'pendiente' && t.texto.includes('que el header sea blanco'))).toBe(true);
+    // Y no se cierra al instante por el techo de rondas.
+    expect(techoAlcanzado(abierta!, new Date())).toBeNull();
+  });
+
+  it('/cambio no reabre encima de una abierta', async () => {
+    const d = arnes({});
+    await cerradaCompleta(d);
+    await handleIncoming({ chatId: 7, messageId: 2, text: '/cambio 1 algo' }, d);
+    const out = await handleIncoming({ chatId: 7, messageId: 3, text: '/cambio 1 otra cosa' }, d);
+    expect(out).toMatchObject({ kind: 'sin_seguir', motivo: 'hay_una_abierta' });
+  });
+
+  it('/consulta corre en el proyecto de la corrida, en preguntar y con su historia', async () => {
+    const d = arnes({});
+    const c = await cerradaCompleta(d);
+    const out = await handleIncoming({ chatId: 7, messageId: 2, text: '/consulta 1 por que el login?' }, d);
+    expect(out.kind).toBe('answer');
+    const req = d.ask.mock.calls.at(-1)![0] as { prompt: string; modo?: string; project?: string; proyecto?: string };
+    expect(req.prompt).toContain('CONSULTA sobre la corrida');
+    expect(req.prompt).toContain('hecho el login');
+    expect(req.prompt).toContain('por que el login?');
+    expect(req.modo).toBe('preguntar');
+    // Y no la reabre.
+    expect(await d.store.corridaAbierta(7)).toBeUndefined();
+    expect(c.id).toBeDefined();
+  });
+
+  it('sin texto o con un numero que no existe, dice que hacer', async () => {
+    const d = arnes({});
+    await cerradaCompleta(d);
+    expect(await handleIncoming({ chatId: 7, messageId: 2, text: '/consulta 1' }, d)).toMatchObject({
+      kind: 'sin_seguir',
+      motivo: 'sin_texto',
+    });
+    expect(await handleIncoming({ chatId: 7, messageId: 3, text: '/cambio 9 algo' }, d)).toMatchObject({
+      kind: 'sin_seguir',
+      motivo: 'no_existe',
+    });
+  });
+});

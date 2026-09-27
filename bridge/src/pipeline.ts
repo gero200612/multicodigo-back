@@ -33,6 +33,8 @@ import { partirEnTareas, type Tarea } from './cola.js';
 import { horaArgentinaDe } from './horas.js';
 import { conDespliegue } from './despliegue.js';
 import {
+  promptDeConsulta,
+  tareaDeCambio,
   esContinuacion,
   marcarContinuacion,
   parseOpcionesDeCorrida,
@@ -62,11 +64,20 @@ import { conCodigoParaTelegram, escaparHtml } from './codigo.js';
 import type { Quien } from './agents-client.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
 
+/** Cuantas corridas se pueden elegir con `/consulta` y `/cambio`. */
+const CORRIDAS_ELEGIBLES = 10;
+
 export interface IncomingMessage {
   chatId: number;
   messageId: number;
   text?: string;
   audio?: { bytes: Uint8Array; mimeType: string };
+  /**
+   * Para `/consulta`: el turno corre en el proyecto de la corrida y con
+   * `preguntar`, que pide OK antes de cualquier edicion. No los manda Telegram.
+   */
+  proyectoForzado?: string;
+  modoForzado?: 'preguntar';
 }
 
 export interface PipelineDeps {
@@ -383,6 +394,27 @@ export type PipelineOutcome =
     }
   /** No habia ninguna corrida que se pueda reanudar, y por que. */
   | { kind: 'sin_reanudar'; motivo: 'hay_una_abierta' | 'ninguna' }
+  /** Las ultimas corridas, numeradas para `/consulta` y `/cambio`. */
+  | {
+      kind: 'corridas';
+      lista: {
+        numero: number;
+        proyecto: string;
+        estado: Corrida['estado'];
+        motivo?: MotivoDeCierre;
+        creadoEn: Date;
+        hechas: number;
+        total: number;
+      }[];
+    }
+  /** No se pudo elegir la corrida del `/consulta` o `/cambio`, y por que. */
+  | {
+      kind: 'sin_seguir';
+      comando: 'consulta' | 'cambio';
+      motivo: 'sin_texto' | 'no_existe' | 'hay_una_abierta' | 'otro_chat' | 'no_se_pudo';
+    }
+  /** Una corrida cerrada reabierta con un pedido. Arranca la cola, como reanudar. */
+  | { kind: 'cambio_encolado'; proyecto: string; numero: number }
   /**
    * Un `/proyecto <nombre>` que no es ninguno de los de la persona.
    *
@@ -822,6 +854,63 @@ export async function handleIncoming(
     return { kind: 'cola_cancelada', cuantas: n, corridaCerrada: Boolean(abierta) };
   }
 
+  if (command.kind === 'corridas') {
+    const corridas = await deps.store.corridasDeUsuario(usuarioId, CORRIDAS_ELEGIBLES);
+    const lista = [];
+    for (const [i, c] of corridas.entries()) {
+      const tareas = await deps.store.tareasDeCorrida(c.id).catch(() => []);
+      lista.push({
+        numero: i + 1,
+        proyecto: c.proyecto,
+        estado: c.estado,
+        ...(c.motivoDeCierre ? { motivo: c.motivoDeCierre } : {}),
+        creadoEn: c.creadoEn,
+        hechas: tareas.filter((t) => t.estado === 'lista').length,
+        total: tareas.length,
+      });
+    }
+    return { kind: 'corridas', lista };
+  }
+
+  if (command.kind === 'consulta' || command.kind === 'cambio') {
+    if (command.texto === '') return { kind: 'sin_seguir', comando: command.kind, motivo: 'sin_texto' };
+    const corridas = await deps.store.corridasDeUsuario(usuarioId, CORRIDAS_ELEGIBLES);
+    const c = corridas[(command.numero ?? 1) - 1];
+    if (!c) return { kind: 'sin_seguir', comando: command.kind, motivo: 'no_existe' };
+
+    if (command.kind === 'consulta') {
+      // El MISMO camino que un mensaje comun —errores, relevo, ocupado—, con el
+      // proyecto de la corrida y en `preguntar`: si quisiera editar, pide OK.
+      const tareas = await deps.store.tareasDeCorrida(c.id).catch(() => []);
+      return handleIncoming(
+        {
+          chatId: input.chatId,
+          messageId: input.messageId,
+          text: promptDeConsulta(c, tareas, command.texto),
+          proyectoForzado: c.proyecto,
+          modoForzado: 'preguntar',
+        },
+        deps,
+      );
+    }
+
+    if (c.chatId !== input.chatId) return { kind: 'sin_seguir', comando: 'cambio', motivo: 'otro_chat' };
+    if (await deps.store.corridaAbierta(input.chatId)) {
+      return { kind: 'sin_seguir', comando: 'cambio', motivo: 'hay_una_abierta' };
+    }
+    const reabierta = await deps.store.reabrirCorrida(c.id, input.chatId).catch(() => undefined);
+    if (!reabierta) return { kind: 'sin_seguir', comando: 'cambio', motivo: 'no_se_pudo' };
+    const agente = (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
+    await deps.store.encolar(input.chatId, {
+      agente,
+      proyecto: reabierta.proyecto,
+      textos: [tareaDeCambio(command.texto)],
+      corridaId: reabierta.id,
+      ronda: reabierta.ronda,
+    });
+    return { kind: 'cambio_encolado', proyecto: reabierta.proyecto, numero: command.numero ?? 1 };
+  }
+
   if (command.kind === 'reanudar') {
     // Una corrida ABIERTA no se reabre: se DESTRABA. Puede estar viva y
     // avanzando —y entonces esto no le saca nada, porque no hay tareas
@@ -907,8 +996,9 @@ export async function handleIncoming(
 
   const agent =
     command.agent ?? (await deps.store.getActiveAgent(input.chatId)) ?? deps.defaultAgent;
-  // El proyecto del turno: lo que eligio el chat, o el default del bridge.
-  const project = await proyectoDelChat(input.chatId, usuarioId, deps);
+  // El proyecto del turno: lo que eligio el chat, o el default del bridge. Una
+  // `/consulta` lo fuerza al de su corrida.
+  const project = input.proyectoForzado ?? (await proyectoDelChat(input.chatId, usuarioId, deps));
 
   // El id del proyecto, para poder compartir el hilo con el panel. Puede no
   // existir —un proyecto de config/projects.json que nunca se creo desde el
@@ -944,7 +1034,7 @@ export async function handleIncoming(
   // El modo del chat. Un fallo aca no puede voltear el turno: sin modo corre
   // con el default del agente, que es el estricto — se pregunta de mas, que es
   // el lado correcto para equivocarse.
-  const modo = await deps.store.modoDeChat(input.chatId).catch(() => undefined);
+  const modo = input.modoForzado ?? (await deps.store.modoDeChat(input.chatId).catch(() => undefined));
   // Igual que el modo: un fallo aca no voltea el turno, corre con el default.
   const modelo = await deps.store.modeloDeChat(input.chatId).catch(() => undefined);
 
