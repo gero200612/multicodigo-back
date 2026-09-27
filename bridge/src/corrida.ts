@@ -115,6 +115,12 @@ export interface Corrida {
    * justo lo que paso esa noche. Ver la migracion 033.
    */
   contrato?: string;
+  /**
+   * Las fichas de las caracteristicas: que tiene que tener cada una para estar
+   * TERMINADA. Las fija el planificador antes de las tareas, las leen las
+   * tareas y las verifican los analistas item por item. Ver la migracion 037.
+   */
+  fichas?: string;
   /** Cuando se pregunto. Sin esto el tope no sobrevive a un reinicio. */
   preguntadoEn?: Date;
 }
@@ -709,6 +715,32 @@ function bloqueDeContrato(contrato: string): string[] {
 }
 
 /**
+ * Las fichas como lineas de prompt. Una sola forma para la tarea y el analista.
+ */
+function bloqueDeFichas(fichas: string, paraQuien: 'tarea' | 'analista'): string[] {
+  return [
+    'LAS FICHAS de las caracteristicas de este proyecto. Las fijo el planificador y',
+    'dicen que tiene que tener cada caracteristica para estar TERMINADA.',
+    ...(paraQuien === 'tarea'
+      ? [
+          'Busca la ficha de la caracteristica de tu tarea y cumpli TODO lo que te toca de',
+          'ella —estados de la pantalla, validaciones, casos borde, tests—, no solo la linea',
+          'de la tarea: lo que no hagas, un analista lo va a encontrar faltando.',
+        ]
+      : [
+          'Verifica CADA item de CADA ficha contra lo que hay. Un item que no se cumple es un',
+          'hueco, y la tarea nombra la ficha y el item ("ficha Inversiones, item estados de',
+          'error: ..."). Una caracteristica no esta terminada hasta que cumple su ficha entera.',
+        ]),
+    '',
+    '--- FICHAS ---',
+    fichas,
+    '--- FIN DE LAS FICHAS ---',
+    '',
+  ];
+}
+
+/**
  * El stack con que se construye, como lineas de prompt.
  *
  * Sin decirlo, cada agente elige el suyo: una corrida con sincroresto de
@@ -843,12 +875,14 @@ export function promptDeAnalisis(
     hechos?: string[];
     cierre?: boolean;
     contrato?: string;
+    /** Las fichas de la corrida. Ver `Corrida.fichas`. */
+    fichas?: string;
     nuevo?: boolean;
     /** Lo que YA esta en la cola de esta corrida (pendiente o corriendo). */
     encoladas?: string[];
   } = {},
 ): string {
-  const { eje, cierre, contrato, nuevo = false, encoladas = [], hechos = [] } = opciones;
+  const { eje, cierre, contrato, fichas, nuevo = false, encoladas = [], hechos = [] } = opciones;
   return [
     eje
       ? `Sos el analista de ${eje.toUpperCase()} de esta corrida: mirás ${QUE_MIRA[eje]}. No construis nada: revisas.`
@@ -969,6 +1003,7 @@ export function promptDeAnalisis(
     'DECILO en la tarea: "falta X; en la referencia esta resuelto en <archivo>".',
     'Eso es lo que hace que quien lo construya copie en vez de inventar.',
     '',
+    ...(fichas ? bloqueDeFichas(fichas, 'analista') : []),
     ...bloqueDeEstado(hechos),
     ...bloqueDeEncoladas(encoladas),
     'No arregles nada. No escribas ni edites archivos. Solo mira y reporta.',
@@ -1094,6 +1129,24 @@ export function promptDePlan(
     'ruta no esta ahi, cada uno la va a inventar distinta.',
     '',
     'Sin prefijos ambiguos: si las rutas van bajo /api, decilo en cada una.',
+    '',
+    // AH (2026-09-27): una tarea lista duraba 3,8 minutos en promedio. El plan
+    // troceaba en archivos y nadie escribia que tenia que tener cada cosa para
+    // estar terminada, asi que la profundidad dependia de a quien se le ocurria.
+    'Despues, y ANTES de la lista, escribi la FICHA de cada caracteristica del',
+    'pliego y fijalas con fijar_fichas. Cada ficha tiene:',
+    '  - que resuelve para el usuario, en una oracion;',
+    '  - los datos que maneja (campos, reglas, que es obligatorio);',
+    '  - las rutas del contrato que usa;',
+    '  - sus pantallas, con los estados VACIO, CARGANDO y ERROR de cada una;',
+    '  - validaciones y CASOS BORDE (duplicados, limites, montos en cero, lo que pasa',
+    '    si el back no responde);',
+    '  - quien puede hacer que (permisos);',
+    '  - como se usa en un telefono;',
+    '  - los tests: el camino feliz y al menos un error, en el back y en el front;',
+    '  - "terminada cuando": como se comprueba, de punta a punta.',
+    'Las tareas salen de las fichas y cada una empieza con "Ficha <nombre>:". Mejor',
+    'pocas caracteristicas terminadas que muchas a medias.',
     '',
     'Despues llama a la herramienta reportar_huecos con las tareas, en el ORDEN en',
     'que hay que hacerlas: lo que otras cosas necesitan va primero.',
@@ -1488,6 +1541,8 @@ export function promptDeTareaDesatendida(
   contrato?: string,
   /** Si el proyecto lo armo esta corrida. Ver `bloqueDeStack`. */
   nuevo = false,
+  /** Las fichas de la corrida. Ver `Corrida.fichas`. */
+  fichas?: string,
 ): string {
   return [
     'Esto corre en una corrida desatendida: del otro lado no hay nadie despierto',
@@ -1538,6 +1593,7 @@ export function promptDeTareaDesatendida(
     '',
     ...bloqueDeStack(nuevo),
     ...(contrato ? bloqueDeContrato(contrato) : []),
+    ...(fichas ? bloqueDeFichas(fichas, 'tarea') : []),
     'La tarea:',
     '',
     texto,

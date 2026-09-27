@@ -2739,6 +2739,7 @@ async function tandaDeAnalisis(
           ...(eje ? { eje } : {}),
           ...(cierre ? { cierre } : {}),
           ...(corrida.contrato ? { contrato: corrida.contrato } : {}),
+          ...(corrida.fichas ? { fichas: corrida.fichas } : {}),
           nuevo: esProyectoNuevo(ctx.repos),
           encoladas: await textosEncolados(corrida.id, deps),
           hechos: await hechosDelProyecto(corrida, ctx.proyectoId, deps),
@@ -3202,6 +3203,7 @@ export async function correrCola(
               tarea.posicion,
               corrida.contrato,
               esProyectoNuevo(ctx.repos),
+              corrida.fichas,
             )
           : tarea.texto,
         modo,

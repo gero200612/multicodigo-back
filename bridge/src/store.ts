@@ -894,6 +894,8 @@ export interface Store {
    * planificador lo fija una vez, y si lo corrige, vale lo ultimo.
    */
   guardarContrato(corridaId: string, contrato: string): Promise<void>;
+  /** Las fichas de las caracteristicas. Pisa las anteriores, como el contrato. */
+  guardarFichas(corridaId: string, fichas: string): Promise<void>;
   /**
    * Mueve el techo de rondas de una corrida ya abierta.
    *
@@ -1635,6 +1637,11 @@ export class InMemoryStore implements Store {
   async guardarContrato(corridaId: string, contrato: string): Promise<void> {
     const c = this.corridas.get(corridaId);
     if (c) c.contrato = contrato;
+  }
+
+  async guardarFichas(corridaId: string, fichas: string): Promise<void> {
+    const c = this.corridas.get(corridaId);
+    if (c) c.fichas = fichas;
   }
 
   async ajustarTechoRondas(corridaId: string, techo: number): Promise<void> {
@@ -2819,7 +2826,7 @@ export class PgStore implements Store {
   private static readonly CAMPOS_CORRIDA =
     'id, chat_id, proyecto, md, ronda, techo_rondas, techo_hora, ' +
     'fallos_seguidos, huecos_de_ronda, pendientes, preguntas, respuestas, ' +
-    'preguntado_en, estado, motivo_de_cierre, creado_en, veredictos, contrato';
+    'preguntado_en, estado, motivo_de_cierre, creado_en, veredictos, contrato, fichas';
 
   private aCorrida(f: Record<string, unknown>): Corrida {
     return {
@@ -2850,6 +2857,7 @@ export class PgStore implements Store {
       ...(typeof f.contrato === 'string' && f.contrato !== ''
         ? { contrato: f.contrato }
         : {}),
+      ...(typeof f.fichas === 'string' && f.fichas !== '' ? { fichas: f.fichas } : {}),
       ...(veredictosDeFila(f.veredictos).length > 0
         ? { veredictos: veredictosDeFila(f.veredictos) }
         : {}),
@@ -3026,6 +3034,12 @@ export class PgStore implements Store {
     // noche entera construyendo dos mitades que no encajan. Si esto falla, el
     // endpoint tiene que contestar error y el planificador enterarse.
     await this.pool.query('UPDATE corridas SET contrato = $2 WHERE id = $1', [corridaId, contrato]);
+  }
+
+  async guardarFichas(corridaId: string, fichas: string): Promise<void> {
+    // Sin `.catch`, por lo mismo que el contrato: unas fichas perdidas son una
+    // noche construyendo sin saber cuando algo esta terminado.
+    await this.pool.query('UPDATE corridas SET fichas = $2 WHERE id = $1', [corridaId, fichas]);
   }
 
   async ajustarTechoRondas(corridaId: string, techo: number): Promise<void> {

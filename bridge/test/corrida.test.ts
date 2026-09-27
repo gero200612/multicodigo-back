@@ -4692,3 +4692,36 @@ describe('cierre honesto de las tareas', () => {
     expect(promptDeTareaDesatendida('algo')).toContain('informar_resultado');
   });
 });
+
+/**
+ * Las fichas de las caracteristicas. En AH (2026-09-27) una tarea lista duraba
+ * 3,8 minutos: el plan troceaba en archivos y nadie escribia que tenia que
+ * tener cada caracteristica para estar terminada.
+ */
+describe('fichas por caracteristica', () => {
+  const FICHAS = 'Ficha Inversiones\n- estados: vacio, cargando, error\n- casos borde: monto en cero';
+
+  it('el plan pide fijar las fichas antes de la lista', () => {
+    const p = promptDePlan('# PozoAuto', []);
+    expect(p).toContain('fijar_fichas');
+    expect(p).toContain('CASOS BORDE');
+    expect(p).toContain('terminada cuando');
+  });
+
+  it('la tarea recibe las fichas y cumplir la suya entera', () => {
+    const p = promptDeTareaDesatendida('Ficha Inversiones: listar', 3, undefined, false, FICHAS);
+    expect(p).toContain('--- FICHAS ---');
+    expect(p).toContain('monto en cero');
+    expect(p).toContain('cumpli TODO lo que te toca');
+  });
+
+  it('el analista verifica cada item de cada ficha', () => {
+    const p = promptDeAnalisis('# PozoAuto', 2, { eje: 'funcionamiento', fichas: FICHAS });
+    expect(p).toContain('Verifica CADA item de CADA ficha');
+    expect(p).toContain('monto en cero');
+  });
+
+  it('sin fichas no aparece el bloque', () => {
+    expect(promptDeTareaDesatendida('algo')).not.toContain('--- FICHAS ---');
+  });
+});

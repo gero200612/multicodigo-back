@@ -45,6 +45,7 @@ export interface ApiDeps {
     | 'marcarHuecos'
     | 'guardarVeredicto'
     | 'guardarContrato'
+    | 'guardarFichas'
     | 'anotarPendiente'
     | 'guardarPreguntas'
     | 'guardarRespuestas'
@@ -821,6 +822,37 @@ export function buildWebhookServer(
       await api.store.guardarContrato(corrida.id, cuerpo.data.contrato);
       return reply.code(200).send({
         output: 'contrato fijado: lo van a leer todos los agentes que construyan. Ahora arma la lista.',
+      });
+    });
+
+    /** Las fichas de las caracteristicas, que fija el planificador. Ver `Corrida.fichas`. */
+    const CuerpoFichas = z.object({
+      jobId: z.string().uuid(),
+      // Mas que el contrato: son todas las caracteristicas con sus items.
+      fichas: z.string().min(1).max(40_000),
+    });
+
+    app.post('/interno/corrida/fichas', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      const cuerpo = CuerpoFichas.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply.code(400).send({
+          code: 'cuerpo_invalido',
+          message: 'las fichas tienen que ser texto, de hasta 40.000 caracteres',
+        });
+      }
+      const corrida = await api.store.corridaDeJob(cuerpo.data.jobId);
+      if (!corrida) {
+        return reply.code(400).send({
+          code: 'sin_corrida',
+          message: 'este turno no pertenece a ninguna corrida abierta. No reintentes: segui con la lista.',
+        });
+      }
+      await api.store.guardarFichas(corrida.id, cuerpo.data.fichas);
+      return reply.code(200).send({
+        output: 'fichas fijadas: las van a leer las tareas y las van a verificar los analistas. Ahora arma la lista.',
       });
     });
 
