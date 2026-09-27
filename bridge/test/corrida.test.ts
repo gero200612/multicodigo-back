@@ -4801,3 +4801,14 @@ describe('/corridas, /consulta y /cambio', () => {
     });
   });
 });
+
+describe('AH se cortaba solo al pedir un ajuste', () => {
+  // Con repos del bot ya publicados, el proyecto tiene codigo: no es nuevo.
+  it('un proyecto con repos publicados no es nuevo', () => {
+    expect(
+      esProyectoNuevo([{ creado_por_el_bot: true, render_service_id: 'srv-1' }, { creado_por_el_bot: true }]),
+    ).toBe(false);
+    expect(esProyectoNuevo([{ creado_por_el_bot: true, render_url: 'https://x.onrender.com' }])).toBe(false);
+    expect(esProyectoNuevo([{ creado_por_el_bot: true, render_service_id: null }])).toBe(true);
+  });
+});

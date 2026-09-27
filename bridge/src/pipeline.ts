@@ -2966,8 +2966,9 @@ export async function planificarCorrida(
     .filter((r) => (r as { solo_lectura?: boolean }).solo_lectura)
     .map((r) => r.nombre);
 
+  let respuestaDelPlan = '';
   try {
-    await ejecutarTurnoConRelevo(deps, {
+    const turno = await ejecutarTurnoConRelevo(deps, {
       proyectoId: ctx.proyectoId,
       proyecto: corrida.proyecto,
       agente: agente as AgentId,
@@ -2987,6 +2988,7 @@ export async function planificarCorrida(
       origen: 'telegram',
       chatId,
     });
+    respuestaDelPlan = turno.texto;
   } catch (err) {
     const codigo = err instanceof Error ? err.message : 'internal';
     return {
@@ -3024,6 +3026,17 @@ export async function planificarCorrida(
   }
 
   const tareas = await deps.store.tareasDeCorrida(corrida.id);
+  // Pregunto en prosa en vez de llamar a la herramienta. Antes su texto se tiraba
+  // y la corrida se cerraba con "no pude sacar ninguna tarea": en AH
+  // (2026-09-27) el planificador pregunto algo razonable y la persona solo vio
+  // que se corto. Ahora es una pregunta como cualquier otra: se muestra y se
+  // espera la respuesta. Una sola vez (`!respuestas`): si vuelve a pasar con la
+  // respuesta en la mano, se cierra como antes.
+  if (tareas.length === 0 && !respuestas && respuestaDelPlan.includes('?')) {
+    const pregunta = respuestaDelPlan.trim().slice(0, 1500);
+    await deps.store.guardarPreguntas(corrida.id, [pregunta]).catch(() => undefined);
+    return { ok: false, preguntas: [pregunta] };
+  }
   if (tareas.length === 0) {
     // Llamo la herramienta con la lista vacia, o no la llamo. En los dos casos
     // no hay con que arrancar, y se dice asi en vez de abrir una corrida que va

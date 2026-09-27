@@ -783,9 +783,22 @@ export function bloqueDeStack(nuevo: boolean): string[] {
  * hace falta: los que vinculo una persona desde el panel son proyectos armados.
  */
 export function esProyectoNuevo(
-  repos: readonly { solo_lectura?: boolean; creado_por_el_bot?: boolean }[] | undefined,
+  repos:
+    | readonly {
+        solo_lectura?: boolean;
+        creado_por_el_bot?: boolean;
+        render_service_id?: string | null;
+        render_url?: string | null;
+      }[]
+    | undefined,
 ): boolean {
   const propios = (repos ?? []).filter((r) => !r.solo_lectura);
+  // Un repo que ya se publico tiene codigo: el proyecto dejo de ser nuevo aunque
+  // lo haya creado el bot. Sin esto AH (2026-09-27), con semanas de trabajo
+  // encima, recibia el plan de "proyecto nuevo, repos vacios, ng new": el
+  // planificador lo noto, contesto preguntando en vez de planificar, y la
+  // corrida se cerro sola.
+  if (propios.some((r) => r.render_service_id || r.render_url)) return false;
   return propios.length > 0 && propios.every((r) => r.creado_por_el_bot === true);
 }
 
