@@ -56,6 +56,14 @@ export interface SupabaseApiDeps {
    * salia en TODOS los informes.
    */
   guardarConexion?: (jobId: string, conexion: string) => Promise<void>;
+  /**
+   * Si el proyecto de este turno YA tiene base. Con eso `crear` no crea otra.
+   *
+   * Visto en AH (2026-09-27): cada corrida nueva volvia a pedir "crear la
+   * base", chocaba con el tope de 2 proyectos del plan free y anotaba
+   * "liberar un proyecto de Supabase" sobre una base que ya andaba.
+   */
+  baseExistente?: (jobId: string) => Promise<boolean>;
   /** La organizacion de Supabase donde nacen los proyectos. */
   orgId?: string;
   /** El bearer del par gateway-bridge, el mismo que el resto de `/interno`. */
@@ -273,6 +281,16 @@ export function registrarSupabase(app: FastifyInstance, deps: SupabaseApiDeps): 
     const cuerpo = CrearProyecto.safeParse(request.body);
     if (!cuerpo.success) {
       return reply.code(400).send({ code: 'cuerpo_invalido', message: 'faltan datos del pedido' });
+    }
+    // 200 y no un error: no hay nada que arreglar, y un error haria que el
+    // agente lo anote como pendiente.
+    if (await deps.baseExistente?.(cuerpo.data.jobId).catch(() => false)) {
+      return reply.code(200).send({
+        output:
+          'este proyecto YA tiene su base de Supabase creada, y el sistema le carga la conexion ' +
+          '(ConnectionStrings__DefaultConnection) y Jwt__Key al back desplegado. No hace falta crear ' +
+          'otra ni anotar nada: si hay que cambiar el esquema, va en las migraciones del back.',
+      });
     }
 
     try {

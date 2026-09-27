@@ -385,3 +385,29 @@ describe('la conexion a la base queda guardada, sin pasar por el modelo', () => 
     expect(guardadas).toHaveLength(0);
   });
 });
+
+// AH (2026-09-27): cada corrida nueva volvia a crear la base, chocaba con el
+// tope del plan y anotaba "liberar un proyecto" sobre una base que andaba.
+describe('crear una base que ya existe', () => {
+  it('no llama a Supabase y dice que ya esta', async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ ref: 'otra' }), { status: 201 }));
+    const app = Fastify();
+    registrarSupabase(app, {
+      apiToken: API_TOKEN,
+      accessToken: 'sbp_falso',
+      orgId: 'org_falsa',
+      fetchImpl: f as unknown as typeof fetch,
+      baseExistente: async () => true,
+    });
+    await app.ready();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/interno/supabase/crear',
+      headers: auth,
+      payload: { jobId: JOB, nombre: 'AH' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().output).toContain('YA tiene su base');
+    expect(f).not.toHaveBeenCalled();
+  });
+});

@@ -3590,6 +3590,17 @@ async function hechosDelProyecto(
   const hechos: string[] = [];
   if (proyectoId && /supabase|postgres/i.test(corrida.md)) {
     const conexion = await deps.store.conexionDeBase(proyectoId).catch(() => 'desconocido');
+    if (conexion && conexion !== 'desconocido') {
+      // El hecho en positivo, por lo mismo que el negativo: sin esto los
+      // analistas ven los placeholders de appsettings.json y piden crear la
+      // base o cargar la conexion, que ya estan. Visto en AH (2026-09-27).
+      hechos.push(
+        'La base de datos YA esta creada (Supabase) y el sistema le carga al back desplegado ' +
+          'ConnectionStrings__DefaultConnection y Jwt__Key como variables de entorno en Render. ' +
+          'NO es un hueco: no pidas crear otra base ni cargar esas variables, y los placeholders ' +
+          'de appsettings.json estan bien asi.',
+      );
+    }
     if (!conexion) {
       hechos.push(
         'La base de datos NO esta creada: el pliego pide Postgres/Supabase y este proyecto no tiene conexion. ' +

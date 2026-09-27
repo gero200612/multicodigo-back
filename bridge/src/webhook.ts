@@ -38,6 +38,7 @@ export interface ApiDeps {
     | 'archivoAutorizadoReciente'
     | 'corridaDeJob'
     | 'guardarConexionDeBase'
+    | 'conexionDeBaseDelJob'
     | 'corridasDeUsuario'
     | 'tareasDeCorrida'
     | 'marcarHuecos'
@@ -673,6 +674,21 @@ export function buildWebhookServer(
             'No reintentes: decilo en tu respuesta.',
         });
       }
+      // Lo que el sistema ya resolvio no se anota. El agente ve los
+      // placeholders de appsettings.json y no puede ver Render, asi que en AH
+      // (2026-09-27) el informe pedia cargar la conexion y el Jwt__Key -y
+      // liberar un proyecto de Supabase- con todo andando.
+      if (
+        esPendienteDeBase(cuerpo.data.texto) &&
+        (await api.store.conexionDeBaseDelJob(cuerpo.data.jobId).catch(() => undefined))
+      ) {
+        return reply.code(200).send({
+          output:
+            'no lo anote: este proyecto ya tiene la base creada y el sistema le carga ' +
+            'ConnectionStrings__DefaultConnection y Jwt__Key al back en Render. Los placeholders de ' +
+            'appsettings.json estan bien asi: en produccion mandan las variables de entorno.',
+        });
+      }
       await api.store.anotarPendiente(corrida.id, cuerpo.data.texto);
       return reply.code(200).send({ output: 'anotado para el informe' });
     });
@@ -815,6 +831,7 @@ export function buildWebhookServer(
       // contraseña sigue sin pasar por el modelo: nace y muere en el bridge.
       guardarConexion: (jobId: string, conexion: string) =>
         api.store.guardarConexionDeBase(jobId, conexion),
+      baseExistente: async (jobId: string) => Boolean(await api.store.conexionDeBaseDelJob(jobId)),
     });
 
     /**
@@ -841,4 +858,14 @@ export function buildWebhookServer(
   }
 
   return app;
+}
+
+/**
+ * Si un pendiente habla de la base, su conexion o el Jwt__Key: lo que el
+ * sistema maneja solo cuando el proyecto ya tiene base (ver `publicar.ts`).
+ */
+export function esPendienteDeBase(texto: string): boolean {
+  return /ConnectionStrings|connection ?string|cadena de conexi|Jwt(__|:| )?Key|base (de datos )?(de |en )?Supabase|proyecto (de|en) Supabase|crear (la|una) base|(tope|l[ií]mite) de .*proyectos/i.test(
+    texto,
+  );
 }

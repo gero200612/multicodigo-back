@@ -581,6 +581,8 @@ export interface Store {
   guardarConexionDeBase(jobId: string, conexion: string): Promise<void>;
   /** La conexion a la base del proyecto, si alguna corrida la creo. */
   conexionDeBase(proyectoId: string): Promise<string | undefined>;
+  /** La misma conexion, pero a partir del turno: es lo que tienen las herramientas. */
+  conexionDeBaseDelJob(jobId: string): Promise<string | undefined>;
   /** El id del proyecto por nombre, o null si no existe. */
   idDeProyecto(nombre: string): Promise<string | null>;
   /** Los agentes del proyecto, por slot. */
@@ -1275,6 +1277,11 @@ export class InMemoryStore implements Store {
 
   async conexionDeBase(proyectoId: string): Promise<string | undefined> {
     return this.conexiones.get(proyectoId);
+  }
+
+  async conexionDeBaseDelJob(jobId: string): Promise<string | undefined> {
+    const ctx = this.contextos.get(jobId);
+    return ctx?.proyectoId ? this.conexiones.get(ctx.proyectoId) : undefined;
   }
 
   async guardarRenderServiceId(
@@ -2302,6 +2309,14 @@ export class PgStore implements Store {
          WHERE id = (SELECT proyecto_id FROM jobs WHERE id = $1)`,
       [jobId, conexion],
     );
+  }
+
+  async conexionDeBaseDelJob(jobId: string): Promise<string | undefined> {
+    const r = await this.pool.query<{ db_conexion: string | null }>(
+      'SELECT p.db_conexion FROM proyectos p JOIN jobs j ON j.proyecto_id = p.id WHERE j.id = $1',
+      [jobId],
+    );
+    return r.rows[0]?.db_conexion ?? undefined;
   }
 
   async conexionDeBase(proyectoId: string): Promise<string | undefined> {

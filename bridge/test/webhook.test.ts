@@ -707,3 +707,26 @@ describe('GET /corridas', () => {
     expect(sinUsuario.statusCode).toBe(400);
   });
 });
+
+// AH (2026-09-27): el informe pedia cargar la conexion, el Jwt__Key y liberar un
+// proyecto de Supabase, con todo andando. El agente ve los placeholders de
+// appsettings.json y no puede ver Render.
+describe('esPendienteDeBase', () => {
+  it('reconoce los pendientes de base, conexion y Jwt__Key', async () => {
+    const { esPendienteDeBase } = await import('../src/webhook.js');
+    for (const t of [
+      'Cargar en el hosting de AH-back la variable ConnectionStrings__DefaultConnection con la cadena real',
+      'Cargar en el hosting de AH-back una Jwt__Key propia y secreta',
+      'Liberar un proyecto en la organizacion de Supabase: esta en el limite de 2 proyectos del free',
+      'Falta crear la base de datos en Supabase',
+    ]) {
+      expect(esPendienteDeBase(t)).toBe(true);
+    }
+  });
+
+  it('deja pasar los pendientes que no son de la base', async () => {
+    const { esPendienteDeBase } = await import('../src/webhook.js');
+    expect(esPendienteDeBase('Dar de alta la cuenta de Mercado Pago y cargar MP_ACCESS_TOKEN')).toBe(false);
+    expect(esPendienteDeBase('Apuntar el dominio pozoauto.com al front')).toBe(false);
+  });
+});
