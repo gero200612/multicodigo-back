@@ -52,7 +52,19 @@ export interface Tarea {
    * entro en los 30 minutos del turno. El informe las cuenta distinto y el
    * cierre por techo espera a que no queden cortadas sin terminar.
    */
-  estado: 'pendiente' | 'corriendo' | 'lista' | 'fallida' | 'cortada' | 'cancelada';
+  /**
+   * `sin_cambios` y `bloqueada` los declara el agente con `informar_resultado`:
+   * cerrada sin avance, y cerrada porque falta algo que solo da una persona.
+   */
+  estado:
+    | 'pendiente'
+    | 'corriendo'
+    | 'lista'
+    | 'fallida'
+    | 'cortada'
+    | 'cancelada'
+    | 'sin_cambios'
+    | 'bloqueada';
   resultado?: string;
   /**
    * De que corrida desatendida salio, si salio de una.

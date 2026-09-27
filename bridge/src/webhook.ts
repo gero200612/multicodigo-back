@@ -39,6 +39,7 @@ export interface ApiDeps {
     | 'corridaDeJob'
     | 'guardarConexionDeBase'
     | 'conexionDeBaseDelJob'
+    | 'declararResultado'
     | 'corridasDeUsuario'
     | 'tareasDeCorrida'
     | 'marcarHuecos'
@@ -691,6 +692,33 @@ export function buildWebhookServer(
       }
       await api.store.anotarPendiente(corrida.id, cuerpo.data.texto);
       return reply.code(200).send({ output: 'anotado para el informe' });
+    });
+
+    /**
+     * Como termino la tarea, dicho por el agente. La tarea sale del jobId, como
+     * en las otras: un id en el cuerpo seria un dato que el modelo puede cambiar.
+     */
+    const CuerpoResultado = z.object({
+      jobId: z.string().uuid(),
+      resultado: z.enum(['hecho', 'sin_cambios', 'bloqueada']),
+      motivo: z.string().max(300).optional(),
+    });
+
+    app.post('/interno/corrida/resultado', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      const cuerpo = CuerpoResultado.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'resultado invalido' });
+      }
+      await api.store.declararResultado(cuerpo.data.jobId, cuerpo.data.resultado, cuerpo.data.motivo);
+      return reply.code(200).send({
+        output:
+          cuerpo.data.resultado === 'bloqueada'
+            ? 'anotado como bloqueada: va al informe como algo que tiene que resolver una persona'
+            : 'anotado',
+      });
     });
 
     /**

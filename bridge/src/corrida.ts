@@ -1229,6 +1229,10 @@ export function reglaDeTamano(): string[] {
 /** Lo que el informe necesita saber de las tareas de la corrida. */
 export interface ResumenDeTareas {
   hechas: number;
+  /** Cerradas sin cambios: no hacia falta tocar nada. No es avance. */
+  sinCambios?: number;
+  /** Cerradas porque falta algo que solo da una persona. */
+  bloqueadas?: number;
   fallidas: number;
   pendientes: number;
   /** Lo que no salio, con la ronda en que se detecto. Para nombrarlo. */
@@ -1335,7 +1339,15 @@ export function textoDeInforme(
     // cuando corta el techo —es asi como el techo se detecta— y un informe que
     // dice "rondas: 4" con techo 3 se lee como un bug del ciclo.
     `Rondas: ${Math.min(c.ronda, c.techoRondas)}`,
-    `Tareas: ${t.hechas} hechas · ${t.fallidas} fallaron · ${t.pendientes} sin hacer`,
+    // Las sin cambios y las bloqueadas APARTE de las hechas: contarlas juntas
+    // era el 40% de avance que en AH no existia.
+    [
+      `Tareas: ${t.hechas} hechas`,
+      ...(t.sinCambios ? [`${t.sinCambios} sin cambios`] : []),
+      ...(t.bloqueadas ? [`${t.bloqueadas} bloqueadas`] : []),
+      `${t.fallidas} fallaron`,
+      `${t.pendientes} sin hacer`,
+    ].join(' · '),
   ];
 
   if (t.sinResolver.length > 0) {
@@ -1504,6 +1516,14 @@ export function promptDeTareaDesatendida(
     // unico que se quiere saber de un vistazo: que quedo hecho.
     //
     // El detalle no hace falta pedirlo: esta en el commit y en el repo.
+    // Sin esto el cierre se deducia de que el turno contestara, y en AH el 40%
+    // de las `lista` no habia avanzado nada.
+    'ANTES de contestar, llama a informar_resultado UNA vez:',
+    '  hecho: cambiaste lo que pedia la tarea.',
+    '  sin_cambios: no hacia falta tocar nada, ya estaba resuelto (deci por que).',
+    '  bloqueada: no se puede sin algo que solo da una persona —un token, una cuenta,',
+    '  un permiso—; deci QUE falta. No es un error tuyo, y no lo cuentes como hecho.',
+    '',
     'CUANDO TERMINES, contesta asi:',
     '',
     'Un parrafo corto —tres o cuatro oraciones— contando QUE quedo hecho, en',

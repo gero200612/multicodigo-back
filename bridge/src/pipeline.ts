@@ -894,6 +894,8 @@ export async function handleIncoming(
       corrida,
       tareas: {
         hechas: tareas.filter((t) => t.estado === 'lista').length,
+        sinCambios: tareas.filter((t) => t.estado === 'sin_cambios').length,
+        bloqueadas: tareas.filter((t) => t.estado === 'bloqueada').length,
         fallidas: tareas.filter((t) => t.estado === 'fallida').length,
         pendientes: tareas.filter((t) => t.estado === 'pendiente').length,
         sinResolver: [],
@@ -2359,13 +2361,15 @@ async function cerrarConInforme(
   const tareas = await deps.store.tareasDeCorrida(corrida.id);
   const resumen: ResumenDeTareas = {
     hechas: tareas.filter((t) => t.estado === 'lista').length,
+    sinCambios: tareas.filter((t) => t.estado === 'sin_cambios').length,
+    bloqueadas: tareas.filter((t) => t.estado === 'bloqueada').length,
     fallidas: tareas.filter((t) => t.estado === 'fallida').length,
     pendientes: tareas.filter((t) => t.estado === 'pendiente').length,
     // Lo que fallo y lo que quedo sin empezar, en la MISMA lista: a la mañana
     // las dos cosas son "esto no esta", y separarlas en dos listas obliga a
     // leer las dos para saber que falta.
     sinResolver: tareas
-      .filter((t) => t.estado === 'fallida' || t.estado === 'pendiente')
+      .filter((t) => t.estado === 'fallida' || t.estado === 'pendiente' || t.estado === 'bloqueada')
       .map((t) => ({ texto: t.texto, ...(t.ronda !== undefined ? { ronda: t.ronda } : {}) })),
   };
 
@@ -3251,7 +3255,33 @@ export async function correrCola(
         continue;
       }
 
-      await deps.store.cerrarTarea(tarea.id, 'lista', r.texto, r.agente);
+      // Como termino lo dice el agente con `informar_resultado`. Sin declaracion
+      // queda `lista`, que es lo de antes. En AH (2026-09-27) el 40% de las
+      // `lista` no avanzo nada: "ya estaba hecho" o "no pude, falta un token".
+      const declarado = corrida
+        ? await deps.store.resultadoDeclarado(r.jobId).catch(() => undefined)
+        : undefined;
+      const estadoFinal =
+        declarado?.resultado === 'sin_cambios'
+          ? 'sin_cambios'
+          : declarado?.resultado === 'bloqueada'
+            ? 'bloqueada'
+            : 'lista';
+      await deps.store.cerrarTarea(
+        tarea.id,
+        estadoFinal,
+        declarado?.motivo ? `${declarado.motivo}\n\n${r.texto}` : r.texto,
+        r.agente,
+      );
+      if (corrida && estadoFinal === 'bloqueada') {
+        // Lo que la destraba es trabajo de una persona: va al informe.
+        await deps.store
+          .anotarPendiente(
+            corrida.id,
+            `destrabar: ${declarado?.motivo ?? tarea.texto.replace(/\s+/g, ' ').slice(0, 200)}`,
+          )
+          .catch(() => undefined);
+      }
       // `r.agente` y no `agente`: si hubo relevo, el trabajo quedo en el
       // worktree del que contesto, y ese es el que hay que mergear.
       ultimoSlot = r.agente;
@@ -3653,6 +3683,19 @@ async function hechosDelProyecto(
     }
   }
   const tareas = await deps.store.tareasDeCorrida(corrida.id).catch(() => []);
+  // Las bloqueadas, para que no se vuelvan a encolar igual: nadie las va a
+  // poder hacer hasta que una persona de lo que falta.
+  const bloqueadas = tareas.filter((t) => t.estado === 'bloqueada');
+  if (bloqueadas.length > 0) {
+    hechos.push(
+      `${bloqueadas.length} tarea(s) quedaron BLOQUEADAS por algo que solo una persona puede dar ` +
+        '(un token, una cuenta, un permiso). NO las vuelvas a encolar igual: ' +
+        bloqueadas
+          .slice(0, 6)
+          .map((t) => `"${(t.resultado ?? t.texto).replace(/\s+/g, ' ').slice(0, 100)}"`)
+          .join('; '),
+    );
+  }
   const cortadas = tareas.filter((t) => t.estado === 'cortada');
   if (cortadas.length > 0) {
     hechos.push(

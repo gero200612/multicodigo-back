@@ -282,6 +282,8 @@ function arnes(opciones: {
   analista?: (ronda: number, eje?: string) => string[] | null;
   /** Tareas cuyo turno tira. La clave es el texto de la tarea. */
   fallan?: Record<string, string>;
+  /** Lo que el agente declara con `informar_resultado`, por texto de tarea. */
+  declaran?: Record<string, { resultado: 'hecho' | 'sin_cambios' | 'bloqueada'; motivo?: string }>;
   /** Fallos que se AGOTAN: fallan `veces` y despues el turno sale bien. */
   fallanVeces?: Record<string, { codigo: string; veces: number }>;
   /** El turno del ANALISTA falla `veces` y despues anda. Para probar el entorno. */
@@ -374,6 +376,11 @@ function arnes(opciones: {
     const codigo = opciones.fallan?.[texto];
     if (codigo) throw new Error(codigo);
     const aMedida = opciones.respuestas?.[texto];
+    // La herramienta la llama el agente DURANTE el turno, con su jobId.
+    const declara = opciones.declaran?.[texto];
+    if (declara) {
+      await store.declararResultado((req as { jobId: string }).jobId, declara.resultado, declara.motivo);
+    }
     return { jobId: 'j', sessionId: 's', text: aMedida ?? 'listo', turns: 1 };
   });
 
@@ -4628,5 +4635,60 @@ describe('el piso visual de AH', () => {
   it('los ejes que no miran no reciben lo de mirar', () => {
     const p = promptDeAnalisis('# PozoAuto', 2, { eje: 'testeos' });
     expect(p).not.toContain('parametro login');
+  });
+});
+
+/**
+ * El cierre honesto. En AH (2026-09-27) el 40% de las `lista` no habia
+ * avanzado nada: "ya estaba hecho" o "no pude, falta un token". Ahora lo dice
+ * el agente con `informar_resultado`.
+ */
+describe('cierre honesto de las tareas', () => {
+  it('sin_cambios y bloqueada no cuentan como hechas', async () => {
+    const d = arnes({
+      analista: () => [],
+      declaran: {
+        dos: { resultado: 'sin_cambios', motivo: 'ya estaba resuelto' },
+        tres: { resultado: 'bloqueada', motivo: 'falta el token de Mercado Pago' },
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    await correr(d);
+
+    const tareas = await d.store.tareasDeChat(7);
+    const estado = (t: string) => tareas.find((x) => x.texto === t)?.estado;
+    expect(estado('uno')).toBe('lista');
+    expect(estado('dos')).toBe('sin_cambios');
+    expect(estado('tres')).toBe('bloqueada');
+  });
+
+  it('una bloqueada va al informe como algo para destrabar', async () => {
+    const d = arnes({
+      analista: () => [],
+      declaran: { dos: { resultado: 'bloqueada', motivo: 'falta el token de Mercado Pago' } },
+    });
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    await correr(d);
+
+    const fila = [...(d.store as unknown as { corridas: Map<string, { id: string; pendientes?: string[] }> }).corridas.values()]
+      .find((x) => x.id === c.id);
+    expect(fila?.pendientes ?? []).toContain('destrabar: falta el token de Mercado Pago');
+  });
+
+  it('el informe cuenta aparte las sin cambios y las bloqueadas', () => {
+    const c = {
+      proyecto: 'x', ronda: 1, techoRondas: 3, creadoEn: new Date(), techoHora: '07:00',
+    } as unknown as Parameters<typeof textoDeInforme>[0];
+    const texto = textoDeInforme(c, 'completo', {
+      hechas: 3, sinCambios: 2, bloqueadas: 1, fallidas: 0, pendientes: 0, sinResolver: [],
+    });
+    expect(texto).toContain('3 hechas · 2 sin cambios · 1 bloqueadas');
+  });
+
+  it('la tarea desatendida pide informar el resultado', () => {
+    expect(promptDeTareaDesatendida('algo')).toContain('informar_resultado');
   });
 });

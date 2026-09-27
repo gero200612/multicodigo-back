@@ -6,6 +6,9 @@ import type { Encargo, Tarea } from './cola.js';
 import { EJES, SE_PUEDE_REANUDAR } from './corrida.js';
 import type { Corrida, Eje, MotivoDeCierre, Veredicto } from './corrida.js';
 
+/** Como termino una tarea, segun el agente. Ver `informar_resultado`. */
+export type ResultadoDeclarado = 'hecho' | 'sin_cambios' | 'bloqueada';
+
 /**
  * La columna `veredictos` de una fila, como lista.
  *
@@ -716,7 +719,7 @@ export interface Store {
    */
   cerrarTarea(
     id: string,
-    estado: 'lista' | 'fallida' | 'cortada' | 'cancelada',
+    estado: 'lista' | 'fallida' | 'cortada' | 'cancelada' | 'sin_cambios' | 'bloqueada',
     resultado?: string,
     agenteReal?: string,
   ): Promise<void>;
@@ -849,6 +852,11 @@ export interface Store {
    * informe con la misma linea cuatro veces se lee como ruido.
    */
   anotarPendiente(corridaId: string, texto: string): Promise<void>;
+  /** Lo que declaro el agente con `informar_resultado`. Ver migracion 036. */
+  declararResultado(jobId: string, resultado: ResultadoDeclarado, motivo?: string): Promise<void>;
+  resultadoDeclarado(
+    jobId: string,
+  ): Promise<{ resultado: ResultadoDeclarado; motivo?: string } | undefined>;
   /**
    * Saca los pendientes que empiezan con `prefijo`. Para los que dejan de ser
    * ciertos: un merge que fallo a mitad de corrida y despues entro.
@@ -1478,7 +1486,7 @@ export class InMemoryStore implements Store {
 
   async cerrarTarea(
     id: string,
-    estado: 'lista' | 'fallida' | 'cortada' | 'cancelada',
+    estado: 'lista' | 'fallida' | 'cortada' | 'cancelada' | 'sin_cambios' | 'bloqueada',
     resultado?: string,
     agenteReal?: string,
   ): Promise<void> {
@@ -1592,6 +1600,18 @@ export class InMemoryStore implements Store {
     if (!c) return;
     const ya = c.pendientes ?? [];
     if (!ya.includes(texto)) c.pendientes = [...ya, texto];
+  }
+
+  private readonly declaraciones = new Map<string, { resultado: ResultadoDeclarado; motivo?: string }>();
+
+  async declararResultado(jobId: string, resultado: ResultadoDeclarado, motivo?: string): Promise<void> {
+    this.declaraciones.set(jobId, { resultado, ...(motivo ? { motivo } : {}) });
+  }
+
+  async resultadoDeclarado(
+    jobId: string,
+  ): Promise<{ resultado: ResultadoDeclarado; motivo?: string } | undefined> {
+    return this.declaraciones.get(jobId);
   }
 
   async quitarPendientes(corridaId: string, prefijo: string): Promise<void> {
@@ -2758,7 +2778,7 @@ export class PgStore implements Store {
 
   async cerrarTarea(
     id: string,
-    estado: 'lista' | 'fallida' | 'cortada' | 'cancelada',
+    estado: 'lista' | 'fallida' | 'cortada' | 'cancelada' | 'sin_cambios' | 'bloqueada',
     resultado?: string,
     agenteReal?: string,
   ): Promise<void> {
@@ -3142,6 +3162,28 @@ export class PgStore implements Store {
     } finally {
       cliente.release();
     }
+  }
+
+  async declararResultado(jobId: string, resultado: ResultadoDeclarado, motivo?: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE jobs SET resultado_declarado = $2, motivo_declarado = $3 WHERE id = $1',
+      [jobId, resultado, motivo ?? null],
+    );
+  }
+
+  async resultadoDeclarado(
+    jobId: string,
+  ): Promise<{ resultado: ResultadoDeclarado; motivo?: string } | undefined> {
+    const r = await this.pool
+      .query<{ resultado_declarado: ResultadoDeclarado | null; motivo_declarado: string | null }>(
+        'SELECT resultado_declarado, motivo_declarado FROM jobs WHERE id = $1',
+        [jobId],
+      )
+      // Contra una base sin la migracion 036: sin declaracion, como antes.
+      .catch(() => undefined);
+    const f = r?.rows[0];
+    if (!f?.resultado_declarado) return undefined;
+    return { resultado: f.resultado_declarado, ...(f.motivo_declarado ? { motivo: f.motivo_declarado } : {}) };
   }
 
   async quitarPendientes(corridaId: string, prefijo: string): Promise<void> {
