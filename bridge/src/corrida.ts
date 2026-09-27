@@ -645,6 +645,11 @@ const PISO: Record<Eje, readonly string[]> = {
       'max-width en una variable CSS, que usan el header, el footer y cada pantalla. Nada ' +
       'de max-width sueltos por componente: si algo se ve corrido o mas angosto, se arregla ' +
       'el contenedor, no esa pantalla.',
+    // AH (2026-09-27): con tres pozos, repeat(auto-fill, minmax(240px, 1fr))
+    // reservaba cinco columnas a 1920px y dejaba vacio un tercio de la pantalla.
+    'Las grillas LLENAN el ancho: sin columnas vacias a la derecha con pocos elementos ' +
+      '(auto-fit y no auto-fill), y a 390px de ancho nada se sale de la pantalla ni hay ' +
+      'scroll horizontal.',
     'Tokens, no solo colores: espaciados, radios y sombras en variables CSS globales, y ' +
       'todas las pantallas los usan en vez de numeros sueltos.',
     // AH tenia el carrusel copiado en la landing y en el home: cada arreglo
@@ -999,6 +1004,12 @@ export function promptDeAnalisis(
           '',
           // Los huecos por archivo ("en X.css poner 1100px como Home") son los
           // que armaron los ocho anchos distintos de AH.
+          // mirar ahora MIDE: desborde, consola y red. Una foto se puede leer como
+          // "asi es el diseño"; un scrollWidth mas grande que la pantalla no.
+          'mirar te devuelve un bloque MEDIDO. Cada linea con ⚠ es un hueco aunque la foto se',
+          'vea bien: se sale de ancho (con el elemento que lo empuja), errores de consola, o',
+          'pedidos que fallaron (con la ruta y el codigo). Reportalo tal cual, con el dato.',
+          '',
           'Cuando algo se ve desparejo —anchos, margenes, colores, radios— el hueco es',
           'del CONTENEDOR o de los TOKENS compartidos, no de una pantalla: no pidas un',
           'numero suelto en un archivo. Y si el mismo bloque esta copiado en dos',

@@ -4843,3 +4843,12 @@ describe('la ultima ronda de analisis no se tira', () => {
     expect(revisiones).toBeLessThanOrEqual(c.techoRondas * 4 + 4);
   });
 });
+
+describe('el piso visual mide', () => {
+  it('pide grillas que llenen el ancho y nada afuera a 390px', () => {
+    expect(promptDePlan('# x', [])).toContain('Las grillas LLENAN el ancho');
+  });
+  it('el analista visual trata lo MEDIDO como hueco', () => {
+    expect(promptDeAnalisis('# x', 2, { eje: 'visual' })).toContain('Cada linea con ⚠ es un hueco');
+  });
+});
