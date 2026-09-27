@@ -3215,7 +3215,18 @@ export async function correrCola(
     // una ronda, que es justo para lo que existen.
     if (corrida) {
       const motivo = techoAlcanzado(corrida, new Date());
-      if (motivo && !(await hayCortadasSinTerminar(motivo, corrida, chatId, deps))) {
+      // El techo de rondas corta el ANALISIS, no la ejecucion. Lo que encontro
+      // la ultima revision deja la ronda en techo+1, y antes eso cerraba la
+      // corrida en la vuelta siguiente cancelando justo lo recien encontrado:
+      // en AH (2026-09-27) el arreglo del ancho de las grillas (auto-fill ->
+      // auto-fit) y tres tareas mas quedaron canceladas sin correr. Ahora esa
+      // ronda final se ejecuta; cuando la cola se vacia, se cierra sin revisar
+      // de nuevo (abajo). Hora y fallos siguen cortando en el medio.
+      const rondaFinal =
+        motivo === 'techo_rondas' &&
+        corrida.ronda === corrida.techoRondas + 1 &&
+        Boolean(await deps.store.proximaTarea(chatId, corrida.id));
+      if (motivo && !rondaFinal && !(await hayCortadasSinTerminar(motivo, corrida, chatId, deps))) {
         await cerrarConInforme(corrida, motivo, deps, avisar);
         return;
       }
@@ -3233,6 +3244,11 @@ export async function correrCola(
     if (!tarea) {
       // Sin corrida, aca se terminaba la noche. Con corrida, empieza el ciclo.
       if (!corrida) return;
+      // La ronda final ya se ejecuto: se cierra sin abrir otra revision.
+      if (techoAlcanzado(corrida, new Date()) === 'techo_rondas') {
+        await cerrarConInforme(corrida, 'techo_rondas', deps, avisar);
+        return;
+      }
       if (!(await rondaDeAnalisis(corrida, usuarioId, deps, avisar))) return;
       continue;
     }

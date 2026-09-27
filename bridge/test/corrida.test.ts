@@ -4812,3 +4812,34 @@ describe('AH se cortaba solo al pedir un ajuste', () => {
     expect(esProyectoNuevo([{ creado_por_el_bot: true, render_service_id: null }])).toBe(true);
   });
 });
+
+/**
+ * El techo de rondas corta el analisis, no la ejecucion. En AH (2026-09-27) lo
+ * que encontro la ultima revision -el ancho de las grillas- quedo cancelado
+ * sin correr, porque el techo cerraba la corrida en la vuelta siguiente.
+ */
+describe('la ultima ronda de analisis no se tira', () => {
+  it('lo que encuentra la ultima revision se hace antes de cerrar', async () => {
+    let revisiones = 0;
+    const d = arnes({
+      analista: (ronda) => {
+        revisiones += 1;
+        return [`hueco de la ronda ${ronda}`];
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    await correr(d);
+
+    const c = [...(d.store as unknown as { corridas: Map<string, { motivoDeCierre?: string; techoRondas: number }> }).corridas.values()][0]!;
+    expect(c.motivoDeCierre).toBe('techo_rondas');
+    const tareas = await d.store.tareasDeChat(7);
+    const huecos = tareas.filter((t) => t.texto.startsWith('hueco de la ronda'));
+    expect(huecos.length).toBeGreaterThan(0);
+    // Ninguno cancelado: el de la ultima revision tambien se hizo.
+    expect(huecos.filter((t) => t.estado === 'cancelada')).toHaveLength(0);
+    expect(huecos.every((t) => t.estado === 'lista')).toBe(true);
+    // Y despues de esa ultima tanda no se abre otra revision.
+    expect(revisiones).toBeLessThanOrEqual(c.techoRondas * 4 + 4);
+  });
+});
