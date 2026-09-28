@@ -13,4 +13,11 @@ ALTER TABLE public.cola_tareas
 
 ALTER TABLE public.cola_tareas
   ADD CONSTRAINT cola_estado_valido
-  CHECK (estado IN ('pendiente', 'corriendo', 'lista', 'fallida', 'cortada', 'cancelada'));
+  -- Con los estados de la 036 adentro: las migraciones corren TODAS en cada
+  -- arranque y en orden, asi que esta vuelve a correr despues de que la 036 ya
+  -- dejo filas en 'bloqueada'. Con la lista vieja el ALTER fallaba y el bridge
+  -- quedaba en crash-loop (2026-09-28).
+  CHECK (estado IN (
+    'pendiente', 'corriendo', 'lista', 'fallida', 'cortada', 'cancelada',
+    'sin_cambios', 'bloqueada'
+  ));
