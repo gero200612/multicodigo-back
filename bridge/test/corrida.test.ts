@@ -4852,3 +4852,14 @@ describe('el piso visual mide', () => {
     expect(promptDeAnalisis('# x', 2, { eje: 'visual' })).toContain('Cada linea con ⚠ es un hueco');
   });
 });
+
+describe('los archivos que sube la persona se usan tal cual', () => {
+  it('la tarea pide copiarlos con copiar_documento y no recrearlos', () => {
+    const p = promptDeTareaDesatendida('usa captura.jpg en los autos');
+    expect(p).toContain('copiar_documento');
+    expect(p).toContain('NUNCA lo recrees');
+  });
+  it('el analista trata un archivo subido y no usado como hueco', () => {
+    expect(promptDeAnalisis('# x', 2, { eje: 'visual' })).toContain('copiar_documento');
+  });
+});

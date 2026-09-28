@@ -1027,6 +1027,12 @@ export function promptDeAnalisis(
     'DECILO en la tarea: "falta X; en la referencia esta resuelto en <archivo>".',
     'Eso es lo que hace que quien lo construya copie en vez de inventar.',
     '',
+    // Si la persona subio un archivo para usar y no esta en el repo, eso es un
+    // hueco, y la tarea tiene que nombrarlo: el constructor no mira _docs solo.
+    'Si hay archivos en _docs que el pliego pide USAR (una imagen, un logo) y no estan',
+    'en el repo, es un hueco: la tarea nombra el archivo y dice que se copie con',
+    'copiar_documento, no que se haga uno parecido.',
+    '',
     ...(fichas ? bloqueDeFichas(fichas, 'analista') : []),
     ...bloqueDeEstado(hechos),
     ...bloqueDeEncoladas(encoladas),
@@ -1597,6 +1603,12 @@ export function promptDeTareaDesatendida(
     // El detalle no hace falta pedirlo: esta en el commit y en el repo.
     // Sin esto el cierre se deducia de que el turno contestara, y en AH el 40%
     // de las `lista` no habia avanzado nada.
+    // AH (2026-09-28): la persona subio una foto para todos los autos y el agente
+    // dibujo un SVG "parecido" porque no podia copiar un binario. Ahora puede.
+    'Si la tarea nombra un archivo que subio la persona (esta en _docs: una imagen, un',
+    'PDF, un logo), usa ESE archivo tal cual: copialo al repo con copiar_documento y',
+    'referencialo desde el codigo. NUNCA lo recrees ni lo reemplaces por uno parecido.',
+    '',
     'ANTES de contestar, llama a informar_resultado UNA vez:',
     '  hecho: cambiaste lo que pedia la tarea.',
     '  sin_cambios: no hacia falta tocar nada, ya estaba resuelto (deci por que).',
