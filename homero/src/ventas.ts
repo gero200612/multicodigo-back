@@ -179,6 +179,7 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
       factibilidad: b.factibilidad,
       factibilidad_motivo: b.factibilidad_motivo,
       fuentes,
+      chatbots,
     },
   });
   const inicial = await deps.store.crearSaliente({
@@ -202,41 +203,73 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
     await aprobarLead(lead.id, deps);
     return;
   }
+  await proponerBorrador(lead.id, deps, { ensayo, muestraEnviada });
+}
+
+/**
+ * La tarjeta de un borrador en Telegram: todo lo que Homero sabe del negocio,
+ * el mail y el seguimiento. Fuera de ensayo lleva Aprobar; en ensayo solo
+ * Descartar, porque nada puede salirle a un cliente.
+ */
+export async function proponerBorrador(
+  leadId: number,
+  deps: DepsDeVentas,
+  o: { ensayo?: string; muestraEnviada?: boolean } = {},
+): Promise<boolean> {
+  const lead = await deps.store.lead(leadId);
+  if (!lead || lead.estado !== 'borrador') return false;
+  const salientes = await deps.store.salientesDeLead(leadId);
+  const inicial = salientes.find((s) => s.tipo === 'inicial' && s.estado === 'borrador');
+  if (!inicial) return false;
+  const seguimiento = salientes.find((s) => s.tipo === 'seguimiento' && s.estado === 'borrador');
+  const inv = lead.investigacion;
   const rubro = rubroPorId(lead.rubro);
+  const fuentes = inv?.fuentes ?? [];
+  const chatbots = inv?.chatbots ?? [];
+
   const tarjeta = [
     `✉️ NUEVO: ${lead.nombre} (${rubro?.nombre ?? lead.rubro}, ${lead.ciudad})`,
-    `Factibilidad: ${b.factibilidad}/10 · ${b.factibilidad_motivo}`,
-    `Para: ${email}`,
+    inv?.factibilidad ? `Factibilidad: ${inv.factibilidad}/10 · ${inv.factibilidad_motivo ?? ''}` : undefined,
+    `Para: ${lead.email}`,
     lead.telefono ? `Tel: ${lead.telefono}` : undefined,
-    `Qué hacen: ${b.resumen_empresa}`,
-    `Qué les falta: ${b.dolor}`,
-    `Propuesta: ${b.idea}`,
+    inv ? `Qué hacen: ${inv.resumen_empresa}` : undefined,
+    inv ? `Qué les falta: ${inv.dolor}` : undefined,
+    inv ? `Propuesta: ${inv.idea}` : undefined,
     chatbots.length ? `Ya tienen atención automática: ${chatbots.join(', ')} (no les ofrezco bot)` : undefined,
     fuentes.length ? `De dónde saqué la info:\n${fuentes.map((f) => `• ${f}`).join('\n')}` : undefined,
     '',
-    `Asunto: ${b.asunto}`,
+    `Asunto: ${inicial.asunto}`,
     '',
-    b.mensaje,
+    inicial.cuerpo,
     '',
-    `— Seguimiento (a la semana, si no contesta): ${b.seguimiento}`,
+    seguimiento ? `— Seguimiento (a la semana, si no contesta): ${seguimiento.cuerpo}` : undefined,
     '',
-    ensayo && muestraEnviada
-      ? `🧪 Ensayo: te mandé a ${ensayo} el mail exactamente como le llegaría. Para probar la respuesta, contestalo desde ahí como si fueras ${lead.nombre}. Al cliente no sale nada hasta /ensayo off.`
-      : ensayo
-        ? '🧪 Ensayo: este no te lo mandé por mail porque la casilla ya llegó a su cupo de hoy (así no cae en spam). Lo ves acá. Al cliente no sale nada hasta /ensayo off.'
-      : 'Para cambiar el primer mail, respondé a este mensaje con el texto nuevo.',
+    o.ensayo && o.muestraEnviada
+      ? `🧪 Ensayo: te mandé a ${o.ensayo} el mail exactamente como le llegaría. Para probar la respuesta, contestalo desde ahí como si fueras ${lead.nombre}. Al cliente no sale nada hasta /ensayo off.`
+      : o.ensayo
+        ? '🧪 Ensayo: al cliente no sale nada hasta /ensayo off.'
+        : 'Para cambiar el primer mail, respondé a este mensaje con el texto nuevo.',
   ]
     .filter((l) => l !== undefined)
     .join('\n');
-  // En ensayo no hay boton de aprobar: nada puede salirle a un cliente.
-  const botones: Boton[] = ensayo
+  const botones: Boton[] = o.ensayo
     ? [{ texto: '🗑 Descartar', datos: `de:${lead.id}` }]
     : [
         { texto: '✅ Aprobar', datos: `ap:${lead.id}` },
         { texto: '🗑 Descartar', datos: `de:${lead.id}` },
       ];
   const msg = await deps.proponer(tarjeta, botones);
-  if (msg) await deps.store.actualizarSaliente(inicial, { telegramMsg: msg });
+  if (msg) await deps.store.actualizarSaliente(inicial.id, { telegramMsg: msg });
+  return true;
+}
+
+/** Al salir del ensayo: vuelve a mandar los borradores pendientes, ahora con Aprobar. */
+export async function reproponerBorradores(deps: DepsDeVentas): Promise<number> {
+  let n = 0;
+  for (const id of await deps.store.leadsEnBorrador()) {
+    if (await proponerBorrador(id, deps)) n++;
+  }
+  return n;
 }
 
 // ------------------------------------------------------------ ensayo

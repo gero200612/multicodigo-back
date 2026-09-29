@@ -30,6 +30,8 @@ export interface Investigacion {
   idea: string;
   factibilidad?: number;
   factibilidad_motivo?: string;
+  /** Chats o bots que ya tiene su web (Tidio, Botmaker...). */
+  chatbots?: string[];
   /** De donde salio la informacion: la ficha del lugar y las paginas leidas. */
   fuentes?: string[];
 }

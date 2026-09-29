@@ -47,6 +47,8 @@ export interface Acciones {
   ensayo(): Promise<string | undefined>;
   /** Apaga el ensayo y libera los horarios de prueba. Devuelve cuantos. */
   apagarEnsayo(): Promise<number>;
+  /** Reenvia los borradores pendientes con el boton de Aprobar. Devuelve cuantos. */
+  reproponerBorradores(): Promise<number>;
   /** Marca o desmarca un horario para ofrecer. Devuelve los botones nuevos. */
   alternarHorario(leadId: number, i: number): Promise<Boton[] | undefined>;
   armarRespuesta(leadId: number): Promise<'encolada' | 'sin_horarios' | 'vencida'>;
@@ -217,9 +219,11 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     if (pedido.toLowerCase() === 'off') {
       const liberadas = (await acciones?.apagarEnsayo()) ?? 0;
       await ctx.reply(
-        '🚀 Ensayo apagado. Desde ahora lo que apruebes le llega al cliente.' +
+        '🚀 Ensayo apagado. Ya no te mando los borradores por mail, y lo que apruebes le llega al cliente.' +
           (liberadas > 0 ? `\nLiberé ${liberadas} horario(s) que habían tomado las pruebas.` : ''),
       );
+      const n = (await acciones?.reproponerBorradores()) ?? 0;
+      if (n > 0) await ctx.reply(`Te reenvío ${n} borrador(es) que tenías pendientes, ahora con ✅ Aprobar.`);
       return;
     }
     if (pedido && !/^\S+@\S+\.\S+$/.test(pedido)) {

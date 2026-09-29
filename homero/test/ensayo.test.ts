@@ -11,6 +11,7 @@ import {
   ENSAYO,
   ensayoActivo,
   mandarMuestras,
+  reproponerBorradores,
 } from '../src/ventas.js';
 import { armar } from './armar.js';
 
@@ -79,6 +80,19 @@ describe('modo ensayo', () => {
     const antes = h.enviados.length;
     expect(await mandarMuestras('gero@personal.com', h.deps)).toBe(0);
     expect(h.enviados).toHaveLength(antes);
+  });
+
+  it('al apagar el ensayo los borradores pendientes vuelven con el boton de Aprobar', async () => {
+    const h = await conUnBorrador();
+    expect(h.tarjetas.at(-1)!.datos).toEqual(['de:1']);
+    await apagarEnsayo(h.deps);
+    expect(await reproponerBorradores(h.deps)).toBe(1);
+    const nueva = h.tarjetas.at(-1)!;
+    expect(nueva.datos).toEqual(['ap:1', 'de:1']);
+    expect(nueva.texto).toContain('Factibilidad: 8/10');
+    expect(nueva.texto).toContain('respondé a este mensaje');
+    // Y ahora Aprobar si programa el envio.
+    expect(await aprobarLead(1, h.deps)).toBe(true);
   });
 
   it('/cortar cancela las busquedas e investigaciones pendientes', async () => {
