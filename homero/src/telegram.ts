@@ -6,7 +6,7 @@ import { cupoDelDia } from './envio.js';
 import { horaArgentina, inicioDelDia } from './horas.js';
 import { ErrorDeCuenta, ErrorDeLimite, pedirTexto } from './ia.js';
 import { SISTEMA } from './prompts.js';
-import { CIUDADES, rubroPorId, RUBROS } from './rubros.js';
+import { CIUDADES, rubroPorId, RUBROS, zonaPorNombre } from './rubros.js';
 import type { Store } from './store.js';
 import { ENSAYO, MODO, modoActual, tablaDeRubros, type Boton } from './ventas.js';
 
@@ -241,9 +241,10 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       await ctx.reply(`No conozco ese rubro. Opciones: ${RUBROS.map((r) => r.id).join(', ')}`);
       return;
     }
-    const ciudad = partes.slice(1).join(' ') || undefined;
+    const pedida = partes.slice(1).join(' ') || undefined;
+    const ciudad = pedida ? zonaPorNombre(pedida)?.nombre ?? pedida : undefined;
     if (ciudad && !CIUDADES.includes(ciudad)) {
-      await ctx.reply(`Ojo: "${ciudad}" no está en mi lista, la busco igual.`);
+      await ctx.reply(`Ojo: "${ciudad}" no está en mi zona (${CIUDADES.slice(0, 4).join(', ')}…), la busco igual.`);
     }
     await store.encolar({
       tipo: 'prospectar',

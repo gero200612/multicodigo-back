@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { horarioEnCastellano, horariosParaOfrecer, invitacionIcs, sigueLibre } from '../src/agenda.js';
 import { elegirRubro, RUBROS } from '../src/rubros.js';
 import { leerDia } from '../src/telegram.js';
-import { esIpPrivada, leerSitio, mailsDeHtml, textoDeHtml } from '../src/web.js';
+import { chatbotsDeHtml, esIpPrivada, leerSitio, mailsDeHtml, textoDeHtml } from '../src/web.js';
+import { leerBorrador, promptDeBorrador } from '../src/prompts.js';
 
 describe('agenda', () => {
   const martes = new Date('2026-09-29T17:00:00Z');
@@ -76,7 +77,37 @@ describe('web', () => {
   });
 });
 
+describe('si ya tienen bot', () => {
+  it('detecta los chats conocidos en el html crudo', () => {
+    expect(chatbotsDeHtml('<script src="https://code.tidio.co/abc.js"></script>')).toEqual(['Tidio']);
+    expect(chatbotsDeHtml('<p>Hablá con nuestro asistente virtual</p>')).toEqual(['un chatbot']);
+    expect(chatbotsDeHtml('<a href="https://wa.me/54911">WhatsApp</a>')).toEqual([]);
+  });
+
+  it('el prompt le prohibe ofrecer un bot y le pide entrar por otro proceso', () => {
+    const lead = { id: 1, nombre: 'X', rubro: 'contable', ciudad: 'Capital Federal', fuente: 'osm', estado: 'nuevo' as const };
+    const p = promptDeBorrador(lead, RUBROS[0], 'texto', 'Geronimo Enrici', ['Tidio']);
+    expect(p).toContain('YA tiene atención automática (Tidio)');
+    expect(promptDeBorrador(lead, RUBROS[0], 'texto', 'Geronimo Enrici')).not.toContain('YA tiene');
+  });
+});
+
+describe('leerBorrador', () => {
+  const base = { motivo: 'x', resumen_empresa: 'x', dolor: 'x', idea: 'x' };
+  it('un descarte con los campos vacios se lee como descarte, no como error', () => {
+    const t = '```json\n' + JSON.stringify({ ...base, encaja: false, asunto: '', mensaje: '', seguimiento: '' }) + '\n```';
+    expect(leerBorrador(t)?.encaja).toBe(false);
+  });
+  it('si encaja pero no trae mail, es ilegible', () => {
+    expect(leerBorrador(JSON.stringify({ ...base, encaja: true, asunto: 'a', mensaje: '', seguimiento: 's' }))).toBeUndefined();
+  });
+});
+
 describe('rubros', () => {
+  it('arranca por estudios contables', () => {
+    expect(elegirRubro([], () => 0.99).id).toBe('contable');
+  });
+
   it('prueba primero los que nunca se probaron', () => {
     const stats = RUBROS.slice(1).map((r) => ({ rubro: r.id, contactados: 10, respuestas: 5 }));
     expect(elegirRubro(stats, () => 0).id).toBe(RUBROS[0]!.id);

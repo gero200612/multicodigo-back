@@ -41,7 +41,9 @@ export interface DepsDeVentas extends DepsDeEnvio {
   pedirIa: (prompt: string) => Promise<string>;
   fuente: Fuente;
   nombreDeFuente: string;
-  leerSitio: (web: string) => Promise<{ texto: string; mails: string[]; paginas?: string[] } | undefined>;
+  leerSitio: (
+    web: string,
+  ) => Promise<{ texto: string; mails: string[]; paginas?: string[]; chatbots?: string[] } | undefined>;
   recibeMail: (email: string) => Promise<boolean>;
   azar?: () => number;
 }
@@ -138,9 +140,10 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
   let texto = '';
   let mails: string[] = [];
   let paginas: string[] = [];
+  let chatbots: string[] = [];
   if (lead.web) {
     const sitio = await deps.leerSitio(lead.web);
-    if (sitio) ({ texto, mails, paginas = [] } = sitio);
+    if (sitio) ({ texto, mails, paginas = [], chatbots = [] } = sitio);
   }
   const email = lead.email ?? mails[0];
   const descartar = () => deps.store.actualizarLead(lead.id, { estado: 'descartado' });
@@ -154,7 +157,7 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
     await deps.store.actualizarLead(lead.id, { email });
   }
 
-  const b = leerBorrador(await deps.pedirIa(promptDeBorrador(lead, rubroPorId(lead.rubro), texto, deps.firma)));
+  const b = leerBorrador(await deps.pedirIa(promptDeBorrador(lead, rubroPorId(lead.rubro), texto, deps.firma, chatbots)));
   if (!b) throw new Error('la IA no devolvio un borrador legible');
   if (!b.encaja) return descartar();
 

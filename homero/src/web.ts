@@ -75,6 +75,32 @@ export const bajarPagina: Buscador = async (crudo) => {
   return undefined;
 };
 
+/**
+ * Los chats y bots que ya tiene la web. Se miran en el HTML CRUDO porque
+ * vienen como scripts de terceros, que `textoDeHtml` saca.
+ */
+const CHATBOTS: [string, RegExp][] = [
+  ['Tidio', /tidio/i],
+  ['Intercom', /intercom/i],
+  ['Zendesk', /zendesk|zopim/i],
+  ['Crisp', /crisp\.chat/i],
+  ['Tawk.to', /tawk\.to/i],
+  ['ManyChat', /manychat/i],
+  ['Botmaker', /botmaker/i],
+  ['Landbot', /landbot/i],
+  ['HubSpot chat', /js\.usemessages|hs-scripts/i],
+  ['Drift', /js\.driftt|drift\.com/i],
+  ['LiveChat', /livechatinc/i],
+  ['Jivo', /jivosite|jivochat/i],
+  ['Chatbase', /chatbase/i],
+  ['Leadsales', /leadsales/i],
+  ['un chatbot', /chat-?bot|asistente virtual|asistente de ia|atención automática/i],
+];
+
+export function chatbotsDeHtml(html: string): string[] {
+  return CHATBOTS.filter(([, re]) => re.test(html)).map(([nombre]) => nombre);
+}
+
 /** El texto visible de un HTML, sin scripts ni estilos. */
 export function textoDeHtml(html: string): string {
   return html
@@ -119,11 +145,12 @@ export function mailsDeHtml(html: string, web?: string): string[] {
 export async function leerSitio(
   web: string,
   bajar: Buscador = bajarPagina,
-): Promise<{ texto: string; mails: string[]; paginas: string[] } | undefined> {
+): Promise<{ texto: string; mails: string[]; paginas: string[]; chatbots: string[] } | undefined> {
   const home = await bajar(web);
   if (!home) return undefined;
   let mails = mailsDeHtml(home, web);
   let texto = textoDeHtml(home);
+  const chatbots = chatbotsDeHtml(home);
   const paginas = [web];
   if (mails.length === 0) {
     const base = web.startsWith('http') ? web : `https://${web}`;
@@ -142,7 +169,7 @@ export async function leerSitio(
       if (mails.length > 0) break;
     }
   }
-  return { texto: texto.slice(0, 8000), mails, paginas };
+  return { texto: texto.slice(0, 8000), mails, paginas, chatbots };
 }
 
 /** `true` si el dominio recibe mail. Evita rebotes, que queman la casilla. */

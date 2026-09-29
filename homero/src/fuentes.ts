@@ -1,4 +1,4 @@
-import type { Rubro } from './rubros.js';
+import { zonaPorNombre, type Rubro } from './rubros.js';
 
 /** Un negocio tal como lo devuelve una fuente, antes de leer su web. */
 export interface Hallazgo {
@@ -28,7 +28,9 @@ export function fuenteGoogle(apiKey: string): Fuente {
         'x-goog-fieldmask': 'places.id,places.displayName,places.websiteUri,places.nationalPhoneNumber',
       },
       body: JSON.stringify({
-        textQuery: `${rubro.busqueda} en ${ciudad}, Argentina`,
+        // Las de la zona son partidos del conurbano: sin "Buenos Aires" Google
+        // puede irse a otro Pilar o San Miguel del pais.
+        textQuery: `${rubro.busqueda} en ${ciudad}${zonaPorNombre(ciudad) && ciudad !== 'Capital Federal' ? ', Buenos Aires' : ''}, Argentina`,
         languageCode: 'es',
         regionCode: 'AR',
         pageSize: 20,
@@ -67,7 +69,7 @@ export const fuenteOsm: Fuente = async (rubro, ciudad) => {
     .join('\n');
   const consulta = `[out:json][timeout:60];
 area["ISO3166-1"="AR"]["admin_level"="2"]->.ar;
-area["name"="${ciudad.replace(/"/g, '')}"]["boundary"="administrative"]->.c;
+area["name"="${(zonaPorNombre(ciudad)?.osm ?? ciudad).replace(/"/g, '')}"]["boundary"="administrative"]->.c;
 (
 ${filtros}
 );

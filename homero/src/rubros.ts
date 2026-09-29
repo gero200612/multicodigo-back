@@ -20,9 +20,10 @@ export const RUBROS: Rubro[] = [
     id: 'contable',
     nombre: 'estudio contable',
     busqueda: 'estudio contable',
-    osm: ['["office"="accountant"]'],
+    osm: ['["office"="accountant"]', '["office"="tax_advisor"]'],
     ideas: [
-      'un bot de WhatsApp donde los clientes mandan fotos de facturas y quedan cargadas y ordenadas solas',
+      'una aplicación donde los clientes mandan sus facturas por WhatsApp y quedan cargadas y ordenadas solas por cliente y por mes',
+      'facturación automática: las facturas de cada cliente se generan solas, sin cargarlas a mano',
       'recordatorios automáticos de vencimientos y pedido de comprobantes a cada cliente',
     ],
   },
@@ -118,18 +119,38 @@ export const RUBROS: Rubro[] = [
   },
 ];
 
-export const CIUDADES = [
-  'Ciudad Autónoma de Buenos Aires',
-  'Córdoba',
-  'Rosario',
-  'Mendoza',
-  'La Plata',
-  'Mar del Plata',
-  'San Miguel de Tucumán',
-  'Santa Fe',
-  'Salta',
-  'Neuquén',
+/**
+ * Donde se busca: Capital y zona norte, EN ORDEN de prioridad. Homero agota
+ * primero los de arriba: a igual cantidad de busquedas, gana el primero.
+ *
+ * `osm` es el nombre exacto del limite administrativo en OpenStreetMap
+ * (verificado contra Overpass); con el nombre corto no encuentra el area.
+ */
+export interface Zona {
+  nombre: string;
+  osm: string;
+}
+
+export const ZONAS: Zona[] = [
+  { nombre: 'Capital Federal', osm: 'Ciudad Autónoma de Buenos Aires' },
+  { nombre: 'Vicente López', osm: 'Partido de Vicente López' },
+  { nombre: 'San Isidro', osm: 'Partido de San Isidro' },
+  { nombre: 'San Fernando', osm: 'Partido de San Fernando' },
+  { nombre: 'Tigre', osm: 'Partido de Tigre' },
+  { nombre: 'Escobar', osm: 'Partido de Escobar' },
+  { nombre: 'Pilar', osm: 'Partido del Pilar' },
+  { nombre: 'San Miguel', osm: 'Partido de San Miguel' },
+  { nombre: 'Malvinas Argentinas', osm: 'Partido de Malvinas Argentinas' },
+  { nombre: 'José C. Paz', osm: 'Partido de José C. Paz' },
 ];
+
+export const CIUDADES = ZONAS.map((z) => z.nombre);
+
+/** La zona de la lista, o `undefined` si es una ciudad libre de /buscar. */
+export function zonaPorNombre(nombre: string): Zona | undefined {
+  const n = nombre.trim().toLowerCase();
+  return ZONAS.find((z) => z.nombre.toLowerCase() === n || z.osm.toLowerCase() === n);
+}
 
 export interface Rendimiento {
   rubro: string;
@@ -142,11 +163,12 @@ export interface Rendimiento {
  *
  * Mayormente el que mejor responde (tasa de respuesta con un previo de 1/10
  * para que un rubro con 1 de 1 no gane por suerte), y cada tanto uno cualquiera
- * para seguir aprendiendo. Los que nunca se probaron van primero.
+ * para seguir aprendiendo. Los que nunca se probaron van primero, EN ORDEN:
+ * la lista arranca por estudios contables, que es donde mejor encaja.
  */
 export function elegirRubro(stats: Rendimiento[], azar: () => number = Math.random): Rubro {
   const sinProbar = RUBROS.filter((r) => !stats.some((s) => s.rubro === r.id && s.contactados > 0));
-  if (sinProbar.length > 0) return sinProbar[Math.floor(azar() * sinProbar.length)]!;
+  if (sinProbar.length > 0) return sinProbar[0]!;
   if (azar() < 0.2) return RUBROS[Math.floor(azar() * RUBROS.length)]!;
 
   const tasa = (r: Rubro) => {
@@ -156,7 +178,7 @@ export function elegirRubro(stats: Rendimiento[], azar: () => number = Math.rand
   return [...RUBROS].sort((a, b) => tasa(b) - tasa(a))[0]!;
 }
 
-/** La ciudad menos buscada para ese rubro. */
+/** La zona menos buscada para ese rubro; si empatan, la primera de la lista. */
 export function elegirCiudad(buscadas: { ciudad: string; veces: number }[]): string {
   const veces = (c: string) => buscadas.find((b) => b.ciudad === c)?.veces ?? 0;
   return [...CIUDADES].sort((a, b) => veces(a) - veces(b))[0]!;
