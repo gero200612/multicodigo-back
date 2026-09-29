@@ -136,6 +136,8 @@ export interface Store {
   /** Las que quedaron `corriendo` por un reinicio vuelven a la cola. */
   rescatarColgadas(): Promise<number>;
   contarTareas(): Promise<{ pendientes: number; fallidas: number }>;
+  /** Cancela las pendientes de esos tipos (las da por fallidas). Devuelve cuantas. */
+  cancelarTareas(tipos: TipoDeTarea[]): Promise<number>;
 
   registrarCuenta(email: string): Promise<void>;
   primerEnvio(email: string): Promise<Date | undefined>;
@@ -281,6 +283,15 @@ export class PgStore implements Store {
   async rescatarColgadas() {
     const r = await this.pool.query(
       `UPDATE homero.tareas SET estado = 'pendiente', actualizada = now() WHERE estado = 'corriendo'`,
+    );
+    return r.rowCount ?? 0;
+  }
+
+  async cancelarTareas(tipos: TipoDeTarea[]) {
+    const r = await this.pool.query(
+      `UPDATE homero.tareas SET estado = 'fallida', ultimo_error = 'cortada por Gero', actualizada = now()
+       WHERE estado = 'pendiente' AND tipo = ANY($1)`,
+      [tipos],
     );
     return r.rowCount ?? 0;
   }

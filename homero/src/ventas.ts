@@ -197,7 +197,7 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
   });
 
   const ensayo = await ensayoActivo(deps);
-  if (ensayo) await mandarMuestra(lead.id, ensayo, deps);
+  const muestraEnviada = ensayo ? await mandarMuestra(lead.id, ensayo, deps) : false;
   if (!ensayo && (await modoActual(deps.store)) === 'auto') {
     await aprobarLead(lead.id, deps);
     return;
@@ -220,8 +220,10 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
     '',
     `— Seguimiento (a la semana, si no contesta): ${b.seguimiento}`,
     '',
-    ensayo
+    ensayo && muestraEnviada
       ? `🧪 Ensayo: te mandé a ${ensayo} el mail exactamente como le llegaría. Para probar la respuesta, contestalo desde ahí como si fueras ${lead.nombre}. Al cliente no sale nada hasta /ensayo off.`
+      : ensayo
+        ? '🧪 Ensayo: este no te lo mandé por mail porque la casilla ya llegó a su cupo de hoy (así no cae en spam). Lo ves acá. Al cliente no sale nada hasta /ensayo off.'
       : 'Para cambiar el primer mail, respondé a este mensaje con el texto nuevo.',
   ]
     .filter((l) => l !== undefined)
@@ -267,12 +269,20 @@ export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVenta
   const inicial = (await deps.store.salientesDeLead(leadId)).find((s) => s.tipo === 'inicial');
   if (!inicial) return false;
 
+  // La muestra tambien sale de la casilla nueva: cuenta para su cupo. Quince
+  // mails seguidos desde una casilla recien creada la mandan a spam, aunque
+  // vayan todos a Gero. Pasado el cupo, el mail queda solo en Telegram.
   const casilla = casillaDeLead(deps.casillas, leadId);
+  const ahora = deps.ahora();
+  const cupo = cupoDelDia(await deps.store.primerEnvio(casilla.email), ahora);
+  if ((await deps.store.enviosDesde(casilla.email, inicioDelDia(ahora))) >= cupo) return false;
+
   const { messageId } = await deps.correo.enviar(casilla, deps.remitente, {
     para: a,
     asunto: inicial.asunto,
     texto: inicial.cuerpo,
   });
+  await deps.store.registrarEnvio({ cuenta: casilla.email, para: a, asunto: inicial.asunto, messageId });
   // Para reconocer la respuesta de Gero a esta muestra como si fuera del cliente.
   if (messageId) await deps.store.guardarEstado(`muestra:${messageId}`, leadId);
   return true;

@@ -101,6 +101,15 @@ export class MemoriaStore implements Store {
       }
     return n;
   }
+  async cancelarTareas(tipos: string[]) {
+    let n = 0;
+    for (const t of this.tareas)
+      if (t.estado === 'pendiente' && tipos.includes(t.tipo)) {
+        t.estado = 'fallida';
+        n++;
+      }
+    return n;
+  }
   async contarTareas() {
     return {
       pendientes: this.tareas.filter((t) => t.estado === 'pendiente').length,

@@ -131,6 +131,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         '/buscar [rubro] [ciudad] · salgo a buscar ya',
         '/rubros · cómo responde cada rubro',
         '/ocupado 30/9 · /libre 30/9 · días sin reuniones',
+        '/cortar · cancela las búsquedas pendientes',
         '/pausa · /seguir',
         '/probar_ia · /probar_mail <destino> [1-3]',
       ].join('\n'),
@@ -248,7 +249,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     }
     await store.encolar({
       tipo: 'prospectar',
-      payload: { cantidad: 10, rubro: rubro?.id, ciudad },
+      payload: { cantidad: 3, rubro: rubro?.id, ciudad },
       requiereIa: false,
     });
     await ctx.reply(`🔎 Salgo a buscar ${rubro?.nombre ?? 'el rubro que mejor viene respondiendo'}${ciudad ? ` en ${ciudad}` : ''}. Te paso los borradores.`);
@@ -272,6 +273,15 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       await ctx.reply(ocupado ? `🚫 El ${dia} no ofrezco reuniones.` : `✅ El ${dia} vuelvo a ofrecer reuniones.`);
     });
   }
+
+  bot.command('cortar', async (ctx) => {
+    const n = await store.cancelarTareas(['prospectar', 'investigar']);
+    await ctx.reply(
+      n > 0
+        ? `✂️ Corté ${n} búsqueda(s) e investigación(es) pendientes. Lo que ya estaba escrito queda como estaba.`
+        : 'No había búsquedas pendientes.',
+    );
+  });
 
   bot.command('pausa', async (ctx) => {
     await store.guardarEstado(PAUSA_MANUAL, { desde: ahora().toISOString() });

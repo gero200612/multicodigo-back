@@ -66,9 +66,28 @@ describe('modo ensayo', () => {
     expect(tarjeta).toContain('https://www.openstreetmap.org/node/42');
     expect(tarjeta).toContain('https://estudiox.com.ar/contacto');
     expect(tarjeta).toContain('lo dejamos para más adelante');
-    // No gasta cupo ni cambia al lead.
-    expect(store.envios).toHaveLength(0);
+    // Cuenta para el cupo de la casilla (cuida que no caiga en spam) y no
+    // cambia al lead.
+    expect(store.envios).toHaveLength(1);
     expect(store.leads[0]!.estado).toBe('borrador');
+  });
+
+  it('pasado el cupo de la casilla no manda mas muestras por mail: quedan en Telegram', async () => {
+    const h = await conUnBorrador();
+    // Llena el cupo del dia (5 para una casilla nueva).
+    for (let i = 0; i < 5; i++) await h.store.registrarEnvio({ cuenta: 'sincro.ventas@gmail.com', para: 'x@x.com', asunto: 'a' });
+    const antes = h.enviados.length;
+    expect(await mandarMuestras('gero@personal.com', h.deps)).toBe(0);
+    expect(h.enviados).toHaveLength(antes);
+  });
+
+  it('/cortar cancela las busquedas e investigaciones pendientes', async () => {
+    const h = armar({ ensayo: true });
+    await h.store.encolar({ tipo: 'prospectar', payload: { cantidad: 3 }, requiereIa: false });
+    await h.store.encolar({ tipo: 'investigar', payload: { leadId: 9 }, requiereIa: true });
+    await h.store.encolar({ tipo: 'resumen_diario', payload: {}, requiereIa: false });
+    expect(await h.store.cancelarTareas(['prospectar', 'investigar'])).toBe(2);
+    expect(h.store.tareas.map((t) => t.estado)).toEqual(['fallida', 'fallida', 'pendiente']);
   });
 
   it('la tarjeta no tiene boton de aprobar y aprobar igual no hace nada', async () => {
