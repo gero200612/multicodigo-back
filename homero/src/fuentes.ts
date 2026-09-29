@@ -61,9 +61,12 @@ const SERVIDORES_OVERPASS = [
  */
 export const fuenteOsm: Fuente = async (rubro, ciudad) => {
   const filtros = rubro.osm
-    .map((f) => `nwr${f}[~"^(website|contact:website|email|contact:email)$"~"."](area.c);`)
+    // (area.c)(area.ar): dentro de la ciudad Y dentro de Argentina. Sin el
+    // segundo, "Córdoba" traia inmobiliarias de Córdoba, España.
+    .map((f) => `nwr${f}[~"^(website|contact:website|email|contact:email)$"~"."](area.c)(area.ar);`)
     .join('\n');
   const consulta = `[out:json][timeout:60];
+area["ISO3166-1"="AR"]["admin_level"="2"]->.ar;
 area["name"="${ciudad.replace(/"/g, '')}"]["boundary"="administrative"]->.c;
 (
 ${filtros}

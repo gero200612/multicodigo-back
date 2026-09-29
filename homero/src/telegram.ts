@@ -26,6 +26,22 @@ export interface Acciones {
   mandarMuestras(a: string): Promise<number>;
   /** A donde van las muestras ahora, o nada si el ensayo esta apagado. */
   ensayo(): Promise<string | undefined>;
+  /** Apaga el ensayo y libera los horarios de prueba. Devuelve cuantos. */
+  apagarEnsayo(): Promise<number>;
+  /** Marca o desmarca un horario para ofrecer. Devuelve los botones nuevos. */
+  alternarHorario(leadId: number, i: number): Promise<Boton[] | undefined>;
+  armarRespuesta(leadId: number): Promise<'encolada' | 'sin_horarios' | 'vencida'>;
+  noResponder(leadId: number): Promise<void>;
+}
+
+/** Hasta tres botones van en una fila; con mas, uno por renglon. */
+export function teclado(botones: Boton[]): InlineKeyboard {
+  const t = new InlineKeyboard();
+  botones.forEach((b, i) => {
+    t.text(b.texto, b.datos);
+    if (botones.length > 3 && i < botones.length - 1) t.row();
+  });
+  return t;
 }
 
 /**
@@ -86,14 +102,12 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   const proponer = async (texto: string, botones: Boton[]) => {
     if (config.chatId === undefined) return undefined;
     const partes = partir(texto);
-    const teclado = new InlineKeyboard();
-    for (const b of botones) teclado.text(b.texto, b.datos);
     let ultimo: number | undefined;
     for (const [i, parte] of partes.entries()) {
       const m = await bot.api.sendMessage(
         config.chatId,
         parte,
-        i === partes.length - 1 ? { reply_markup: teclado } : {},
+        i === partes.length - 1 ? { reply_markup: teclado(botones) } : {},
       );
       ultimo = m.message_id;
     }
@@ -181,8 +195,11 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   bot.command('ensayo', async (ctx) => {
     const pedido = (ctx.match ?? '').trim();
     if (pedido.toLowerCase() === 'off') {
-      await store.guardarEstado(ENSAYO, { apagado: true });
-      await ctx.reply('🚀 Ensayo apagado. Desde ahora lo que apruebes le llega al cliente.');
+      const liberadas = (await acciones?.apagarEnsayo()) ?? 0;
+      await ctx.reply(
+        '🚀 Ensayo apagado. Desde ahora lo que apruebes le llega al cliente.' +
+          (liberadas > 0 ? `\nLiberé ${liberadas} horario(s) que habían tomado las pruebas.` : ''),
+      );
       return;
     }
     if (pedido && !/^\S+@\S+\.\S+$/.test(pedido)) {
@@ -304,14 +321,44 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
 
   // Los botones de las tarjetas.
   bot.on('callback_query:data', async (ctx) => {
-    const [accion, crudo] = ctx.callbackQuery.data.split(':');
+    const [accion, crudo, extra] = ctx.callbackQuery.data.split(':');
     const id = Number(crudo);
     if (!acciones || !Number.isInteger(id)) {
       await ctx.answerCallbackQuery({ text: 'No entendí ese botón.' });
       return;
     }
+    // Marcar un horario no cierra la tarjeta: se redibujan los botones.
+    if (accion === 'ho') {
+      const botones = await acciones.alternarHorario(id, Number(extra));
+      if (!botones) {
+        await ctx.answerCallbackQuery({ text: 'Esta elección ya no está vigente.' });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageReplyMarkup({ reply_markup: teclado(botones) }).catch(() => undefined);
+      return;
+    }
+    if (accion === 'ar') {
+      const r = await acciones.armarRespuesta(id);
+      if (r === 'sin_horarios') {
+        await ctx.answerCallbackQuery({ text: 'Marcá al menos un horario.' });
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: r === 'encolada' ? '✍️ La escribo y te la paso.' : 'Ya no está vigente.' });
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
+      if (r === 'encolada') {
+        await ctx.reply('✍️ Escribo la respuesta con esos horarios y te la paso para enviar.', {
+          reply_parameters: { message_id: ctx.callbackQuery.message!.message_id },
+        }).catch(() => undefined);
+      }
+      return;
+    }
     let resultado: string;
     switch (accion) {
+      case 'nr':
+        await acciones.noResponder(id);
+        resultado = '🗑 No le respondo.';
+        break;
       case 'ap':
         resultado = (await acciones.aprobarLead(id)) ? '✅ Aprobado, sale en el próximo turno.' : 'Ya estaba decidido.';
         break;

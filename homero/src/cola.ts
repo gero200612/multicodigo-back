@@ -9,6 +9,7 @@ import {
   investigar,
   prospectar,
   recordatorio,
+  redactarRespuesta,
   resumenDiario,
   type DepsDeVentas,
 } from './ventas.js';
@@ -140,5 +141,7 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       return recordatorio(tarea.payload, deps);
     case 'resumen_diario':
       return resumenDiario(deps);
+    case 'redactar_respuesta':
+      return redactarRespuesta(tarea.payload, deps);
   }
 }

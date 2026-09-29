@@ -2,8 +2,9 @@ import { z } from 'zod';
 import {
   diaArgentino,
   finDe,
+  horarioCorto,
   horarioEnCastellano,
-  horariosParaOfrecer,
+  horariosLibres,
   invitacionIcs,
   linkDeReunion,
   sigueLibre,
@@ -15,6 +16,7 @@ import { horaArgentina, inicioDelDia, relojArgentino, sumarDiasHabiles } from '.
 import {
   leerAnalisis,
   leerBorrador,
+  promptDeAnalisis,
   promptDeBorrador,
   promptDeRespuesta,
   type Analisis,
@@ -264,12 +266,23 @@ export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVenta
   ]);
 
   const casilla = casillaDeLead(deps.casillas, leadId);
-  await deps.correo.enviar(casilla, deps.remitente, {
+  const { messageId } = await deps.correo.enviar(casilla, deps.remitente, {
     para: a,
     asunto: `[ENSAYO] ${inicial.asunto}`,
-    texto: [...encabezado, '', inicial.cuerpo, ...cola].join('\n'),
+    texto: [...encabezado, '', inicial.cuerpo, ...cola, '', '──────── para probar la respuesta ────────', 'Respondé este mail como si fueras el cliente y te muestro qué haría.'].join('\n'),
   });
+  // Para reconocer la respuesta de Gero a esta muestra como si fuera del cliente.
+  if (messageId) await deps.store.guardarEstado(`muestra:${messageId}`, leadId);
   return true;
+}
+
+/** Apaga el ensayo y libera los horarios que tomaron las pruebas. */
+export async function apagarEnsayo(deps: Pick<DepsDeVentas, 'store'>): Promise<number> {
+  const ids = (await deps.store.leerEstado<number[]>('reuniones_de_ensayo')) ?? [];
+  for (const id of ids) await deps.store.cancelarReunion(id);
+  await deps.store.guardarEstado('reuniones_de_ensayo', null);
+  await deps.store.guardarEstado(ENSAYO, { apagado: true });
+  return ids.length;
 }
 
 /** Manda la muestra de todos los borradores que esperan aprobacion. */
@@ -383,6 +396,15 @@ export async function enviarSaliente(
     return;
   }
 
+  // En ensayo lo frio no sale nunca, y lo demas (respuestas, confirmaciones,
+  // recordatorios) le llega a Gero en vez de al cliente.
+  const ensayo = await ensayoActivo(deps);
+  if (ensayo && frio) {
+    await deps.store.actualizarSaliente(s.id, { estado: 'cancelado' });
+    return;
+  }
+  const para = ensayo ?? lead.email;
+
   const casilla = deps.casillas.find((c) => c.email === s.casilla) ?? casillaDeLead(deps.casillas, lead.id);
   let enRespuestaA = s.enRespuestaA;
   if (s.tipo === 'seguimiento') {
@@ -401,7 +423,7 @@ export async function enviarSaliente(
         descripcion: `Charla de 30 minutos sobre ${lead.investigacion?.idea ?? 'automatizar procesos'}.`,
         link: r.link,
         organizador: casilla.email,
-        invitados: [lead.email, ...(deps.emailGero ? [deps.emailGero] : [])],
+        invitados: [para, ...(deps.emailGero && deps.emailGero !== para ? [deps.emailGero] : [])],
       });
     }
   }
@@ -410,12 +432,12 @@ export async function enviarSaliente(
     deps,
     casilla,
     {
-      para: lead.email,
-      asunto: s.asunto,
+      para,
+      asunto: ensayo ? `[ENSAYO] ${s.asunto.replace(/\[ENSAYO\]\s*/g, '')}` : s.asunto,
       texto: s.cuerpo,
       enRespuestaA,
       ics,
-      cc: s.tipo === 'confirmacion' ? deps.emailGero : undefined,
+      cc: s.tipo === 'confirmacion' && !ensayo && deps.emailGero !== para ? deps.emailGero : undefined,
     },
     { enHilo: !frio },
   );
@@ -482,61 +504,73 @@ export function mensajeDeRespuesta(r: Recibido, a: Analisis, lead?: Lead): strin
 }
 
 /**
- * Entiende una respuesta y actua: corta la secuencia, anota bajas, contesta
- * con horarios y, si eligio uno, agenda la reunion.
+ * Entiende una respuesta y actua: corta el seguimiento, anota bajas, y si
+ * esta interesado le pasa a Gero los horarios libres para que elija cuales
+ * ofrecer. Si eligio uno de los ofrecidos, reserva.
+ *
+ * En ensayo, una respuesta de Gero a una muestra se trata como si fuera del
+ * cliente: asi se prueba el circuito entero sin escribirle a nadie. Lo que
+ * "le mandaria" al cliente le llega a Gero, y el negocio no cambia de estado.
  */
 export async function atenderRespuesta(r: Recibido, deps: DepsDeVentas): Promise<void> {
   const de = direccion(r.de);
-  let lead = await deps.store.leadPorEmail(de);
+  const ensayo = await ensayoActivo(deps);
+  const esEnsayo = ensayo !== undefined && de === ensayo;
+
+  let lead = esEnsayo ? undefined : await deps.store.leadPorEmail(de);
   if (!lead && r.enRespuestaA) {
+    const deMuestra = esEnsayo ? await deps.store.leerEstado<number>(`muestra:${r.enRespuestaA}`) : undefined;
     // Le escribimos a info@ y contesto juan@: el hilo dice de quien es.
-    const nuestro = await deps.store.salientePorMessageId(r.enRespuestaA);
-    if (nuestro) lead = await deps.store.lead(nuestro.leadId);
+    const nuestro = deMuestra ? undefined : await deps.store.salientePorMessageId(r.enRespuestaA);
+    const leadId = deMuestra ?? nuestro?.leadId;
+    if (leadId) lead = await deps.store.lead(leadId);
     // Desde aca se le contesta a quien respondio, que es quien quiere hablar.
-    if (lead) {
+    if (lead && !esEnsayo) {
       await deps.store.actualizarLead(lead.id, { email: de });
       lead = { ...lead, email: de };
     }
   }
+  // En ensayo, Gero escribiendo por fuera de un hilo no es un cliente.
+  if (esEnsayo && !lead) {
+    await deps.avisar(`🧪 Me escribiste desde ${de} pero no respondiendo a una muestra. Respondé el mail [ENSAYO] para probar.`);
+    return;
+  }
+  const marcar = async (estado: Lead['estado']) => {
+    if (lead && !esEnsayo) await deps.store.actualizarLead(lead.id, { estado });
+  };
+
   const ahora = deps.ahora();
   const enviados = lead ? (await deps.store.salientesDeLead(lead.id)).filter((s) => s.estado === 'enviado') : [];
   const ofrecidos = lead ? await deps.store.oferta(lead.id) : undefined;
   const tomados = (await deps.store.reunionesDesde(new Date(ahora.getTime() - 3_600_000))).map((x) => x.inicio);
   const ocupados = await deps.store.diasOcupados();
-  const libres = horariosParaOfrecer(ahora, tomados, ocupados);
 
   const a = leerAnalisis(
-    await deps.pedirIa(
-      promptDeRespuesta(r, {
-        lead,
-        loQueLeMandamos: enviados.at(-1)?.cuerpo,
-        ofrecidos,
-        libres,
-        firma: deps.firma,
-      }),
-    ),
+    await deps.pedirIa(promptDeAnalisis(r, { lead, loQueLeMandamos: enviados.at(-1)?.cuerpo, ofrecidos })),
   );
   if (a.tipo === 'automatico') return;
-  if (lead) await deps.store.cancelarSeguimientos(lead.id);
+  if (lead && !esEnsayo) await deps.store.cancelarSeguimientos(lead.id);
+  const prefijo = esEnsayo ? '🧪 ENSAYO · ' : '';
 
   if (a.tipo === 'baja') {
-    await deps.store.agregarBaja(de, 'la pidió por mail');
-    if (lead) await deps.store.actualizarLead(lead.id, { estado: 'baja' });
-    await deps.avisar(mensajeDeRespuesta(r, a, lead));
+    if (!esEnsayo) await deps.store.agregarBaja(de, 'la pidió por mail');
+    await marcar('baja');
+    await deps.avisar(prefijo + mensajeDeRespuesta(r, a, lead) + '\n\nNo le escribo nunca más.');
     return;
   }
   if (a.tipo === 'no_interesado') {
-    if (lead) await deps.store.actualizarLead(lead.id, { estado: 'cerrado' });
-    await deps.avisar(mensajeDeRespuesta(r, a, lead));
+    await marcar('cerrado');
+    await deps.avisar(prefijo + mensajeDeRespuesta(r, a, lead));
     return;
   }
 
   if (a.tipo === 'eligio_horario' && lead && ofrecidos && a.horario_elegido) {
     const elegido = ofrecidos[a.horario_elegido - 1];
-    if (elegido && sigueLibre(elegido, tomados, ocupados) && (await reservar(lead, elegido, r, deps))) return;
+    if (elegido && sigueLibre(elegido, tomados, ocupados) && (await reservar(lead, elegido, r, deps, esEnsayo))) return;
     await deps.avisar(
-      `${mensajeDeRespuesta(r, a, lead)}\n\n⚠️ Eligió ${elegido ? horarioEnCastellano(elegido) : 'un horario'} pero ya no está libre. Respondele vos con otro.`,
+      `${prefijo}${mensajeDeRespuesta(r, a, lead)}\n\n⚠️ Eligió ${elegido ? horarioEnCastellano(elegido) : 'un horario'} pero ya no está libre. Te paso otros para que elijas.`,
     );
+    await ofrecerEleccion(lead, r, a, deps, prefijo);
     return;
   }
 
@@ -552,32 +586,109 @@ export async function atenderRespuesta(r: Recibido, deps: DepsDeVentas): Promise
     });
     lead = id ? await deps.store.lead(id) : undefined;
   }
-  if (lead) await deps.store.actualizarLead(lead.id, { estado: 'respondio' });
+  await marcar('respondio');
 
-  const resumen = mensajeDeRespuesta(r, a, lead);
-  if (!lead || !a.respuesta || (a.tipo !== 'interesado' && a.tipo !== 'pregunta')) {
-    await deps.avisar(resumen);
+  if (!lead || (a.tipo !== 'interesado' && a.tipo !== 'pregunta')) {
+    await deps.avisar(prefijo + mensajeDeRespuesta(r, a, lead));
     return;
   }
+  await ofrecerEleccion(lead, r, a, deps, prefijo);
+}
 
-  await deps.store.guardarOferta(lead.id, libres);
-  const auto = (await modoActual(deps.store)) === 'auto';
+// ------------------------------------------------------------ eleccion de horarios
+
+interface Eleccion {
+  recibido: Recibido;
+  libres: string[];
+  elegidos: number[];
+}
+
+const claveDeEleccion = (leadId: number) => `eleccion:${leadId}`;
+
+/** Los botones: un horario por renglon (marcado o no) y las dos acciones. */
+export function botonesDeEleccion(leadId: number, libres: Date[], elegidos: number[]): Boton[] {
+  return [
+    ...libres.map((h, i) => ({
+      texto: `${elegidos.includes(i) ? '☑️' : '⬜'} ${horarioCorto(h)}`,
+      datos: `ho:${leadId}:${i}`,
+    })),
+    { texto: '✍️ Armar respuesta', datos: `ar:${leadId}` },
+    { texto: '🗑 No responder', datos: `nr:${leadId}` },
+  ];
+}
+
+/**
+ * Le pasa a Gero el resumen y los horarios libres de la agenda para que marque
+ * cuales ofrecer. La respuesta se escribe recien cuando toca "Armar respuesta".
+ */
+async function ofrecerEleccion(lead: Lead, r: Recibido, a: Analisis, deps: DepsDeVentas, prefijo: string) {
+  const ahora = deps.ahora();
+  const tomados = (await deps.store.reunionesDesde(new Date(ahora.getTime() - 3_600_000))).map((x) => x.inicio);
+  const libres = horariosLibres(ahora, tomados, await deps.store.diasOcupados());
+  await deps.store.guardarEstado(claveDeEleccion(lead.id), {
+    recibido: r,
+    libres: libres.map((h) => h.toISOString()),
+    elegidos: [],
+  } satisfies Eleccion);
+  await deps.proponer(
+    `${prefijo}${mensajeDeRespuesta(r, a, lead)}\n\n🗓 Estos horarios están libres en tu agenda. Marcá los que quieras ofrecerle y tocá ✍️ Armar respuesta.`,
+    botonesDeEleccion(lead.id, libres, []),
+  );
+}
+
+/** Marca o desmarca un horario. Devuelve los botones nuevos. */
+export async function alternarHorario(leadId: number, i: number, deps: Pick<DepsDeVentas, 'store'>) {
+  const e = await deps.store.leerEstado<Eleccion>(claveDeEleccion(leadId));
+  if (!e || i < 0 || i >= e.libres.length) return undefined;
+  e.elegidos = e.elegidos.includes(i) ? e.elegidos.filter((x) => x !== i) : [...e.elegidos, i].sort();
+  await deps.store.guardarEstado(claveDeEleccion(leadId), e);
+  return botonesDeEleccion(leadId, e.libres.map((h) => new Date(h)), e.elegidos);
+}
+
+export async function armarRespuesta(
+  leadId: number,
+  deps: Pick<DepsDeVentas, 'store'>,
+): Promise<'encolada' | 'sin_horarios' | 'vencida'> {
+  const e = await deps.store.leerEstado<Eleccion>(claveDeEleccion(leadId));
+  if (!e) return 'vencida';
+  if (e.elegidos.length === 0) return 'sin_horarios';
+  await deps.store.encolar({ tipo: 'redactar_respuesta', payload: { leadId }, requiereIa: true });
+  return 'encolada';
+}
+
+export async function noResponder(leadId: number, deps: Pick<DepsDeVentas, 'store'>): Promise<void> {
+  await deps.store.guardarEstado(claveDeEleccion(leadId), null);
+}
+
+/** Escribe la respuesta con los horarios que marco Gero y se la pasa para enviar. */
+export async function redactarRespuesta(payload: unknown, deps: DepsDeVentas): Promise<void> {
+  const { leadId } = z.object({ leadId: z.number() }).parse(payload);
+  const e = await deps.store.leerEstado<Eleccion>(claveDeEleccion(leadId));
+  const lead = await deps.store.lead(leadId);
+  if (!e || !lead) return;
+  const horarios = e.elegidos.map((i) => new Date(e.libres[i]!));
+  const r = { ...e.recibido, recibidoEn: new Date(e.recibido.recibidoEn) };
+  const enviados = (await deps.store.salientesDeLead(lead.id)).filter((s) => s.estado === 'enviado');
+
+  const texto = (
+    await deps.pedirIa(
+      promptDeRespuesta(r, { lead, loQueLeMandamos: enviados.at(-1)?.cuerpo, horarios, firma: deps.firma }),
+    )
+  ).trim();
+  await deps.store.guardarOferta(lead.id, horarios);
   const id = await deps.store.crearSaliente({
     leadId: lead.id,
     tipo: 'respuesta',
     paso: 0,
     casilla: r.cuenta,
     asunto: conRe(r.asunto),
-    cuerpo: a.respuesta,
+    cuerpo: texto,
     enRespuestaA: r.messageId,
   });
-  if (auto) {
-    await aprobarSaliente(id, deps);
-    await deps.avisar(`${resumen}\n\n↩️ Le contesté:\n${a.respuesta}`);
-    return;
-  }
+  await deps.store.guardarEstado(claveDeEleccion(leadId), null);
+  const ensayo = await ensayoActivo(deps);
   const msg = await deps.proponer(
-    `${resumen}\n\n↩️ Respuesta propuesta:\n${a.respuesta}\n\nPara cambiarla, respondé a este mensaje con el texto nuevo.`,
+    `↩️ Respuesta para ${lead.nombre}${ensayo ? ' (🧪 ensayo: te llega a vos)' : ''}:\n\n${texto}\n\nPara cambiarla, respondé a este mensaje con el texto nuevo.`,
     [
       { texto: '📤 Enviar', datos: `en:${id}` },
       { texto: '🗑 No enviar', datos: `no:${id}` },
@@ -592,11 +703,23 @@ export async function atenderRespuesta(r: Recibido, deps: DepsDeVentas): Promise
  * Nada sale sin su OK, tampoco esto: el horario queda tomado para que nadie
  * mas lo agarre, y si Gero toca "No enviar" se libera.
  */
-export async function reservar(lead: Lead, inicio: Date, r: Recibido, deps: DepsDeVentas): Promise<boolean> {
+export async function reservar(
+  lead: Lead,
+  inicio: Date,
+  r: Recibido,
+  deps: DepsDeVentas,
+  esEnsayo = false,
+): Promise<boolean> {
   const link = linkDeReunion();
   const reunionId = await deps.store.crearReunion({ leadId: lead.id, inicio, fin: finDe(inicio), link });
   if (!reunionId) return false;
-  await deps.store.actualizarLead(lead.id, { estado: 'reunion' });
+  if (esEnsayo) {
+    // Se cancelan solas con /ensayo off: no pueden quedar tapando la agenda.
+    const previas = (await deps.store.leerEstado<number[]>('reuniones_de_ensayo')) ?? [];
+    await deps.store.guardarEstado('reuniones_de_ensayo', [...previas, reunionId]);
+  } else {
+    await deps.store.actualizarLead(lead.id, { estado: 'reunion' });
+  }
 
   const cuerpo = [
     `¡Genial! Quedamos el ${horarioEnCastellano(inicio)} (hora de Argentina). Te mandé la invitación para que te quede en el calendario.`,
@@ -639,7 +762,7 @@ export async function reservar(lead: Lead, inicio: Date, r: Recibido, deps: Deps
 
   const tarjeta = await deps.proponer(
     [
-      `📅 ELIGIÓ HORARIO: ${lead.nombre}`,
+      `${esEnsayo ? '🧪 ENSAYO · ' : ''}📅 ELIGIÓ HORARIO: ${lead.nombre}`,
       `Cuándo: ${horarioEnCastellano(inicio)} (ya lo reservé)`,
       `Link: ${link}`,
       lead.investigacion ? `Qué hacen: ${lead.investigacion.resumen_empresa}` : undefined,

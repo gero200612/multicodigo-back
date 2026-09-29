@@ -15,7 +15,7 @@ Claude y su propio esquema (`homero.*`) en la misma base de Supabase.
 | Durante el día | Lee la web de cada uno, consigue el mail, chequea que el dominio reciba mail y escribe el mail inicial y un seguimiento. Te pasa la tarjeta para aprobar |
 | 9 a 19 (días hábiles) | Manda los aprobados separados entre 4 y 12 minutos y desparramados en la ventana. Respeta el cupo de calentamiento de cada casilla |
 | A la semana (5 días hábiles) | UN solo seguimiento en el mismo hilo, solo si no contestó. Después, nada más |
-| Cada 10 min | Lee las 3 bandejas. Si alguien contesta: corta los seguimientos, te manda quién es y qué dijo, y te propone la respuesta con 3 horarios |
+| Cada 10 min | Lee las bandejas. Si alguien contesta: corta el seguimiento, te manda quién es, qué hace la empresa y qué dijo, y te muestra los horarios libres de tu agenda para que marques cuáles ofrecer. Con eso escribe la respuesta y te la pasa para enviar |
 | Cuando elige horario | Agenda, le manda la invitación (.ics) con link de Jitsi (y te copia), te avisa con el resumen de la empresa |
 | 2 h antes | Le recuerda al cliente por mail (menos ausencias) |
 | 30 min antes | Te manda por Telegram el resumen para entrar preparado |
@@ -23,7 +23,7 @@ Claude y su propio esquema (`homero.*`) en la misma base de Supabase.
 
 Lo que se hizo pensando en **más respuestas**:
 - mails cortos (≤90 palabras), con algo específico de la web del negocio en la primera línea, una sola idea concreta y una sola pregunta al final;
-- sin links ni adjuntos en los mails en frío (van a spam), firma de persona, salida fácil ("respondé no");
+- sin links ni adjuntos en los mails en frío (van a spam), firma de persona; si alguien pide que no le escriban, Homero lo entiende de su respuesta y no le escribe más;
 - un seguimiento a la semana en el mismo hilo (muchas respuestas llegan recién ahí);
 - aprende qué rubro responde mejor y le da más volumen;
 - chequeo de MX antes de escribir, freno de la casilla si rebota más del 5%: cuida la reputación de las casillas;

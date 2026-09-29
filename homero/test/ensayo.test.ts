@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { correrSiguiente } from '../src/cola.js';
 import { linkDeFicha } from '../src/fuentes.js';
-import { aprobarLead, ENSAYO, ensayoActivo, mandarMuestras } from '../src/ventas.js';
+import type { Recibido } from '../src/store.js';
+import {
+  alternarHorario,
+  apagarEnsayo,
+  aprobarLead,
+  aprobarSaliente,
+  armarRespuesta,
+  ENSAYO,
+  ensayoActivo,
+  mandarMuestras,
+} from '../src/ventas.js';
 import { armar } from './armar.js';
 
 const borrador = JSON.stringify({
@@ -67,6 +77,63 @@ describe('modo ensayo', () => {
     const h = await conUnBorrador();
     expect(await mandarMuestras('gero200612@gmail.com', h.deps)).toBe(1);
     expect(h.enviados.at(-1)!.para).toBe('gero200612@gmail.com');
+  });
+
+  it('respondiendo la muestra se prueba el circuito entero, y todo le llega a Gero', async () => {
+    const h = await conUnBorrador();
+    const vaciar = async () => {
+      for (let i = 0; i < 20 && (await correrSiguiente(h.deps)); i++);
+    };
+    const deGero = (cuerpo: string, enRespuestaA: string): Recibido => ({
+      cuenta: 'sincro.ventas@gmail.com',
+      messageId: `<g${Math.random()}@gmail>`,
+      de: 'Geronimo <gero@personal.com>',
+      asunto: 'Re: [ENSAYO] facturas del estudio',
+      cuerpo,
+      recibidoEn: new Date(),
+      enRespuestaA,
+    });
+
+    // 1. Gero contesta la muestra como si fuera el estudio.
+    h.deps.pedirIa = async () =>
+      JSON.stringify({ tipo: 'interesado', empresa: 'Estudio X', resumen: 'Quiere verlo', sugerencia: 'Ofrecer' });
+    await h.store.encolar({ tipo: 'resumir_respuesta', payload: deGero('Me interesa, contame', '<m1@x>'), requiereIa: true });
+    await vaciar();
+    const eleccion = h.tarjetas.at(-1)!;
+    expect(eleccion.texto).toContain('🧪 ENSAYO');
+    expect(eleccion.texto).toContain('Qué hacen: Estudio contable en Rosario');
+    // El negocio real no cambia de estado ni recibe el mail de Gero.
+    expect(h.store.leads[0]).toMatchObject({ estado: 'borrador', email: 'info@estudiox.com.ar' });
+
+    // 2. Elige un horario y arma la respuesta.
+    await alternarHorario(1, 1, h.deps);
+    await armarRespuesta(1, h.deps);
+    h.deps.pedirIa = async () => 'Hola, ¿te sirve el miércoles a las 15?';
+    await vaciar();
+    await aprobarSaliente(Number(h.tarjetas.at(-1)!.datos[0]!.slice(3)), h.deps);
+    await vaciar();
+    const resp = h.enviados.at(-1)!;
+    expect(resp.para).toBe('gero@personal.com');
+    expect(resp.asunto.startsWith('[ENSAYO]')).toBe(true);
+    const idDeLaRespuesta = h.store.salientes.find((s) => s.tipo === 'respuesta')!.messageId!;
+
+    // 3. Gero elige el horario: reserva, y la confirmacion con la invitacion le llega a el.
+    h.deps.pedirIa = async () =>
+      JSON.stringify({ tipo: 'eligio_horario', empresa: 'Estudio X', resumen: 'El 1', sugerencia: '-', horario_elegido: 1 });
+    await h.store.encolar({ tipo: 'resumir_respuesta', payload: deGero('Dale, el miércoles', idDeLaRespuesta), requiereIa: true });
+    await vaciar();
+    expect(h.tarjetas.at(-1)!.texto).toContain('🧪 ENSAYO · 📅 ELIGIÓ HORARIO');
+    await aprobarSaliente(Number(h.tarjetas.at(-1)!.datos[0]!.slice(3)), h.deps);
+    await vaciar();
+    const conf = h.enviados.at(-1)!;
+    expect(conf.para).toBe('gero@personal.com');
+    expect(conf.ics).toContain('mailto:gero@personal.com');
+    expect(conf.ics).not.toContain('info@estudiox.com.ar');
+    expect(h.store.leads[0]!.estado).toBe('borrador');
+
+    // 4. Al apagar el ensayo, el horario de prueba se libera.
+    expect(await apagarEnsayo(h.deps)).toBe(1);
+    expect(await h.store.reunionesDesde(new Date(0))).toHaveLength(0);
   });
 
   it('el link de la ficha sale para OSM y para Google', () => {

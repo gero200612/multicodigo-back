@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { correrSiguiente } from '../src/cola.js';
 import type { Recibido } from '../src/store.js';
-import { aprobarLead, aprobarSaliente, descartarSaliente, MODO, planificar, procesarRebote } from '../src/ventas.js';
+import {
+  alternarHorario,
+  aprobarLead,
+  aprobarSaliente,
+  armarRespuesta,
+  descartarSaliente,
+  MODO,
+  planificar,
+  procesarRebote,
+} from '../src/ventas.js';
 import { armar, casilla } from './armar.js';
 
 const borrador = JSON.stringify({
@@ -113,29 +122,50 @@ async function contactadoYRespondio(analisis: object) {
 }
 
 describe('cuando responden', () => {
-  it('un interesado corta los seguimientos y Gero recibe la respuesta propuesta con 3 horarios', async () => {
+  it('un interesado corta el seguimiento y Gero elige los horarios antes de que se escriba la respuesta', async () => {
     const h = await contactadoYRespondio({
       tipo: 'interesado',
       empresa: 'La Distri',
       resumen: 'Quiere ver cómo sería',
       sugerencia: 'Ofrecer reunión',
-      respuesta: 'Buenísimo, ¿te sirve alguno de estos horarios?',
     });
     await h.store.encolar({ tipo: 'resumir_respuesta', payload: respuesta('Me interesa'), requiereIa: true });
     await vaciar(h.deps);
 
     expect(h.store.leads[0]!.estado).toBe('respondio');
     expect(h.store.salientes.filter((s) => s.tipo === 'seguimiento').every((s) => s.estado === 'cancelado')).toBe(true);
-    expect(h.store.ofertas.get(1)).toHaveLength(3);
+    // Todavia no se escribio ninguna respuesta: primero elige Gero.
+    expect(h.store.salientes.some((s) => s.tipo === 'respuesta')).toBe(false);
+    const eleccion = h.tarjetas.at(-1)!;
+    expect(eleccion.texto).toContain('Qué hacen: Distribuidora de bebidas en Rosario');
+    expect(eleccion.datos.filter((d) => d.startsWith('ho:'))).toHaveLength(6);
+
+    // Sin marcar nada no arma.
+    expect(await armarRespuesta(1, h.deps)).toBe('sin_horarios');
+    const botones = await alternarHorario(1, 0, h.deps);
+    expect(botones![0]!.texto.startsWith('☑️')).toBe(true);
+    await alternarHorario(1, 2, h.deps);
+    expect(await armarRespuesta(1, h.deps)).toBe('encolada');
+
+    h.deps.pedirIa = async (p) => {
+      expect(p).toContain('miércoles 30/9 a las 12:30');
+      expect(p).toContain('miércoles 30/9 a las 18:00');
+      expect(p).not.toContain('a las 15:00');
+      return 'Hola Ana, ¿te sirve el miércoles a las 12:30 o a las 18?';
+    };
+    await vaciar(h.deps);
     const tarjeta = h.tarjetas.at(-1)!;
-    expect(tarjeta.texto).toContain('Qué hacen: Distribuidora de bebidas en Rosario');
     expect(tarjeta.datos[0]).toMatch(/^en:/);
+    expect(h.store.ofertas.get(1)).toHaveLength(2);
 
     // Gero toca Enviar: sale en el hilo aunque sean las 22hs.
     h.mover(new Date('2026-09-30T01:00:00Z'));
     await aprobarSaliente(Number(tarjeta.datos[0]!.slice(3)), h.deps);
     await vaciar(h.deps);
-    expect(h.enviados.at(-1)).toMatchObject({ texto: 'Buenísimo, ¿te sirve alguno de estos horarios?' });
+    expect(h.enviados.at(-1)).toMatchObject({
+      para: 'ventas@ladistri.com.ar',
+      texto: 'Hola Ana, ¿te sirve el miércoles a las 12:30 o a las 18?',
+    });
   });
 
   async function eligioElPrimero() {

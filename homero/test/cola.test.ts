@@ -63,7 +63,7 @@ describe('la cola frente al limite de Claude', () => {
   });
 
   it('cuando pasa el reset levanta la pausa, avisa y retoma la tarea', async () => {
-    const { store, deps, avisos, mover } = armar({ pedirIa: async () => resumenOk });
+    const { store, deps, avisos, tarjetas, mover } = armar({ pedirIa: async () => resumenOk });
     await store.guardarEstado(PAUSA_IA, { hasta: '2026-09-29T22:51:00.000Z', motivo: 'limite' });
     await store.encolar({
       tipo: 'resumir_respuesta',
@@ -78,7 +78,7 @@ describe('la cola frente al limite de Claude', () => {
     expect(await store.leerEstado(PAUSA_IA)).toBeUndefined();
     expect(store.tareas[0]!.estado).toBe('lista');
     expect(avisos.some((a) => a.includes('Vuelvo a usar Claude'))).toBe(true);
-    expect(avisos.some((a) => a.includes('RESPONDIÓ') && a.includes('Distribuidora'))).toBe(true);
+    expect(tarjetas.some((t) => t.texto.includes('RESPONDIÓ') && t.texto.includes('Distribuidora'))).toBe(true);
   });
 });
 

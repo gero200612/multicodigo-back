@@ -14,8 +14,12 @@ import {
   aprobarSaliente,
   descartarLead,
   descartarSaliente,
+  alternarHorario,
+  apagarEnsayo,
+  armarRespuesta,
   ensayoActivo,
   mandarMuestras,
+  noResponder,
   planificar,
   procesarRebote,
 } from './ventas.js';
@@ -65,6 +69,10 @@ async function main() {
     descartarSaliente: (id) => descartarSaliente(id, deps),
     mandarMuestras: (a) => mandarMuestras(a, deps),
     ensayo: () => ensayoActivo(deps),
+    apagarEnsayo: () => apagarEnsayo(deps),
+    alternarHorario: (id, i) => alternarHorario(id, i, deps),
+    armarRespuesta: (id) => armarRespuesta(id, deps),
+    noResponder: (id) => noResponder(id, deps),
   });
 
   let corriendo = true;

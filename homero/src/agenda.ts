@@ -64,6 +64,35 @@ export function horariosParaOfrecer(
   return libres;
 }
 
+/**
+ * Los horarios libres para que Gero elija cuales ofrecer: tres por dia habil
+ * (12:30, 15 y 18, o la siguiente media hora libre), desde mañana.
+ */
+export function horariosLibres(ahora: Date, tomados: Date[], ocupados: string[], cantidad = 6): Date[] {
+  const preferidos = [12 * 60 + 30, 15 * 60, 18 * 60];
+  const choca = (d: Date) =>
+    tomados.some((t) => Math.abs(t.getTime() - d.getTime()) < DURACION_MIN * 60_000);
+  const libres: Date[] = [];
+  let dia = new Date(ahora.getTime() - HORAS_DE_DIFERENCIA * HORA + 24 * HORA);
+  for (let vueltas = 0; libres.length < cantidad && vueltas < 20; vueltas++) {
+    const esHabil = dia.getUTCDay() >= 1 && dia.getUTCDay() <= 5;
+    if (esHabil && !ocupados.includes(dia.toISOString().slice(0, 10))) {
+      for (const quiero of preferidos) {
+        if (libres.length >= cantidad) break;
+        for (let m = quiero; m <= ULTIMA; m += DURACION_MIN) {
+          const cand = aInstante(dia, m);
+          if (!choca(cand) && !libres.some((l) => l.getTime() === cand.getTime())) {
+            libres.push(cand);
+            break;
+          }
+        }
+      }
+    }
+    dia = new Date(dia.getTime() + 24 * HORA);
+  }
+  return libres;
+}
+
 /** `true` si el horario sigue dentro de la franja y no choca con nada. */
 export function sigueLibre(inicio: Date, tomados: Date[], ocupados: string[]): boolean {
   const local = new Date(inicio.getTime() - HORAS_DE_DIFERENCIA * HORA);
@@ -90,6 +119,16 @@ export function horarioEnCastellano(d: Date): string {
   const hh = String(l.getUTCHours()).padStart(2, '0');
   const mm = String(l.getUTCMinutes()).padStart(2, '0');
   return `${DIAS[l.getUTCDay()]} ${l.getUTCDate()}/${l.getUTCMonth() + 1} a las ${hh}:${mm}`;
+}
+
+const DIAS_CORTOS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+
+/** `mié 30/9 15:00`, para los botones. */
+export function horarioCorto(d: Date): string {
+  const l = new Date(d.getTime() - HORAS_DE_DIFERENCIA * HORA);
+  const hh = String(l.getUTCHours()).padStart(2, '0');
+  const mm = String(l.getUTCMinutes()).padStart(2, '0');
+  return `${DIAS_CORTOS[l.getUTCDay()]} ${l.getUTCDate()}/${l.getUTCMonth() + 1} ${hh}:${mm}`;
 }
 
 /** Una sala de Jitsi con nombre imposible de adivinar. Gratis y sin cuenta. */

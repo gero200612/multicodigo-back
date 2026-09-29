@@ -8,7 +8,8 @@ export type TipoDeTarea =
   | 'investigar'
   | 'enviar_saliente'
   | 'recordatorio'
-  | 'resumen_diario';
+  | 'resumen_diario'
+  | 'redactar_respuesta';
 
 export type EstadoDeLead =
   | 'nuevo'
