@@ -9,13 +9,16 @@ export interface Opciones {
   pedirIa?: (p: string) => Promise<string>;
   ahora?: Date;
   hallazgos?: Hallazgo[];
-  sitio?: { texto: string; mails: string[] };
+  sitio?: { texto: string; mails: string[]; paginas?: string[] };
+  /** Por defecto apagado en los tests; en produccion arranca prendido. */
+  ensayo?: boolean;
 }
 
 /** Un Homero entero con todo lo de afuera falso. */
 export function armar(o: Opciones = {}) {
   let ahora = o.ahora ?? new Date('2026-09-29T17:00:00Z'); // martes 14hs AR
   const store = new MemoriaStore(() => ahora);
+  if (!o.ensayo) store.estado.set('ensayo', { apagado: true });
   const avisos: string[] = [];
   const tarjetas: { texto: string; datos: string[] }[] = [];
   const enviados: MailSaliente[] = [];

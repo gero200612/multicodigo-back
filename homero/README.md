@@ -105,6 +105,7 @@ volumen. Poné un tope de presupuesto en la consola.
 | `/estado` | Modo, pausas, tareas, borradores esperando, envíos de hoy por casilla |
 | `/hoy` | Números del día |
 | `/reuniones` | Las próximas, con link |
+| `/ensayo [mail]` / `/ensayo off` | **Arranca prendido.** Cada borrador te llega a tu mail tal cual lo recibiría el cliente, con a quién iba y los links de dónde sacó la info. Al cliente no sale nada (ni con Aprobar) hasta `/ensayo off` |
 | `/modo aprobar` / `/modo auto` | Si te pide OK para cada mail y respuesta (arranca en aprobar) |
 | `/buscar [rubro] [ciudad]` | Sale a buscar ya (`/buscar taller Córdoba`) |
 | `/rubros` | Respuestas / contactados de cada rubro |

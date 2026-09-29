@@ -106,3 +106,16 @@ out tags 60;`;
       };
     });
 };
+
+/**
+ * El link publico a la ficha de donde salio un negocio, para que Gero pueda
+ * ver de donde saco Homero la informacion.
+ */
+export function linkDeFicha(externo: string | undefined): string | undefined {
+  if (!externo) return undefined;
+  if (externo.startsWith('osm:')) return `https://www.openstreetmap.org/${externo.slice(4)}`;
+  if (externo.startsWith('google:')) {
+    return `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(externo.slice(7))}`;
+  }
+  return undefined;
+}

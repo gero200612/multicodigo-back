@@ -10,7 +10,7 @@ import {
 } from './agenda.js';
 import type { Casilla } from './config.js';
 import { cupoDelDia, enviarMail, type DepsDeEnvio } from './envio.js';
-import type { Fuente } from './fuentes.js';
+import { linkDeFicha, type Fuente } from './fuentes.js';
 import { horaArgentina, inicioDelDia, relojArgentino, sumarDiasHabiles } from './horas.js';
 import {
   leerAnalisis,
@@ -39,7 +39,7 @@ export interface DepsDeVentas extends DepsDeEnvio {
   pedirIa: (prompt: string) => Promise<string>;
   fuente: Fuente;
   nombreDeFuente: string;
-  leerSitio: (web: string) => Promise<{ texto: string; mails: string[] } | undefined>;
+  leerSitio: (web: string) => Promise<{ texto: string; mails: string[]; paginas?: string[] } | undefined>;
   recibeMail: (email: string) => Promise<boolean>;
   azar?: () => number;
 }
@@ -135,9 +135,10 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
 
   let texto = '';
   let mails: string[] = [];
+  let paginas: string[] = [];
   if (lead.web) {
     const sitio = await deps.leerSitio(lead.web);
-    if (sitio) ({ texto, mails } = sitio);
+    if (sitio) ({ texto, mails, paginas = [] } = sitio);
   }
   const email = lead.email ?? mails[0];
   const descartar = () => deps.store.actualizarLead(lead.id, { estado: 'descartado' });
@@ -155,9 +156,10 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
   if (!b) throw new Error('la IA no devolvio un borrador legible');
   if (!b.encaja) return descartar();
 
+  const fuentes = [linkDeFicha(lead.externo), ...paginas].filter((f): f is string => !!f);
   await deps.store.actualizarLead(lead.id, {
     estado: 'borrador',
-    investigacion: { resumen_empresa: b.resumen_empresa, dolor: b.dolor, idea: b.idea },
+    investigacion: { resumen_empresa: b.resumen_empresa, dolor: b.dolor, idea: b.idea, fuentes },
   });
   const inicial = await deps.store.crearSaliente({
     leadId: lead.id,
@@ -173,17 +175,19 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
     await deps.store.crearSaliente({ leadId: lead.id, tipo: 'seguimiento', paso, asunto: conRe(b.asunto), cuerpo });
   }
 
-  if ((await modoActual(deps.store)) === 'auto') {
+  const ensayo = await ensayoActivo(deps);
+  if (ensayo) await mandarMuestra(lead.id, ensayo, deps);
+  if (!ensayo && (await modoActual(deps.store)) === 'auto') {
     await aprobarLead(lead.id, deps);
     return;
   }
   const rubro = rubroPorId(lead.rubro);
   const tarjeta = [
     `✉️ NUEVO: ${lead.nombre} (${rubro?.nombre ?? lead.rubro}, ${lead.ciudad})`,
-    lead.web ? `Web: ${lead.web}` : undefined,
     `Para: ${email}`,
     `Qué hacen: ${b.resumen_empresa}`,
     `Idea: ${b.idea}`,
+    fuentes.length ? `De dónde saqué la info:\n${fuentes.map((f) => `• ${f}`).join('\n')}` : undefined,
     '',
     `Asunto: ${b.asunto}`,
     '',
@@ -192,15 +196,89 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
     `— Seguimiento (día 3): ${b.seguimiento1}`,
     `— Seguimiento (día 7): ${b.seguimiento2}`,
     '',
-    'Para cambiar el primer mail, respondé a este mensaje con el texto nuevo.',
+    ensayo
+      ? `🧪 Ensayo: te lo mandé a ${ensayo} tal cual le llegaría. Al cliente no sale nada hasta /ensayo off.`
+      : 'Para cambiar el primer mail, respondé a este mensaje con el texto nuevo.',
   ]
     .filter((l) => l !== undefined)
     .join('\n');
-  const msg = await deps.proponer(tarjeta, [
-    { texto: '✅ Aprobar', datos: `ap:${lead.id}` },
-    { texto: '🗑 Descartar', datos: `de:${lead.id}` },
-  ]);
+  // En ensayo no hay boton de aprobar: nada puede salirle a un cliente.
+  const botones: Boton[] = ensayo
+    ? [{ texto: '🗑 Descartar', datos: `de:${lead.id}` }]
+    : [
+        { texto: '✅ Aprobar', datos: `ap:${lead.id}` },
+        { texto: '🗑 Descartar', datos: `de:${lead.id}` },
+      ];
+  const msg = await deps.proponer(tarjeta, botones);
   if (msg) await deps.store.actualizarSaliente(inicial, { telegramMsg: msg });
+}
+
+// ------------------------------------------------------------ ensayo
+
+export const ENSAYO = 'ensayo';
+
+/**
+ * A que mail van las muestras, o `undefined` si el ensayo esta apagado.
+ *
+ * Prendido por defecto (al mail de Gero) hasta que se apague con /ensayo off:
+ * lo primero que se quiere ver es que mandaria, antes de que mande.
+ */
+export async function ensayoActivo(
+  deps: Pick<DepsDeVentas, 'store' | 'emailGero'>,
+): Promise<string | undefined> {
+  const e = await deps.store.leerEstado<{ a?: string; apagado?: boolean }>(ENSAYO);
+  if (e?.apagado) return undefined;
+  return e?.a ?? deps.emailGero;
+}
+
+/**
+ * Le manda a Gero el mail de un lead tal cual lo recibiria el cliente (mismo
+ * remitente, asunto y cuerpo), con un encabezado de a quien iba, de donde salio
+ * la informacion y los dos seguimientos. No cuenta para el cupo ni toca al lead.
+ */
+export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVentas): Promise<boolean> {
+  const lead = await deps.store.lead(leadId);
+  if (!lead || deps.casillas.length === 0) return false;
+  const salientes = await deps.store.salientesDeLead(leadId);
+  const inicial = salientes.find((s) => s.tipo === 'inicial');
+  if (!inicial) return false;
+  const seguimientos = salientes.filter((s) => s.tipo === 'seguimiento');
+  const fuentes =
+    lead.investigacion?.fuentes ?? [linkDeFicha(lead.externo), lead.web].filter((f): f is string => !!f);
+  const rubro = rubroPorId(lead.rubro)?.nombre ?? lead.rubro;
+
+  const encabezado = [
+    '──────── ENSAYO: esto NO le llegó al cliente ────────',
+    `Iba para: ${lead.email} (${lead.nombre}, ${rubro}, ${lead.ciudad})`,
+    lead.telefono ? `Teléfono: ${lead.telefono}` : undefined,
+    `Qué hacen: ${lead.investigacion?.resumen_empresa ?? '-'}`,
+    `Idea propuesta: ${lead.investigacion?.idea ?? '-'}`,
+    'De dónde saqué la info:',
+    ...(fuentes.length ? fuentes.map((f) => `  • ${f}`) : ['  • (sin links)']),
+    '──────── abajo, el mail tal cual ────────',
+  ].filter((l) => l !== undefined);
+  const cola = seguimientos.flatMap((s) => [
+    '',
+    `──────── seguimiento ${s.paso} (día ${s.paso === 1 ? 3 : 7} hábil, mismo hilo) ────────`,
+    s.cuerpo,
+  ]);
+
+  const casilla = casillaDeLead(deps.casillas, leadId);
+  await deps.correo.enviar(casilla, deps.remitente, {
+    para: a,
+    asunto: `[ENSAYO] ${inicial.asunto}`,
+    texto: [...encabezado, '', inicial.cuerpo, ...cola].join('\n'),
+  });
+  return true;
+}
+
+/** Manda la muestra de todos los borradores que esperan aprobacion. */
+export async function mandarMuestras(a: string, deps: DepsDeVentas): Promise<number> {
+  let n = 0;
+  for (const leadId of await deps.store.leadsEnBorrador()) {
+    if (await mandarMuestra(leadId, a, deps)) n++;
+  }
+  return n;
 }
 
 /** La casilla de un lead: repartidos en ronda, y siempre la misma para su hilo. */
@@ -226,6 +304,8 @@ async function proximoTurno(deps: DepsDeVentas): Promise<Date> {
 export async function aprobarLead(leadId: number, deps: DepsDeVentas): Promise<boolean> {
   const lead = await deps.store.lead(leadId);
   if (!lead || lead.estado !== 'borrador' || deps.casillas.length === 0) return false;
+  // En ensayo nada sale a un cliente, aunque llegue a tocarse un boton viejo.
+  if (await ensayoActivo(deps)) return false;
   const casilla = casillaDeLead(deps.casillas, leadId);
   const salientes = (await deps.store.salientesDeLead(leadId)).filter((s) => s.estado === 'borrador');
   for (const s of salientes) await deps.store.actualizarSaliente(s.id, { estado: 'aprobado', casilla: casilla.email });

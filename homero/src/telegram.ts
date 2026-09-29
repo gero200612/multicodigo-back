@@ -8,7 +8,7 @@ import { ErrorDeCuenta, ErrorDeLimite, pedirTexto } from './ia.js';
 import { SISTEMA } from './prompts.js';
 import { CIUDADES, rubroPorId, RUBROS } from './rubros.js';
 import type { Store } from './store.js';
-import { MODO, modoActual, tablaDeRubros, type Boton } from './ventas.js';
+import { ENSAYO, MODO, modoActual, tablaDeRubros, type Boton } from './ventas.js';
 
 export const NOMBRE = 'Homero';
 
@@ -22,6 +22,10 @@ export interface Acciones {
   descartarLead(id: number): Promise<void>;
   aprobarSaliente(id: number): Promise<boolean>;
   descartarSaliente(id: number): Promise<void>;
+  /** Manda la muestra de cada borrador pendiente. Devuelve cuantas. */
+  mandarMuestras(a: string): Promise<number>;
+  /** A donde van las muestras ahora, o nada si el ensayo esta apagado. */
+  ensayo(): Promise<string | undefined>;
 }
 
 /**
@@ -108,6 +112,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         '/estado · cómo vengo',
         '/hoy · números del día',
         '/reuniones · las próximas',
+        '/ensayo [mail] | off · te mando a vos los mails en vez de al cliente',
         '/modo aprobar | auto · si te pido OK para cada mail',
         '/buscar [rubro] [ciudad] · salgo a buscar ya',
         '/rubros · cómo responde cada rubro',
@@ -128,6 +133,8 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     const pausaIa = await store.leerEstado<{ hasta: string; motivo: string }>(PAUSA_IA);
     const pausaManual = await store.leerEstado(PAUSA_MANUAL);
     lineas.push(pausaManual ? '⏸ En pausa (manual). /seguir para retomar.' : '▶️ Andando.');
+    const ensayo = await acciones?.ensayo();
+    lineas.push(ensayo ? `🧪 Ensayo: los mails van a ${ensayo}, no a clientes. /ensayo off para arrancar.` : '🚀 Ensayo apagado: los aprobados salen a clientes.');
     lineas.push(`Modo: ${(await modoActual(store)) === 'auto' ? 'automático' : 'te pido aprobación'}`);
     lineas.push(
       pausaIa
@@ -169,6 +176,31 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       lineas.push(`📅 ${horarioEnCastellano(r.inicio)}: ${lead?.nombre ?? '?'}\n   ${r.link}`);
     }
     await ctx.reply(lineas.join('\n'));
+  });
+
+  bot.command('ensayo', async (ctx) => {
+    const pedido = (ctx.match ?? '').trim();
+    if (pedido.toLowerCase() === 'off') {
+      await store.guardarEstado(ENSAYO, { apagado: true });
+      await ctx.reply('🚀 Ensayo apagado. Desde ahora lo que apruebes le llega al cliente.');
+      return;
+    }
+    if (pedido && !/^\S+@\S+\.\S+$/.test(pedido)) {
+      await ctx.reply('Uso: /ensayo tu@mail.com · /ensayo off · /ensayo (para ver cómo está)');
+      return;
+    }
+    if (pedido) await store.guardarEstado(ENSAYO, { a: pedido.toLowerCase() });
+    else if ((await store.leerEstado<{ apagado?: boolean }>(ENSAYO))?.apagado) await store.guardarEstado(ENSAYO, null);
+    const a = await acciones?.ensayo();
+    if (!a) {
+      await ctx.reply('No tengo a qué mail mandarte las muestras: /ensayo tu@mail.com');
+      return;
+    }
+    const n = (await acciones?.mandarMuestras(a)) ?? 0;
+    await ctx.reply(
+      `🧪 Ensayo prendido: cada mail nuevo te llega a ${a} tal cual lo recibiría el cliente, con de dónde saqué la info. Al cliente no sale nada.` +
+        (n > 0 ? `\nTe acabo de mandar ${n} muestra(s) de los borradores que ya tenía.` : ''),
+    );
   });
 
   bot.command('modo', async (ctx) => {

@@ -119,11 +119,12 @@ export function mailsDeHtml(html: string, web?: string): string[] {
 export async function leerSitio(
   web: string,
   bajar: Buscador = bajarPagina,
-): Promise<{ texto: string; mails: string[] } | undefined> {
+): Promise<{ texto: string; mails: string[]; paginas: string[] } | undefined> {
   const home = await bajar(web);
   if (!home) return undefined;
   let mails = mailsDeHtml(home, web);
   let texto = textoDeHtml(home);
+  const paginas = [web];
   if (mails.length === 0) {
     const base = web.startsWith('http') ? web : `https://${web}`;
     for (const ruta of ['/contacto', '/contact', '/contactanos', '/contacto/']) {
@@ -136,11 +137,12 @@ export async function leerSitio(
       const pagina = await bajar(url);
       if (!pagina) continue;
       mails = mailsDeHtml(pagina, web);
+      paginas.push(url);
       texto += '\n' + textoDeHtml(pagina).slice(0, 2000);
       if (mails.length > 0) break;
     }
   }
-  return { texto: texto.slice(0, 8000), mails };
+  return { texto: texto.slice(0, 8000), mails, paginas };
 }
 
 /** `true` si el dominio recibe mail. Evita rebotes, que queman la casilla. */

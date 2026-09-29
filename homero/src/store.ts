@@ -27,6 +27,8 @@ export interface Investigacion {
   resumen_empresa: string;
   dolor: string;
   idea: string;
+  /** De donde salio la informacion: la ficha del lugar y las paginas leidas. */
+  fuentes?: string[];
 }
 
 export interface Lead {
@@ -41,9 +43,11 @@ export interface Lead {
   investigacion?: Investigacion;
   estado: EstadoDeLead;
   casilla?: string;
+  /** Id en la fuente: `osm:node/123` o `google:<place_id>`. */
+  externo?: string;
 }
 
-export type NuevoLead = Omit<Lead, 'id' | 'estado' | 'investigacion' | 'casilla'> & { externo?: string };
+export type NuevoLead = Omit<Lead, 'id' | 'estado' | 'investigacion' | 'casilla'>;
 
 export type TipoDeSaliente = 'inicial' | 'seguimiento' | 'respuesta' | 'confirmacion' | 'recordatorio';
 export type EstadoDeSaliente = 'borrador' | 'aprobado' | 'enviado' | 'cancelado';
@@ -143,6 +147,7 @@ export interface Store {
   /** `undefined` si ya existia (mismo lugar o mismo mail). */
   crearLead(l: NuevoLead): Promise<number | undefined>;
   lead(id: number): Promise<Lead | undefined>;
+  leadsEnBorrador(): Promise<number[]>;
   leadPorEmail(email: string): Promise<Lead | undefined>;
   actualizarLead(
     id: number,
@@ -365,6 +370,11 @@ export class PgStore implements Store {
   async lead(id: number) {
     const r = await this.pool.query('SELECT * FROM homero.leads WHERE id = $1', [id]);
     return r.rows[0] ? aLead(r.rows[0]) : undefined;
+  }
+
+  async leadsEnBorrador() {
+    const r = await this.pool.query(`SELECT id FROM homero.leads WHERE estado = 'borrador' ORDER BY id`);
+    return r.rows.map((f) => Number(f.id));
   }
 
   async leadPorEmail(email: string) {
@@ -622,6 +632,7 @@ function aLead(f: Fila): Lead {
     investigacion: opc(f.investigacion),
     estado: f.estado as EstadoDeLead,
     casilla: opc(f.casilla),
+    externo: opc(f.externo),
   };
 }
 

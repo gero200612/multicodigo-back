@@ -147,6 +147,9 @@ export class MemoriaStore implements Store {
     const l = this.leads.find((x) => x.id === id);
     return l ? { ...l } : undefined;
   }
+  async leadsEnBorrador() {
+    return this.leads.filter((l) => l.estado === 'borrador').map((l) => l.id);
+  }
   async leadPorEmail(email: string) {
     const l = this.leads.find((x) => x.email === email.toLowerCase());
     return l ? { ...l } : undefined;
