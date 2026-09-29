@@ -12,9 +12,9 @@ Claude y su propio esquema (`homero.*`) en la misma base de Supabase.
 | Cuándo | Qué hace |
 |---|---|
 | 7:00 (días hábiles) | Sale a buscar negocios: elige el rubro que mejor viene respondiendo (y cada tanto prueba otro) y la ciudad menos buscada |
-| Durante el día | Lee la web de cada uno, consigue el mail, chequea que el dominio reciba mail y escribe el mail inicial con 2 seguimientos. Te pasa la tarjeta para aprobar |
+| Durante el día | Lee la web de cada uno, consigue el mail, chequea que el dominio reciba mail y escribe el mail inicial y un seguimiento. Te pasa la tarjeta para aprobar |
 | 9 a 19 (días hábiles) | Manda los aprobados separados entre 4 y 12 minutos y desparramados en la ventana. Respeta el cupo de calentamiento de cada casilla |
-| Día 3 y día 7 hábil | Seguimientos en el mismo hilo, solo si no contestó |
+| A la semana (5 días hábiles) | UN solo seguimiento en el mismo hilo, solo si no contestó. Después, nada más |
 | Cada 10 min | Lee las 3 bandejas. Si alguien contesta: corta los seguimientos, te manda quién es y qué dijo, y te propone la respuesta con 3 horarios |
 | Cuando elige horario | Agenda, le manda la invitación (.ics) con link de Jitsi (y te copia), te avisa con el resumen de la empresa |
 | 2 h antes | Le recuerda al cliente por mail (menos ausencias) |
@@ -24,7 +24,7 @@ Claude y su propio esquema (`homero.*`) en la misma base de Supabase.
 Lo que se hizo pensando en **más respuestas**:
 - mails cortos (≤90 palabras), con algo específico de la web del negocio en la primera línea, una sola idea concreta y una sola pregunta al final;
 - sin links ni adjuntos en los mails en frío (van a spam), firma de persona, salida fácil ("respondé no");
-- 2 seguimientos en el mismo hilo (la mayoría de las respuestas llegan en el seguimiento);
+- un seguimiento a la semana en el mismo hilo (muchas respuestas llegan recién ahí);
 - aprende qué rubro responde mejor y le da más volumen;
 - chequeo de MX antes de escribir, freno de la casilla si rebota más del 5%: cuida la reputación de las casillas;
 - si contesta otra persona de la empresa (se le escribió a info@ y contesta juan@), lo reconoce por el hilo y sigue con ella.
@@ -129,8 +129,8 @@ Rubros: `contable`, `distribuidora`, `inmobiliaria`, `consultorio`, `taller`,
 | `HOMERO_CHAT_ID` | — | Sin esto no obedece a nadie |
 | `DATABASE_URL` | — | La misma del bridge |
 | `HOMERO_MODELO` | `sonnet` | |
-| `HOMERO_REMITENTE` | `Gero · Sincro` | Nombre que ve el destinatario |
-| `HOMERO_FIRMA` | `Gero` | Cómo firma los mails |
+| `HOMERO_REMITENTE` | `Geronimo Enrici` | Nombre que ve el destinatario |
+| `HOMERO_FIRMA` | `Geronimo Enrici\nSincro_ar` | Cómo firma los mails (`\n` = salto de línea) |
 | `HOMERO_EMAIL_GERO` | — | Te copia las invitaciones de reunión |
 | `GOOGLE_PLACES_API_KEY` | — | Sin esto, OpenStreetMap |
 | `HOMERO_BANDEJA_MIN` | `10` | Cada cuánto lee las bandejas |

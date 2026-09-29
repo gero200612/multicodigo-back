@@ -32,7 +32,7 @@ export function armar(o: Opciones = {}) {
   const deps: DepsDeCola = {
     store,
     correo,
-    remitente: 'Gero · Sincro',
+    remitente: 'Geronimo Enrici',
     casillas: [casilla],
     firma: 'Gero',
     emailGero: 'gero@personal.com',

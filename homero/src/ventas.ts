@@ -168,12 +168,13 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
     asunto: b.asunto,
     cuerpo: b.mensaje,
   });
-  for (const [paso, cuerpo] of [
-    [1, b.seguimiento1],
-    [2, b.seguimiento2],
-  ] as const) {
-    await deps.store.crearSaliente({ leadId: lead.id, tipo: 'seguimiento', paso, asunto: conRe(b.asunto), cuerpo });
-  }
+  await deps.store.crearSaliente({
+    leadId: lead.id,
+    tipo: 'seguimiento',
+    paso: 1,
+    asunto: conRe(b.asunto),
+    cuerpo: b.seguimiento,
+  });
 
   const ensayo = await ensayoActivo(deps);
   if (ensayo) await mandarMuestra(lead.id, ensayo, deps);
@@ -193,8 +194,7 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
     '',
     b.mensaje,
     '',
-    `— Seguimiento (día 3): ${b.seguimiento1}`,
-    `— Seguimiento (día 7): ${b.seguimiento2}`,
+    `— Seguimiento (a la semana, si no contesta): ${b.seguimiento}`,
     '',
     ensayo
       ? `🧪 Ensayo: te lo mandé a ${ensayo} tal cual le llegaría. Al cliente no sale nada hasta /ensayo off.`
@@ -234,7 +234,7 @@ export async function ensayoActivo(
 /**
  * Le manda a Gero el mail de un lead tal cual lo recibiria el cliente (mismo
  * remitente, asunto y cuerpo), con un encabezado de a quien iba, de donde salio
- * la informacion y los dos seguimientos. No cuenta para el cupo ni toca al lead.
+ * la informacion y el seguimiento. No cuenta para el cupo ni toca al lead.
  */
 export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVentas): Promise<boolean> {
   const lead = await deps.store.lead(leadId);
@@ -259,7 +259,7 @@ export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVenta
   ].filter((l) => l !== undefined);
   const cola = seguimientos.flatMap((s) => [
     '',
-    `──────── seguimiento ${s.paso} (día ${s.paso === 1 ? 3 : 7} hábil, mismo hilo) ────────`,
+    '──────── seguimiento (a la semana, solo si no contesta, mismo hilo) ────────',
     s.cuerpo,
   ]);
 
@@ -357,7 +357,8 @@ export async function descartarSaliente(salienteId: number, deps: Pick<DepsDeVen
 
 // ------------------------------------------------------------ enviar
 
-const DIAS_ENTRE_PASOS = [3, 4];
+/** Un solo seguimiento, a la semana (5 dias habiles) si no contesto. */
+const DIAS_HASTA_EL_SEGUIMIENTO = 5;
 
 /**
  * Manda un mail de la secuencia y programa el siguiente. Devuelve cuando
@@ -444,7 +445,7 @@ export async function enviarSaliente(
         payload: { salienteId: siguiente.id },
         requiereIa: false,
         clave: `enviar:${siguiente.id}`,
-        disponibleDesde: sumarDiasHabiles(deps.ahora(), DIAS_ENTRE_PASOS[s.paso] ?? 4),
+        disponibleDesde: sumarDiasHabiles(deps.ahora(), DIAS_HASTA_EL_SEGUIMIENTO),
       });
     }
   }

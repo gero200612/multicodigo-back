@@ -12,8 +12,7 @@ const borrador = JSON.stringify({
   idea: 'bot de facturas por WhatsApp',
   asunto: 'facturas del estudio',
   mensaje: 'Hola, vi que son estudio contable...',
-  seguimiento1: 'Te escribo de nuevo...',
-  seguimiento2: '¿Lo dejo acá?',
+  seguimiento: 'Te escribo de nuevo, ¿lo vemos o lo dejamos para más adelante?',
 });
 
 async function conUnBorrador() {
@@ -50,7 +49,7 @@ describe('modo ensayo', () => {
     expect(m.texto).toContain('https://www.openstreetmap.org/node/42');
     expect(m.texto).toContain('https://estudiox.com.ar/contacto');
     expect(m.texto).toContain('Hola, vi que son estudio contable...');
-    expect(m.texto).toContain('¿Lo dejo acá?');
+    expect(m.texto).toContain('lo dejamos para más adelante');
     // No gasta cupo ni cambia al lead.
     expect(store.envios).toHaveLength(0);
     expect(store.leads[0]!.estado).toBe('borrador');

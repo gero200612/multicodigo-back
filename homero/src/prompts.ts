@@ -33,13 +33,12 @@ export const Borrador = z.object({
   idea: z.string(),
   asunto: z.string().min(1).max(80),
   mensaje: z.string().min(1),
-  seguimiento1: z.string().min(1),
-  seguimiento2: z.string().min(1),
+  seguimiento: z.string().min(1),
 });
 export type Borrador = z.infer<typeof Borrador>;
 
 /**
- * El mail inicial y sus dos seguimientos, en un solo pedido: Gero aprueba la
+ * El mail inicial y su seguimiento, en un solo pedido: Gero aprueba la
  * secuencia entera de una vez.
  *
  * Las reglas de estilo son las que mas mueven la tasa de respuesta en frio:
@@ -75,9 +74,8 @@ Cómo escribir el mail (esto es lo que hace que respondan):
 - Última línea, aparte: "Si no te interesa, respondé 'no' y no te escribo más."
 - Asunto: 2 a 5 palabras, en minúscula, que suene a mail entre personas (por ejemplo "pedidos de ${l.nombre.toLowerCase()}"). Nada de "oferta" ni "gratis".
 
-Seguimientos (van en el mismo hilo, sin asunto):
-- seguimiento1 (a los 3 días hábiles): 2 o 3 líneas, suma UN beneficio distinto o un ejemplo, y vuelve a preguntar. Misma firma.
-- seguimiento2 (a los 7): 2 líneas, cierre amable del tipo "¿lo dejo acá o te interesa verlo más adelante?". Misma firma.
+Seguimiento (va en el mismo hilo, sin asunto):
+- Hay UN solo seguimiento, a la semana, y solo si no contestó: 2 o 3 líneas, suma UN beneficio distinto o un ejemplo concreto, y cierra amable dejando la puerta abierta (por ejemplo "¿Te interesa verlo o lo dejamos para más adelante?"). Misma firma.
 
 "encaja" es false si no es una pyme a la que le sirva (cadena enorme, organismo público, web de otra cosa, negocio cerrado) o si no hay de qué agarrarse.
 
@@ -90,8 +88,7 @@ Contestá con este JSON:
   "idea": "la automatización que le proponés",
   "asunto": "...",
   "mensaje": "...",
-  "seguimiento1": "...",
-  "seguimiento2": "..."
+  "seguimiento": "..."
 }`;
 }
 

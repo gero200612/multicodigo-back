@@ -18,10 +18,12 @@ const Env = z.object({
   HOMERO_CHAT_ID: opcional(z.coerce.number().int()),
   DATABASE_URL: z.string().min(1),
   HOMERO_MODELO: z.string().min(1).default('sonnet'),
-  HOMERO_REMITENTE: z.string().min(1).default('Gero · Sincro'),
+  // El nombre que ve el destinatario en la bandeja.
+  HOMERO_REMITENTE: opcional(z.string().min(1)).transform((v) => v ?? 'Geronimo Enrici'),
   HOMERO_BANDEJA_MIN: z.coerce.number().int().min(1).default(10),
   // Como firma los mails. Un nombre de persona responde mas que una marca.
-  HOMERO_FIRMA: z.string().min(1).default('Gero'),
+  // Va en dos renglones: nombre y marca. En mc.env el salto se escribe \n.
+  HOMERO_FIRMA: opcional(z.string().min(1)).transform((v) => (v ?? 'Geronimo Enrici\nSincro_ar').replace(/\\n/g, '\n')),
   // Adonde le llega a Gero la invitacion de cada reunion.
   HOMERO_EMAIL_GERO: opcional(z.string().email()),
   // Sin esto se busca en OpenStreetMap, que es gratis y no pide cuenta.

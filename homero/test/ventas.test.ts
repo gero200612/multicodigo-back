@@ -12,8 +12,7 @@ const borrador = JSON.stringify({
   idea: 'bot que carga los pedidos solo',
   asunto: 'pedidos de la distri',
   mensaje: 'Hola, vi que toman pedidos por WhatsApp...',
-  seguimiento1: 'Te escribo de nuevo...',
-  seguimiento2: '¿Lo dejo acá?',
+  seguimiento: 'Te escribo de nuevo, ¿lo vemos o lo dejamos para más adelante?',
 });
 
 const hallazgo = { externo: 'osm:node/1', nombre: 'La Distri', web: 'https://ladistri.com.ar', fuente: 'osm' as const };
@@ -35,7 +34,7 @@ async function hastaContactado() {
 }
 
 describe('de la busqueda al primer mail', () => {
-  it('encuentra, investiga y le pasa a Gero la tarjeta con el mail y los seguimientos', async () => {
+  it('encuentra, investiga y le pasa a Gero la tarjeta con el mail y su unico seguimiento', async () => {
     const { store, tarjetas, prompts } = await hastaContactado();
     const lead = store.leads[0]!;
     expect(lead).toMatchObject({ estado: 'borrador', email: 'ventas@ladistri.com.ar' });
@@ -43,14 +42,13 @@ describe('de la busqueda al primer mail', () => {
     expect(store.salientes.map((s) => [s.tipo, s.paso, s.estado])).toEqual([
       ['inicial', 0, 'borrador'],
       ['seguimiento', 1, 'borrador'],
-      ['seguimiento', 2, 'borrador'],
     ]);
     expect(tarjetas[0]!.datos).toEqual([`ap:${lead.id}`, `de:${lead.id}`]);
     // La web va marcada como no confiable en el prompt.
     expect(prompts[0]).toContain('<no_confiable>');
   });
 
-  it('al aprobar sale el inicial y el seguimiento queda a 3 dias habiles, en el mismo hilo', async () => {
+  it('al aprobar sale el inicial y el unico seguimiento queda a la semana, en el mismo hilo', async () => {
     const h = await hastaContactado();
     await aprobarLead(1, h.deps);
     h.mover(new Date(h.ahora().getTime() + 20 * 60_000));
@@ -61,12 +59,16 @@ describe('de la busqueda al primer mail', () => {
     expect(h.store.leads[0]!.estado).toBe('contactado');
 
     const seguimiento = h.store.tareas.find((t) => t.tipo === 'enviar_saliente' && t.estado === 'pendiente')!;
-    // Martes 14:20 + 3 habiles = viernes.
-    expect(seguimiento.disponibleDesde.toISOString().slice(0, 10)).toBe('2026-10-02');
+    // Martes 14:20 + 5 habiles = el martes siguiente.
+    expect(seguimiento.disponibleDesde.toISOString().slice(0, 10)).toBe('2026-10-06');
 
-    h.mover(new Date('2026-10-02T17:30:00Z'));
+    h.mover(new Date('2026-10-06T17:30:00Z'));
     await vaciar(h.deps);
     expect(h.enviados[1]).toMatchObject({ asunto: 'Re: pedidos de la distri', enRespuestaA: '<m1@x>' });
+    // Y no hay un segundo seguimiento.
+    h.mover(new Date('2026-10-20T17:30:00Z'));
+    await vaciar(h.deps);
+    expect(h.enviados).toHaveLength(2);
   });
 
   it('en modo automatico no pide aprobacion', async () => {
