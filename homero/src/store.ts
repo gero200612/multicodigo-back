@@ -169,6 +169,7 @@ export interface Store {
   /** `undefined` si el horario ya lo tomo otra reunion. */
   crearReunion(r: Omit<Reunion, 'id'>): Promise<number | undefined>;
   reunion(id: number): Promise<Reunion | undefined>;
+  cancelarReunion(id: number): Promise<void>;
   reunionesDesde(desde: Date): Promise<Reunion[]>;
   diasOcupados(): Promise<string[]>;
   marcarOcupado(dia: string, ocupado: boolean): Promise<void>;
@@ -517,6 +518,10 @@ export class PgStore implements Store {
       [id],
     );
     return r.rows[0] ? aReunion(r.rows[0]) : undefined;
+  }
+
+  async cancelarReunion(id: number) {
+    await this.pool.query(`UPDATE homero.reuniones SET estado = 'cancelada' WHERE id = $1`, [id]);
   }
 
   async reunionesDesde(desde: Date) {

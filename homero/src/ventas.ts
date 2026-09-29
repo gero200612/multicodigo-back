@@ -345,7 +345,14 @@ export async function aprobarSaliente(salienteId: number, deps: DepsDeVentas): P
 }
 
 export async function descartarSaliente(salienteId: number, deps: Pick<DepsDeVentas, 'store'>): Promise<void> {
+  const s = await deps.store.saliente(salienteId);
+  if (!s || s.estado !== 'borrador') return;
   await deps.store.actualizarSaliente(salienteId, { estado: 'cancelado' });
+  // Sin confirmacion no hay reunion: el horario vuelve a estar libre.
+  if (s.tipo === 'confirmacion' && s.reunionId) {
+    await deps.store.cancelarReunion(s.reunionId);
+    await deps.store.actualizarLead(s.leadId, { estado: 'respondio' });
+  }
 }
 
 // ------------------------------------------------------------ enviar
@@ -578,7 +585,12 @@ export async function atenderRespuesta(r: Recibido, deps: DepsDeVentas): Promise
   if (msg) await deps.store.actualizarSaliente(id, { telegramMsg: msg });
 }
 
-/** Agenda la reunion, manda la invitacion y programa los recordatorios. */
+/**
+ * Reserva el horario y le pasa a Gero la confirmacion para que la apruebe.
+ *
+ * Nada sale sin su OK, tampoco esto: el horario queda tomado para que nadie
+ * mas lo agarre, y si Gero toca "No enviar" se libera.
+ */
 export async function reservar(lead: Lead, inicio: Date, r: Recibido, deps: DepsDeVentas): Promise<boolean> {
   const link = linkDeReunion();
   const reunionId = await deps.store.crearReunion({ leadId: lead.id, inicio, fin: finDe(inicio), link });
@@ -601,10 +613,8 @@ export async function reservar(lead: Lead, inicio: Date, r: Recibido, deps: Deps
     asunto: conRe(r.asunto),
     cuerpo,
     enRespuestaA: r.messageId,
-    estado: 'aprobado',
     reunionId,
   });
-  await deps.store.encolar({ tipo: 'enviar_saliente', payload: { salienteId: conf }, requiereIa: false, clave: `enviar:${conf}` });
 
   // Un recordatorio el mismo dia baja mucho las ausencias.
   const ahora = deps.ahora().getTime();
@@ -626,10 +636,10 @@ export async function reservar(lead: Lead, inicio: Date, r: Recibido, deps: Deps
     disponibleDesde: new Date(Math.max(ahora, inicio.getTime() - 30 * 60_000)),
   });
 
-  await deps.avisar(
+  const tarjeta = await deps.proponer(
     [
-      `📅 REUNIÓN CONFIRMADA: ${lead.nombre}`,
-      `Cuándo: ${horarioEnCastellano(inicio)}`,
+      `📅 ELIGIÓ HORARIO: ${lead.nombre}`,
+      `Cuándo: ${horarioEnCastellano(inicio)} (ya lo reservé)`,
       `Link: ${link}`,
       lead.investigacion ? `Qué hacen: ${lead.investigacion.resumen_empresa}` : undefined,
       lead.investigacion ? `Dolor probable: ${lead.investigacion.dolor}` : undefined,
@@ -637,10 +647,20 @@ export async function reservar(lead: Lead, inicio: Date, r: Recibido, deps: Deps
       lead.web ? `Web: ${lead.web}` : undefined,
       lead.telefono ? `Tel: ${lead.telefono}` : undefined,
       `Mail: ${lead.email}`,
+      '',
+      '↩️ Confirmación con la invitación de calendario (te copio a vos):',
+      cuerpo,
+      '',
+      'Si tocás "No enviar", libero el horario.',
     ]
       .filter((l) => l !== undefined)
       .join('\n'),
+    [
+      { texto: '📤 Enviar', datos: `en:${conf}` },
+      { texto: '🗑 No enviar', datos: `no:${conf}` },
+    ],
   );
+  if (tarjeta) await deps.store.actualizarSaliente(conf, { telegramMsg: tarjeta });
   return true;
 }
 
@@ -682,10 +702,17 @@ export async function recordatorio(payload: unknown, deps: DepsDeVentas): Promis
     asunto: p.asunto ?? 'Nuestra charla de hoy',
     cuerpo: `Hola, te recuerdo que hoy a las ${horaArgentina(reunion.inicio)} charlamos.\n\nLink: ${reunion.link}\n\n¡Nos vemos!\n${deps.firma}`,
     enRespuestaA: confirmacion?.messageId,
-    estado: 'aprobado',
     reunionId: reunion.id,
   });
-  await deps.store.encolar({ tipo: 'enviar_saliente', payload: { salienteId: id }, requiereIa: false, clave: `enviar:${id}` });
+  const cuerpo = (await deps.store.saliente(id))?.cuerpo ?? '';
+  const tarjeta = await deps.proponer(
+    `⏰ Recordatorio para ${lead.nombre} (reunión ${horarioEnCastellano(reunion.inicio)}):\n\n${cuerpo}`,
+    [
+      { texto: '📤 Enviar', datos: `en:${id}` },
+      { texto: '🗑 No enviar', datos: `no:${id}` },
+    ],
+  );
+  if (tarjeta) await deps.store.actualizarSaliente(id, { telegramMsg: tarjeta });
 }
 
 // ------------------------------------------------------------ rebotes

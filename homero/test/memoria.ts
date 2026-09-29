@@ -31,7 +31,7 @@ export class MemoriaStore implements Store {
   leads: (Lead & { externo?: string; creado: Date })[] = [];
   salientes: Saliente[] = [];
   ofertas = new Map<number, Date[]>();
-  reuniones: (Reunion & { creada: Date })[] = [];
+  reuniones: (Reunion & { creada: Date; cancelada?: boolean })[] = [];
   ocupados = new Set<string>();
   busquedas: { rubro: string; ciudad: string; fuente: string; hallados: number }[] = [];
   rebotes: { cuenta: string; email?: string; en: Date }[] = [];
@@ -207,16 +207,20 @@ export class MemoriaStore implements Store {
     return this.ofertas.get(leadId);
   }
   async crearReunion(r: Omit<Reunion, 'id'>) {
-    if (this.reuniones.some((x) => x.inicio.getTime() === r.inicio.getTime())) return undefined;
+    if (this.reuniones.some((x) => !x.cancelada && x.inicio.getTime() === r.inicio.getTime())) return undefined;
     const id = this.reuniones.length + 1;
     this.reuniones.push({ ...r, id, creada: this.ahora() });
     return id;
   }
   async reunion(id: number) {
-    return this.reuniones.find((x) => x.id === id);
+    return this.reuniones.find((x) => x.id === id && !x.cancelada);
+  }
+  async cancelarReunion(id: number) {
+    const r = this.reuniones.find((x) => x.id === id);
+    if (r) r.cancelada = true;
   }
   async reunionesDesde(desde: Date) {
-    return this.reuniones.filter((r) => r.inicio.getTime() >= desde.getTime()).sort((a, b) => a.inicio.getTime() - b.inicio.getTime());
+    return this.reuniones.filter((r) => !r.cancelada && r.inicio.getTime() >= desde.getTime()).sort((a, b) => a.inicio.getTime() - b.inicio.getTime());
   }
   async diasOcupados() {
     return [...this.ocupados];

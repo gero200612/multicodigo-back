@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { correrSiguiente } from '../src/cola.js';
 import type { Recibido } from '../src/store.js';
-import { aprobarLead, aprobarSaliente, MODO, planificar, procesarRebote } from '../src/ventas.js';
+import { aprobarLead, aprobarSaliente, descartarSaliente, MODO, planificar, procesarRebote } from '../src/ventas.js';
 import { armar, casilla } from './armar.js';
 
 const borrador = JSON.stringify({
@@ -136,21 +136,51 @@ describe('cuando responden', () => {
     expect(h.enviados.at(-1)).toMatchObject({ texto: 'Buenísimo, ¿te sirve alguno de estos horarios?' });
   });
 
-  it('si elige un horario ofrecido, agenda, manda la invitacion y programa los recordatorios', async () => {
+  async function eligioElPrimero() {
     const h = await contactadoYRespondio({ tipo: 'eligio_horario', empresa: 'La Distri', resumen: 'El 1', sugerencia: '-', horario_elegido: 1 });
     const horario = new Date('2026-09-30T18:00:00Z'); // miercoles 15hs AR
     await h.store.guardarOferta(1, [horario]);
+    const antes = h.enviados.length;
     await h.store.encolar({ tipo: 'resumir_respuesta', payload: respuesta('Dale, el primero'), requiereIa: true });
     await vaciar(h.deps);
+    return { h, antes };
+  }
 
+  it('si elige un horario reserva, pero la confirmacion NO sale sin el OK de Gero', async () => {
+    const { h, antes } = await eligioElPrimero();
     expect(h.store.reuniones).toHaveLength(1);
     expect(h.store.leads[0]!.estado).toBe('reunion');
+    expect(h.enviados).toHaveLength(antes);
+    const tarjeta = h.tarjetas.at(-1)!;
+    expect(tarjeta.texto).toContain('ELIGIÓ HORARIO');
+    expect(tarjeta.datos[0]).toMatch(/^en:/);
+
+    await aprobarSaliente(Number(tarjeta.datos[0]!.slice(3)), h.deps);
+    await vaciar(h.deps);
     const confirmacion = h.enviados.at(-1)!;
     expect(confirmacion.ics).toContain('DTSTART:20260930T180000Z');
     expect(confirmacion.cc).toBe('gero@personal.com');
     expect(confirmacion.texto).toContain('meet.jit.si');
-    expect(h.avisos.some((a) => a.includes('REUNIÓN CONFIRMADA'))).toBe(true);
     expect(h.store.tareas.filter((t) => t.tipo === 'recordatorio')).toHaveLength(2);
+  });
+
+  it('si Gero no manda la confirmacion, el horario se libera', async () => {
+    const { h } = await eligioElPrimero();
+    const tarjeta = h.tarjetas.at(-1)!;
+    await descartarSaliente(Number(tarjeta.datos[1]!.slice(3)), h.deps);
+    expect(await h.store.reunionesDesde(new Date(0))).toHaveLength(0);
+    expect(h.store.leads[0]!.estado).toBe('respondio');
+  });
+
+  it('el recordatorio al cliente tambien espera el OK', async () => {
+    const { h } = await eligioElPrimero();
+    await aprobarSaliente(Number(h.tarjetas.at(-1)!.datos[0]!.slice(3)), h.deps);
+    await vaciar(h.deps);
+    const enviadosAntes = h.enviados.length;
+    h.mover(new Date('2026-09-30T16:05:00Z')); // 2hs antes
+    await vaciar(h.deps);
+    expect(h.enviados).toHaveLength(enviadosAntes);
+    expect(h.tarjetas.at(-1)!.texto).toContain('Recordatorio para La Distri');
   });
 
   it('si responde otra persona de la empresa, lo reconoce por el hilo y le contesta a ella', async () => {
