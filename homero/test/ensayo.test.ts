@@ -17,6 +17,8 @@ import { armar } from './armar.js';
 const borrador = JSON.stringify({
   encaja: true,
   motivo: 'pyme',
+  factibilidad: 8,
+  factibilidad_motivo: 'proceso manual claro',
   resumen_empresa: 'Estudio contable en Rosario',
   dolor: 'carga de facturas',
   idea: 'bot de facturas por WhatsApp',
@@ -49,17 +51,21 @@ describe('modo ensayo', () => {
     expect(await ensayoActivo(h.deps)).toBeUndefined();
   });
 
-  it('manda la muestra a Gero, con a quien iba, las fuentes y los seguimientos, y nada al cliente', async () => {
-    const { enviados, store } = await conUnBorrador();
+  it('al mail le llega el mail tal cual y a Telegram la informacion, y nada al cliente', async () => {
+    const h = await conUnBorrador();
+    const { enviados, store } = h;
     expect(enviados).toHaveLength(1);
     const m = enviados[0]!;
     expect(m.para).toBe('gero@personal.com');
-    expect(m.asunto).toBe('[ENSAYO] facturas del estudio');
-    expect(m.texto).toContain('Iba para: info@estudiox.com.ar');
-    expect(m.texto).toContain('https://www.openstreetmap.org/node/42');
-    expect(m.texto).toContain('https://estudiox.com.ar/contacto');
-    expect(m.texto).toContain('Hola, vi que son estudio contable...');
-    expect(m.texto).toContain('lo dejamos para más adelante');
+    // Al mail, exactamente lo que recibiria el cliente.
+    expect(m.asunto).toBe('facturas del estudio');
+    expect(m.texto).toBe('Hola, vi que son estudio contable...');
+    // Y la informacion, por Telegram.
+    const tarjeta = h.tarjetas[0]!.texto;
+    expect(tarjeta).toContain('Factibilidad: 8/10');
+    expect(tarjeta).toContain('https://www.openstreetmap.org/node/42');
+    expect(tarjeta).toContain('https://estudiox.com.ar/contacto');
+    expect(tarjeta).toContain('lo dejamos para más adelante');
     // No gasta cupo ni cambia al lead.
     expect(store.envios).toHaveLength(0);
     expect(store.leads[0]!.estado).toBe('borrador');
@@ -114,7 +120,7 @@ describe('modo ensayo', () => {
     await vaciar();
     const resp = h.enviados.at(-1)!;
     expect(resp.para).toBe('gero@personal.com');
-    expect(resp.asunto.startsWith('[ENSAYO]')).toBe(true);
+    expect(resp.asunto).toBe('Re: [ENSAYO] facturas del estudio');
     const idDeLaRespuesta = h.store.salientes.find((s) => s.tipo === 'respuesta')!.messageId!;
 
     // 3. Gero elige el horario: reserva, y la confirmacion con la invitacion le llega a el.

@@ -16,6 +16,8 @@ import { armar, casilla } from './armar.js';
 const borrador = JSON.stringify({
   encaja: true,
   motivo: 'pyme',
+  factibilidad: 8,
+  factibilidad_motivo: 'proceso manual claro',
   resumen_empresa: 'Distribuidora de bebidas en Rosario',
   dolor: 'toman pedidos por WhatsApp a mano',
   idea: 'bot que carga los pedidos solo',
@@ -91,6 +93,15 @@ describe('de la busqueda al primer mail', () => {
     await vaciar(h.deps);
     expect(h.tarjetas).toHaveLength(0);
     expect(h.store.leads[0]!.estado).toBe('aprobado');
+  });
+
+  it('descarta la propuesta poco factible aunque encaje', async () => {
+    const flojo = JSON.stringify({ ...JSON.parse(borrador), factibilidad: 4, factibilidad_motivo: 'unipersonal' });
+    const h = armar({ hallazgos: [hallazgo], sitio: { texto: 'x', mails: ['a@ladistri.com.ar'] }, pedirIa: async () => flojo });
+    await h.store.encolar({ tipo: 'prospectar', payload: { cantidad: 1 }, requiereIa: false });
+    await vaciar(h.deps);
+    expect(h.store.leads[0]!.estado).toBe('descartado');
+    expect(h.tarjetas).toHaveLength(0);
   });
 
   it('descarta el negocio sin mail o que no encaja', async () => {

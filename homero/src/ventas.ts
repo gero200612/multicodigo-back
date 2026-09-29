@@ -49,6 +49,9 @@ export interface DepsDeVentas extends DepsDeEnvio {
 }
 
 export const MODO = 'modo';
+
+/** Por debajo de esto la propuesta no se le pasa a Gero. */
+export const FACTIBILIDAD_MINIMA = 6;
 export type Modo = 'aprobar' | 'auto';
 
 export async function modoActual(store: Store): Promise<Modo> {
@@ -90,9 +93,12 @@ export async function prospectar(payload: unknown, deps: DepsDeVentas): Promise<
     hallados: hallazgos.length,
   });
 
+  // Se investiga el doble de lo pedido: los de baja factibilidad se descartan
+  // y asi a Gero le llegan los mejores.
+  const aInvestigar = p.cantidad * 2;
   let nuevos = 0;
   for (const h of hallazgos) {
-    if (nuevos >= p.cantidad) break;
+    if (nuevos >= aInvestigar) break;
     if (!h.web && !h.email) continue;
     const id = await deps.store.crearLead({
       nombre: h.nombre,
@@ -114,7 +120,7 @@ export async function prospectar(payload: unknown, deps: DepsDeVentas): Promise<
     nuevos++;
   }
 
-  const faltan = p.cantidad - nuevos;
+  const faltan = Math.ceil((aInvestigar - nuevos) / 2);
   if (faltan > 0 && p.vuelta < 2) {
     // Otra combinacion: sin rubro ni ciudad fijos, que elija de nuevo.
     await deps.store.encolar({
@@ -160,11 +166,20 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
   const b = leerBorrador(await deps.pedirIa(promptDeBorrador(lead, rubroPorId(lead.rubro), texto, deps.firma, chatbots)));
   if (!b) throw new Error('la IA no devolvio un borrador legible');
   if (!b.encaja) return descartar();
+  // Solo pasan las propuestas con chances reales: prioriza lo mas factible.
+  if (b.factibilidad < FACTIBILIDAD_MINIMA) return descartar();
 
   const fuentes = [linkDeFicha(lead.externo), ...paginas].filter((f): f is string => !!f);
   await deps.store.actualizarLead(lead.id, {
     estado: 'borrador',
-    investigacion: { resumen_empresa: b.resumen_empresa, dolor: b.dolor, idea: b.idea, fuentes },
+    investigacion: {
+      resumen_empresa: b.resumen_empresa,
+      dolor: b.dolor,
+      idea: b.idea,
+      factibilidad: b.factibilidad,
+      factibilidad_motivo: b.factibilidad_motivo,
+      fuentes,
+    },
   });
   const inicial = await deps.store.crearSaliente({
     leadId: lead.id,
@@ -190,9 +205,13 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
   const rubro = rubroPorId(lead.rubro);
   const tarjeta = [
     `✉️ NUEVO: ${lead.nombre} (${rubro?.nombre ?? lead.rubro}, ${lead.ciudad})`,
+    `Factibilidad: ${b.factibilidad}/10 · ${b.factibilidad_motivo}`,
     `Para: ${email}`,
+    lead.telefono ? `Tel: ${lead.telefono}` : undefined,
     `Qué hacen: ${b.resumen_empresa}`,
-    `Idea: ${b.idea}`,
+    `Qué les falta: ${b.dolor}`,
+    `Propuesta: ${b.idea}`,
+    chatbots.length ? `Ya tienen atención automática: ${chatbots.join(', ')} (no les ofrezco bot)` : undefined,
     fuentes.length ? `De dónde saqué la info:\n${fuentes.map((f) => `• ${f}`).join('\n')}` : undefined,
     '',
     `Asunto: ${b.asunto}`,
@@ -202,7 +221,7 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
     `— Seguimiento (a la semana, si no contesta): ${b.seguimiento}`,
     '',
     ensayo
-      ? `🧪 Ensayo: te lo mandé a ${ensayo} tal cual le llegaría. Al cliente no sale nada hasta /ensayo off.`
+      ? `🧪 Ensayo: te mandé a ${ensayo} el mail exactamente como le llegaría. Para probar la respuesta, contestalo desde ahí como si fueras ${lead.nombre}. Al cliente no sale nada hasta /ensayo off.`
       : 'Para cambiar el primer mail, respondé a este mensaje con el texto nuevo.',
   ]
     .filter((l) => l !== undefined)
@@ -237,42 +256,22 @@ export async function ensayoActivo(
 }
 
 /**
- * Le manda a Gero el mail de un lead tal cual lo recibiria el cliente (mismo
- * remitente, asunto y cuerpo), con un encabezado de a quien iba, de donde salio
- * la informacion y el seguimiento. No cuenta para el cupo ni toca al lead.
+ * Le manda a Gero el mail de un lead EXACTAMENTE como lo recibiria el cliente:
+ * mismo remitente, asunto y cuerpo, sin encabezados. La informacion (de donde
+ * salio, factibilidad, seguimiento) va por Telegram. No cuenta para el cupo ni
+ * toca al lead.
  */
 export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVentas): Promise<boolean> {
   const lead = await deps.store.lead(leadId);
   if (!lead || deps.casillas.length === 0) return false;
-  const salientes = await deps.store.salientesDeLead(leadId);
-  const inicial = salientes.find((s) => s.tipo === 'inicial');
+  const inicial = (await deps.store.salientesDeLead(leadId)).find((s) => s.tipo === 'inicial');
   if (!inicial) return false;
-  const seguimientos = salientes.filter((s) => s.tipo === 'seguimiento');
-  const fuentes =
-    lead.investigacion?.fuentes ?? [linkDeFicha(lead.externo), lead.web].filter((f): f is string => !!f);
-  const rubro = rubroPorId(lead.rubro)?.nombre ?? lead.rubro;
-
-  const encabezado = [
-    '──────── ENSAYO: esto NO le llegó al cliente ────────',
-    `Iba para: ${lead.email} (${lead.nombre}, ${rubro}, ${lead.ciudad})`,
-    lead.telefono ? `Teléfono: ${lead.telefono}` : undefined,
-    `Qué hacen: ${lead.investigacion?.resumen_empresa ?? '-'}`,
-    `Idea propuesta: ${lead.investigacion?.idea ?? '-'}`,
-    'De dónde saqué la info:',
-    ...(fuentes.length ? fuentes.map((f) => `  • ${f}`) : ['  • (sin links)']),
-    '──────── abajo, el mail tal cual ────────',
-  ].filter((l) => l !== undefined);
-  const cola = seguimientos.flatMap((s) => [
-    '',
-    '──────── seguimiento (a la semana, solo si no contesta, mismo hilo) ────────',
-    s.cuerpo,
-  ]);
 
   const casilla = casillaDeLead(deps.casillas, leadId);
   const { messageId } = await deps.correo.enviar(casilla, deps.remitente, {
     para: a,
-    asunto: `[ENSAYO] ${inicial.asunto}`,
-    texto: [...encabezado, '', inicial.cuerpo, ...cola, '', '──────── para probar la respuesta ────────', 'Respondé este mail como si fueras el cliente y te muestro qué haría.'].join('\n'),
+    asunto: inicial.asunto,
+    texto: inicial.cuerpo,
   });
   // Para reconocer la respuesta de Gero a esta muestra como si fuera del cliente.
   if (messageId) await deps.store.guardarEstado(`muestra:${messageId}`, leadId);
@@ -436,7 +435,7 @@ export async function enviarSaliente(
     casilla,
     {
       para,
-      asunto: ensayo ? `[ENSAYO] ${s.asunto.replace(/\[ENSAYO\]\s*/g, '')}` : s.asunto,
+      asunto: s.asunto,
       texto: s.cuerpo,
       enRespuestaA,
       ics,

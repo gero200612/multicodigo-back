@@ -31,6 +31,9 @@ export const Borrador = z.object({
   resumen_empresa: z.string(),
   dolor: z.string(),
   idea: z.string(),
+  /** Que tan probable es que esta propuesta les sirva y la compren, de 1 a 10. */
+  factibilidad: z.coerce.number().int().min(1).max(10),
+  factibilidad_motivo: z.string(),
   // Vacios cuando no encaja: un descarte no trae mail. Si encaja y vienen
   // vacios, `leerBorrador` lo rechaza.
   asunto: z.string().max(80),
@@ -68,7 +71,7 @@ Rubro buscado: ${rubro?.nombre ?? l.rubro}
 Ciudad: ${l.ciudad}
 Web: ${l.web ?? 'sin web'}
 
-Ideas que suelen servirle a este rubro:
+Ideas que suelen servirle a este rubro (SOLO inspiración: la propuesta tiene que salir de lo que ves en SU web; cada negocio tiene necesidades distintas, y si ves algo más específico o mejor, usalo):
 ${ideas}
 
 ${chatbots.length ? `⚠️ Su web YA tiene atención automática (${chatbots.join(', ')}). NO les ofrezcas un bot de consultas ni de atención: ya lo tienen conectado a su sistema. Entrá por otro lado: una aplicación para un proceso interno (facturación, cobranzas, recepción de comprobantes, stock, turnos, reportes). Si no hay otro ángulo creíble, "encaja" es false.
@@ -99,13 +102,19 @@ Seguimiento (va en el mismo hilo, sin asunto):
 
 "encaja" es false si la web es un directorio, portal o red de terceros y no la web propia del negocio (por ejemplo una ficha dentro de veterinarias.com.ar, zonaprop o un listado), si no es una pyme de ARGENTINA (mirá la dirección, el teléfono +54 y la web: si es de otro país, es false), si no le sirve (cadena enorme, organismo público, web de otra cosa, negocio cerrado) o si no hay de qué agarrarse.
 
+Antes de escribir, analizá qué necesita ESTE negocio: qué hacen, cómo trabajan hoy (turnos, pedidos, cobros, consultas, papeles) y qué parte se ve manual o sin resolver. La propuesta tiene que ser específica para ellos.
+
+Factibilidad (1 a 10): qué tan probable es que les sirva y la contraten. Sumá si se ve un proceso manual claro y repetitivo, si el negocio tiene volumen (varios profesionales, sucursales, muchos clientes) y si la propuesta es concreta. Restá si ya tienen resuelto eso, si es muy chico o unipersonal, si la web está abandonada o si la idea es genérica. Sé exigente: un 8 o más es una propuesta que Gero mandaría sin dudar.
+
 Contestá con este JSON:
 {
   "encaja": true,
   "motivo": "por qué encaja o no, en una oración",
   "resumen_empresa": "qué hace el negocio, en una o dos oraciones",
   "dolor": "el proceso que probablemente les come tiempo",
-  "idea": "la automatización que le proponés",
+  "idea": "la aplicación que les proponés, específica para ellos",
+  "factibilidad": 7,
+  "factibilidad_motivo": "por qué ese puntaje, en una oración",
   "asunto": "...",
   "mensaje": "...",
   "seguimiento": "..."

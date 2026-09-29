@@ -1,9 +1,9 @@
 /**
  * A quien se le escribe.
  *
- * Cada rubro trae con que buscarlo (texto para Google, etiquetas para
- * OpenStreetMap) y dos ideas de automatizacion que le sirven, para que el mail
- * hable de algo concreto de SU negocio y no de "automatizamos procesos".
+ * Veinte tipos de negocio. Cada uno trae con que buscarlo (texto para Google,
+ * etiquetas para OpenStreetMap) e ideas de automatizacion como INSPIRACION: la
+ * propuesta la arma la IA para cada negocio segun lo que ve en su web.
  */
 export interface Rubro {
   id: string;
@@ -22,19 +22,20 @@ export const RUBROS: Rubro[] = [
     busqueda: 'estudio contable',
     osm: ['["office"="accountant"]', '["office"="tax_advisor"]'],
     ideas: [
-      'una aplicación donde los clientes mandan sus facturas por WhatsApp y quedan cargadas y ordenadas solas por cliente y por mes',
-      'facturación automática: las facturas de cada cliente se generan solas, sin cargarlas a mano',
-      'recordatorios automáticos de vencimientos y pedido de comprobantes a cada cliente',
+      'recepción de facturas y comprobantes por WhatsApp que quedan cargados y ordenados por cliente y por mes',
+      'facturación automática de los clientes del estudio',
+      'recordatorios automáticos de vencimientos y pedido de documentación',
     ],
   },
   {
-    id: 'distribuidora',
-    nombre: 'distribuidora',
-    busqueda: 'distribuidora mayorista',
-    osm: ['["shop"="wholesale"]', '["office"="wholesale"]'],
+    id: 'juridico',
+    nombre: 'estudio jurídico',
+    busqueda: 'estudio jurídico abogados',
+    osm: ['["office"="lawyer"]'],
     ideas: [
-      'toma de pedidos por WhatsApp que carga el pedido solo y avisa a depósito',
-      'facturas y remitos que se generan automáticos con el pedido',
+      'seguimiento de expedientes con avisos automáticos al cliente del estado de su caso',
+      'recepción y orden de la documentación de cada cliente',
+      'agenda de audiencias y vencimientos con recordatorios',
     ],
   },
   {
@@ -43,48 +44,41 @@ export const RUBROS: Rubro[] = [
     busqueda: 'inmobiliaria',
     osm: ['["office"="estate_agent"]'],
     ideas: [
-      'un bot que responde consultas de propiedades 24/7 y agenda visitas',
       'cobro de alquileres con recordatorios y recibos automáticos',
+      'administración de propiedades: vencimientos de contratos, ajustes e inquilinos en un solo lugar',
+      'respuesta de consultas y agenda de visitas',
     ],
   },
   {
     id: 'consultorio',
-    nombre: 'consultorio o clínica',
+    nombre: 'consultorio médico o clínica',
     busqueda: 'consultorio médico',
-    osm: ['["amenity"="clinic"]', '["amenity"="doctors"]', '["amenity"="dentist"]'],
+    osm: ['["amenity"="clinic"]', '["amenity"="doctors"]'],
     ideas: [
-      'turnos por WhatsApp con confirmación y recordatorio automático (menos ausencias)',
-      'carga automática de órdenes y autorizaciones de obras sociales',
+      'turnos con confirmación y recordatorio automático (menos ausencias)',
+      'carga de órdenes y autorizaciones de obras sociales',
+      'historia clínica y facturación a obras sociales ordenadas',
     ],
   },
   {
-    id: 'taller',
-    nombre: 'taller mecánico',
-    busqueda: 'taller mecánico',
-    osm: ['["shop"="car_repair"]'],
+    id: 'odontologia',
+    nombre: 'consultorio odontológico',
+    busqueda: 'odontólogo',
+    osm: ['["amenity"="dentist"]', '["healthcare"="dentist"]'],
     ideas: [
-      'presupuestos que se arman solos y se mandan por WhatsApp con aprobación',
-      'aviso automático al cliente cuando el auto está listo y recordatorio de service',
+      'turnos con recordatorio y confirmación automáticos',
+      'presupuestos de tratamientos y seguimiento de pagos en cuotas',
+      'recordatorio de controles periódicos a cada paciente',
     ],
   },
   {
-    id: 'gastronomia',
-    nombre: 'restaurante',
-    busqueda: 'restaurante',
-    osm: ['["amenity"="restaurant"]'],
+    id: 'kinesiologia',
+    nombre: 'centro de kinesiología',
+    busqueda: 'kinesiología',
+    osm: ['["healthcare"="physiotherapist"]'],
     ideas: [
-      'control de stock y costos que se actualiza solo con las facturas de proveedores',
-      'pedidos y reservas por WhatsApp que entran directo al sistema',
-    ],
-  },
-  {
-    id: 'logistica',
-    nombre: 'empresa de logística',
-    busqueda: 'empresa de logística transporte',
-    osm: ['["office"="logistics"]', '["office"="moving_company"]'],
-    ideas: [
-      'seguimiento de envíos con avisos automáticos al cliente por WhatsApp',
-      'carga automática de remitos y guías desde una foto',
+      'agenda de sesiones con recordatorios y control de sesiones autorizadas por obra social',
+      'seguimiento de pacientes y cobro de sesiones',
     ],
   },
   {
@@ -94,7 +88,30 @@ export const RUBROS: Rubro[] = [
     osm: ['["amenity"="veterinary"]'],
     ideas: [
       'recordatorios automáticos de vacunas y controles a cada dueño',
-      'turnos por WhatsApp con confirmación',
+      'turnos y fichas de cada mascota en un solo lugar',
+      'stock de alimentos y medicamentos',
+    ],
+  },
+  {
+    id: 'optica',
+    nombre: 'óptica',
+    busqueda: 'óptica',
+    osm: ['["shop"="optician"]'],
+    ideas: [
+      'aviso automático cuando los anteojos están listos',
+      'recetas y graduaciones de cada cliente ordenadas, con recordatorio de control anual',
+      'pedidos a laboratorio y stock de armazones',
+    ],
+  },
+  {
+    id: 'estetica',
+    nombre: 'centro de estética o peluquería',
+    busqueda: 'centro de estética',
+    osm: ['["shop"="beauty"]', '["shop"="hairdresser"]'],
+    ideas: [
+      'turnos online con recordatorio y seña',
+      'fichas de clientas y recordatorio para volver a reservar',
+      'caja y comisiones de cada profesional',
     ],
   },
   {
@@ -103,18 +120,114 @@ export const RUBROS: Rubro[] = [
     busqueda: 'gimnasio',
     osm: ['["leisure"="fitness_centre"]'],
     ideas: [
-      'cobro de cuotas con recordatorio y aviso de vencidos automático',
-      'reservas de clases por WhatsApp',
+      'cobro de cuotas con recordatorio y aviso de vencidos',
+      'reservas de clases con cupo',
+      'control de acceso y asistencia de socios',
+    ],
+  },
+  {
+    id: 'instituto',
+    nombre: 'instituto o academia',
+    busqueda: 'instituto de idiomas academia',
+    osm: ['["amenity"="language_school"]', '["amenity"="music_school"]', '["amenity"="driving_school"]'],
+    ideas: [
+      'inscripciones y cobro de cuotas con recordatorios',
+      'asistencia, notas y comunicación con alumnos o padres',
+    ],
+  },
+  {
+    id: 'taller',
+    nombre: 'taller mecánico',
+    busqueda: 'taller mecánico',
+    osm: ['["shop"="car_repair"]'],
+    ideas: [
+      'presupuestos que se arman y se aprueban por WhatsApp',
+      'aviso automático cuando el auto está listo y recordatorio de service',
+      'historial de cada vehículo y repuestos usados',
+    ],
+  },
+  {
+    id: 'distribuidora',
+    nombre: 'distribuidora',
+    busqueda: 'distribuidora mayorista',
+    osm: ['["shop"="wholesale"]', '["office"="wholesale"]'],
+    ideas: [
+      'toma de pedidos que se cargan solos y avisan a depósito',
+      'facturas y remitos automáticos con cada pedido',
+      'cuenta corriente de clientes y cobranzas',
     ],
   },
   {
     id: 'ferreteria',
     nombre: 'ferretería o corralón',
     busqueda: 'corralón materiales construcción',
-    osm: ['["shop"="hardware"]', '["shop"="doityourself"]'],
+    osm: ['["shop"="hardware"]', '["shop"="doityourself"]', '["shop"="trade"]'],
     ideas: [
-      'presupuestos por WhatsApp que se arman solos con la lista de precios',
+      'presupuestos que se arman solos con la lista de precios',
       'actualización automática de precios con las listas de proveedores',
+      'stock y reposición',
+    ],
+  },
+  {
+    id: 'gastronomia',
+    nombre: 'restaurante o café',
+    busqueda: 'restaurante',
+    osm: ['["amenity"="restaurant"]', '["amenity"="cafe"]'],
+    ideas: [
+      'control de stock y costos que se actualiza con las facturas de proveedores',
+      'pedidos y reservas que entran directo al sistema',
+    ],
+  },
+  {
+    id: 'logistica',
+    nombre: 'empresa de logística o transporte',
+    busqueda: 'empresa de logística transporte',
+    osm: ['["office"="logistics"]', '["office"="moving_company"]', '["shop"="courier"]'],
+    ideas: [
+      'seguimiento de envíos con avisos automáticos al cliente',
+      'carga de remitos y guías desde una foto',
+      'liquidación de choferes y viajes',
+    ],
+  },
+  {
+    id: 'seguros',
+    nombre: 'productor de seguros',
+    busqueda: 'productor de seguros',
+    osm: ['["office"="insurance"]'],
+    ideas: [
+      'avisos automáticos de vencimientos y renovaciones de pólizas',
+      'recepción de denuncias de siniestros con fotos por WhatsApp',
+      'cartera de clientes y pólizas ordenada',
+    ],
+  },
+  {
+    id: 'viajes',
+    nombre: 'agencia de viajes',
+    busqueda: 'agencia de viajes',
+    osm: ['["shop"="travel_agency"]', '["office"="travel_agent"]'],
+    ideas: [
+      'cotizaciones que se arman y se mandan solas',
+      'seguimiento de reservas, pagos y documentación de cada pasajero',
+    ],
+  },
+  {
+    id: 'arquitectura',
+    nombre: 'estudio de arquitectura o constructora',
+    busqueda: 'estudio de arquitectura constructora',
+    osm: ['["office"="architect"]', '["office"="construction_company"]'],
+    ideas: [
+      'seguimiento de obras con avance, gastos y certificados',
+      'presupuestos y compras de materiales por obra',
+    ],
+  },
+  {
+    id: 'imprenta',
+    nombre: 'imprenta o gráfica',
+    busqueda: 'imprenta gráfica',
+    osm: ['["shop"="copyshop"]', '["craft"="printer"]'],
+    ideas: [
+      'pedidos y presupuestos que se arman solos según cantidad y material',
+      'aviso automático cuando el trabajo está listo',
     ],
   },
 ];
@@ -163,12 +276,12 @@ export interface Rendimiento {
  *
  * Mayormente el que mejor responde (tasa de respuesta con un previo de 1/10
  * para que un rubro con 1 de 1 no gane por suerte), y cada tanto uno cualquiera
- * para seguir aprendiendo. Los que nunca se probaron van primero, EN ORDEN:
- * la lista arranca por estudios contables, que es donde mejor encaja.
+ * para seguir aprendiendo. Los que nunca se probaron van primero, al azar:
+ * que se prueben los veinte y los numeros digan cual rinde.
  */
 export function elegirRubro(stats: Rendimiento[], azar: () => number = Math.random): Rubro {
   const sinProbar = RUBROS.filter((r) => !stats.some((s) => s.rubro === r.id && s.contactados > 0));
-  if (sinProbar.length > 0) return sinProbar[0]!;
+  if (sinProbar.length > 0) return sinProbar[Math.floor(azar() * sinProbar.length)]!;
   if (azar() < 0.2) return RUBROS[Math.floor(azar() * RUBROS.length)]!;
 
   const tasa = (r: Rubro) => {

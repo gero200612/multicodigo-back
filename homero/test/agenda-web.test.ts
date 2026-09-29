@@ -93,7 +93,7 @@ describe('si ya tienen bot', () => {
 });
 
 describe('leerBorrador', () => {
-  const base = { motivo: 'x', resumen_empresa: 'x', dolor: 'x', idea: 'x' };
+  const base = { motivo: 'x', resumen_empresa: 'x', dolor: 'x', idea: 'x', factibilidad: 7, factibilidad_motivo: 'x' };
   it('un descarte con los campos vacios se lee como descarte, no como error', () => {
     const t = '```json\n' + JSON.stringify({ ...base, encaja: false, asunto: '', mensaje: '', seguimiento: '' }) + '\n```';
     expect(leerBorrador(t)?.encaja).toBe(false);
@@ -104,8 +104,10 @@ describe('leerBorrador', () => {
 });
 
 describe('rubros', () => {
-  it('arranca por estudios contables', () => {
-    expect(elegirRubro([], () => 0.99).id).toBe('contable');
+  it('son veinte y los que nunca se probaron salen al azar, no siempre el mismo', () => {
+    expect(RUBROS).toHaveLength(20);
+    expect(elegirRubro([], () => 0).id).toBe(RUBROS[0]!.id);
+    expect(elegirRubro([], () => 0.99).id).toBe(RUBROS[19]!.id);
   });
 
   it('prueba primero los que nunca se probaron', () => {

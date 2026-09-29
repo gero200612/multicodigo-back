@@ -28,6 +28,8 @@ export interface Investigacion {
   resumen_empresa: string;
   dolor: string;
   idea: string;
+  factibilidad?: number;
+  factibilidad_motivo?: string;
   /** De donde salio la informacion: la ficha del lugar y las paginas leidas. */
   fuentes?: string[];
 }
