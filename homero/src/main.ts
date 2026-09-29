@@ -8,7 +8,7 @@ import { fuenteGoogle, fuenteOsm } from './fuentes.js';
 import { pedirTexto } from './ia.js';
 import { SISTEMA } from './prompts.js';
 import { PgStore } from './store.js';
-import { crearBot, NOMBRE } from './telegram.js';
+import { COMANDOS, crearBot, NOMBRE } from './telegram.js';
 import {
   aprobarLead,
   aprobarSaliente,
@@ -110,6 +110,8 @@ async function main() {
   // Polling y no webhook: Homero no necesita entrada publica, y asi no hay
   // host de cloudflared ni secreto que mantener.
   await bot.api.deleteWebhook();
+  // El boton de menu con todos los comandos. Si falla, el bot anda igual.
+  await bot.api.setMyCommands(COMANDOS).catch((e) => console.warn('[homero] no pude cargar el menu:', e));
   void bot.start({
     onStart: () => console.log(`[homero] ${NOMBRE} escuchando en Telegram`),
   });

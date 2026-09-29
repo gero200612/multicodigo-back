@@ -12,6 +12,25 @@ import { ENSAYO, MODO, modoActual, tablaDeRubros, type Boton } from './ventas.js
 
 export const NOMBRE = 'Homero';
 
+/** Lo que aparece en el boton de menu de Telegram, al lado del campo de texto. */
+export const COMANDOS = [
+  { command: 'estado', description: 'Cómo vengo: pausas, cupo y borradores' },
+  { command: 'hoy', description: 'Números del día' },
+  { command: 'buscar', description: 'Salir a buscar ya: /buscar [rubro] [zona]' },
+  { command: 'cortar', description: 'Cancelar las búsquedas pendientes' },
+  { command: 'pausa', description: 'Frenar todo (las bandejas se siguen leyendo)' },
+  { command: 'seguir', description: 'Retomar después de /pausa' },
+  { command: 'reuniones', description: 'Las próximas reuniones' },
+  { command: 'ocupado', description: 'Bloquear un día: /ocupado 30/9' },
+  { command: 'libre', description: 'Liberar un día: /libre 30/9' },
+  { command: 'rubros', description: 'Cómo responde cada rubro' },
+  { command: 'ensayo', description: 'Modo ensayo: /ensayo [mail] | off' },
+  { command: 'modo', description: 'Pedir OK o automático: /modo aprobar | auto' },
+  { command: 'probar_ia', description: 'Probar que Claude responde' },
+  { command: 'probar_mail', description: 'Mail de prueba: /probar_mail tu@mail.com' },
+  { command: 'start', description: 'Ayuda' },
+];
+
 /**
  * Lo que los botones y comandos le piden al resto de Homero. Se inyecta
  * despues de armar el bot porque esas acciones necesitan el `proponer` del
