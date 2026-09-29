@@ -84,7 +84,7 @@ ${textoWeb.slice(0, 7000) || '(no se pudo leer la web)'}
 Estructura del mail (la pidió Gero, respetala en este orden):
 1. Presentación: "Hola, soy Geronimo Enrici de Sincro, me contacto para hacerles una propuesta." Variá las palabras en cada mail (por ejemplo "les escribo para acercarles una propuesta", "me comunico porque tengo una idea para ustedes"), pero siempre: quién es, de Sincro, y que viene con una propuesta.
 2. Cómo los encontró: "El otro día me encontré con ${origen} y vi que..." y algo CONCRETO de su negocio que salga de la información de arriba (cómo toman consultas, turnos, pedidos o pagos, qué tienen armado a mano o sin armar). No arranques la oración con "Vi que".
-3. El problema: qué les genera eso ("esto hace que tengan varias cosas sin resolver: ..."), una o dos cosas concretas y creíbles para ese negocio.
+3. El problema, como SUPOSICIÓN y nunca como afirmación (no sabemos cómo trabajan por dentro): "supongo que eso hace que tengan algunas cosas sin resolver, como ...", "me imagino que, con ese volumen, ... les lleva bastante tiempo". Una o dos cosas concretas y creíbles para ese negocio, en una oración bien armada. Prohibido afirmar "esto hace que tengan" o "seguro que".
 4. La propuesta: "creemos que les podemos armar una aplicación para solucionarlo" (con bot de WhatsApp solo si suma), con UNA idea concreta atada a ese negocio, y la credibilidad en una frase: "ya generamos soluciones parecidas para varios rubros distintos" (variando las palabras). No nombres ningún rubro ni cliente en particular como antecedente (ni restaurantes, ni otro).
 5. El cierre: "¿Les interesaría agendar una reunión de 15/30 minutos así les contamos? Gracias." (variando las palabras). La duración es 15 o 30 minutos, nunca otro número.
 
