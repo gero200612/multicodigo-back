@@ -1,0 +1,65 @@
+import { z } from 'zod';
+
+/** Una casilla de Gmail con su contraseña de aplicacion. */
+export interface Casilla {
+  email: string;
+  clave: string;
+}
+
+// Un `${VAR:-}` del compose llega como string vacio, no como ausente. Sin esto
+// `z.coerce.number()` convierte '' en 0 y el bot quedaria "vinculado" al chat 0.
+const opcional = <T extends z.ZodTypeAny>(s: T) =>
+  z.preprocess((v) => (v === '' ? undefined : v), s.optional());
+
+const Env = z.object({
+  TELEGRAM_BOT_TOKEN: z.string().min(1),
+  // Sin esto el bot solo contesta /start con el id del chat, para poder
+  // configurarlo. Ver `telegram.ts`.
+  HOMERO_CHAT_ID: opcional(z.coerce.number().int()),
+  DATABASE_URL: z.string().min(1),
+  HOMERO_MODELO: z.string().min(1).default('sonnet'),
+  HOMERO_REMITENTE: z.string().min(1).default('Gero · Sincro'),
+  HOMERO_BANDEJA_MIN: z.coerce.number().int().min(1).default(10),
+  HOMERO_GMAIL_1_USER: opcional(z.string().email()),
+  HOMERO_GMAIL_1_PASS: opcional(z.string().min(1)),
+  HOMERO_GMAIL_2_USER: opcional(z.string().email()),
+  HOMERO_GMAIL_2_PASS: opcional(z.string().min(1)),
+  HOMERO_GMAIL_3_USER: opcional(z.string().email()),
+  HOMERO_GMAIL_3_PASS: opcional(z.string().min(1)),
+});
+
+export interface Config {
+  telegramToken: string;
+  chatId?: number;
+  databaseUrl: string;
+  modelo: string;
+  remitente: string;
+  bandejaCadaMs: number;
+  casillas: Casilla[];
+}
+
+export function leerConfig(env: NodeJS.ProcessEnv): Config {
+  const e = Env.parse(env);
+  const casillas: Casilla[] = [];
+  for (const n of [1, 2, 3] as const) {
+    const email = e[`HOMERO_GMAIL_${n}_USER`];
+    const clave = e[`HOMERO_GMAIL_${n}_PASS`];
+    if (!email && !clave) continue;
+    if (!email || !clave) {
+      throw new Error(`HOMERO_GMAIL_${n}: falta el USER o el PASS, van los dos juntos`);
+    }
+    // Google muestra la contraseña de aplicacion en grupos de cuatro con
+    // espacios. Acepta las dos formas, pero con espacios no sobrevive a
+    // /root/mc.env sin comillas.
+    casillas.push({ email: email.toLowerCase(), clave: clave.replace(/\s+/g, '') });
+  }
+  return {
+    telegramToken: e.TELEGRAM_BOT_TOKEN,
+    chatId: e.HOMERO_CHAT_ID,
+    databaseUrl: e.DATABASE_URL,
+    modelo: e.HOMERO_MODELO,
+    remitente: e.HOMERO_REMITENTE,
+    bandejaCadaMs: e.HOMERO_BANDEJA_MIN * 60_000,
+    casillas,
+  };
+}

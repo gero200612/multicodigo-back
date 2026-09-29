@@ -1,0 +1,5 @@
+# Desde pnpm 10 la lista de scripts de instalacion permitidos vive aca y no en
+# package.json. Sin esto el postinstall de esbuild (que usa vitest) no corre y
+# el install falla.
+allowBuilds:
+  esbuild: true
