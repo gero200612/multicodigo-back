@@ -20,6 +20,12 @@ const Env = z.object({
   HOMERO_MODELO: z.string().min(1).default('sonnet'),
   HOMERO_REMITENTE: z.string().min(1).default('Gero · Sincro'),
   HOMERO_BANDEJA_MIN: z.coerce.number().int().min(1).default(10),
+  // Como firma los mails. Un nombre de persona responde mas que una marca.
+  HOMERO_FIRMA: z.string().min(1).default('Gero'),
+  // Adonde le llega a Gero la invitacion de cada reunion.
+  HOMERO_EMAIL_GERO: opcional(z.string().email()),
+  // Sin esto se busca en OpenStreetMap, que es gratis y no pide cuenta.
+  GOOGLE_PLACES_API_KEY: opcional(z.string().min(1)),
   HOMERO_GMAIL_1_USER: opcional(z.string().email()),
   HOMERO_GMAIL_1_PASS: opcional(z.string().min(1)),
   HOMERO_GMAIL_2_USER: opcional(z.string().email()),
@@ -35,6 +41,9 @@ export interface Config {
   modelo: string;
   remitente: string;
   bandejaCadaMs: number;
+  firma: string;
+  emailGero?: string;
+  placesKey?: string;
   casillas: Casilla[];
 }
 
@@ -60,6 +69,9 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
     modelo: e.HOMERO_MODELO,
     remitente: e.HOMERO_REMITENTE,
     bandejaCadaMs: e.HOMERO_BANDEJA_MIN * 60_000,
+    firma: e.HOMERO_FIRMA,
+    emailGero: e.HOMERO_EMAIL_GERO,
+    placesKey: e.GOOGLE_PLACES_API_KEY,
     casillas,
   };
 }

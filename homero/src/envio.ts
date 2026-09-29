@@ -9,6 +9,10 @@ export interface MailSaliente {
   texto: string;
   /** Message-ID del mail al que se contesta, para que quede en el mismo hilo. */
   enRespuestaA?: string;
+  /** Invitacion de calendario (.ics) para adjuntar. */
+  ics?: string;
+  /** Copia (la invitacion a Gero). */
+  cc?: string;
 }
 
 /** El transporte, aparte para poder testear sin Gmail. */
@@ -31,6 +35,8 @@ export const correoGmail: Correo = {
       text: m.texto,
       inReplyTo: m.enRespuestaA,
       references: m.enRespuestaA,
+      cc: m.cc,
+      icalEvent: m.ics ? { method: 'REQUEST', filename: 'reunion.ics', content: m.ics } : undefined,
       // Gmail y Yahoo lo piden a quien manda en cantidad. Una respuesta con
       // "baja" la toma la bandeja y el remitente entra en homero.bajas.
       list: { unsubscribe: { url: `mailto:${casilla.email}?subject=baja`, comment: 'baja' } },
@@ -61,7 +67,10 @@ export function cupoDelDia(primerEnvio: Date | undefined, ahora: Date): number {
 export type ResultadoDeEnvio =
   | { tipo: 'enviado'; messageId?: string }
   | { tipo: 'baja' }
-  | { tipo: 'esperar'; hasta: Date; motivo: 'fuera_de_horario' | 'sin_cupo' };
+  | { tipo: 'esperar'; hasta: Date; motivo: 'fuera_de_horario' | 'sin_cupo' | 'casilla_pausada' };
+
+/** Clave en homero.estado de una casilla frenada por rebotes. */
+export const casillaPausada = (email: string) => `casilla_pausada:${email}`;
 
 export interface DepsDeEnvio {
   store: Store;
@@ -74,18 +83,26 @@ export interface DepsDeEnvio {
  * Manda un mail respetando las reglas que NO se le dejan al modelo: la lista
  * de bajas, el horario y el cupo diario de la casilla.
  *
- * `prueba` saltea el horario (para /probar_mail un domingo), no el cupo.
+ * `enHilo` es para contestarle a alguien que ya escribio (respuestas,
+ * confirmaciones, recordatorios): saltea horario y cupo, porque contestar
+ * rapido a un interesado es lo que mas reuniones cierra, y un mail en un hilo
+ * vivo no es frio. `prueba` saltea solo el horario (para /probar_mail un domingo).
  */
 export async function enviarMail(
   deps: DepsDeEnvio,
   casilla: Casilla,
   m: MailSaliente,
-  opciones: { prueba?: boolean } = {},
+  opciones: { prueba?: boolean; enHilo?: boolean } = {},
 ): Promise<ResultadoDeEnvio> {
   const ahora = deps.ahora();
   if (await deps.store.esBaja(m.para)) return { tipo: 'baja' };
 
-  if (!opciones.prueba) {
+  const pausa = await deps.store.leerEstado<{ hasta: string }>(casillaPausada(casilla.email));
+  if (pausa && new Date(pausa.hasta).getTime() > ahora.getTime()) {
+    return { tipo: 'esperar', hasta: new Date(pausa.hasta), motivo: 'casilla_pausada' };
+  }
+
+  if (!opciones.prueba && !opciones.enHilo) {
     const ventana = proximaVentanaDeEnvio(ahora);
     if (ventana.getTime() > ahora.getTime()) {
       return { tipo: 'esperar', hasta: ventana, motivo: 'fuera_de_horario' };
@@ -94,7 +111,7 @@ export async function enviarMail(
 
   const cupo = cupoDelDia(await deps.store.primerEnvio(casilla.email), ahora);
   const hechos = await deps.store.enviosDesde(casilla.email, inicioDelDia(ahora));
-  if (hechos >= cupo) {
+  if (!opciones.enHilo && hechos >= cupo) {
     const manana = new Date(inicioDelDia(ahora).getTime() + DIA);
     return { tipo: 'esperar', hasta: proximaVentanaDeEnvio(manana), motivo: 'sin_cupo' };
   }

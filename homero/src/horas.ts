@@ -75,3 +75,21 @@ export function instanteDeReset(texto: string, ahora: Date): Date | undefined {
   );
   return new Date(objetivo <= ahora.getTime() ? objetivo + 24 * HORA : objetivo);
 }
+
+/** Hora, minuto y dia de la semana en Argentina (0 = domingo). */
+export function relojArgentino(d: Date): { hora: number; minuto: number; diaSemana: number } {
+  const l = local(d);
+  return { hora: l.getUTCHours(), minuto: l.getUTCMinutes(), diaSemana: l.getUTCDay() };
+}
+
+/** Suma dias habiles (lunes a viernes) manteniendo la hora. */
+export function sumarDiasHabiles(d: Date, dias: number): Date {
+  let t = d.getTime();
+  let faltan = dias;
+  while (faltan > 0) {
+    t += 24 * HORA;
+    const dia = local(new Date(t)).getUTCDay();
+    if (dia >= 1 && dia <= 5) faltan--;
+  }
+  return new Date(t);
+}

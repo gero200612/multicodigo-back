@@ -1,10 +1,19 @@
 import { z } from 'zod';
-import type { Casilla } from './config.js';
-import { enviarMail, type DepsDeEnvio } from './envio.js';
+import { enviarMail } from './envio.js';
 import { horaArgentina } from './horas.js';
-import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite, pedirTexto } from './ia.js';
-import { leerResumen, promptDeResumen, SISTEMA, type Resumen } from './prompts.js';
-import type { Recibido, Store, Tarea } from './store.js';
+import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
+import type { Recibido, Tarea } from './store.js';
+import {
+  atenderRespuesta,
+  enviarSaliente,
+  investigar,
+  prospectar,
+  recordatorio,
+  resumenDiario,
+  type DepsDeVentas,
+} from './ventas.js';
+
+export { direccion } from './ventas.js';
 
 /** Clave en homero.estado de la pausa de la IA. */
 export const PAUSA_IA = 'ia_pausada';
@@ -16,13 +25,7 @@ interface PausaDeIa {
   motivo: 'limite' | 'cuenta';
 }
 
-export interface DepsDeCola extends DepsDeEnvio {
-  casillas: Casilla[];
-  modelo?: string;
-  avisar: (texto: string) => Promise<void>;
-  /** Por defecto la IA de verdad. Los tests pasan una falsa. */
-  pedirIa?: (prompt: string) => Promise<string>;
-}
+export type DepsDeCola = DepsDeVentas;
 
 /** Despues de tantos fallos que no son de la IA, la tarea se da por perdida. */
 const TOPE_DE_INTENTOS = 5;
@@ -97,7 +100,9 @@ async function manejarError(tarea: Tarea, err: unknown, deps: DepsDeCola) {
   const mensaje = err instanceof Error ? err.message : String(err);
   if (tarea.intentos + 1 >= TOPE_DE_INTENTOS) {
     await deps.store.fallar(tarea.id, mensaje);
-    await deps.avisar(`❌ No pude hacer una tarea (${tarea.tipo}) después de ${TOPE_DE_INTENTOS} intentos: ${mensaje.slice(0, 300)}`);
+    await deps.avisar(
+      `❌ No pude hacer una tarea (${tarea.tipo}) después de ${TOPE_DE_INTENTOS} intentos: ${mensaje.slice(0, 300)}`,
+    );
     return;
   }
   // Espera creciente: 1, 2, 4, 8 minutos.
@@ -111,50 +116,29 @@ async function manejarError(tarea: Tarea, err: unknown, deps: DepsDeCola) {
 async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPara: Date } | void> {
   switch (tarea.tipo) {
     case 'enviar_mail': {
+      // Solo /probar_mail: los mails a leads van por `enviar_saliente`.
       const p = PayloadDeEnvio.parse(tarea.payload);
       const casilla = deps.casillas.find((c) => c.email === p.casilla);
       if (!casilla) throw new Error(`la casilla ${p.casilla} no esta configurada`);
       const r = await enviarMail(deps, casilla, p, { prueba: p.prueba });
       if (r.tipo === 'esperar') return { reprogramarPara: r.hasta };
       if (r.tipo === 'baja') await deps.avisar(`🚫 No le mandé a ${p.para}: pidió la baja.`);
-      if (r.tipo === 'enviado' && p.prueba) await deps.avisar(`✉️ Mail de prueba enviado a ${p.para} desde ${casilla.email}.`);
+      if (r.tipo === 'enviado' && p.prueba) {
+        await deps.avisar(`✉️ Mail de prueba enviado a ${p.para} desde ${casilla.email}.`);
+      }
       return;
     }
-    case 'resumir_respuesta': {
-      const r = tarea.payload as Recibido;
-      const pedir =
-        deps.pedirIa ?? ((prompt: string) => pedirTexto(prompt, { sistema: SISTEMA, modelo: deps.modelo }));
-      const resumen = leerResumen(await pedir(promptDeResumen(r)));
-      if (resumen.tipo === 'baja') await deps.store.agregarBaja(direccion(r.de), 'la pidió por mail');
-      // Las automaticas no le interesan a Gero: se guardan y listo.
-      if (resumen.tipo !== 'automatico') await deps.avisar(mensajeDeRespuesta(r, resumen));
-      return;
-    }
+    case 'resumir_respuesta':
+      return atenderRespuesta(tarea.payload as Recibido, deps);
+    case 'prospectar':
+      return prospectar(tarea.payload, deps);
+    case 'investigar':
+      return investigar(tarea.payload, deps);
+    case 'enviar_saliente':
+      return enviarSaliente(tarea.payload, deps);
+    case 'recordatorio':
+      return recordatorio(tarea.payload, deps);
+    case 'resumen_diario':
+      return resumenDiario(deps);
   }
-}
-
-/** `"Ana <ana@x.com>"` -> `ana@x.com` */
-export function direccion(de: string): string {
-  const m = /<([^>]+)>/.exec(de);
-  return (m?.[1] ?? de).trim().toLowerCase();
-}
-
-const ICONOS: Record<Resumen['tipo'], string> = {
-  interesado: '🟢',
-  pregunta: '🟡',
-  no_interesado: '⚪',
-  baja: '🚫',
-  automatico: '🤖',
-  otro: '📩',
-};
-
-export function mensajeDeRespuesta(r: Recibido, s: Resumen): string {
-  return [
-    `${ICONOS[s.tipo]} RESPONDIÓ (${s.tipo.replace('_', ' ')}): ${s.empresa}`,
-    `De: ${r.de}`,
-    `Asunto: ${r.asunto}`,
-    `Qué dijo: ${s.resumen}`,
-    `Sugerencia: ${s.sugerencia}`,
-    `Casilla: ${r.cuenta}`,
-  ].join('\n');
 }

@@ -1,4 +1,15 @@
-import type { NuevaTarea, Recibido, Store, Tarea } from '../src/store.js';
+import type {
+  CambiosDeSaliente,
+  EstadoDeSaliente,
+  Lead,
+  NuevaTarea,
+  NuevoLead,
+  Recibido,
+  Reunion,
+  Saliente,
+  Store,
+  Tarea,
+} from '../src/store.js';
 
 interface Fila extends Tarea {
   clave?: string;
@@ -6,6 +17,8 @@ interface Fila extends Tarea {
   disponibleDesde: Date;
   ultimoError?: string;
 }
+
+const copia = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
 /** Un Store en memoria con la misma semantica que el de Postgres. */
 export class MemoriaStore implements Store {
@@ -15,6 +28,13 @@ export class MemoriaStore implements Store {
   envios: { cuenta: string; para: string; asunto: string; en: Date }[] = [];
   recibidos = new Set<string>();
   bajas = new Set<string>();
+  leads: (Lead & { externo?: string; creado: Date })[] = [];
+  salientes: Saliente[] = [];
+  ofertas = new Map<number, Date[]>();
+  reuniones: (Reunion & { creada: Date })[] = [];
+  ocupados = new Set<string>();
+  busquedas: { rubro: string; ciudad: string; fuente: string; hallados: number }[] = [];
+  rebotes: { cuenta: string; email?: string; en: Date }[] = [];
 
   constructor(private ahora: () => Date = () => new Date()) {}
 
@@ -23,7 +43,7 @@ export class MemoriaStore implements Store {
   }
   async guardarEstado(clave: string, valor: unknown) {
     if (valor === null) this.estado.delete(clave);
-    else this.estado.set(clave, JSON.parse(JSON.stringify(valor)));
+    else this.estado.set(clave, copia(valor));
   }
 
   async encolar(t: NuevaTarea) {
@@ -31,7 +51,7 @@ export class MemoriaStore implements Store {
     this.tareas.push({
       id: this.tareas.length + 1,
       tipo: t.tipo,
-      payload: JSON.parse(JSON.stringify(t.payload)),
+      payload: copia(t.payload),
       requiereIa: t.requiereIa,
       intentos: 0,
       clave: t.clave,
@@ -111,5 +131,137 @@ export class MemoriaStore implements Store {
   }
   async agregarBaja(email: string) {
     this.bajas.add(email.toLowerCase());
+  }
+
+  // ---- ventas
+
+  async crearLead(l: NuevoLead) {
+    const email = l.email?.toLowerCase();
+    if (l.externo && this.leads.some((x) => x.externo === l.externo)) return undefined;
+    if (email && this.leads.some((x) => x.email === email)) return undefined;
+    const id = this.leads.length + 1;
+    this.leads.push({ ...l, email, id, estado: 'nuevo', creado: this.ahora() });
+    return id;
+  }
+  async lead(id: number) {
+    const l = this.leads.find((x) => x.id === id);
+    return l ? { ...l } : undefined;
+  }
+  async leadPorEmail(email: string) {
+    const l = this.leads.find((x) => x.email === email.toLowerCase());
+    return l ? { ...l } : undefined;
+  }
+  async actualizarLead(id: number, c: Partial<Pick<Lead, 'estado' | 'investigacion' | 'casilla' | 'email'>>) {
+    const l = this.leads.find((x) => x.id === id)!;
+    Object.assign(l, Object.fromEntries(Object.entries(c).filter(([, v]) => v !== undefined)));
+    if (c.email) l.email = c.email.toLowerCase();
+  }
+  async crearSaliente(s: Omit<Saliente, 'id' | 'estado' | 'messageId' | 'telegramMsg'> & { estado?: EstadoDeSaliente }) {
+    const id = this.salientes.length + 1;
+    this.salientes.push({ ...s, id, estado: s.estado ?? 'borrador' });
+    return id;
+  }
+  async saliente(id: number) {
+    const s = this.salientes.find((x) => x.id === id);
+    return s ? { ...s } : undefined;
+  }
+  async salientesDeLead(leadId: number) {
+    return this.salientes
+      .filter((s) => s.leadId === leadId)
+      .sort((a, b) => a.paso - b.paso || a.id - b.id)
+      .map((s) => ({ ...s }));
+  }
+  async salientePorTelegram(msg: number) {
+    const s = this.salientes.find((x) => x.telegramMsg === msg);
+    return s ? { ...s } : undefined;
+  }
+  async salientePorMessageId(mid: string) {
+    const s = this.salientes.find((x) => x.messageId === mid);
+    return s ? { ...s } : undefined;
+  }
+  async actualizarSaliente(id: number, c: CambiosDeSaliente) {
+    const s = this.salientes.find((x) => x.id === id)!;
+    Object.assign(s, Object.fromEntries(Object.entries(c).filter(([, v]) => v !== undefined)));
+  }
+  async marcarEnviado(id: number, messageId?: string) {
+    const s = this.salientes.find((x) => x.id === id)!;
+    s.estado = 'enviado';
+    s.messageId = messageId;
+  }
+  async cancelarSeguimientos(leadId: number) {
+    let n = 0;
+    for (const s of this.salientes)
+      if (s.leadId === leadId && s.tipo === 'seguimiento' && (s.estado === 'borrador' || s.estado === 'aprobado')) {
+        s.estado = 'cancelado';
+        n++;
+      }
+    return n;
+  }
+  async guardarOferta(leadId: number, horarios: Date[]) {
+    this.ofertas.set(leadId, horarios);
+  }
+  async oferta(leadId: number) {
+    return this.ofertas.get(leadId);
+  }
+  async crearReunion(r: Omit<Reunion, 'id'>) {
+    if (this.reuniones.some((x) => x.inicio.getTime() === r.inicio.getTime())) return undefined;
+    const id = this.reuniones.length + 1;
+    this.reuniones.push({ ...r, id, creada: this.ahora() });
+    return id;
+  }
+  async reunion(id: number) {
+    return this.reuniones.find((x) => x.id === id);
+  }
+  async reunionesDesde(desde: Date) {
+    return this.reuniones.filter((r) => r.inicio.getTime() >= desde.getTime()).sort((a, b) => a.inicio.getTime() - b.inicio.getTime());
+  }
+  async diasOcupados() {
+    return [...this.ocupados];
+  }
+  async marcarOcupado(dia: string, ocupado: boolean) {
+    if (ocupado) this.ocupados.add(dia);
+    else this.ocupados.delete(dia);
+  }
+  async registrarBusqueda(b: { rubro: string; ciudad: string; fuente: string; hallados: number }) {
+    this.busquedas.push(b);
+  }
+  async busquedasDeRubro(rubro: string) {
+    const veces = new Map<string, number>();
+    for (const b of this.busquedas) if (b.rubro === rubro) veces.set(b.ciudad, (veces.get(b.ciudad) ?? 0) + 1);
+    return [...veces].map(([ciudad, v]) => ({ ciudad, veces: v }));
+  }
+  async rendimientoPorRubro() {
+    const rubros = [...new Set(this.leads.map((l) => l.rubro))];
+    return rubros.map((rubro) => {
+      const ls = this.leads.filter((l) => l.rubro === rubro);
+      return {
+        rubro,
+        contactados: ls.filter((l) => ['contactado', 'respondio', 'reunion', 'cerrado', 'baja'].includes(l.estado)).length,
+        respuestas: ls.filter((l) => ['respondio', 'reunion', 'cerrado'].includes(l.estado)).length,
+        reuniones: ls.filter((l) => l.estado === 'reunion').length,
+      };
+    });
+  }
+  async pipeline() {
+    const ini = this.salientes.filter((s) => s.tipo === 'inicial');
+    return {
+      borradores: ini.filter((s) => s.estado === 'borrador').length,
+      aprobados: ini.filter((s) => s.estado === 'aprobado').length,
+    };
+  }
+  async registrarRebote(cuenta: string, email?: string) {
+    this.rebotes.push({ cuenta, email, en: this.ahora() });
+  }
+  async rebotesDesde(cuenta: string, desde: Date) {
+    return this.rebotes.filter((r) => r.cuenta === cuenta && r.en.getTime() >= desde.getTime()).length;
+  }
+  async metricasDesde(desde: Date) {
+    const d = desde.getTime();
+    return {
+      enviados: this.envios.filter((e) => e.en.getTime() >= d).length,
+      respuestas: this.recibidos.size,
+      reuniones: this.reuniones.filter((r) => r.creada.getTime() >= d).length,
+      leads: this.leads.filter((l) => l.creado.getTime() >= d).length,
+    };
   }
 }

@@ -45,6 +45,7 @@ export const buzonGmail: Buzon = {
             asunto: p.subject ?? '(sin asunto)',
             cuerpo: p.text ?? '',
             recibidoEn: p.date ?? new Date(),
+            enRespuestaA: p.inReplyTo,
           });
         }
         await procesar(mails);
@@ -58,9 +59,10 @@ export const buzonGmail: Buzon = {
   },
 };
 
-// Rebotes y avisos del servidor: no gastan IA. El manejo de rebotes (pausar
-// la casilla si rebotan muchos) es de la fase 4.
+// Avisos del servidor: no gastan IA. Los rebotes van a `alRebote`, que marca
+// al lead y frena la casilla si rebotan muchos.
 const DE_SISTEMA = /mailer-daemon|postmaster|no-?reply/i;
+const REBOTE = /mailer-daemon|postmaster/i;
 
 /**
  * Barre las casillas y encola el resumen de cada mail nuevo.
@@ -73,6 +75,7 @@ export async function revisarBandejas(deps: {
   buzon: Buzon;
   casillas: Casilla[];
   log?: (m: string) => void;
+  alRebote?: (r: Recibido) => Promise<void>;
 }): Promise<number> {
   const propias = new Set(deps.casillas.map((c) => c.email));
   let nuevos = 0;
@@ -82,6 +85,7 @@ export async function revisarBandejas(deps: {
         for (const r of mails) {
           if (!(await deps.store.guardarRecibido(r))) continue;
           const de = direccion(r.de);
+          if (REBOTE.test(de)) await deps.alRebote?.(r);
           if (propias.has(de) || DE_SISTEMA.test(de)) continue;
           const encolado = await deps.store.encolar({
             tipo: 'resumir_respuesta',

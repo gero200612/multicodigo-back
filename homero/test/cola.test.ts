@@ -1,36 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { correrSiguiente, PAUSA_IA, PAUSA_MANUAL, type DepsDeCola } from '../src/cola.js';
-import type { Correo } from '../src/envio.js';
+import { correrSiguiente, PAUSA_IA, PAUSA_MANUAL } from '../src/cola.js';
 import { ErrorDeLimite } from '../src/ia.js';
 import type { Recibido } from '../src/store.js';
-import { MemoriaStore } from './memoria.js';
-
-const casilla = { email: 'sincro.ventas@gmail.com', clave: 'x' };
-
-function armar(opciones: { pedirIa?: (p: string) => Promise<string>; ahora?: Date } = {}) {
-  let ahora = opciones.ahora ?? new Date('2026-09-29T17:00:00Z'); // martes 14hs AR
-  const store = new MemoriaStore(() => ahora);
-  const avisos: string[] = [];
-  const enviados: string[] = [];
-  const correo: Correo = {
-    async enviar(_c, _r, m) {
-      enviados.push(m.para);
-      return { messageId: `<${enviados.length}@x>` };
-    },
-  };
-  const deps: DepsDeCola = {
-    store,
-    correo,
-    remitente: 'Gero · Sincro',
-    casillas: [casilla],
-    ahora: () => ahora,
-    avisar: async (t) => {
-      avisos.push(t);
-    },
-    pedirIa: opciones.pedirIa,
-  };
-  return { store, deps, avisos, enviados, mover: (d: Date) => (ahora = d) };
-}
+import { armar, casilla } from './armar.js';
 
 const mail: Recibido = {
   cuenta: casilla.email,
@@ -86,7 +58,7 @@ describe('la cola frente al limite de Claude', () => {
 
     await correrSiguiente(deps);
 
-    expect(enviados).toEqual(['cliente@x.com']);
+    expect(enviados.map((m) => m.para)).toEqual(['cliente@x.com']);
     expect(store.tareas[0]!.estado).toBe('pendiente');
   });
 

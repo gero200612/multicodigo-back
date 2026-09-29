@@ -1,7 +1,86 @@
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 
-export type TipoDeTarea = 'resumir_respuesta' | 'enviar_mail';
+export type TipoDeTarea =
+  | 'resumir_respuesta'
+  | 'enviar_mail'
+  | 'prospectar'
+  | 'investigar'
+  | 'enviar_saliente'
+  | 'recordatorio'
+  | 'resumen_diario';
+
+export type EstadoDeLead =
+  | 'nuevo'
+  | 'descartado'
+  | 'borrador'
+  | 'aprobado'
+  | 'contactado'
+  | 'respondio'
+  | 'reunion'
+  | 'cerrado'
+  | 'baja'
+  | 'rebotado';
+
+/** Lo que la IA saco de la web del negocio. */
+export interface Investigacion {
+  resumen_empresa: string;
+  dolor: string;
+  idea: string;
+}
+
+export interface Lead {
+  id: number;
+  nombre: string;
+  rubro: string;
+  ciudad: string;
+  web?: string;
+  email?: string;
+  telefono?: string;
+  fuente: string;
+  investigacion?: Investigacion;
+  estado: EstadoDeLead;
+  casilla?: string;
+}
+
+export type NuevoLead = Omit<Lead, 'id' | 'estado' | 'investigacion' | 'casilla'> & { externo?: string };
+
+export type TipoDeSaliente = 'inicial' | 'seguimiento' | 'respuesta' | 'confirmacion' | 'recordatorio';
+export type EstadoDeSaliente = 'borrador' | 'aprobado' | 'enviado' | 'cancelado';
+
+export interface Saliente {
+  id: number;
+  leadId: number;
+  tipo: TipoDeSaliente;
+  paso: number;
+  casilla?: string;
+  asunto: string;
+  cuerpo: string;
+  enRespuestaA?: string;
+  estado: EstadoDeSaliente;
+  messageId?: string;
+  telegramMsg?: number;
+  reunionId?: number;
+}
+
+export type CambiosDeSaliente = Partial<
+  Pick<Saliente, 'estado' | 'cuerpo' | 'asunto' | 'casilla' | 'messageId' | 'telegramMsg' | 'enRespuestaA'>
+>;
+
+export interface Reunion {
+  id: number;
+  leadId: number;
+  inicio: Date;
+  fin: Date;
+  link: string;
+}
+
+export interface Rendimiento {
+  rubro: string;
+  contactados: number;
+  respuestas: number;
+  reuniones: number;
+}
 
 export interface Tarea {
   id: number;
@@ -27,6 +106,8 @@ export interface Recibido {
   asunto: string;
   cuerpo: string;
   recibidoEn: Date;
+  /** Message-ID al que contesta: encuentra al lead aunque responda otra persona. */
+  enRespuestaA?: string;
 }
 
 export interface Store {
@@ -58,6 +139,43 @@ export interface Store {
   guardarRecibido(r: Recibido): Promise<boolean>;
   esBaja(email: string): Promise<boolean>;
   agregarBaja(email: string, motivo: string): Promise<void>;
+
+  /** `undefined` si ya existia (mismo lugar o mismo mail). */
+  crearLead(l: NuevoLead): Promise<number | undefined>;
+  lead(id: number): Promise<Lead | undefined>;
+  leadPorEmail(email: string): Promise<Lead | undefined>;
+  actualizarLead(
+    id: number,
+    c: Partial<Pick<Lead, 'estado' | 'investigacion' | 'casilla' | 'email'>>,
+  ): Promise<void>;
+
+  crearSaliente(s: Omit<Saliente, 'id' | 'estado' | 'messageId' | 'telegramMsg'> & { estado?: EstadoDeSaliente }): Promise<number>;
+  saliente(id: number): Promise<Saliente | undefined>;
+  salientesDeLead(leadId: number): Promise<Saliente[]>;
+  salientePorTelegram(msg: number): Promise<Saliente | undefined>;
+  salientePorMessageId(messageId: string): Promise<Saliente | undefined>;
+  actualizarSaliente(id: number, c: CambiosDeSaliente): Promise<void>;
+  marcarEnviado(id: number, messageId?: string): Promise<void>;
+  /** Cancela los seguimientos que no salieron todavia. */
+  cancelarSeguimientos(leadId: number): Promise<number>;
+
+  guardarOferta(leadId: number, horarios: Date[]): Promise<void>;
+  oferta(leadId: number): Promise<Date[] | undefined>;
+  /** `undefined` si el horario ya lo tomo otra reunion. */
+  crearReunion(r: Omit<Reunion, 'id'>): Promise<number | undefined>;
+  reunion(id: number): Promise<Reunion | undefined>;
+  reunionesDesde(desde: Date): Promise<Reunion[]>;
+  diasOcupados(): Promise<string[]>;
+  marcarOcupado(dia: string, ocupado: boolean): Promise<void>;
+
+  registrarBusqueda(b: { rubro: string; ciudad: string; fuente: string; hallados: number }): Promise<void>;
+  busquedasDeRubro(rubro: string): Promise<{ ciudad: string; veces: number }[]>;
+  rendimientoPorRubro(): Promise<Rendimiento[]>;
+  /** Mails iniciales esperando aprobacion o esperando salir. */
+  pipeline(): Promise<{ borradores: number; aprobados: number }>;
+  registrarRebote(cuenta: string, email?: string): Promise<void>;
+  rebotesDesde(cuenta: string, desde: Date): Promise<number>;
+  metricasDesde(desde: Date): Promise<{ enviados: number; respuestas: number; reuniones: number; leads: number }>;
 }
 
 export class PgStore implements Store {
@@ -222,4 +340,314 @@ export class PgStore implements Store {
       [email.toLowerCase(), motivo],
     );
   }
+
+  // ---- Ventas: leads, salientes, agenda, metricas ----
+
+  async crearLead(l: NuevoLead) {
+    const r = await this.pool.query(
+      `INSERT INTO homero.leads (nombre, rubro, ciudad, web, email, telefono, fuente, externo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT DO NOTHING RETURNING id`,
+      [
+        l.nombre,
+        l.rubro,
+        l.ciudad,
+        l.web ?? null,
+        l.email?.toLowerCase() ?? null,
+        l.telefono ?? null,
+        l.fuente,
+        l.externo ?? null,
+      ],
+    );
+    return r.rows[0] ? Number(r.rows[0].id) : undefined;
+  }
+
+  async lead(id: number) {
+    const r = await this.pool.query('SELECT * FROM homero.leads WHERE id = $1', [id]);
+    return r.rows[0] ? aLead(r.rows[0]) : undefined;
+  }
+
+  async leadPorEmail(email: string) {
+    const r = await this.pool.query('SELECT * FROM homero.leads WHERE email = $1', [email.toLowerCase()]);
+    return r.rows[0] ? aLead(r.rows[0]) : undefined;
+  }
+
+  async actualizarLead(id: number, c: Partial<Pick<Lead, 'estado' | 'investigacion' | 'casilla' | 'email'>>) {
+    await this.pool.query(
+      `UPDATE homero.leads SET
+         estado = COALESCE($2, estado),
+         investigacion = COALESCE($3, investigacion),
+         casilla = COALESCE($4, casilla),
+         email = COALESCE($5, email),
+         actualizado = now()
+       WHERE id = $1`,
+      [
+        id,
+        c.estado ?? null,
+        c.investigacion ? JSON.stringify(c.investigacion) : null,
+        c.casilla ?? null,
+        c.email?.toLowerCase() ?? null,
+      ],
+    );
+  }
+
+  async crearSaliente(
+    s: Omit<Saliente, 'id' | 'estado' | 'messageId' | 'telegramMsg'> & { estado?: EstadoDeSaliente },
+  ) {
+    const r = await this.pool.query(
+      `INSERT INTO homero.salientes (lead_id, tipo, paso, casilla, asunto, cuerpo, en_respuesta_a, estado, reunion_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+      [
+        s.leadId,
+        s.tipo,
+        s.paso,
+        s.casilla ?? null,
+        s.asunto,
+        s.cuerpo,
+        s.enRespuestaA ?? null,
+        s.estado ?? 'borrador',
+        s.reunionId ?? null,
+      ],
+    );
+    return Number(r.rows[0].id);
+  }
+
+  async saliente(id: number) {
+    const r = await this.pool.query('SELECT * FROM homero.salientes WHERE id = $1', [id]);
+    return r.rows[0] ? aSaliente(r.rows[0]) : undefined;
+  }
+
+  async salientesDeLead(leadId: number) {
+    const r = await this.pool.query('SELECT * FROM homero.salientes WHERE lead_id = $1 ORDER BY paso, id', [
+      leadId,
+    ]);
+    return r.rows.map(aSaliente);
+  }
+
+  async salientePorTelegram(msg: number) {
+    const r = await this.pool.query(
+      'SELECT * FROM homero.salientes WHERE telegram_msg = $1 ORDER BY id LIMIT 1',
+      [msg],
+    );
+    return r.rows[0] ? aSaliente(r.rows[0]) : undefined;
+  }
+
+  async salientePorMessageId(messageId: string) {
+    const r = await this.pool.query('SELECT * FROM homero.salientes WHERE message_id = $1 LIMIT 1', [messageId]);
+    return r.rows[0] ? aSaliente(r.rows[0]) : undefined;
+  }
+
+  async actualizarSaliente(id: number, c: CambiosDeSaliente) {
+    await this.pool.query(
+      `UPDATE homero.salientes SET
+         estado = COALESCE($2, estado), cuerpo = COALESCE($3, cuerpo), asunto = COALESCE($4, asunto),
+         casilla = COALESCE($5, casilla), message_id = COALESCE($6, message_id),
+         telegram_msg = COALESCE($7, telegram_msg), en_respuesta_a = COALESCE($8, en_respuesta_a)
+       WHERE id = $1`,
+      [
+        id,
+        c.estado ?? null,
+        c.cuerpo ?? null,
+        c.asunto ?? null,
+        c.casilla ?? null,
+        c.messageId ?? null,
+        c.telegramMsg ?? null,
+        c.enRespuestaA ?? null,
+      ],
+    );
+  }
+
+  async marcarEnviado(id: number, messageId?: string) {
+    await this.pool.query(
+      `UPDATE homero.salientes SET estado = 'enviado', message_id = $2, enviado_en = now() WHERE id = $1`,
+      [id, messageId ?? null],
+    );
+  }
+
+  async cancelarSeguimientos(leadId: number) {
+    const r = await this.pool.query(
+      `UPDATE homero.salientes SET estado = 'cancelado'
+       WHERE lead_id = $1 AND tipo = 'seguimiento' AND estado IN ('borrador', 'aprobado')`,
+      [leadId],
+    );
+    return r.rowCount ?? 0;
+  }
+
+  async guardarOferta(leadId: number, horarios: Date[]) {
+    await this.pool.query(
+      `INSERT INTO homero.ofertas (lead_id, horarios) VALUES ($1, $2)
+       ON CONFLICT (lead_id) DO UPDATE SET horarios = EXCLUDED.horarios, creada = now()`,
+      [leadId, JSON.stringify(horarios.map((h) => h.toISOString()))],
+    );
+  }
+
+  async oferta(leadId: number) {
+    const r = await this.pool.query('SELECT horarios FROM homero.ofertas WHERE lead_id = $1', [leadId]);
+    const h = r.rows[0]?.horarios as string[] | undefined;
+    return h?.map((x) => new Date(x));
+  }
+
+  async crearReunion(r: Omit<Reunion, 'id'>) {
+    try {
+      const q = await this.pool.query(
+        'INSERT INTO homero.reuniones (lead_id, inicio, fin, link) VALUES ($1, $2, $3, $4) RETURNING id',
+        [r.leadId, r.inicio, r.fin, r.link],
+      );
+      return Number(q.rows[0].id);
+    } catch (err) {
+      // El indice unico de reuniones confirmadas: otro ya tomo ese horario.
+      if ((err as { code?: string }).code === '23505') return undefined;
+      throw err;
+    }
+  }
+
+  async reunion(id: number) {
+    const r = await this.pool.query(
+      `SELECT * FROM homero.reuniones WHERE id = $1 AND estado = 'confirmada'`,
+      [id],
+    );
+    return r.rows[0] ? aReunion(r.rows[0]) : undefined;
+  }
+
+  async reunionesDesde(desde: Date) {
+    const r = await this.pool.query(
+      `SELECT * FROM homero.reuniones WHERE estado = 'confirmada' AND inicio >= $1 ORDER BY inicio`,
+      [desde],
+    );
+    return r.rows.map(aReunion);
+  }
+
+  async diasOcupados() {
+    const r = await this.pool.query(`SELECT to_char(dia, 'YYYY-MM-DD') AS d FROM homero.ocupados`);
+    return r.rows.map((f) => f.d as string);
+  }
+
+  async marcarOcupado(dia: string, ocupado: boolean) {
+    await this.pool.query(
+      ocupado
+        ? 'INSERT INTO homero.ocupados (dia) VALUES ($1) ON CONFLICT DO NOTHING'
+        : 'DELETE FROM homero.ocupados WHERE dia = $1',
+      [dia],
+    );
+  }
+
+  async registrarBusqueda(b: { rubro: string; ciudad: string; fuente: string; hallados: number }) {
+    await this.pool.query(
+      'INSERT INTO homero.busquedas (rubro, ciudad, fuente, hallados) VALUES ($1, $2, $3, $4)',
+      [b.rubro, b.ciudad, b.fuente, b.hallados],
+    );
+  }
+
+  async busquedasDeRubro(rubro: string) {
+    const r = await this.pool.query(
+      'SELECT ciudad, count(*) AS veces FROM homero.busquedas WHERE rubro = $1 GROUP BY ciudad',
+      [rubro],
+    );
+    return r.rows.map((f) => ({ ciudad: f.ciudad as string, veces: Number(f.veces) }));
+  }
+
+  async rendimientoPorRubro() {
+    const r = await this.pool.query(
+      `SELECT rubro,
+              count(*) FILTER (WHERE estado IN ('contactado', 'respondio', 'reunion', 'cerrado', 'baja')) AS c,
+              count(*) FILTER (WHERE estado IN ('respondio', 'reunion', 'cerrado')) AS r,
+              count(*) FILTER (WHERE estado = 'reunion') AS m
+       FROM homero.leads GROUP BY rubro`,
+    );
+    return r.rows.map((f) => ({
+      rubro: f.rubro as string,
+      contactados: Number(f.c),
+      respuestas: Number(f.r),
+      reuniones: Number(f.m),
+    }));
+  }
+
+  async pipeline() {
+    const r = await this.pool.query(
+      `SELECT count(*) FILTER (WHERE estado = 'borrador') AS b,
+              count(*) FILTER (WHERE estado = 'aprobado') AS a
+       FROM homero.salientes WHERE tipo = 'inicial'`,
+    );
+    return { borradores: Number(r.rows[0].b), aprobados: Number(r.rows[0].a) };
+  }
+
+  async registrarRebote(cuenta: string, email?: string) {
+    await this.pool.query('INSERT INTO homero.rebotes (cuenta, email) VALUES ($1, $2)', [
+      cuenta,
+      email ?? null,
+    ]);
+  }
+
+  async rebotesDesde(cuenta: string, desde: Date) {
+    const r = await this.pool.query(
+      'SELECT count(*) AS n FROM homero.rebotes WHERE cuenta = $1 AND llegado >= $2',
+      [cuenta, desde],
+    );
+    return Number(r.rows[0].n);
+  }
+
+  async metricasDesde(desde: Date) {
+    const r = await this.pool.query(
+      `SELECT
+         (SELECT count(*) FROM homero.envios WHERE enviado_en >= $1) AS enviados,
+         (SELECT count(*) FROM homero.recibidos WHERE guardado >= $1) AS respuestas,
+         (SELECT count(*) FROM homero.reuniones WHERE creada >= $1 AND estado = 'confirmada') AS reuniones,
+         (SELECT count(*) FROM homero.leads WHERE creado >= $1) AS leads`,
+      [desde],
+    );
+    const f = r.rows[0];
+    return {
+      enviados: Number(f.enviados),
+      respuestas: Number(f.respuestas),
+      reuniones: Number(f.reuniones),
+      leads: Number(f.leads),
+    };
+  }
+}
+
+type Fila = Record<string, unknown>;
+const opc = <T>(v: unknown) => (v === null || v === undefined ? undefined : (v as T));
+const num = (v: unknown) => (v === null || v === undefined ? undefined : Number(v));
+
+function aLead(f: Fila): Lead {
+  return {
+    id: Number(f.id),
+    nombre: f.nombre as string,
+    rubro: f.rubro as string,
+    ciudad: f.ciudad as string,
+    web: opc(f.web),
+    email: opc(f.email),
+    telefono: opc(f.telefono),
+    fuente: f.fuente as string,
+    investigacion: opc(f.investigacion),
+    estado: f.estado as EstadoDeLead,
+    casilla: opc(f.casilla),
+  };
+}
+
+function aSaliente(f: Fila): Saliente {
+  return {
+    id: Number(f.id),
+    leadId: Number(f.lead_id),
+    tipo: f.tipo as TipoDeSaliente,
+    paso: Number(f.paso),
+    casilla: opc(f.casilla),
+    asunto: f.asunto as string,
+    cuerpo: f.cuerpo as string,
+    enRespuestaA: opc(f.en_respuesta_a),
+    estado: f.estado as EstadoDeSaliente,
+    messageId: opc(f.message_id),
+    telegramMsg: num(f.telegram_msg),
+    reunionId: num(f.reunion_id),
+  };
+}
+
+function aReunion(f: Fila): Reunion {
+  return {
+    id: Number(f.id),
+    leadId: Number(f.lead_id),
+    inicio: f.inicio as Date,
+    fin: f.fin as Date,
+    link: f.link as string,
+  };
 }
