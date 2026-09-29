@@ -86,7 +86,7 @@ Estructura del mail (la pidió Gero, respetala en este orden):
 2. Cómo los encontró: "El otro día me encontré con ${origen} y vi que..." y algo CONCRETO de su negocio que salga de la información de arriba (cómo toman consultas, turnos, pedidos o pagos, qué tienen armado a mano o sin armar). No arranques la oración con "Vi que".
 3. El problema: qué les genera eso ("esto hace que tengan varias cosas sin resolver: ..."), una o dos cosas concretas y creíbles para ese negocio.
 4. La propuesta: "creemos que les podemos armar una aplicación para solucionarlo" (con bot de WhatsApp solo si suma), con UNA idea concreta atada a ese negocio, y la credibilidad en una frase: "ya generamos soluciones parecidas para varios rubros distintos" (variando las palabras). No nombres ningún rubro ni cliente en particular como antecedente (ni restaurantes, ni otro).
-5. El cierre: "¿Les interesaría agendar una reunión de 15/30 minutos así les contamos? Gracias." (variando las palabras).
+5. El cierre: "¿Les interesaría agendar una reunión de 15/30 minutos así les contamos? Gracias." (variando las palabras). La duración es 15 o 30 minutos, nunca otro número.
 
 Reglas:
 - Hablales de "ustedes" en plural (al negocio). Podés hablar en plural por Sincro ("creemos", "podemos armarles").
@@ -98,7 +98,7 @@ Reglas:
 - Asunto: 2 a 6 palabras, en minúscula, que suene a mail entre personas (por ejemplo "propuesta para ${l.nombre.toLowerCase()}"). Nada de "oferta" ni "gratis".
 
 Seguimiento (va en el mismo hilo, sin asunto):
-- Hay UN solo seguimiento, a la semana, y solo si no contestaron: 2 o 3 líneas, en el mismo tono ("Hola, les escribo de nuevo por la propuesta..."), suma UN beneficio distinto o un ejemplo concreto, y vuelve a ofrecer la reunión de 15/30 minutos. Misma firma.
+- Hay UN solo seguimiento, a la semana, y solo si no contestaron: 2 o 3 líneas, en el mismo tono ("Hola, les escribo de nuevo por la propuesta..."), suma UN beneficio distinto o un ejemplo concreto, y vuelve a ofrecer la reunión de 15 o 30 minutos (nunca otro número). Misma firma.
 
 "encaja" es false si la web es un directorio, portal o red de terceros y no la web propia del negocio (por ejemplo una ficha dentro de veterinarias.com.ar, zonaprop o un listado), si no es una pyme de ARGENTINA (mirá la dirección, el teléfono +54 y la web: si es de otro país, es false), si no le sirve (cadena enorme, organismo público, web de otra cosa, negocio cerrado) o si no hay de qué agarrarse.
 
