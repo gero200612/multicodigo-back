@@ -28,6 +28,13 @@ const Env = z.object({
   HOMERO_EMAIL_GERO: opcional(z.string().email()),
   // Sin esto se busca en OpenStreetMap, que es gratis y no pide cuenta.
   GOOGLE_PLACES_API_KEY: opcional(z.string().min(1)),
+  // La API interna que usa punchi.dev (a traves del panel). Sin token no se
+  // levanta: Homero sigue andando solo por Telegram.
+  HOMERO_API_TOKEN: opcional(z.string().min(16)),
+  HOMERO_API_PUERTO: z.coerce.number().int().default(8095),
+  // Para pedirle demos a Punchi. Van juntas; sin ellas no hay boton de demo.
+  BRIDGE_URL: opcional(z.string().url()),
+  BRIDGE_API_TOKEN: opcional(z.string().min(16)),
   HOMERO_GMAIL_1_USER: opcional(z.string().email()),
   HOMERO_GMAIL_1_PASS: opcional(z.string().min(1)),
   HOMERO_GMAIL_2_USER: opcional(z.string().email()),
@@ -47,6 +54,9 @@ export interface Config {
   emailGero?: string;
   placesKey?: string;
   casillas: Casilla[];
+  apiToken?: string;
+  apiPuerto: number;
+  bridge?: { url: string; token: string };
 }
 
 export function leerConfig(env: NodeJS.ProcessEnv): Config {
@@ -75,5 +85,8 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
     emailGero: e.HOMERO_EMAIL_GERO,
     placesKey: e.GOOGLE_PLACES_API_KEY,
     casillas,
+    apiToken: e.HOMERO_API_TOKEN,
+    apiPuerto: e.HOMERO_API_PUERTO,
+    bridge: e.BRIDGE_URL && e.BRIDGE_API_TOKEN ? { url: e.BRIDGE_URL, token: e.BRIDGE_API_TOKEN } : undefined,
   };
 }

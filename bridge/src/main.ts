@@ -34,6 +34,8 @@ import {
 } from './documentos.js';
 import { buildBot, retomarCorridas } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
+import { abrirDemo, estadoDeDemo } from './demo-homero.js';
+import { partirParaTelegram } from './codigo.js';
 import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
 
@@ -565,6 +567,16 @@ await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start(
 export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   store,
   apiToken: env.BRIDGE_API_TOKEN,
+  // Las demos de Homero avisan en el chat de Punchi como cualquier corrida.
+  demos: {
+    abrir: (p) =>
+      abrirDemo(p, botDeps, async (html) => {
+        for (const parte of partirParaTelegram(html)) {
+          await bot.api.sendMessage(p.chatId, parte, { parse_mode: 'HTML' });
+        }
+      }),
+    estado: (chatId, id) => estadoDeDemo(chatId, id, botDeps),
+  },
   // Los documentos que ESCRIBE el agente. Las mismas deps que los que llegan
   // por Telegram: mismo disco, misma tabla, mismo conversor — solo cambia la
   // direccion de la conversion.

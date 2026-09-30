@@ -1,6 +1,9 @@
 import { fileURLToPath } from 'node:url';
 import { setTimeout as dormir } from 'node:timers/promises';
+import { crearApi } from './api.js';
 import { buzonGmail, revisarBandejas } from './bandeja.js';
+import { cambiarEnsayo, estadoDeHomero } from './comandos.js';
+import { armarDemo, cancelarDemo, clienteDePunchi, editarPliego, enviarDemo, seguirDemos } from './demos.js';
 import { correrSiguiente, type DepsDeCola } from './cola.js';
 import { leerConfig } from './config.js';
 import { correoGmail } from './envio.js';
@@ -8,7 +11,7 @@ import { fuenteGoogle, fuenteOsm } from './fuentes.js';
 import { pedirTexto } from './ia.js';
 import { SISTEMA } from './prompts.js';
 import { PgStore } from './store.js';
-import { COMANDOS, crearBot, NOMBRE } from './telegram.js';
+import { COMANDOS, crearBot, NOMBRE, type Acciones } from './telegram.js';
 import {
   aprobarLead,
   aprobarSaliente,
@@ -28,13 +31,15 @@ import {
 } from './ventas.js';
 import { leerSitio, recibeMail } from './web.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
 const COLA_VACIA_MS = 15_000;
 /** Cada cuanto se fija si toca buscar clientes o mandar el resumen del dia. */
 const PLANIFICADOR_MS = 5 * 60_000;
+/** Cada cuanto le pregunta a Punchi como van las demos. */
+const DEMOS_MS = 5 * 60_000;
 
 async function main() {
   const config = leerConfig(process.env);
@@ -42,7 +47,7 @@ async function main() {
   for (const c of config.casillas) await store.registrarCuenta(c.email);
 
   const rescatadas = await store.rescatarColgadas();
-  const { bot, avisar, proponer, conectar } = crearBot(config, store);
+  const { bot, avisar, proponer, conectar, cambiarBotones } = crearBot(config, store);
 
   const aviso = (t: string) => avisar(t).catch((e) => console.error('[homero] no pude avisar:', e));
   const deps: DepsDeCola = {
@@ -64,8 +69,12 @@ async function main() {
     nombreDeFuente: config.placesKey ? 'google' : 'osm',
     leerSitio: (web) => leerSitio(web),
     recibeMail,
+    punchi:
+      config.bridge && config.chatId !== undefined
+        ? clienteDePunchi({ ...config.bridge, chatId: config.chatId })
+        : undefined,
   };
-  conectar({
+  const acciones: Acciones = {
     aprobarLead: (id) => aprobarLead(id, deps),
     descartarLead: (id) => descartarLead(id, deps),
     aprobarSaliente: (id) => aprobarSaliente(id, deps),
@@ -78,8 +87,25 @@ async function main() {
     lugaresHoy: () => lugaresHoy(deps),
     alternarHorario: (id, i) => alternarHorario(id, i, deps),
     armarRespuesta: (id) => armarRespuesta(id, deps),
-    noResponder: (id) => noResponder(id, deps),
-  });
+    noResponder: (id: number) => noResponder(id, deps),
+    estado: () => estadoDeHomero({ ...deps, placesKey: config.placesKey }),
+    cambiarEnsayo: (p: 'off' | string | undefined) => cambiarEnsayo(deps, p),
+    armarDemo: (id: number) => armarDemo(id, deps),
+    enviarDemo: (id: number) => enviarDemo(id, deps),
+    cancelarDemo: (id: number) => cancelarDemo(id, deps),
+    editarPliego: (id: number, pliego: string) => editarPliego(id, pliego, deps),
+  };
+  conectar(acciones);
+
+  const api = config.apiToken
+    ? crearApi({ token: config.apiToken, store, acciones, cambiarBotones, ahora: deps.ahora })
+    : undefined;
+  if (api) {
+    // 0.0.0.0 dentro del contenedor; el compose no publica el puerto, asi que
+    // solo lo alcanza quien comparte la red `puente` (el panel).
+    await api.listen({ host: '0.0.0.0', port: config.apiPuerto });
+    console.log(`[homero] API interna en :${config.apiPuerto}`);
+  }
 
   let corriendo = true;
 
@@ -113,6 +139,11 @@ async function main() {
   void plan();
   const planificador = setInterval(plan, PLANIFICADOR_MS);
 
+  const demos = setInterval(
+    () => void seguirDemos(deps).catch((err) => console.error('[homero] demos:', err)),
+    DEMOS_MS,
+  );
+
   // Polling y no webhook: Homero no necesita entrada publica, y asi no hay
   // host de cloudflared ni secreto que mantener.
   await bot.api.deleteWebhook();
@@ -131,6 +162,8 @@ async function main() {
     corriendo = false;
     clearInterval(bandeja);
     clearInterval(planificador);
+    clearInterval(demos);
+    await api?.close();
     await bot.stop();
     await bucleDeCola;
     await store.cerrar();

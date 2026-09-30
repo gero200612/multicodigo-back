@@ -121,6 +121,28 @@ Rubros: `contable`, `distribuidora`, `inmobiliaria`, `consultorio`, `taller`,
 `gastronomia`, `logistica`, `veterinaria`, `gimnasio`, `ferreteria`
 (`src/rubros.ts`, cada uno con sus ideas de automatización).
 
+## Desde punchi.dev
+
+Todo lo de Telegram también se maneja desde la web (sección **Homero**): borradores,
+respuestas con horarios, reuniones, leads, rubros, búsqueda, pausa, modo y ensayo.
+La web llama a la API interna de Homero (`src/api.ts`) a través del panel, que solo
+deja pasar al dueño (`HOMERO_USUARIO_ID`). Cada acción usa la misma función que el
+botón de Telegram y le saca los botones a la tarjeta del chat.
+
+## Demos con Punchi
+
+En cada reunión confirmada aparece **🧪 Armar demo con Punchi** (Telegram: después de
+enviar la confirmación y en `/reuniones`; web: pestaña Reuniones).
+
+1. Claude escribe un pliego con lo que se sabe de la empresa y te lo pasa.
+2. Lo editás (respondiendo a la tarjeta, o en la web) y tocás **🚀 Enviar a Punchi**.
+3. El bridge abre la corrida (`proyecto=<empresa>-demo publico=si`) y la arranca sola,
+   sin pedir confirmación del plan. El avance llega por el chat de Punchi.
+4. Homero pregunta cada 5 minutos cómo va y te avisa con la URL cuando está publicada.
+
+Punchi hace una corrida a la vez por chat: si está ocupado, la demo queda con el
+pliego y el motivo, y se reintenta con el mismo botón.
+
 ## Variables
 
 | Variable | Default | |
@@ -135,6 +157,9 @@ Rubros: `contable`, `distribuidora`, `inmobiliaria`, `consultorio`, `taller`,
 | `GOOGLE_PLACES_API_KEY` | — | Sin esto, OpenStreetMap |
 | `HOMERO_BANDEJA_MIN` | `10` | Cada cuánto lee las bandejas |
 | `HOMERO_GMAIL_{1,2,3}_{USER,PASS}` | — | Van de a pares |
+| `HOMERO_API_TOKEN` | — | La API interna para punchi.dev. Sin esto no se levanta |
+| `HOMERO_API_PUERTO` | `8095` | |
+| `BRIDGE_URL` / `BRIDGE_API_TOKEN` | — | Para las demos. Sin las dos no hay botón de demo |
 
 ## Desarrollo
 

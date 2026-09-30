@@ -9,7 +9,8 @@ export type TipoDeTarea =
   | 'enviar_saliente'
   | 'recordatorio'
   | 'resumen_diario'
-  | 'redactar_respuesta';
+  | 'redactar_respuesta'
+  | 'pliego_demo';
 
 export type EstadoDeLead =
   | 'nuevo'
@@ -82,6 +83,34 @@ export interface Reunion {
   inicio: Date;
   fin: Date;
   link: string;
+}
+
+export type EstadoDeDemo = 'redactando' | 'pliego' | 'enviada' | 'lista' | 'fallida';
+
+/** Una demo que Punchi arma para una reunion. */
+export interface Demo {
+  id: number;
+  reunionId: number;
+  leadId: number;
+  /** El nombre del proyecto en Punchi. */
+  proyecto: string;
+  pliego?: string;
+  estado: EstadoDeDemo;
+  corridaId?: string;
+  url?: string;
+  error?: string;
+  telegramMsg?: number;
+}
+
+export type CambiosDeDemo = Partial<Pick<Demo, 'pliego' | 'estado' | 'corridaId' | 'url' | 'error' | 'telegramMsg'>>;
+
+export interface FiltroDeLeads {
+  estado?: EstadoDeLead;
+  rubro?: string;
+  /** Busca en nombre, mail y web. */
+  q?: string;
+  limite: number;
+  desde: number;
 }
 
 export interface Rendimiento {
@@ -189,6 +218,23 @@ export interface Store {
   registrarRebote(cuenta: string, email?: string): Promise<void>;
   rebotesDesde(cuenta: string, desde: Date): Promise<number>;
   metricasDesde(desde: Date): Promise<{ enviados: number; respuestas: number; reuniones: number; leads: number }>;
+
+  // ---- Lo que usa la web
+  /** Todas las claves de homero.estado que empiezan asi (p. ej. `eleccion:`). */
+  estadosConPrefijo(prefijo: string): Promise<{ clave: string; valor: unknown }[]>;
+  /** Los borradores de esos tipos, del mas viejo al mas nuevo. */
+  salientesEnBorrador(tipos: TipoDeSaliente[]): Promise<Saliente[]>;
+  listarLeads(f: FiltroDeLeads): Promise<{ total: number; leads: (Lead & { creado: Date })[] }>;
+
+  // ---- Demos
+  /** `undefined` si esa reunion ya tiene demo. */
+  crearDemo(d: { reunionId: number; leadId: number; proyecto: string }): Promise<number | undefined>;
+  demo(id: number): Promise<Demo | undefined>;
+  demoDeReunion(reunionId: number): Promise<Demo | undefined>;
+  demoPorTelegram(msg: number): Promise<Demo | undefined>;
+  actualizarDemo(id: number, c: CambiosDeDemo): Promise<void>;
+  /** Las que Punchi esta construyendo: a estas se les pregunta el estado. */
+  demosEnviadas(): Promise<Demo[]>;
 }
 
 export class PgStore implements Store {
@@ -634,6 +680,93 @@ export class PgStore implements Store {
       leads: Number(f.leads),
     };
   }
+
+  async estadosConPrefijo(prefijo: string) {
+    const r = await this.pool.query(
+      `SELECT clave, valor FROM homero.estado WHERE starts_with(clave, $1) ORDER BY actualizado`,
+      [prefijo],
+    );
+    return r.rows.map((f) => ({ clave: f.clave as string, valor: f.valor as unknown }));
+  }
+
+  async salientesEnBorrador(tipos: TipoDeSaliente[]) {
+    const r = await this.pool.query(
+      `SELECT * FROM homero.salientes WHERE estado = 'borrador' AND tipo = ANY($1) ORDER BY id`,
+      [tipos],
+    );
+    return r.rows.map(aSaliente);
+  }
+
+  async listarLeads(f: FiltroDeLeads) {
+    const params: unknown[] = [];
+    const cond: string[] = [];
+    if (f.estado) cond.push(`estado = $${params.push(f.estado)}`);
+    if (f.rubro) cond.push(`rubro = $${params.push(f.rubro)}`);
+    if (f.q) {
+      const i = params.push(`%${f.q}%`);
+      cond.push(`(nombre ILIKE $${i} OR email ILIKE $${i} OR web ILIKE $${i})`);
+    }
+    const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
+    const total = await this.pool.query(`SELECT count(*) AS n FROM homero.leads ${where}`, params);
+    const r = await this.pool.query(
+      `SELECT * FROM homero.leads ${where} ORDER BY actualizado DESC, id DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, f.limite, f.desde],
+    );
+    return {
+      total: Number(total.rows[0].n),
+      leads: r.rows.map((x) => ({ ...aLead(x), creado: x.creado as Date })),
+    };
+  }
+
+  async crearDemo(d: { reunionId: number; leadId: number; proyecto: string }) {
+    const r = await this.pool.query(
+      `INSERT INTO homero.demos (reunion_id, lead_id, proyecto) VALUES ($1, $2, $3)
+       ON CONFLICT (reunion_id) DO NOTHING RETURNING id`,
+      [d.reunionId, d.leadId, d.proyecto],
+    );
+    return r.rows[0] ? Number(r.rows[0].id) : undefined;
+  }
+
+  async demo(id: number) {
+    const r = await this.pool.query('SELECT * FROM homero.demos WHERE id = $1', [id]);
+    return r.rows[0] ? aDemo(r.rows[0]) : undefined;
+  }
+
+  async demoDeReunion(reunionId: number) {
+    const r = await this.pool.query('SELECT * FROM homero.demos WHERE reunion_id = $1', [reunionId]);
+    return r.rows[0] ? aDemo(r.rows[0]) : undefined;
+  }
+
+  async demoPorTelegram(msg: number) {
+    const r = await this.pool.query('SELECT * FROM homero.demos WHERE telegram_msg = $1 LIMIT 1', [msg]);
+    return r.rows[0] ? aDemo(r.rows[0]) : undefined;
+  }
+
+  async actualizarDemo(id: number, c: CambiosDeDemo) {
+    await this.pool.query(
+      `UPDATE homero.demos SET
+         pliego = COALESCE($2, pliego), estado = COALESCE($3, estado),
+         corrida_id = COALESCE($4, corrida_id), url = COALESCE($5, url),
+         error = CASE WHEN $6::text = '' THEN NULL ELSE COALESCE($6, error) END,
+         telegram_msg = COALESCE($7, telegram_msg), actualizada = now()
+       WHERE id = $1`,
+      [
+        id,
+        c.pliego ?? null,
+        c.estado ?? null,
+        c.corridaId ?? null,
+        c.url ?? null,
+        c.error ?? null,
+        c.telegramMsg ?? null,
+      ],
+    );
+  }
+
+  async demosEnviadas() {
+    const r = await this.pool.query(`SELECT * FROM homero.demos WHERE estado = 'enviada' ORDER BY id`);
+    return r.rows.map(aDemo);
+  }
 }
 
 type Fila = Record<string, unknown>;
@@ -681,5 +814,20 @@ function aReunion(f: Fila): Reunion {
     inicio: f.inicio as Date,
     fin: f.fin as Date,
     link: f.link as string,
+  };
+}
+
+function aDemo(f: Fila): Demo {
+  return {
+    id: Number(f.id),
+    reunionId: Number(f.reunion_id),
+    leadId: Number(f.lead_id),
+    proyecto: f.proyecto as string,
+    pliego: opc(f.pliego),
+    estado: f.estado as EstadoDeDemo,
+    corridaId: opc(f.corrida_id),
+    url: opc(f.url),
+    error: opc(f.error),
+    telegramMsg: num(f.telegram_msg),
   };
 }

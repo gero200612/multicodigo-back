@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { redactarPliego, type DepsDeDemos } from './demos.js';
 import { enviarMail } from './envio.js';
 import { horaArgentina } from './horas.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
@@ -11,7 +12,6 @@ import {
   recordatorio,
   redactarRespuesta,
   resumenDiario,
-  type DepsDeVentas,
 } from './ventas.js';
 
 export { direccion } from './ventas.js';
@@ -26,7 +26,7 @@ interface PausaDeIa {
   motivo: 'limite' | 'cuenta';
 }
 
-export type DepsDeCola = DepsDeVentas;
+export type DepsDeCola = DepsDeDemos;
 
 /** Despues de tantos fallos que no son de la IA, la tarea se da por perdida. */
 const TOPE_DE_INTENTOS = 5;
@@ -143,5 +143,7 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       return resumenDiario(deps);
     case 'redactar_respuesta':
       return redactarRespuesta(tarea.payload, deps);
+    case 'pliego_demo':
+      return redactarPliego(tarea.payload, deps);
   }
 }

@@ -1015,7 +1015,7 @@ async function avisarPartido(
   }
 }
 
-async function arrancarCola(
+export async function arrancarCola(
   chatId: number,
   deps: BridgeDeps,
   avisar: (texto: string) => Promise<void>,
