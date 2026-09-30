@@ -41,6 +41,20 @@ var githubAppSlug = cfg["GITHUB_APP_SLUG"];
 // tiene levantado.
 var conversorUrl = cfg["CONVERSOR_URL"];
 
+// Homero, el agente comercial. OPCIONAL: sin las tres, la seccion no existe y
+// el front la esconde. El dueño es UNA persona (el usuario de Supabase de
+// Gero): Homero manda mails a nombre de el, asi que nadie mas lo maneja.
+var homeroUrl = cfg["HOMERO_URL"];
+var homeroToken = cfg["HOMERO_API_TOKEN"];
+var homeroDuenio = cfg["HOMERO_USUARIO_ID"];
+var homeroActivo = !string.IsNullOrWhiteSpace(homeroUrl)
+                   && !string.IsNullOrWhiteSpace(homeroToken)
+                   && !string.IsNullOrWhiteSpace(homeroDuenio);
+if (homeroActivo && homeroToken!.Length < 16)
+{
+    throw new InvalidOperationException("HOMERO_API_TOKEN debe tener al menos 16 caracteres");
+}
+
 var supabaseUrl = Requerido("SUPABASE_URL").TrimEnd('/');
 var supabaseAnonKey = Requerido("SUPABASE_ANON_KEY");
 // Aca vivia `var proyecto = cfg["PANEL_PROJECT"] ?? "demo";`.
@@ -164,6 +178,17 @@ if (!string.IsNullOrWhiteSpace(conversorUrl))
 else
 {
     builder.Services.AddSingleton<IConversorClient, SinConversor>();
+}
+
+if (homeroActivo)
+{
+    // Dos minutos: lo mas largo es "enviar a Punchi", que espera a que el
+    // bridge cree los repos.
+    builder.Services.AddHttpClient<IHomeroClient, HomeroClient>(c => ConBearer(c, homeroUrl!, homeroToken!, 2));
+}
+else
+{
+    builder.Services.AddSingleton<IHomeroClient, SinHomero>();
 }
 
 builder.Services.AddHttpClient<IInstalacionesClient, InstalacionesClient>(c =>
@@ -2015,6 +2040,51 @@ api.MapDelete("/telegram/vinculos/{chatId:long}", async (
 
 // --- el front -------------------------------------------------------------
 //
+// --- Homero ---------------------------------------------------------------
+//
+// Un reenvio y nada mas: la API de Homero ya valida y decide. El panel pone lo
+// que Homero no puede saber, que es QUIEN pide, y solo deja pasar al dueño.
+async Task<IResult> ReenviarAHomero(
+    HttpContext ctx, string resto, IHomeroClient homero, CancellationToken ct)
+{
+    if (!homero.Configurado)
+    {
+        return Results.NotFound(new { code = "sin_homero", message = "Homero no esta configurado" });
+    }
+    if (ctx.User.FindFirst("sub")?.Value != homeroDuenio)
+    {
+        return Results.Json(
+            new { code = "no_es_el_duenio", message = "Homero es de una sola persona" },
+            statusCode: StatusCodes.Status403Forbidden);
+    }
+    if (!RutasDeHomero.RutaValida(resto))
+    {
+        return Results.NotFound(new { code = "ruta_invalida", message = resto });
+    }
+
+    string? cuerpo = null;
+    if (ctx.Request.ContentLength > 0 || ctx.Request.Headers.TransferEncoding.Count > 0)
+    {
+        using var lector = new StreamReader(ctx.Request.Body);
+        cuerpo = await lector.ReadToEndAsync(ct);
+    }
+    try
+    {
+        var r = await homero.ReenviarAsync(
+            new HttpMethod(ctx.Request.Method), $"/{resto}{ctx.Request.QueryString}", cuerpo, ct);
+        return Results.Content(r.Cuerpo, "application/json", Encoding.UTF8, r.Status);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+    {
+        app.Logger.LogError(ex, "Homero no responde");
+        return Results.Json(
+            new { code = "homero_caido", message = "Homero no responde" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+}
+
+api.MapMethods("/homero/{**resto}", ["GET", "POST", "PATCH", "DELETE"], ReenviarAHomero);
+
 // En el despliegue de hoy esto NO sirve nada: el front vive en su propio repo y
 // en su propia imagen, y es el nginx de esa imagen el que sirve el bundle y
 // hace de proxy hacia aca. La imagen de este servicio ya no tiene wwwroot, asi

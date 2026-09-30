@@ -1,5 +1,9 @@
 import type {
+  CambiosDeDemo,
   CambiosDeSaliente,
+  Demo,
+  FiltroDeLeads,
+  TipoDeSaliente,
   EstadoDeSaliente,
   Lead,
   NuevaTarea,
@@ -35,6 +39,7 @@ export class MemoriaStore implements Store {
   ocupados = new Set<string>();
   busquedas: { rubro: string; ciudad: string; fuente: string; hallados: number }[] = [];
   rebotes: { cuenta: string; email?: string; en: Date }[] = [];
+  demos: Demo[] = [];
 
   constructor(private ahora: () => Date = () => new Date()) {}
 
@@ -279,5 +284,45 @@ export class MemoriaStore implements Store {
       reuniones: this.reuniones.filter((r) => r.creada.getTime() >= d).length,
       leads: this.leads.filter((l) => l.creado.getTime() >= d).length,
     };
+  }
+  async estadosConPrefijo(prefijo: string) {
+    return [...this.estado].filter(([k]) => k.startsWith(prefijo)).map(([clave, valor]) => ({ clave, valor: copia(valor) }));
+  }
+  async salientesEnBorrador(tipos: TipoDeSaliente[]) {
+    return this.salientes.filter((s) => s.estado === 'borrador' && tipos.includes(s.tipo)).map((s) => ({ ...s }));
+  }
+  async listarLeads(f: FiltroDeLeads) {
+    const q = f.q?.toLowerCase();
+    const todos = this.leads
+      .filter((l) => (!f.estado || l.estado === f.estado) && (!f.rubro || l.rubro === f.rubro))
+      .filter((l) => !q || [l.nombre, l.email, l.web].some((x) => x?.toLowerCase().includes(q)))
+      .sort((a, b) => b.id - a.id);
+    return { total: todos.length, leads: todos.slice(f.desde, f.desde + f.limite).map((l) => ({ ...l })) };
+  }
+  async crearDemo(d: { reunionId: number; leadId: number; proyecto: string }) {
+    if (this.demos.some((x) => x.reunionId === d.reunionId)) return undefined;
+    const id = this.demos.length + 1;
+    this.demos.push({ ...d, id, estado: 'redactando' });
+    return id;
+  }
+  async demo(id: number) {
+    const d = this.demos.find((x) => x.id === id);
+    return d ? { ...d } : undefined;
+  }
+  async demoDeReunion(reunionId: number) {
+    const d = this.demos.find((x) => x.reunionId === reunionId);
+    return d ? { ...d } : undefined;
+  }
+  async demoPorTelegram(msg: number) {
+    const d = this.demos.find((x) => x.telegramMsg === msg);
+    return d ? { ...d } : undefined;
+  }
+  async actualizarDemo(id: number, c: CambiosDeDemo) {
+    const d = this.demos.find((x) => x.id === id)!;
+    Object.assign(d, Object.fromEntries(Object.entries(c).filter(([, v]) => v !== undefined)));
+    if (c.error === '') d.error = undefined;
+  }
+  async demosEnviadas() {
+    return this.demos.filter((d) => d.estado === 'enviada').map((d) => ({ ...d }));
   }
 }

@@ -683,13 +683,20 @@ export async function atenderRespuesta(r: Recibido, deps: DepsDeVentas): Promise
 
 // ------------------------------------------------------------ eleccion de horarios
 
-interface Eleccion {
+/** Una respuesta esperando que Gero marque horarios. Vive en homero.estado. */
+export interface Eleccion {
   recibido: Recibido;
   libres: string[];
   elegidos: number[];
+  /** Lo que se le mostro a Gero: el analisis de la respuesta. */
+  resumen?: string;
+  /** La tarjeta de Telegram, para redibujar sus botones si se marca desde la web. */
+  telegramMsg?: number;
 }
 
-const claveDeEleccion = (leadId: number) => `eleccion:${leadId}`;
+export const PREFIJO_DE_ELECCION = 'eleccion:';
+
+export const claveDeEleccion = (leadId: number) => `${PREFIJO_DE_ELECCION}${leadId}`;
 
 /** Los botones: un horario por renglon (marcado o no) y las dos acciones. */
 export function botonesDeEleccion(leadId: number, libres: Date[], elegidos: number[]): Boton[] {
@@ -711,15 +718,18 @@ async function ofrecerEleccion(lead: Lead, r: Recibido, a: Analisis, deps: DepsD
   const ahora = deps.ahora();
   const tomados = (await deps.store.reunionesDesde(new Date(ahora.getTime() - 3_600_000))).map((x) => x.inicio);
   const libres = horariosLibres(ahora, tomados, await deps.store.diasOcupados());
-  await deps.store.guardarEstado(claveDeEleccion(lead.id), {
+  const eleccion: Eleccion = {
     recibido: r,
     libres: libres.map((h) => h.toISOString()),
     elegidos: [],
-  } satisfies Eleccion);
-  await deps.proponer(
-    `${prefijo}${mensajeDeRespuesta(r, a, lead)}\n\n🗓 Estos horarios están libres en tu agenda. Marcá los que quieras ofrecerle y tocá ✍️ Armar respuesta.`,
+    resumen: `${prefijo}${mensajeDeRespuesta(r, a, lead)}`,
+  };
+  await deps.store.guardarEstado(claveDeEleccion(lead.id), eleccion);
+  const msg = await deps.proponer(
+    `${eleccion.resumen}\n\n🗓 Estos horarios están libres en tu agenda. Marcá los que quieras ofrecerle y tocá ✍️ Armar respuesta.`,
     botonesDeEleccion(lead.id, libres, []),
   );
+  if (msg) await deps.store.guardarEstado(claveDeEleccion(lead.id), { ...eleccion, telegramMsg: msg });
 }
 
 /** Marca o desmarca un horario. Devuelve los botones nuevos. */

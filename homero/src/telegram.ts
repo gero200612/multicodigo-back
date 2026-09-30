@@ -1,14 +1,15 @@
 import { Bot, InlineKeyboard } from 'grammy';
 import { diaArgentino, horarioEnCastellano } from './agenda.js';
-import { PAUSA_IA, PAUSA_MANUAL } from './cola.js';
 import type { Config } from './config.js';
-import { cupoDelDia } from './envio.js';
 import { horaArgentina, inicioDelDia } from './horas.js';
 import { ErrorDeCuenta, ErrorDeLimite, pedirTexto } from './ia.js';
 import { SISTEMA } from './prompts.js';
-import { CIUDADES, rubroPorId, RUBROS, zonaPorNombre } from './rubros.js';
-import type { Store } from './store.js';
-import { ENSAYO, MODO, modoActual, tablaDeRubros, type Boton } from './ventas.js';
+import { CIUDADES } from './rubros.js';
+import type { CambioDeEnsayo, EstadoDeHomero } from './comandos.js';
+import { cortarBusquedas, pausar, pedirBusqueda, ponerModo, seguir } from './comandos.js';
+import type { Resultado as ResultadoDeDemo } from './demos.js';
+import type { Demo, Store } from './store.js';
+import { modoActual, tablaDeRubros, type Boton } from './ventas.js';
 
 export const NOMBRE = 'Homero';
 
@@ -58,6 +59,27 @@ export interface Acciones {
   alternarHorario(leadId: number, i: number): Promise<Boton[] | undefined>;
   armarRespuesta(leadId: number): Promise<'encolada' | 'sin_horarios' | 'vencida'>;
   noResponder(leadId: number): Promise<void>;
+  estado(): Promise<EstadoDeHomero>;
+  cambiarEnsayo(pedido: 'off' | string | undefined): Promise<CambioDeEnsayo>;
+  armarDemo(reunionId: number): Promise<ResultadoDeDemo>;
+  enviarDemo(demoId: number): Promise<ResultadoDeDemo>;
+  cancelarDemo(demoId: number): Promise<ResultadoDeDemo>;
+  editarPliego(demoId: number, pliego: string): Promise<ResultadoDeDemo>;
+}
+
+/** El boton para pedir la demo de una reunion. */
+export const botonDeDemo = (reunionId: number): Boton => ({ texto: '🧪 Armar demo con Punchi', datos: `dm:${reunionId}` });
+
+const ESTADO_DE_DEMO: Record<Demo['estado'], string> = {
+  redactando: '✍️ escribiendo el pliego',
+  pliego: '📝 pliego listo para revisar',
+  enviada: '🏗 Punchi la está construyendo',
+  lista: '✅ publicada',
+  fallida: '❌ falló',
+};
+
+export function textoDeEstadoDeDemo(d: Demo): string {
+  return `Demo: ${ESTADO_DE_DEMO[d.estado]}${d.url ? ` · ${d.url}` : ''}${d.error ? ` (${d.error})` : ''}`;
 }
 
 /** Hasta tres botones van en una fila; con mas, uno por renglon. */
@@ -171,30 +193,27 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   });
 
   bot.command('estado', async (ctx) => {
+    if (!acciones) return;
+    const e = await acciones.estado();
     const lineas: string[] = [];
-    const pausaIa = await store.leerEstado<{ hasta: string; motivo: string }>(PAUSA_IA);
-    const pausaManual = await store.leerEstado(PAUSA_MANUAL);
-    lineas.push(pausaManual ? '⏸ En pausa (manual). /seguir para retomar.' : '▶️ Andando.');
-    const ensayo = await acciones?.ensayo();
-    lineas.push(ensayo ? `🧪 Ensayo: los mails van a ${ensayo}, no a clientes. /ensayo off para arrancar.` : '🚀 Ensayo apagado: los aprobados salen a clientes.');
-    lineas.push(`Modo: ${(await modoActual(store)) === 'auto' ? 'automático' : 'te pido aprobación'}`);
+    lineas.push(e.pausaManual ? '⏸ En pausa (manual). /seguir para retomar.' : '▶️ Andando.');
     lineas.push(
-      pausaIa
-        ? `🧠 Claude en pausa (${pausaIa.motivo}) hasta ${horaArgentina(new Date(pausaIa.hasta))}.`
+      e.ensayo
+        ? `🧪 Ensayo: los mails van a ${e.ensayo}, no a clientes. /ensayo off para arrancar.`
+        : '🚀 Ensayo apagado: los aprobados salen a clientes.',
+    );
+    lineas.push(`Modo: ${e.modo === 'auto' ? 'automático' : 'te pido aprobación'}`);
+    lineas.push(
+      e.pausaIa
+        ? `🧠 Claude en pausa (${e.pausaIa.motivo}) hasta ${horaArgentina(new Date(e.pausaIa.hasta))}.`
         : '🧠 Claude disponible.',
     );
-    const t = await store.contarTareas();
-    const p = await store.pipeline();
-    lineas.push(`📋 Tareas: ${t.pendientes} pendientes, ${t.fallidas} fallidas.`);
-    lineas.push(`✉️ Esperando tu OK: ${p.borradores} · aprobados por salir: ${p.aprobados}`);
-    lineas.push(`🔎 Busco en: ${config.placesKey ? 'Google Places' : 'OpenStreetMap'}`);
-    if (config.casillas.length === 0) lineas.push('✉️ Sin casillas configuradas.');
-    for (const c of config.casillas) {
-      const hoy = await store.enviosDesde(c.email, inicioDelDia(ahora()));
-      const cupo = cupoDelDia(await store.primerEnvio(c.email), ahora());
-      const pausa = await store.leerEstado<{ hasta: string }>(`casilla_pausada:${c.email}`);
-      const frenada = pausa && new Date(pausa.hasta).getTime() > ahora().getTime() ? ' 🛑 frenada por rebotes' : '';
-      lineas.push(`   ${c.email}: ${hoy}/${cupo} hoy${frenada}`);
+    lineas.push(`📋 Tareas: ${e.tareas.pendientes} pendientes, ${e.tareas.fallidas} fallidas.`);
+    lineas.push(`✉️ Esperando tu OK: ${e.pipeline.borradores} · aprobados por salir: ${e.pipeline.aprobados}`);
+    lineas.push(`🔎 Busco en: ${e.fuente === 'google' ? 'Google Places' : 'OpenStreetMap'}`);
+    if (e.casillas.length === 0) lineas.push('✉️ Sin casillas configuradas.');
+    for (const c of e.casillas) {
+      lineas.push(`   ${c.email}: ${c.hoy}/${c.cupo} hoy${c.frenadaHasta ? ' 🛑 frenada por rebotes' : ''}`);
     }
     await ctx.reply(lineas.join('\n'));
   });
@@ -206,47 +225,51 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     );
   });
 
+  // Una tarjeta por reunion: asi cada una lleva su boton de demo.
   bot.command('reuniones', async (ctx) => {
     const rs = await store.reunionesDesde(ahora());
     if (rs.length === 0) {
       await ctx.reply('No hay reuniones agendadas.');
       return;
     }
-    const lineas = [];
-    for (const r of rs.slice(0, 15)) {
+    for (const r of rs.slice(0, 10)) {
       const lead = await store.lead(r.leadId);
-      lineas.push(`📅 ${horarioEnCastellano(r.inicio)}: ${lead?.nombre ?? '?'}\n   ${r.link}`);
+      const demo = await store.demoDeReunion(r.id);
+      const texto = [
+        `📅 ${horarioEnCastellano(r.inicio)}: ${lead?.nombre ?? '?'}`,
+        `   ${r.link}`,
+        demo ? `   ${textoDeEstadoDeDemo(demo)}` : undefined,
+      ]
+        .filter((l) => l !== undefined)
+        .join('\n');
+      const puedeArmar = !demo || demo.estado === 'fallida';
+      await ctx.reply(texto, puedeArmar ? { reply_markup: teclado([botonDeDemo(r.id)]) } : {});
     }
-    await ctx.reply(lineas.join('\n'));
   });
 
   bot.command('ensayo', async (ctx) => {
+    if (!acciones) return;
     const pedido = (ctx.match ?? '').trim();
-    if (pedido.toLowerCase() === 'off') {
-      const liberadas = (await acciones?.apagarEnsayo()) ?? 0;
-      await ctx.reply(
-        '🚀 Ensayo apagado. Ya no te mando los borradores por mail, y lo que apruebes le llega al cliente.' +
-          (liberadas > 0 ? `\nLiberé ${liberadas} horario(s) que habían tomado las pruebas.` : ''),
-      );
-      const n = (await acciones?.reproponerBorradores()) ?? 0;
-      if (n > 0) await ctx.reply(`Te reenvío ${n} borrador(es) que tenías pendientes, ahora con ✅ Aprobar.`);
-      return;
-    }
-    if (pedido && !/^\S+@\S+\.\S+$/.test(pedido)) {
+    if (pedido && pedido.toLowerCase() !== 'off' && !/^\S+@\S+\.\S+$/.test(pedido)) {
       await ctx.reply('Uso: /ensayo tu@mail.com · /ensayo off · /ensayo (para ver cómo está)');
       return;
     }
-    if (pedido) await store.guardarEstado(ENSAYO, { a: pedido.toLowerCase() });
-    else if ((await store.leerEstado<{ apagado?: boolean }>(ENSAYO))?.apagado) await store.guardarEstado(ENSAYO, null);
-    const a = await acciones?.ensayo();
-    if (!a) {
+    const r = await acciones.cambiarEnsayo(pedido.toLowerCase() === 'off' ? 'off' : pedido || undefined);
+    if (r.apagado) {
+      await ctx.reply(
+        '🚀 Ensayo apagado. Ya no te mando los borradores por mail, y lo que apruebes le llega al cliente.' +
+          (r.liberados > 0 ? `\nLiberé ${r.liberados} horario(s) que habían tomado las pruebas.` : ''),
+      );
+      if (r.repropuestos > 0) await ctx.reply(`Te reenvié ${r.repropuestos} borrador(es) que tenías pendientes, ahora con ✅ Aprobar.`);
+      return;
+    }
+    if (!r.a) {
       await ctx.reply('No tengo a qué mail mandarte las muestras: /ensayo tu@mail.com');
       return;
     }
-    const n = (await acciones?.mandarMuestras(a)) ?? 0;
     await ctx.reply(
-      `🧪 Ensayo prendido: cada mail nuevo te llega a ${a} tal cual lo recibiría el cliente, con de dónde saqué la info. Al cliente no sale nada.` +
-        (n > 0 ? `\nTe acabo de mandar ${n} muestra(s) de los borradores que ya tenía.` : ''),
+      `🧪 Ensayo prendido: cada mail nuevo te llega a ${r.a} tal cual lo recibiría el cliente, con de dónde saqué la info. Al cliente no sale nada.` +
+        (r.muestras > 0 ? `\nTe acabo de mandar ${r.muestras} muestra(s) de los borradores que ya tenía.` : ''),
     );
   });
 
@@ -256,7 +279,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       await ctx.reply(`Modo actual: ${await modoActual(store)}. Uso: /modo aprobar | /modo auto`);
       return;
     }
-    await store.guardarEstado(MODO, pedido);
+    await ponerModo(store, pedido);
     await ctx.reply(
       pedido === 'auto'
         ? '🤖 Modo automático: mando los mails y respuestas sin pedirte OK. Te sigo avisando todo.'
@@ -266,22 +289,13 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
 
   bot.command('buscar', async (ctx) => {
     const partes = (ctx.match ?? '').trim().split(/\s+/).filter(Boolean);
-    const rubro = partes[0] ? rubroPorId(partes[0]) : undefined;
-    if (partes[0] && !rubro) {
-      await ctx.reply(`No conozco ese rubro. Opciones: ${RUBROS.map((r) => r.id).join(', ')}`);
+    const b = await pedirBusqueda(store, partes[0], partes.slice(1).join(' ') || undefined);
+    if (!b.ok) {
+      await ctx.reply(b.motivo);
       return;
     }
-    const pedida = partes.slice(1).join(' ') || undefined;
-    const ciudad = pedida ? zonaPorNombre(pedida)?.nombre ?? pedida : undefined;
-    if (ciudad && !CIUDADES.includes(ciudad)) {
-      await ctx.reply(`Ojo: "${ciudad}" no está en mi zona (${CIUDADES.slice(0, 4).join(', ')}…), la busco igual.`);
-    }
-    await store.encolar({
-      tipo: 'prospectar',
-      payload: { cantidad: 3, rubro: rubro?.id, ciudad },
-      requiereIa: false,
-    });
-    await ctx.reply(`🔎 Salgo a buscar ${rubro?.nombre ?? 'el rubro que mejor viene respondiendo'}${ciudad ? ` en ${ciudad}` : ''}. Te paso los borradores.`);
+    if (b.fueraDeZona) await ctx.reply(`Ojo: "${b.ciudad}" no está en mi zona (${CIUDADES.slice(0, 4).join(', ')}…), la busco igual.`);
+    await ctx.reply(`🔎 Salgo a buscar ${b.rubro ?? 'el rubro que mejor viene respondiendo'}${b.ciudad ? ` en ${b.ciudad}` : ''}. Te paso los borradores.`);
   });
 
   bot.command('rubros', async (ctx) => {
@@ -316,7 +330,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   });
 
   bot.command('cortar', async (ctx) => {
-    const n = await store.cancelarTareas(['prospectar', 'investigar']);
+    const n = await cortarBusquedas(store);
     await ctx.reply(
       n > 0
         ? `✂️ Corté ${n} búsqueda(s) e investigación(es) pendientes. Lo que ya estaba escrito queda como estaba.`
@@ -325,12 +339,12 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   });
 
   bot.command('pausa', async (ctx) => {
-    await store.guardarEstado(PAUSA_MANUAL, { desde: ahora().toISOString() });
+    await pausar(store, ahora());
     await ctx.reply('⏸ Pausado. No mando ni resumo nada hasta /seguir. Las bandejas se siguen leyendo.');
   });
 
   bot.command('seguir', async (ctx) => {
-    await store.guardarEstado(PAUSA_MANUAL, null);
+    await seguir(store);
     await ctx.reply('▶️ Sigo.');
   });
 
@@ -426,13 +440,44 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         await acciones.descartarLead(id);
         resultado = '🗑 Descartado.';
         break;
-      case 'en':
-        resultado = (await acciones.aprobarSaliente(id)) ? '📤 Enviando.' : 'Ya estaba decidido.';
+      case 'en': {
+        if (!(await acciones.aprobarSaliente(id))) {
+          resultado = 'Ya estaba decidido.';
+          break;
+        }
+        resultado = '📤 Enviando.';
+        // Con la reunion confirmada, el momento de pedir la demo.
+        const s = await store.saliente(id);
+        if (s?.tipo === 'confirmacion' && s.reunionId && (await acciones.estado()).demos) {
+          await ctx
+            .reply('¿Querés que Punchi te arme una demo para esta reunión?', {
+              reply_markup: teclado([botonDeDemo(s.reunionId)]),
+            })
+            .catch(() => undefined);
+        }
         break;
+      }
       case 'no':
         await acciones.descartarSaliente(id);
         resultado = '🗑 No se envía.';
         break;
+      case 'dm': {
+        const r = await acciones.armarDemo(id);
+        resultado = r.ok ? '✍️ Escribo el pliego de la demo y te lo paso para revisar.' : `No pude: ${r.motivo}`;
+        break;
+      }
+      case 'dp': {
+        const r = await acciones.enviarDemo(id);
+        resultado = r.ok
+          ? `🚀 Se lo pasé a Punchi (${r.demo.proyecto}). Arranca solo y te aviso cuando esté publicada.`
+          : `No pude: ${r.motivo}. Probá de nuevo desde /reuniones o punchi.dev.`;
+        break;
+      }
+      case 'dc': {
+        const r = await acciones.cancelarDemo(id);
+        resultado = r.ok ? '🗑 Demo cancelada.' : `No pude: ${r.motivo}`;
+        break;
+      }
       default:
         resultado = 'No entendí ese botón.';
     }
@@ -446,6 +491,13 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   bot.on('message:text', async (ctx) => {
     const citado = ctx.message.reply_to_message?.message_id;
     if (!citado) return;
+    // El pliego de una demo tambien se corrige respondiendole.
+    const demo = await store.demoPorTelegram(citado);
+    if (demo && acciones) {
+      const r = await acciones.editarPliego(demo.id, ctx.message.text);
+      await ctx.reply(r.ok ? '✏️ Listo, cambié el pliego. Tocá 🚀 Enviar a Punchi en la tarjeta.' : `No pude: ${r.motivo}`);
+      return;
+    }
     const s = await store.salientePorTelegram(citado);
     if (!s || s.estado !== 'borrador') {
       await ctx.reply('Ese mensaje ya no se puede cambiar.');
@@ -457,10 +509,22 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
 
   bot.catch((err) => console.error('[homero] error del bot:', err.error));
 
+  /**
+   * Cuando algo se decide desde la web, la tarjeta de Telegram pierde sus
+   * botones (o los redibuja): lo mismo que pasa al tocarlos en el chat.
+   */
+  const cambiarBotones = async (msg: number, botones: Boton[] | undefined) => {
+    if (config.chatId === undefined) return;
+    await bot.api
+      .editMessageReplyMarkup(config.chatId, msg, { reply_markup: botones ? teclado(botones) : undefined })
+      .catch(() => undefined);
+  };
+
   return {
     bot,
     avisar,
     proponer,
+    cambiarBotones,
     conectar: (a: Acciones) => {
       acciones = a;
     },

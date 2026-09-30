@@ -9,6 +9,7 @@ import { FORMATOS_GENERABLES } from './documentos.js';
 import { EJES, sinRepetidas } from './corrida.js';
 import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
+import type { EstadoDeDemo, PedidoDeDemo, ResultadoDeDemo } from './demo-homero.js';
 
 /** Tope duro. Sin esto, un `?limit=` de la URL deja pedir la tabla entera. */
 const MAX_JOBS = 50;
@@ -105,7 +106,22 @@ export interface ApiDeps {
    * conversaciones puede tambien inyectar updates de Telegram.
    */
   apiToken: string;
+  /**
+   * Las demos que pide Homero. Se inyectan porque abrir una necesita el bot
+   * (para avisar en el chat) y el pipeline entero. Sin esto las rutas dan 503.
+   */
+  demos?: {
+    abrir: (p: PedidoDeDemo) => Promise<ResultadoDeDemo>;
+    estado: (chatId: number, corridaId: string) => Promise<EstadoDeDemo | undefined>;
+  };
 }
+
+const CuerpoDemo = z.object({
+  chatId: z.coerce.number().int(),
+  // La misma forma que valida `/corrida proyecto=`.
+  proyecto: z.string().regex(/^[a-zA-Z0-9._-]+$/).max(60),
+  pliego: z.string().min(20).max(60_000),
+});
 
 /** Cuantas corridas muestra el dashboard: la abierta y las ultimas. */
 const CORRIDAS_A_MOSTRAR = 5;
@@ -522,6 +538,41 @@ export function buildWebhookServer(
       // fuera no llamar la herramienta, o sea lo mismo que fallar.
       huecos: z.array(z.string().min(1).max(2000)).max(50),
     });
+
+    /**
+     * Homero pide una demo: abre la corrida y la arranca sin el boton de
+     * confirmar. Ver `demo-homero.ts`.
+     */
+    app.post('/interno/corrida/desde-homero', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      if (!api.demos) return reply.code(503).send({ code: 'sin_demos', message: 'demos no configuradas' });
+      const cuerpo = CuerpoDemo.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta chatId, proyecto o pliego' });
+      }
+      const r = await api.demos.abrir(cuerpo.data);
+      return r.ok
+        ? reply.code(200).send({ corridaId: r.corridaId })
+        : reply.code(409).send({ code: 'no_abierta', message: r.motivo });
+    });
+
+    app.get<{ Params: { id: string }; Querystring: { chatId?: string } }>(
+      '/interno/corrida/:id/estado',
+      async (request, reply) => {
+        if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+          return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+        }
+        if (!api.demos) return reply.code(503).send({ code: 'sin_demos', message: 'demos no configuradas' });
+        const chatId = Number(request.query.chatId);
+        if (!Number.isInteger(chatId) || !z.string().uuid().safeParse(request.params.id).success) {
+          return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta chatId o id' });
+        }
+        const e = await api.demos.estado(chatId, request.params.id);
+        return e ? reply.code(200).send(e) : reply.code(404).send({ code: 'no_existe', message: 'no esta esa corrida' });
+      },
+    );
 
     app.post('/interno/corrida/huecos', async (request, reply) => {
       if (!isTokenValid(request.headers.authorization, api.apiToken)) {
