@@ -21,6 +21,8 @@ import {
   mandarMuestras,
   noResponder,
   reproponerBorradores,
+  proponerPrioridad,
+  lugaresHoy,
   planificar,
   procesarRebote,
 } from './ventas.js';
@@ -72,6 +74,8 @@ async function main() {
     ensayo: () => ensayoActivo(deps),
     apagarEnsayo: () => apagarEnsayo(deps),
     reproponerBorradores: () => reproponerBorradores(deps),
+    prioridad: (n) => proponerPrioridad(deps, n),
+    lugaresHoy: () => lugaresHoy(deps),
     alternarHorario: (id, i) => alternarHorario(id, i, deps),
     armarRespuesta: (id) => armarRespuesta(id, deps),
     noResponder: (id) => noResponder(id, deps),

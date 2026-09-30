@@ -12,7 +12,7 @@ import {
 import type { Casilla } from './config.js';
 import { cupoDelDia, enviarMail, type DepsDeEnvio } from './envio.js';
 import { linkDeFicha, type Fuente } from './fuentes.js';
-import { horaArgentina, inicioDelDia, relojArgentino, sumarDiasHabiles } from './horas.js';
+import { horaArgentina, inicioDelDia, proximaVentanaDeEnvio, relojArgentino, sumarDiasHabiles } from './horas.js';
 import {
   leerAnalisis,
   leerBorrador,
@@ -261,6 +261,47 @@ export async function proponerBorrador(
   const msg = await deps.proponer(tarjeta, botones);
   if (msg) await deps.store.actualizarSaliente(inicial.id, { telegramMsg: msg });
   return true;
+}
+
+/**
+ * /prioridad: los `n` borradores con mayor factibilidad, del mejor al peor,
+ * para aprobar primero los que mas chances tienen.
+ */
+export async function proponerPrioridad(deps: DepsDeVentas, n = 5): Promise<number> {
+  const leads: Lead[] = [];
+  for (const id of await deps.store.leadsEnBorrador()) {
+    const l = await deps.store.lead(id);
+    if (l) leads.push(l);
+  }
+  leads.sort((a, b) => (b.investigacion?.factibilidad ?? 0) - (a.investigacion?.factibilidad ?? 0));
+  const ensayo = await ensayoActivo(deps);
+  let propuestos = 0;
+  for (const l of leads.slice(0, n)) {
+    if (await proponerBorrador(l.id, deps, { ensayo })) propuestos++;
+  }
+  return propuestos;
+}
+
+/**
+ * Cuantos mails nuevos entran hoy: el cupo de todas las casillas, menos lo que
+ * ya salio hoy, menos lo que ya esta aprobado esperando turno.
+ */
+export async function lugaresHoy(
+  deps: Pick<DepsDeVentas, 'store' | 'casillas' | 'ahora'>,
+): Promise<{ quedan: number; cupo: number; ventanaAbierta: boolean }> {
+  const ahora = deps.ahora();
+  let cupo = 0;
+  let enviados = 0;
+  for (const c of deps.casillas) {
+    cupo += cupoDelDia(await deps.store.primerEnvio(c.email), ahora);
+    enviados += await deps.store.enviosDesde(c.email, inicioDelDia(ahora));
+  }
+  const { aprobados } = await deps.store.pipeline();
+  return {
+    quedan: Math.max(0, cupo - enviados - aprobados),
+    cupo,
+    ventanaAbierta: proximaVentanaDeEnvio(ahora).getTime() <= ahora.getTime(),
+  };
 }
 
 /** Al salir del ensayo: vuelve a mandar los borradores pendientes, ahora con Aprobar. */

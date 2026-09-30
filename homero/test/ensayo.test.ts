@@ -12,6 +12,8 @@ import {
   ensayoActivo,
   mandarMuestras,
   reproponerBorradores,
+  proponerPrioridad,
+  lugaresHoy,
 } from '../src/ventas.js';
 import { armar } from './armar.js';
 
@@ -93,6 +95,25 @@ describe('modo ensayo', () => {
     expect(nueva.texto).toContain('respondé a este mensaje');
     // Y ahora Aprobar si programa el envio.
     expect(await aprobarLead(1, h.deps)).toBe(true);
+  });
+
+  it('/prioridad pasa primero los de mayor factibilidad y aprobar descuenta lugares del dia', async () => {
+    const h = armar();
+    const factibilidades = [6, 9, 7];
+    for (const [i, fact] of factibilidades.entries()) {
+      const id = (await h.store.crearLead({ nombre: `N${i}`, rubro: 'contable', ciudad: 'X', fuente: 'osm', email: `n${i}@x.com` }))!;
+      await h.store.actualizarLead(id, {
+        estado: 'borrador',
+        investigacion: { resumen_empresa: 'r', dolor: 'd', idea: 'i', factibilidad: fact },
+      });
+      await h.store.crearSaliente({ leadId: id, tipo: 'inicial', paso: 0, asunto: 'a', cuerpo: 'c' });
+    }
+    expect(await proponerPrioridad(h.deps, 2)).toBe(2);
+    expect(h.tarjetas.map((t) => t.datos[0])).toEqual(['ap:2', 'ap:3']);
+
+    expect((await lugaresHoy(h.deps)).quedan).toBe(5);
+    await aprobarLead(2, h.deps);
+    expect((await lugaresHoy(h.deps)).quedan).toBe(4);
   });
 
   it('/cortar cancela las busquedas e investigaciones pendientes', async () => {

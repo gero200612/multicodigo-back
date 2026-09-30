@@ -17,6 +17,7 @@ export const COMANDOS = [
   { command: 'estado', description: 'Cómo vengo: pausas, cupo y borradores' },
   { command: 'hoy', description: 'Números del día' },
   { command: 'buscar', description: 'Salir a buscar ya: /buscar [rubro] [zona]' },
+  { command: 'prioridad', description: 'Los 5 borradores con más factibilidad' },
   { command: 'cortar', description: 'Cancelar las búsquedas pendientes' },
   { command: 'pausa', description: 'Frenar todo (las bandejas se siguen leyendo)' },
   { command: 'seguir', description: 'Retomar después de /pausa' },
@@ -49,6 +50,10 @@ export interface Acciones {
   apagarEnsayo(): Promise<number>;
   /** Reenvia los borradores pendientes con el boton de Aprobar. Devuelve cuantos. */
   reproponerBorradores(): Promise<number>;
+  /** Reenvia los `n` borradores de mayor factibilidad. Devuelve cuantos. */
+  prioridad(n: number): Promise<number>;
+  /** Cuantos mails nuevos entran hoy. */
+  lugaresHoy(): Promise<{ quedan: number; cupo: number; ventanaAbierta: boolean }>;
   /** Marca o desmarca un horario para ofrecer. Devuelve los botones nuevos. */
   alternarHorario(leadId: number, i: number): Promise<Boton[] | undefined>;
   armarRespuesta(leadId: number): Promise<'encolada' | 'sin_horarios' | 'vencida'>;
@@ -152,6 +157,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         '/buscar [rubro] [ciudad] · salgo a buscar ya',
         '/rubros · cómo responde cada rubro',
         '/ocupado 30/9 · /libre 30/9 · días sin reuniones',
+        '/prioridad [n] · los borradores con más factibilidad',
         '/cortar · cancela las búsquedas pendientes',
         '/pausa · /seguir',
         '/probar_ia · /probar_mail <destino> [1-3]',
@@ -297,6 +303,18 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     });
   }
 
+  bot.command('prioridad', async (ctx) => {
+    const n = Math.min(20, Math.max(1, Number((ctx.match ?? '').trim()) || 5));
+    await ctx.reply(`⭐ Te paso los ${n} borradores con más factibilidad, del mejor al peor:`);
+    const enviados = (await acciones?.prioridad(n)) ?? 0;
+    const l = await acciones?.lugaresHoy();
+    await ctx.reply(
+      enviados === 0
+        ? 'No hay borradores esperando.'
+        : `Listo. ${l ? `Hoy entran ${l.quedan} mail(s) nuevo(s) más (cupo ${l.cupo}).` : ''}`,
+    );
+  });
+
   bot.command('cortar', async (ctx) => {
     const n = await store.cancelarTareas(['prospectar', 'investigar']);
     await ctx.reply(
@@ -393,9 +411,17 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         await acciones.noResponder(id);
         resultado = '🗑 No le respondo.';
         break;
-      case 'ap':
-        resultado = (await acciones.aprobarLead(id)) ? '✅ Aprobado, sale en el próximo turno.' : 'Ya estaba decidido.';
+      case 'ap': {
+        if (!(await acciones.aprobarLead(id))) {
+          resultado = 'Ya estaba decidido.';
+          break;
+        }
+        const l = await acciones.lugaresHoy();
+        resultado = l.ventanaAbierta
+          ? `✅ Aprobado. ${l.quedan > 0 ? `Te quedan ${l.quedan} lugar(es) para hoy (cupo ${l.cupo}).` : `Hoy ya está lleno el cupo (${l.cupo}): este sale el próximo día hábil.`}`
+          : `✅ Aprobado. Hoy ya cerró la ventana de envío: sale el próximo día hábil desde las 9. Lugares para ese día: ${l.quedan} de ${l.cupo}.`;
         break;
+      }
       case 'de':
         await acciones.descartarLead(id);
         resultado = '🗑 Descartado.';
