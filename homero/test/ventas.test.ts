@@ -256,16 +256,41 @@ describe('rebotes', () => {
 });
 
 describe('planificar', () => {
-  it('un dia habil a la mañana sale a buscar una vez, y a la noche manda el resumen', async () => {
+  it('un dia habil a la mañana sale a buscar el cupo entero, y a la noche manda el resumen', async () => {
     const h = armar({ ahora: new Date('2026-09-29T11:00:00Z') }); // martes 8hs AR
     await planificar(h.deps);
     await planificar(h.deps);
     expect(h.store.tareas.filter((t) => t.tipo === 'prospectar')).toHaveLength(1);
-    expect(h.store.tareas[0]!.payload).toEqual({ cantidad: 3 }); // 60% de un cupo de 5
+    expect(h.store.tareas[0]!.payload).toEqual({ cantidad: 5 }); // el cupo entero de 5
 
     h.mover(new Date('2026-09-29T23:45:00Z')); // 20:45 AR
     await planificar(h.deps);
     expect(h.store.tareas.some((t) => t.tipo === 'resumen_diario')).toBe(true);
+  });
+
+  it('cada dos horas vuelve a buscar lo que falta, pero no mientras la anterior sigue', async () => {
+    const h = armar({ ahora: new Date('2026-09-29T10:30:00Z') }); // martes 7:30 AR
+    await planificar(h.deps);
+    expect(h.store.tareas.filter((t) => t.tipo === 'prospectar')).toHaveLength(1);
+
+    // 9:30: la de las 7 sigue pendiente, no se duplica.
+    h.mover(new Date('2026-09-29T12:30:00Z'));
+    await planificar(h.deps);
+    expect(h.store.tareas.filter((t) => t.tipo === 'prospectar')).toHaveLength(1);
+
+    // Termino sin dar borradores: a las 11 sale de nuevo por el cupo entero.
+    h.store.tareas[0]!.estado = 'lista';
+    h.mover(new Date('2026-09-29T14:10:00Z'));
+    await planificar(h.deps);
+    const busquedas = h.store.tareas.filter((t) => t.tipo === 'prospectar');
+    expect(busquedas).toHaveLength(2);
+    expect(busquedas[1]!.payload).toEqual({ cantidad: 5 });
+
+    // Despues de las 17 ya no busca: no llegaria a salir hoy.
+    busquedas[1]!.estado = 'lista';
+    h.mover(new Date('2026-09-29T20:30:00Z')); // 17:30 AR
+    await planificar(h.deps);
+    expect(h.store.tareas.filter((t) => t.tipo === 'prospectar')).toHaveLength(2);
   });
 
   it('el fin de semana no sale a buscar', async () => {

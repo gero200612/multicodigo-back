@@ -115,6 +115,9 @@ export class MemoriaStore implements Store {
       }
     return n;
   }
+  async tareasEnCurso(tipos: string[]) {
+    return this.tareas.filter((t) => (t.estado === 'pendiente' || t.estado === 'corriendo') && tipos.includes(t.tipo)).length;
+  }
   async contarTareas() {
     return {
       pendientes: this.tareas.filter((t) => t.estado === 'pendiente').length,

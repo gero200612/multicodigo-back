@@ -969,10 +969,16 @@ export async function procesarRebote(r: Recibido, deps: Pick<DepsDeVentas, 'stor
 
 // ------------------------------------------------------------ el dia
 
-/** Cuantos iniciales nuevos buscar por dia, como parte del cupo total. */
-const PARTE_PARA_NUEVOS = 0.6;
 /** Tope de borradores esperando aprobacion: mas que esto no se llega a leer. */
 const TOPE_DE_BORRADORES = 15;
+/**
+ * Las vueltas de busqueda del dia: a las 7, 9, 11, 13 y 15 de Argentina. La
+ * ultima a las 15 para que lo que encuentre llegue a salir antes de que cierre
+ * la ventana de envio (19 hs).
+ */
+const PRIMERA_BUSQUEDA = 7;
+const ULTIMA_BUSQUEDA = 15;
+const CADA_HORAS = 2;
 
 /**
  * Lo que Homero hace solo segun la hora. Se llama cada pocos minutos; cada
@@ -985,20 +991,29 @@ export async function planificar(deps: DepsDeVentas): Promise<void> {
   const { hora, minuto, diaSemana } = relojArgentino(ahora);
   const habil = diaSemana >= 1 && diaSemana <= 5;
 
-  if (habil && hora >= 7 && !(await deps.store.leerEstado(`prospeccion:${dia}`))) {
-    await deps.store.guardarEstado(`prospeccion:${dia}`, true);
-    let capacidad = 0;
-    for (const c of deps.casillas) capacidad += cupoDelDia(await deps.store.primerEnvio(c.email), ahora);
-    const { borradores, aprobados } = await deps.store.pipeline();
-    const objetivo = Math.round(capacidad * PARTE_PARA_NUEVOS);
-    const faltan = Math.min(TOPE_DE_BORRADORES - borradores, objetivo - borradores - aprobados);
-    if (faltan > 0) {
-      await deps.store.encolar({
-        tipo: 'prospectar',
-        payload: { cantidad: faltan },
-        requiereIa: false,
-        clave: `prospectar:${dia}`,
-      });
+  // Completar el cupo del dia: cada dos horas mira cuanto lugar queda y sale a
+  // buscar lo que falta. Una sola busqueda por dia se quedaba corta cuando la
+  // mitad de lo investigado se descartaba (sin mail, factibilidad baja).
+  if (habil && hora >= PRIMERA_BUSQUEDA && hora < ULTIMA_BUSQUEDA + CADA_HORAS) {
+    const vuelta = Math.floor((hora - PRIMERA_BUSQUEDA) / CADA_HORAS);
+    const marca = `prospeccion:${dia}:${vuelta}`;
+    if (!(await deps.store.leerEstado(marca))) {
+      await deps.store.guardarEstado(marca, true);
+      // Si la anterior sigue buscando o investigando, todavia no se sabe
+      // cuantos borradores va a dar: se espera a la proxima vuelta.
+      if ((await deps.store.tareasEnCurso(['prospectar', 'investigar'])) === 0) {
+        const { quedan } = await lugaresHoy(deps);
+        const { borradores } = await deps.store.pipeline();
+        const faltan = Math.min(TOPE_DE_BORRADORES - borradores, quedan - borradores);
+        if (faltan > 0) {
+          await deps.store.encolar({
+            tipo: 'prospectar',
+            payload: { cantidad: faltan },
+            requiereIa: false,
+            clave: `prospectar:${dia}:${vuelta}`,
+          });
+        }
+      }
     }
   }
 
