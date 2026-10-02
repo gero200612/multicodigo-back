@@ -183,6 +183,8 @@ export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<
       factibilidad_motivo: b.factibilidad_motivo,
       fuentes,
       chatbots,
+      ...(b.personas ? { personas: b.personas } : {}),
+      ...(b.usuarios?.trim() ? { usuarios: b.usuarios.trim() } : {}),
     },
   });
   const inicial = await deps.store.crearSaliente({

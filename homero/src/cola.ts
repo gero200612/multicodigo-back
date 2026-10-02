@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { redactarPliego, type DepsDeDemos } from './demos.js';
 import { enviarMail } from './envio.js';
 import { horaArgentina } from './horas.js';
+import { presupuestar } from './patan.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
 import type { Recibido, Tarea } from './store.js';
 import {
@@ -145,5 +146,7 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       return redactarRespuesta(tarea.payload, deps);
     case 'pliego_demo':
       return redactarPliego(tarea.payload, deps);
+    case 'presupuestar':
+      return presupuestar(tarea.payload, deps);
   }
 }

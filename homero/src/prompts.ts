@@ -12,7 +12,7 @@ Reglas que no se rompen:
 - Cuando te pidan JSON, contestas SOLO el JSON, sin texto alrededor ni bloques de codigo.`;
 
 /** El JSON de una respuesta del modelo, tolerando texto alrededor. */
-function extraerJson(texto: string): unknown {
+export function extraerJson(texto: string): unknown {
   const inicio = texto.indexOf('{');
   const fin = texto.lastIndexOf('}');
   if (inicio < 0 || fin <= inicio) return undefined;
@@ -34,6 +34,10 @@ export const Borrador = z.object({
   /** Que tan probable es que esta propuesta les sirva y la compren, de 1 a 10. */
   factibilidad: z.coerce.number().int().min(1).max(10),
   factibilidad_motivo: z.string(),
+  // Para Patán: el tamaño de la empresa y quién usaría la app. Opcionales:
+  // los borradores viejos no los traen.
+  personas: z.coerce.number().int().min(1).optional().catch(undefined),
+  usuarios: z.string().optional().catch(undefined),
   // Vacios cuando no encaja: un descarte no trae mail. Si encaja y vienen
   // vacios, `leerBorrador` lo rechaza.
   asunto: z.string().max(80),
@@ -104,6 +108,8 @@ Seguimiento (va en el mismo hilo, sin asunto):
 
 Antes de escribir, analizá qué necesita ESTE negocio: qué hacen, cómo trabajan hoy (turnos, pedidos, cobros, consultas, papeles) y qué parte se ve manual o sin resolver. La propuesta tiene que ser específica para ellos.
 
+Personas y usuarios: estimá cuánta gente trabaja en el negocio (por la web: equipo, sucursales, profesionales) y quién usaría la aplicación que proponés. Es una estimación: si no hay pistas, poné tu mejor número según el tamaño que se ve.
+
 Factibilidad (1 a 10): qué tan probable es que les sirva y la contraten. Sumá si se ve un proceso manual claro y repetitivo, si el negocio tiene volumen (varios profesionales, sucursales, muchos clientes) y si la propuesta es concreta. Restá si ya tienen resuelto eso, si es muy chico o unipersonal, si la web está abandonada o si la idea es genérica. Sé exigente: un 8 o más es una propuesta que Gero mandaría sin dudar.
 
 Contestá con este JSON:
@@ -115,6 +121,8 @@ Contestá con este JSON:
   "idea": "la aplicación que les proponés, específica para ellos",
   "factibilidad": 7,
   "factibilidad_motivo": "por qué ese puntaje, en una oración",
+  "personas": 12,
+  "usuarios": "quién usaría la aplicación y cuántos, por ejemplo: administración (2) y vendedores (4)",
   "asunto": "...",
   "mensaje": "...",
   "seguimiento": "..."

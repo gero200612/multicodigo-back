@@ -168,3 +168,25 @@ pnpm install
 pnpm test
 pnpm typecheck
 ```
+
+## Patán: los presupuestos
+
+Vive adentro de Homero (misma base, cola y cuenta de Claude); en punchi.dev es
+su propia sección, `/patan`. Para cada demo ya mandada a Punchi, Gero pega sus
+notas de la reunión y toca "Armar presupuesto": la tarea `presupuestar` le pide
+a Claude el alcance y una estimación del ahorro mensual del cliente (horas ×
+costo de la hora). Los PRECIOS no los pone Claude: salen de la regla
+(`patan:regla` en `homero.estado`, editable desde la web):
+
+- armado = ahorro mensual × `mesesDeAhorro`, nunca menos que `pisoArmado`;
+- abono = ahorro mensual × `porcentajeAbono`, nunca menos que `pisoAbono`, con `horasSoporte` incluidas.
+
+La cuenta del ahorro queda en `justificacion` y la ve solo Gero; el PDF (se
+genera en el navegador) dice únicamente lo que se cobra.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /patan` | Las demos presupuestables con su empresa, reunión y presupuesto, y la regla |
+| `POST /patan/demos/:id/armar` | `{ notas }`: encola el presupuesto (rehacerlo pisa el anterior) |
+| `PATCH /patan/presupuestos/:id` | `{ contenido }`: Gero lo edita antes de bajar el PDF |
+| `PATCH /patan/regla` | `{ regla }` |

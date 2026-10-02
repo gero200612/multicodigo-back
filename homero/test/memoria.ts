@@ -1,5 +1,7 @@
 import { dominio } from '../src/cadenas.js';
 import type {
+  CambiosDePresupuesto,
+  Presupuesto,
   CambiosDeDemo,
   CambiosDeSaliente,
   Demo,
@@ -41,6 +43,7 @@ export class MemoriaStore implements Store {
   busquedas: { rubro: string; ciudad: string; fuente: string; hallados: number }[] = [];
   rebotes: { cuenta: string; email?: string; en: Date }[] = [];
   demos: Demo[] = [];
+  presupuestos: Presupuesto[] = [];
 
   constructor(private ahora: () => Date = () => new Date()) {}
 
@@ -331,5 +334,38 @@ export class MemoriaStore implements Store {
   }
   async demosEnviadas() {
     return this.demos.filter((d) => d.estado === 'enviada').map((d) => ({ ...d }));
+  }
+  async demosPresupuestables() {
+    return this.demos
+      .filter((d) => d.estado === 'enviada' || d.estado === 'lista')
+      .reverse()
+      .map((d) => ({ ...d }));
+  }
+
+  async presupuesto(id: number) {
+    const p = this.presupuestos.find((x) => x.id === id);
+    return p ? structuredClone(p) : undefined;
+  }
+  async presupuestoDeDemo(demoId: number) {
+    const p = this.presupuestos.find((x) => x.demoId === demoId);
+    return p ? structuredClone(p) : undefined;
+  }
+  async guardarPedidoDePresupuesto(p: { demoId: number; leadId: number; notas: string }) {
+    const previo = this.presupuestos.find((x) => x.demoId === p.demoId);
+    if (previo) {
+      Object.assign(previo, { notas: p.notas, estado: 'armando', error: undefined, actualizado: new Date() });
+      return previo.id;
+    }
+    const id = this.presupuestos.length + 1;
+    this.presupuestos.push({ ...p, id, estado: 'armando', actualizado: new Date() });
+    return id;
+  }
+  async actualizarPresupuesto(id: number, c: CambiosDePresupuesto) {
+    const p = this.presupuestos.find((x) => x.id === id)!;
+    const { error, ...resto } = c;
+    Object.assign(p, Object.fromEntries(Object.entries(resto).filter(([, v]) => v !== undefined)));
+    if (error === '') p.error = undefined;
+    else if (error !== undefined) p.error = error;
+    p.actualizado = new Date();
   }
 }

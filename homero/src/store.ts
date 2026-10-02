@@ -1,3 +1,4 @@
+import type { Contenido, Justificacion } from './patan.js';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 
@@ -10,7 +11,8 @@ export type TipoDeTarea =
   | 'recordatorio'
   | 'resumen_diario'
   | 'redactar_respuesta'
-  | 'pliego_demo';
+  | 'pliego_demo'
+  | 'presupuestar';
 
 export type EstadoDeLead =
   | 'nuevo'
@@ -35,6 +37,10 @@ export interface Investigacion {
   chatbots?: string[];
   /** De donde salio la informacion: la ficha del lugar y las paginas leidas. */
   fuentes?: string[];
+  /** Estimado de cuanta gente trabaja ahi (para Patán). */
+  personas?: number;
+  /** Quien usaria la app y cuantos (para Patán). */
+  usuarios?: string;
 }
 
 export interface Lead {
@@ -101,6 +107,23 @@ export interface Demo {
   error?: string;
   telegramMsg?: number;
 }
+
+export type EstadoDePresupuesto = 'armando' | 'listo' | 'fallido';
+
+/** El presupuesto de Patán para una demo. Uno por demo. */
+export interface Presupuesto {
+  id: number;
+  demoId: number;
+  leadId: number;
+  notas: string;
+  estado: EstadoDePresupuesto;
+  contenido?: Contenido;
+  justificacion?: Justificacion;
+  error?: string;
+  actualizado: Date;
+}
+
+export type CambiosDePresupuesto = Partial<Pick<Presupuesto, 'estado' | 'contenido' | 'justificacion' | 'error'>>;
 
 export type CambiosDeDemo = Partial<Pick<Demo, 'pliego' | 'estado' | 'corridaId' | 'url' | 'error' | 'telegramMsg'>>;
 
@@ -239,6 +262,14 @@ export interface Store {
   actualizarDemo(id: number, c: CambiosDeDemo): Promise<void>;
   /** Las que Punchi esta construyendo: a estas se les pregunta el estado. */
   demosEnviadas(): Promise<Demo[]>;
+  /** Las demos que ya se mandaron a Punchi (enviada o lista), las mas nuevas primero. */
+  demosPresupuestables(): Promise<Demo[]>;
+
+  presupuesto(id: number): Promise<Presupuesto | undefined>;
+  presupuestoDeDemo(demoId: number): Promise<Presupuesto | undefined>;
+  /** Crea el presupuesto o, si ya habia, lo vuelve a `armando` con las notas nuevas. */
+  guardarPedidoDePresupuesto(p: { demoId: number; leadId: number; notas: string }): Promise<number>;
+  actualizarPresupuesto(id: number, c: CambiosDePresupuesto): Promise<void>;
 }
 
 export class PgStore implements Store {
@@ -792,6 +823,53 @@ export class PgStore implements Store {
     const r = await this.pool.query(`SELECT * FROM homero.demos WHERE estado = 'enviada' ORDER BY id`);
     return r.rows.map(aDemo);
   }
+
+  async demosPresupuestables() {
+    const r = await this.pool.query(
+      `SELECT * FROM homero.demos WHERE estado IN ('enviada', 'lista') ORDER BY id DESC LIMIT 100`,
+    );
+    return r.rows.map(aDemo);
+  }
+
+  async presupuesto(id: number) {
+    const r = await this.pool.query('SELECT * FROM homero.presupuestos WHERE id = $1', [id]);
+    return r.rows[0] ? aPresupuesto(r.rows[0]) : undefined;
+  }
+
+  async presupuestoDeDemo(demoId: number) {
+    const r = await this.pool.query('SELECT * FROM homero.presupuestos WHERE demo_id = $1', [demoId]);
+    return r.rows[0] ? aPresupuesto(r.rows[0]) : undefined;
+  }
+
+  async guardarPedidoDePresupuesto(p: { demoId: number; leadId: number; notas: string }) {
+    const r = await this.pool.query(
+      `INSERT INTO homero.presupuestos (demo_id, lead_id, notas) VALUES ($1, $2, $3)
+       ON CONFLICT (demo_id) DO UPDATE
+         SET notas = EXCLUDED.notas, estado = 'armando', error = NULL, actualizado = now()
+       RETURNING id`,
+      [p.demoId, p.leadId, p.notas],
+    );
+    return Number(r.rows[0].id);
+  }
+
+  async actualizarPresupuesto(id: number, c: CambiosDePresupuesto) {
+    await this.pool.query(
+      `UPDATE homero.presupuestos SET
+         estado = COALESCE($2, estado),
+         contenido = COALESCE($3::jsonb, contenido),
+         justificacion = COALESCE($4::jsonb, justificacion),
+         error = CASE WHEN $5::text = '' THEN NULL ELSE COALESCE($5, error) END,
+         actualizado = now()
+       WHERE id = $1`,
+      [
+        id,
+        c.estado ?? null,
+        c.contenido ? JSON.stringify(c.contenido) : null,
+        c.justificacion ? JSON.stringify(c.justificacion) : null,
+        c.error ?? null,
+      ],
+    );
+  }
 }
 
 type Fila = Record<string, unknown>;
@@ -839,6 +917,20 @@ function aReunion(f: Fila): Reunion {
     inicio: f.inicio as Date,
     fin: f.fin as Date,
     link: f.link as string,
+  };
+}
+
+function aPresupuesto(f: Fila): Presupuesto {
+  return {
+    id: Number(f.id),
+    demoId: Number(f.demo_id),
+    leadId: Number(f.lead_id),
+    notas: (f.notas as string) ?? '',
+    estado: f.estado as EstadoDePresupuesto,
+    contenido: opc(f.contenido),
+    justificacion: opc(f.justificacion),
+    error: opc(f.error),
+    actualizado: f.actualizado as Date,
   };
 }
 

@@ -3,6 +3,7 @@ import { isTokenValid } from '@multicodigo/shared';
 import { z } from 'zod';
 import { cortarBusquedas, pausar, pedirBusqueda, ponerModo, seguir } from './comandos.js';
 import { inicioDelDia } from './horas.js';
+import { Contenido, editarPresupuesto, guardarRegla, pedirPresupuesto, Regla, reglaActual } from './patan.js';
 import { RUBROS } from './rubros.js';
 import type { Store } from './store.js';
 import type { Acciones } from './telegram.js';
@@ -311,6 +312,47 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       return { demo: r.demo };
     });
   }
+
+  // ------------------------------------------------------------ patán
+  //
+  // Vive en Homero, pero en la web es su propia seccion (/patan).
+
+  app.get('/patan', async () => {
+    const clientes = [];
+    for (const demo of await store.demosPresupuestables()) {
+      clientes.push({
+        demo,
+        lead: (await store.lead(demo.leadId)) ?? null,
+        reunion: (await store.reunion(demo.reunionId)) ?? null,
+        presupuesto: (await store.presupuestoDeDemo(demo.id)) ?? null,
+      });
+    }
+    return { regla: await reglaActual(store), clientes };
+  });
+
+  app.post<{ Params: { id: string } }>('/patan/demos/:id/armar', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
+    const b = z.object({ notas: z.string().max(20_000).default('') }).safeParse(request.body ?? {});
+    if (!id.success || !b.success) return invalido(reply);
+    const r = await pedirPresupuesto(id.data, b.data.notas, store);
+    return r.ok ? { presupuesto: await store.presupuesto(r.presupuestoId) } : noSe(reply, r.motivo);
+  });
+
+  app.patch<{ Params: { id: string } }>('/patan/presupuestos/:id', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
+    const b = z.object({ contenido: Contenido }).safeParse(request.body);
+    if (!id.success) return invalido(reply);
+    if (!b.success) return invalido(reply, b.error.issues[0]?.message ?? 'presupuesto invalido');
+    const r = await editarPresupuesto(id.data, b.data.contenido, store);
+    return r.ok ? { presupuesto: await store.presupuesto(r.presupuestoId) } : noSe(reply, r.motivo);
+  });
+
+  app.patch('/patan/regla', async (request, reply) => {
+    const b = z.object({ regla: Regla }).safeParse(request.body);
+    if (!b.success) return invalido(reply);
+    await guardarRegla(store, b.data.regla);
+    return { regla: b.data.regla };
+  });
 
   return app;
 }
