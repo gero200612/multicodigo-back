@@ -37,28 +37,42 @@ export interface EstadoDeHomero {
 
 export async function estadoDeHomero(deps: DepsDeDemos & { placesKey?: string }): Promise<EstadoDeHomero> {
   const ahora = deps.ahora();
-  const casillas = [];
-  for (const c of deps.casillas) {
-    const pausa = await deps.store.leerEstado<{ hasta: string }>(`casilla_pausada:${c.email}`);
-    casillas.push({
-      email: c.email,
-      hoy: await deps.store.enviosDesde(c.email, inicioDelDia(ahora)),
-      cupo: cupoDelDia(await deps.store.primerEnvio(c.email), ahora),
-      ...(pausa && new Date(pausa.hasta).getTime() > ahora.getTime() ? { frenadaHasta: pausa.hasta } : {}),
-    });
-  }
-  const pausaIa = await deps.store.leerEstado<{ hasta: string; motivo: string }>(PAUSA_IA);
-  const ensayo = await ensayoActivo(deps);
+  // Todo en paralelo: son una docena de consultas a la base, y en serie cada
+  // ida y vuelta se sumaba (3 a 5 s por /estado desde el panel).
+  const casillas = Promise.all(
+    deps.casillas.map(async (c) => {
+      const [pausa, hoy, primero] = await Promise.all([
+        deps.store.leerEstado<{ hasta: string }>(`casilla_pausada:${c.email}`),
+        deps.store.enviosDesde(c.email, inicioDelDia(ahora)),
+        deps.store.primerEnvio(c.email),
+      ]);
+      return {
+        email: c.email,
+        hoy,
+        cupo: cupoDelDia(primero, ahora),
+        ...(pausa && new Date(pausa.hasta).getTime() > ahora.getTime() ? { frenadaHasta: pausa.hasta } : {}),
+      };
+    }),
+  );
+  const [pausaIa, ensayo, pausaManual, modo, tareas, pipeline, lugares] = await Promise.all([
+    deps.store.leerEstado<{ hasta: string; motivo: string }>(PAUSA_IA),
+    ensayoActivo(deps),
+    deps.store.leerEstado(PAUSA_MANUAL),
+    modoActual(deps.store),
+    deps.store.contarTareas(),
+    deps.store.pipeline(),
+    lugaresHoy(deps),
+  ]);
   return {
-    pausaManual: Boolean(await deps.store.leerEstado(PAUSA_MANUAL)),
+    pausaManual: Boolean(pausaManual),
     ...(pausaIa ? { pausaIa } : {}),
     ...(ensayo ? { ensayo } : {}),
-    modo: await modoActual(deps.store),
+    modo,
     fuente: deps.placesKey ? 'google' : 'osm',
-    tareas: await deps.store.contarTareas(),
-    pipeline: await deps.store.pipeline(),
-    lugares: await lugaresHoy(deps),
-    casillas,
+    tareas,
+    pipeline,
+    lugares,
+    casillas: await casillas,
     demos: Boolean(deps.punchi),
   };
 }

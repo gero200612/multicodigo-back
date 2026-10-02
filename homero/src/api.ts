@@ -57,12 +57,12 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
   // ------------------------------------------------------------ lectura
 
   app.get('/estado', async () => {
-    return {
-      ...(await acciones.estado()),
-      hoy: await store.metricasDesde(inicioDelDia(d.ahora())),
-      rubros: RUBROS.map((r) => ({ id: r.id, nombre: r.nombre })),
-      diasOcupados: await store.diasOcupados(),
-    };
+    const [estado, hoy, diasOcupados] = await Promise.all([
+      acciones.estado(),
+      store.metricasDesde(inicioDelDia(d.ahora())),
+      store.diasOcupados(),
+    ]);
+    return { ...estado, hoy, rubros: RUBROS.map((r) => ({ id: r.id, nombre: r.nombre })), diasOcupados };
   });
 
   app.get('/borradores', async () => {

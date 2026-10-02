@@ -241,7 +241,10 @@ export class PgStore implements Store {
   constructor(private pool: pg.Pool) {}
 
   static async conectar(url: string, migraciones: string[]): Promise<PgStore> {
-    const pool = new pg.Pool({ connectionString: url, max: 3 });
+    // 5 para que /estado corra sus consultas en paralelo. Y las conexiones
+    // viven un minuto ociosas: el panel pregunta cada 20 s, y con el default
+    // de 10 s cada vuelta negociaba TLS de nuevo con la base.
+    const pool = new pg.Pool({ connectionString: url, max: 5, idleTimeoutMillis: 60_000 });
     // Cada archivo es idempotente, igual que en el bridge.
     for (const path of migraciones) await pool.query(await readFile(path, 'utf8'));
     return new PgStore(pool);
