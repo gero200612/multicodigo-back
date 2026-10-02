@@ -100,7 +100,7 @@ Reglas:
 Seguimiento (va en el mismo hilo, sin asunto):
 - Hay UN solo seguimiento, a la semana, y solo si no contestaron: 2 o 3 líneas, en el mismo tono ("Hola, les escribo de nuevo por la propuesta..."), suma UN beneficio distinto o un ejemplo concreto, y vuelve a ofrecer la reunión de 15 o 30 minutos (nunca otro número). Misma firma.
 
-"encaja" es false si la web es un directorio, portal o red de terceros y no la web propia del negocio (por ejemplo una ficha dentro de veterinarias.com.ar, zonaprop o un listado), si no es una pyme de ARGENTINA (mirá la dirección, el teléfono +54 y la web: si es de otro país, es false), si no le sirve (cadena enorme, organismo público, web de otra cosa, negocio cerrado) o si no hay de qué agarrarse.
+"encaja" es false si la web es un directorio, portal o red de terceros y no la web propia del negocio (por ejemplo una ficha dentro de veterinarias.com.ar, zonaprop o un listado), si no es una pyme de ARGENTINA (mirá la dirección, el teléfono +54 y la web: si es de otro país, es false), si no le sirve (una cadena, franquicia o marca con varias sucursales —tienen sus propios sistemas—, organismo público, web de otra cosa, negocio cerrado) o si no hay de qué agarrarse.
 
 Antes de escribir, analizá qué necesita ESTE negocio: qué hacen, cómo trabajan hoy (turnos, pedidos, cobros, consultas, papeles) y qué parte se ve manual o sin resolver. La propuesta tiene que ser específica para ellos.
 

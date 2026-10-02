@@ -1,3 +1,4 @@
+import { dominio } from '../src/cadenas.js';
 import type {
   CambiosDeDemo,
   CambiosDeSaliente,
@@ -166,6 +167,9 @@ export class MemoriaStore implements Store {
   }
   async leadsEnBorrador() {
     return this.leads.filter((l) => l.estado === 'borrador').map((l) => l.id);
+  }
+  async hayLeadConDominio(d: string) {
+    return this.leads.some((l) => dominio(l.web ?? undefined) === d);
   }
   async leadPorEmail(email: string) {
     const l = this.leads.find((x) => x.email === email.toLowerCase());

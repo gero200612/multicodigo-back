@@ -187,6 +187,8 @@ export interface Store {
   lead(id: number): Promise<Lead | undefined>;
   leadsEnBorrador(): Promise<number[]>;
   leadPorEmail(email: string): Promise<Lead | undefined>;
+  /** Si algun lead anterior tiene una web en ese dominio (`megatlon.com`). */
+  hayLeadConDominio(dominio: string): Promise<boolean>;
   actualizarLead(
     id: number,
     c: Partial<Pick<Lead, 'estado' | 'investigacion' | 'casilla' | 'email'>>,
@@ -451,6 +453,16 @@ export class PgStore implements Store {
   async leadsEnBorrador() {
     const r = await this.pool.query(`SELECT id FROM homero.leads WHERE estado = 'borrador' ORDER BY id`);
     return r.rows.map((f) => Number(f.id));
+  }
+
+  async hayLeadConDominio(dominio: string) {
+    // La web se guarda como vino de la fuente (con o sin https, con o sin www,
+    // con o sin ruta): se compara el host con una regex anclada.
+    const escapado = dominio.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const r = await this.pool.query(`SELECT 1 FROM homero.leads WHERE web ~* $1 LIMIT 1`, [
+      `^(https?://)?(www[0-9]*\\.)?${escapado}([/:?#]|$)`,
+    ]);
+    return (r.rowCount ?? 0) > 0;
   }
 
   async leadPorEmail(email: string) {

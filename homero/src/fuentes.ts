@@ -8,6 +8,8 @@ export interface Hallazgo {
   email?: string;
   telefono?: string;
   fuente: 'google' | 'osm';
+  /** La fuente dice que es una marca (cadena o franquicia). */
+  marca?: boolean;
 }
 
 export type Fuente = (rubro: Rubro, ciudad: string) => Promise<Hallazgo[]>;
@@ -108,6 +110,8 @@ out tags 60;`;
         email: (t.email ?? t['contact:email'])?.split(/[;,\s]/)[0]?.toLowerCase(),
         telefono: t.phone ?? t['contact:phone'],
         fuente: 'osm' as const,
+        // OSM etiqueta las sucursales de una marca con `brand`.
+        marca: Boolean(t.brand || t['brand:wikidata']),
       };
     });
 };

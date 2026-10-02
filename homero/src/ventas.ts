@@ -21,6 +21,7 @@ import {
   promptDeRespuesta,
   type Analisis,
 } from './prompts.js';
+import { sinCadenas } from './cadenas.js';
 import { elegirCiudad, elegirRubro, rubroPorId, RUBROS } from './rubros.js';
 import type { Lead, Recibido, Saliente, Store } from './store.js';
 
@@ -85,12 +86,14 @@ export async function prospectar(payload: unknown, deps: DepsDeVentas): Promise<
     (p.rubro && rubroPorId(p.rubro)) || elegirRubro(await deps.store.rendimientoPorRubro(), deps.azar);
   const ciudad = p.ciudad ?? elegirCiudad(await deps.store.busquedasDeRubro(rubro.id));
 
-  const hallazgos = await deps.fuente(rubro, ciudad);
+  const encontrados = await deps.fuente(rubro, ciudad);
+  // Las cadenas afuera antes de gastar una investigacion en ellas.
+  const { quedan: hallazgos } = await sinCadenas(encontrados, (d) => deps.store.hayLeadConDominio(d));
   await deps.store.registrarBusqueda({
     rubro: rubro.id,
     ciudad,
     fuente: deps.nombreDeFuente,
-    hallados: hallazgos.length,
+    hallados: encontrados.length,
   });
 
   // Se investiga el doble de lo pedido: los de baja factibilidad se descartan
