@@ -68,13 +68,18 @@ export type Busqueda =
   | { ok: false; motivo: string };
 
 /** Encola una busqueda. Sin rubro, elige el que mejor viene respondiendo. */
-export async function pedirBusqueda(store: Store, rubroPedido?: string, zonaPedida?: string): Promise<Busqueda> {
+export async function pedirBusqueda(
+  store: Store,
+  rubroPedido?: string,
+  zonaPedida?: string,
+  cantidad = 3,
+): Promise<Busqueda> {
   const rubro = rubroPedido ? rubroPorId(rubroPedido) : undefined;
   if (rubroPedido && !rubro) {
     return { ok: false, motivo: `No conozco ese rubro. Opciones: ${RUBROS.map((r) => r.id).join(', ')}` };
   }
   const ciudad = zonaPedida ? (zonaPorNombre(zonaPedida)?.nombre ?? zonaPedida) : undefined;
-  await store.encolar({ tipo: 'prospectar', payload: { cantidad: 3, rubro: rubro?.id, ciudad }, requiereIa: false });
+  await store.encolar({ tipo: 'prospectar', payload: { cantidad, rubro: rubro?.id, ciudad }, requiereIa: false });
   return {
     ok: true,
     ...(rubro ? { rubro: rubro.nombre } : {}),

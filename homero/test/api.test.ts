@@ -145,6 +145,15 @@ describe('API de Homero', () => {
     expect(h.store.tareas.at(-1)!.tipo).toBe('prospectar');
   });
 
+  it('buscar respeta la cantidad pedida, entre 1 y 10', async () => {
+    const h = conApi();
+    await h.pedir('POST', '/buscar', {});
+    expect((h.store.tareas.at(-1)!.payload as { cantidad: number }).cantidad).toBe(3);
+    await h.pedir('POST', '/buscar', { cantidad: 7 });
+    expect((h.store.tareas.at(-1)!.payload as { cantidad: number }).cantidad).toBe(7);
+    expect((await h.pedir('POST', '/buscar', { cantidad: 50 })).statusCode).toBe(400);
+  });
+
   it('pausa, modo y dias ocupados', async () => {
     const h = conApi();
     await h.pedir('POST', '/pausa');

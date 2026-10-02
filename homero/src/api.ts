@@ -230,9 +230,16 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
   // ------------------------------------------------------------ comandos
 
   app.post('/buscar', async (request, reply) => {
-    const b = z.object({ rubro: z.string().optional(), ciudad: z.string().max(80).optional() }).safeParse(request.body ?? {});
+    const b = z
+      .object({
+        rubro: z.string().optional(),
+        ciudad: z.string().max(80).optional(),
+        // Cuantos negocios con borrador se buscan: el doble se investiga.
+        cantidad: z.number().int().min(1).max(10).optional(),
+      })
+      .safeParse(request.body ?? {});
     if (!b.success) return invalido(reply);
-    const r = await pedirBusqueda(store, b.data.rubro || undefined, b.data.ciudad || undefined);
+    const r = await pedirBusqueda(store, b.data.rubro || undefined, b.data.ciudad || undefined, b.data.cantidad);
     return r.ok ? r : noSe(reply, r.motivo);
   });
 
