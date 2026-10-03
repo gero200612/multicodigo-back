@@ -266,6 +266,8 @@ export interface FilaDeDocumento {
    * (`panel`), que es de donde venia todo cuando no existia esta columna.
    */
   origen?: 'panel' | 'telegram' | 'drive' | 'agente';
+  /** La carpeta en Archivos (`a/b`). Vacía o ausente: la raíz. */
+  carpeta?: string;
 }
 
 /** Lo que consumio un turno, o la suma de varios. */
@@ -630,6 +632,8 @@ export interface Store {
 
   /** Los slots agotados que todavia valen, por slot. */
   slotsAgotados(): Promise<Map<string, Agotamiento>>;
+  /** El nombre del proyecto, para nombrar la carpeta del análisis funcional. */
+  nombreDeProyecto(proyectoId: string): Promise<string | undefined>;
   /** Los slots cuya cuenta es de otro bot (Homero, Patán): Punchi no los usa. */
   slotsDeOtrosBots(): Promise<Set<string>>;
   /** El usuario del panel dueño de este chat, o undefined si no esta vinculado. */
@@ -1137,6 +1141,13 @@ export class InMemoryStore implements Store {
 
   async documentosDeProyecto(proyectoId: string): Promise<DocumentoDeProyecto[]> {
     return this.documentos.get(proyectoId) ?? [];
+  }
+
+  /** Para los tests: id -> nombre de proyecto. */
+  readonly nombresDeProyecto = new Map<string, string>();
+
+  async nombreDeProyecto(proyectoId: string): Promise<string | undefined> {
+    return this.nombresDeProyecto.get(proyectoId);
   }
 
   async guardarDocumento(fila: FilaDeDocumento): Promise<void> {
@@ -2053,8 +2064,8 @@ export class PgStore implements Store {
   async guardarDocumento(fila: FilaDeDocumento): Promise<void> {
     await this.pool.query(
       `INSERT INTO documentos
-         (proyecto_id, nombre, nombre_original, ruta, ruta_texto, tipo, bytes, error, subido_por, origen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, 'panel'))
+         (proyecto_id, nombre, nombre_original, ruta, ruta_texto, tipo, bytes, error, subido_por, origen, carpeta)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, 'panel'), COALESCE($11, ''))
        ON CONFLICT (proyecto_id, nombre) DO UPDATE SET
          nombre_original = EXCLUDED.nombre_original,
          ruta = EXCLUDED.ruta,
@@ -2063,7 +2074,8 @@ export class PgStore implements Store {
          bytes = EXCLUDED.bytes,
          error = EXCLUDED.error,
          subido_por = EXCLUDED.subido_por,
-         origen = EXCLUDED.origen`,
+         origen = EXCLUDED.origen,
+         carpeta = EXCLUDED.carpeta`,
       [
         fila.proyectoId,
         fila.nombre,
@@ -2075,8 +2087,14 @@ export class PgStore implements Store {
         fila.error ?? null,
         fila.subidoPor,
         fila.origen ?? null,
+        fila.carpeta ?? null,
       ],
     );
+  }
+
+  async nombreDeProyecto(proyectoId: string): Promise<string | undefined> {
+    const r = await this.pool.query<{ nombre: string }>('SELECT nombre FROM proyectos WHERE id = $1', [proyectoId]);
+    return r.rows[0]?.nombre;
   }
 
   async consumoPorAgente(): Promise<Map<string, Consumo>> {

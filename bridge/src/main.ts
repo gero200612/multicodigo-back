@@ -9,7 +9,7 @@
 // PRIMERO y por su efecto: sube el techo real de un turno antes del primer
 // fetch. Ver `dispatcher.ts` — el techo de verdad eran 5 minutos, no 20.
 import './dispatcher.js';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { AgentId } from '@multicodigo/shared';
@@ -20,6 +20,7 @@ import { publicar } from './publicar.js';
 import { dispararDeploy, setearEnvVar, ultimoDeploy } from './render-api.js';
 import { reescribirConfig } from './conectar.js';
 import { escribirArchivo, leerArchivo } from './github-contenido.js';
+import { guardarAnalisis, guardarCapturas } from './analisis.js';
 import { asegurarDockerfile } from './dockerfile-back.js';
 import { asegurarOutputPathDeAngular } from './angular-output.js';
 import { verificarDespliegue, tareaDeProblema } from './verificar.js';
@@ -230,6 +231,11 @@ const docsDeps = {
     await writeFile(ruta, datos);
   },
   guardarFila: (fila: FilaDeDocumento) => store.guardarDocumento(fila),
+};
+// Para el análisis funcional: el PDF lee las capturas ya guardadas del disco.
+const analisisDeps = {
+  ...docsDeps,
+  leer: async (ruta: string) => new Uint8Array(await readFile(`${env.DOCS_ROOT}/${ruta}`)),
 };
 
 // El aviso de "sin SUPABASE_SERVICE_KEY no se pueden guardar documentos" se
@@ -590,6 +596,9 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   // por Telegram: mismo disco, misma tabla, mismo conversor — solo cambia la
   // direccion de la conversion.
   guardarGenerado: (entrada) => guardarDocumentoGenerado(entrada, docsDeps),
+  guardarCapturas: (entrada) => guardarCapturas(entrada, docsDeps),
+  guardarAnalisis: (entrada) => guardarAnalisis(entrada, analisisDeps),
+  nombreDeProyecto: (id) => store.nombreDeProyecto(id),
   /**
    * Drive en vivo, o nada.
    *

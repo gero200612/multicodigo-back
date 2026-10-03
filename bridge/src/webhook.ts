@@ -72,6 +72,23 @@ export interface ApiDeps {
     contenido: string;
     formato: string;
   }) => Promise<{ nombre: string; tipo: string; bytes: number }>;
+  /** Análisis funcional: guarda capturas del agente (ver analisis.ts). */
+  guardarCapturas?: (entrada: {
+    proyectoId: string;
+    usuarioId: string;
+    proyecto: string;
+    capturas: { nombre: string; png: string }[];
+  }) => Promise<string[]>;
+  /** Análisis funcional: arma el PDF con las capturas guardadas. */
+  guardarAnalisis?: (entrada: {
+    proyectoId: string;
+    usuarioId: string;
+    proyecto: string;
+    titulo: string;
+    resumen: string;
+    secciones: { titulo: string; texto: string; capturas?: string[] }[];
+  }) => Promise<{ nombre: string; bytes: number; faltantes: string[] }>;
+  nombreDeProyecto?: (proyectoId: string) => Promise<string | undefined>;
   /**
    * Como decidir una aprobacion desde afuera de Telegram.
    *
@@ -457,6 +474,70 @@ export function buildWebhookServer(
       nombre: z.string().min(1),
       contenido: z.string().min(1),
       formato: z.enum(FORMATOS_GENERABLES),
+    });
+
+    // --- análisis funcional ---------------------------------------------
+    const CuerpoCapturas = z.object({
+      jobId: z.string().uuid(),
+      capturas: z
+        .array(z.object({ nombre: z.string().min(1).max(80), png: z.string().min(1).max(12_000_000) }))
+        .min(1)
+        .max(12),
+    });
+    const CuerpoAnalisis = z.object({
+      jobId: z.string().uuid(),
+      titulo: z.string().min(1).max(200),
+      resumen: z.string().min(1).max(8000),
+      secciones: z
+        .array(
+          z.object({
+            titulo: z.string().min(1).max(200),
+            texto: z.string().min(1).max(8000),
+            capturas: z.array(z.string().max(160)).max(6).optional(),
+          }),
+        )
+        .min(1)
+        .max(20),
+    });
+
+    /** El proyecto y el usuario del turno, y el nombre del proyecto para la carpeta. */
+    const apiDelAnalisis = api;
+    async function contextoDelAnalisis(jobId: string) {
+      const contexto = await apiDelAnalisis.store.contextoDeJob(jobId);
+      if (!contexto?.proyectoId || !contexto.usuarioId) return undefined;
+      const proyecto = (await apiDelAnalisis.nombreDeProyecto?.(contexto.proyectoId)) ?? 'proyecto';
+      return { proyectoId: contexto.proyectoId, usuarioId: contexto.usuarioId, proyecto };
+    }
+
+    app.post('/interno/documentos/capturas', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      if (!api.guardarCapturas) return reply.code(503).send({ code: 'sin_documentos', message: 'este bridge no guarda capturas' });
+      const cuerpo = CuerpoCapturas.safeParse(request.body);
+      if (!cuerpo.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'faltan las capturas' });
+      const ctx = await contextoDelAnalisis(cuerpo.data.jobId);
+      if (!ctx) return reply.code(400).send({ code: 'sin_contexto', message: 'ese turno no tiene proyecto y usuario' });
+      const nombres = await api.guardarCapturas({ ...ctx, capturas: cuerpo.data.capturas });
+      return reply.code(200).send({ nombres, output: nombres.length ? `guardé: ${nombres.join(', ')}` : 'no había PNG válidos' });
+    });
+
+    app.post('/interno/documentos/analisis', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      if (!api.guardarAnalisis) return reply.code(503).send({ code: 'sin_documentos', message: 'este bridge no arma análisis' });
+      const cuerpo = CuerpoAnalisis.safeParse(request.body);
+      if (!cuerpo.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el título, el resumen o las secciones' });
+      const ctx = await contextoDelAnalisis(cuerpo.data.jobId);
+      if (!ctx) return reply.code(400).send({ code: 'sin_contexto', message: 'ese turno no tiene proyecto y usuario' });
+      try {
+        const r = await api.guardarAnalisis({ ...ctx, ...cuerpo.data });
+        const aviso = r.faltantes.length ? ` (no encontré estas capturas: ${r.faltantes.join(', ')})` : '';
+        return reply.code(200).send({ output: `guardé el análisis funcional ${r.nombre} en "Análisis funcional (${ctx.proyecto})"${aviso}` });
+      } catch (e) {
+        return reply.code(422).send({ code: 'analisis_fallo', message: e instanceof Error ? e.message : 'no se pudo armar el PDF' });
+      }
     });
 
     app.post('/interno/documentos/generado', async (request, reply) => {
