@@ -40,6 +40,8 @@ export interface DepsDeVentas extends DepsDeEnvio {
   /** Manda una tarjeta con botones y devuelve el id del mensaje. */
   proponer: (texto: string, botones: Boton[]) => Promise<number | undefined>;
   pedirIa: (prompt: string) => Promise<string>;
+  /** La de Patán, si tiene cuenta propia asignada; sin esto usa `pedirIa`. */
+  pedirIaPatan?: (prompt: string) => Promise<string>;
   fuente: Fuente;
   nombreDeFuente: string;
   leerSitio: (

@@ -265,3 +265,6 @@ public sealed record RespuestaTurno(
 
 /// <summary>El cuerpo de "carpeta nueva" en un repo.</summary>
 public sealed record CarpetaNueva(string? Ruta);
+
+/// <summary>El cuerpo de "esta cuenta es de tal bot".</summary>
+public sealed record BotDelSlot(string? Bot);

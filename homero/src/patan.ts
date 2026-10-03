@@ -261,7 +261,7 @@ export async function presupuestar(payload: unknown, deps: DepsDeVentas): Promis
   const prompt = promptDePresupuesto({ lead, demo, notas: p.notas, regla });
   for (let i = 0; i < INTENTOS_DE_LECTURA; i++) {
     // Los errores de la IA (limite, cuenta) suben: la cola los espera y reintenta.
-    const leido = leerPresupuesto(await deps.pedirIa(prompt), regla);
+    const leido = leerPresupuesto(await (deps.pedirIaPatan ?? deps.pedirIa)(prompt), regla);
     if (leido) {
       await deps.store.actualizarPresupuesto(presupuestoId, { ...leido, estado: 'listo', error: '' });
       await deps.avisar(

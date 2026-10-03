@@ -853,6 +853,25 @@ describe('ejecutarTurno', () => {
     expect(await store.getJobRespuesta(jobId)).toBe('la respuesta');
   });
 
+  // Una cuenta asignada a Homero la usa Homero: dos procesos con la misma
+  // credencial se pisan el refresh token. Ni elegida a mano entra.
+  it('no usa un agente cuya cuenta es de otro bot', async () => {
+    const store = new InMemoryStore();
+    store.botDeSlot.set('c2', 'homero');
+    const ask = vi.fn(async (r: { jobId: string }) => ({ jobId: r.jobId, sessionId: 's', text: 'x', turns: 1 }));
+    await expect(
+      ejecutarTurno(deps({ store, ask }), {
+        proyectoId: PROYECTO,
+        proyecto: 'demo',
+        agente: 'c2',
+        usuarioId: USUARIO,
+        prompt: 'hola',
+        origen: 'panel',
+      }),
+    ).rejects.toThrow('agente_de_otro_bot');
+    expect(ask).not.toHaveBeenCalled();
+  });
+
   // Sin el poller, un agente que pide permiso desde un turno del panel se
   // cuelga hasta el timeout de 15 minutos, sin decir por que.
   it('cuelga el poller de aprobaciones tambien en un turno del panel', async () => {

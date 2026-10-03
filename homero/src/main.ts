@@ -9,6 +9,7 @@ import { leerConfig } from './config.js';
 import { correoGmail } from './envio.js';
 import { fuenteGoogle, fuenteOsm } from './fuentes.js';
 import { pedirTexto } from './ia.js';
+import { cuentaDeClaude } from './cuenta.js';
 import { SISTEMA } from './prompts.js';
 import { PgStore } from './store.js';
 import { COMANDOS, crearBot, NOMBRE, type Acciones } from './telegram.js';
@@ -50,6 +51,8 @@ async function main() {
   const { bot, avisar, proponer, conectar, cambiarBotones } = crearBot(config, store);
 
   const aviso = (t: string) => avisar(t).catch((e) => console.error('[homero] no pude avisar:', e));
+  // La cuenta de Claude asignada desde el panel; sin asignar, la propia.
+  const cuenta = cuentaDeClaude((b) => store.slotDelBot(b));
   const deps: DepsDeCola = {
     store,
     correo: correoGmail,
@@ -64,7 +67,15 @@ async function main() {
         console.error('[homero] no pude mandar la tarjeta:', e);
         return undefined;
       }),
-    pedirIa: (prompt) => pedirTexto(prompt, { sistema: SISTEMA, modelo: config.modelo }),
+    pedirIa: async (prompt) =>
+      pedirTexto(prompt, { sistema: SISTEMA, modelo: config.modelo, home: await cuenta.home('homero') }),
+    // Patán usa la suya si tiene; si no, la de Homero.
+    pedirIaPatan: async (prompt) =>
+      pedirTexto(prompt, {
+        sistema: SISTEMA,
+        modelo: config.modelo,
+        home: (await cuenta.home('patan')) ?? (await cuenta.home('homero')),
+      }),
     fuente: config.placesKey ? fuenteGoogle(config.placesKey) : fuenteOsm,
     nombreDeFuente: config.placesKey ? 'google' : 'osm',
     leerSitio: (web) => leerSitio(web),

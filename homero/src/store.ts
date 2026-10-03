@@ -275,6 +275,18 @@ export interface Store {
 export class PgStore implements Store {
   constructor(private pool: pg.Pool) {}
 
+  /**
+   * El slot cuya cuenta de Claude está asignada a `bot` en el panel, o
+   * undefined. Vive en `public.agentes` (el esquema de Punchi), no en `homero`.
+   */
+  async slotDelBot(bot: string): Promise<string | undefined> {
+    const r = await this.pool.query<{ slot: string }>(
+      'SELECT slot FROM public.agentes WHERE bot = $1 ORDER BY slot LIMIT 1',
+      [bot],
+    );
+    return r.rows[0]?.slot;
+  }
+
   static async conectar(url: string, migraciones: string[]): Promise<PgStore> {
     // 5 para que /estado corra sus consultas en paralelo. Y las conexiones
     // viven un minuto ociosas: el panel pregunta cada 20 s, y con el default

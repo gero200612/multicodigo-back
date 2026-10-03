@@ -689,6 +689,40 @@ api.MapPut("/slots/{slot}/nombre", async (
     }
 });
 
+/// De qué bot es la cuenta de cada slot. Sin entrada = Punchi.
+api.MapGet("/slots/bots", async (HttpContext ctx, IAgentesClient agentes, CancellationToken ct) =>
+    Results.Ok(await agentes.BotsAsync(await JwtDe(ctx), ct)));
+
+/// Asigna la cuenta de un slot a un bot. Solo el dueño del proyecto del slot:
+/// sacarle una cuenta a Punchi cambia con qué trabaja todo el equipo.
+api.MapPut("/slots/{slot}/bot", async (
+    string slot, BotDelSlot cuerpo, HttpContext ctx, IAgentesClient agentes,
+    IProyectosClient proyectos, CancellationToken ct) =>
+{
+    if (SlotInvalido(slot) is { } malo) return malo;
+    var bot = cuerpo.Bot?.Trim().ToLowerInvariant() ?? "";
+    if (bot is not ("punchi" or "homero" or "patan"))
+    {
+        return Results.BadRequest(new { code = "bot_invalido", message = "el bot es punchi, homero o patan" });
+    }
+    var jwt = await JwtDe(ctx);
+    var proyectoId = (await agentes.ProyectosPorSlotAsync(jwt, ct)).GetValueOrDefault(slot);
+    if (proyectoId is null || await proyectos.RolDeAsync(jwt, proyectoId, ct) != "dueño")
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    try
+    {
+        return await agentes.AsignarBotAsync(jwt, slot, bot, ct)
+            ? Results.Ok(new { slot, bot })
+            : Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    catch (UpstreamException)
+    {
+        return Results.Json(new { code = "bot_no_guardado", message = "no se pudo guardar" }, statusCode: 503);
+    }
+});
+
 // --- proyectos, miembros e invitaciones ------------------------------------
 
 api.MapPost("/proyectos", async (

@@ -200,6 +200,7 @@ const MIGRACIONES = [
   '035_cortada.sql',
   '036_resultado.sql',
   '037_fichas.sql',
+  '038_agentes_bot.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 
@@ -499,7 +500,15 @@ const pipelineDeps = {
   // Los documentos ya no se pasan: el pipeline los lee del store, que se
   // conecta a la misma base como `postgres`. Antes iban por la API REST de
   // Supabase con la service_role, y sin esa clave quedaban apagados enteros.
-  listarAgentes: () => listarAgentes(gatewayDeps),
+  // Solo los de Punchi: una cuenta asignada a Homero (o Patán) no entra en el
+  // relevo, ni en la cola, ni en los botones de Telegram.
+  listarAgentes: async () => {
+    const [agentes, ajenos] = await Promise.all([
+      listarAgentes(gatewayDeps),
+      store.slotsDeOtrosBots().catch(() => new Set<string>()),
+    ]);
+    return agentes.filter((a) => !ajenos.has(a.id));
+  },
   /**
    * La app desplegada, al final de cada ronda.
    *

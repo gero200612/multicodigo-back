@@ -1525,6 +1525,13 @@ export async function ejecutarTurno(
   deps: PipelineDeps,
   t: Turno,
 ): Promise<{ jobId: string; texto: string }> {
+  // Elegido a mano (Telegram, panel) también: la cuenta de Homero la usa
+  // Homero, y dos procesos con la misma credencial se pisan el refresh token.
+  const ajenos = await deps.store.slotsDeOtrosBots().catch(() => new Set<string>());
+  if (ajenos.has(t.agente)) {
+    // Sin job: se corta antes de crearlo. El código viaja como `message`.
+    throw new ErrorDeTurno('', 'agente_de_otro_bot');
+  }
   // `sesionLimpia` gana sobre el proyecto: ver el campo en `Turno` para por que
   // los turnos de una corrida no heredan la conversacion.
   const sessionId =
