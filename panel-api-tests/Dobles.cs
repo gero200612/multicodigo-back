@@ -279,18 +279,6 @@ public sealed class AgentesFalso : IAgentesClient
     public List<(string Jwt, string ProyectoId, string Slot)> Registrados { get; } = [];
     public bool Falla { get; set; }
 
-    public Dictionary<string, string> Bots { get; } = [];
-
-    public Task<bool> AsignarBotAsync(string jwt, string slot, string bot, CancellationToken ct = default)
-    {
-        if (!PorSlot.ContainsKey(slot)) return Task.FromResult(false);
-        Bots[slot] = bot;
-        return Task.FromResult(true);
-    }
-
-    public Task<IReadOnlyDictionary<string, string>> BotsAsync(string jwt, CancellationToken ct = default)
-        => Task.FromResult<IReadOnlyDictionary<string, string>>(Bots);
-
     public Task RegistrarAsync(string jwt, string proyectoId, string slot, CancellationToken ct = default)
     {
         if (Falla) throw new UpstreamException("no se pudo anotar el agente");
@@ -301,24 +289,6 @@ public sealed class AgentesFalso : IAgentesClient
 
 public sealed class LoginFalso : ILoginClient
 {
-    /// <summary>Lo que se movió: ("ceder"|"recuperar", slot, bot).</summary>
-    public List<(string Accion, string Slot, string Bot)> Cesiones { get; } = [];
-    /// <summary>Si no es null, ceder falla con este mensaje (p. ej. el bot ya tiene otra).</summary>
-    public string? FallaCeder { get; set; }
-
-    public Task CederAsync(string slot, string bot, CancellationToken ct = default)
-    {
-        if (FallaCeder is not null) throw new UpstreamException(FallaCeder);
-        Cesiones.Add(("ceder", slot, bot));
-        return Task.CompletedTask;
-    }
-
-    public Task RecuperarAsync(string slot, string bot, CancellationToken ct = default)
-    {
-        Cesiones.Add(("recuperar", slot, bot));
-        return Task.CompletedTask;
-    }
-
     public Dictionary<string, EstadoCredencial> Estados { get; } = [];
     public bool Falla { get; set; }
     public string Url { get; set; } = "https://claude.ai/oauth/x";

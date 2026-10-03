@@ -67,15 +67,6 @@ public interface IAgentesClient
     /// </summary>
     Task MarcarCuotaAsync(string jwt, string slot, string? hasta, CancellationToken ct = default);
 
-    /// <summary>
-    /// De qué bot es la cuenta del slot: `punchi`, `homero` o `patan`.
-    /// Devuelve false si RLS no dejó cambiar ninguna fila.
-    /// </summary>
-    Task<bool> AsignarBotAsync(string jwt, string slot, string bot, CancellationToken ct = default);
-
-    /// <summary>slot -> bot, de los slots que el usuario ve. Sin entrada = Punchi.</summary>
-    Task<IReadOnlyDictionary<string, string>> BotsAsync(string jwt, CancellationToken ct = default);
-
     /// <summary>Hasta cuándo está sin cuota cada slot. Sin entrada = tiene cuota.</summary>
     Task<IReadOnlyDictionary<string, string>> SinCuotaAsync(
         string jwt, CancellationToken ct = default);
@@ -88,10 +79,6 @@ public interface ILoginClient
     Task CodigoAsync(string slot, string code, CancellationToken ct = default);
     Task TokenAsync(string slot, string token, string account, CancellationToken ct = default);
     Task BorrarAsync(string slot, CancellationToken ct = default);
-    /// <summary>Mueve la credencial del slot al HOME del bot (homero, patan).</summary>
-    Task CederAsync(string slot, string bot, CancellationToken ct = default);
-    /// <summary>Se la devuelve al slot y repone la propia del bot.</summary>
-    Task RecuperarAsync(string slot, string bot, CancellationToken ct = default);
 }
 
 public interface IBridgeClient
@@ -414,18 +401,6 @@ public sealed class LoginClient(HttpClient http) : ILoginClient
     {
         using var cts = Topes.De(ct, 30);
         await LanzarSiFallo(await http.DeleteAsync($"/login/{slot}", cts.Token), cts.Token);
-    }
-
-    public async Task CederAsync(string slot, string bot, CancellationToken ct = default)
-    {
-        using var cts = Topes.De(ct, 30);
-        await LanzarSiFallo(await http.PostAsJsonAsync($"/cuentas/{slot}/ceder", new { bot }, cts.Token), cts.Token);
-    }
-
-    public async Task RecuperarAsync(string slot, string bot, CancellationToken ct = default)
-    {
-        using var cts = Topes.De(ct, 30);
-        await LanzarSiFallo(await http.PostAsJsonAsync($"/cuentas/{slot}/recuperar", new { bot }, cts.Token), cts.Token);
     }
 
     /// <summary>
@@ -1230,47 +1205,6 @@ public sealed class AgentesClient(HttpClient http, string anonKey, ILogger<Agent
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             log.LogWarning(ex, "no se pudo anotar la cuota de {Slot}", slot);
-        }
-    }
-
-    private sealed record FilaBot(string Slot, string? Bot);
-
-    public async Task<bool> AsignarBotAsync(string jwt, string slot, string bot, CancellationToken ct = default)
-    {
-        if (!Slot.EsValido(slot)) return false;
-        var req = new HttpRequestMessage(HttpMethod.Patch, $"/rest/v1/agentes?slot=eq.{slot}&select=slot");
-        req.Headers.TryAddWithoutValidation("apikey", anonKey);
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
-        // representation: un PATCH que RLS filtra a cero filas contesta 200 igual,
-        // y solo mirando lo que volvió se sabe si cambió algo.
-        req.Headers.TryAddWithoutValidation("Prefer", "return=representation");
-        req.Content = JsonContent.Create(new { bot }, options: Json.Opciones);
-        var res = await http.SendAsync(req, ct);
-        if (!res.IsSuccessStatusCode)
-        {
-            log.LogError("no se pudo asignar el bot de {Slot}: {Status}", slot, (int)res.StatusCode);
-            throw new UpstreamException("bot_no_guardado");
-        }
-        var filas = await res.Content.ReadFromJsonAsync<List<FilaBot>>(Json.Supabase, ct);
-        return filas is { Count: > 0 };
-    }
-
-    public async Task<IReadOnlyDictionary<string, string>> BotsAsync(string jwt, CancellationToken ct = default)
-    {
-        try
-        {
-            var req = new HttpRequestMessage(HttpMethod.Get, "/rest/v1/agentes?select=slot,bot");
-            req.Headers.TryAddWithoutValidation("apikey", anonKey);
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
-            var res = await http.SendAsync(req, ct);
-            if (!res.IsSuccessStatusCode) return new Dictionary<string, string>();
-            var filas = await res.Content.ReadFromJsonAsync<List<FilaBot>>(Json.Supabase, ct) ?? [];
-            return filas.Where(f => f.Bot is not null).ToDictionary(f => f.Slot, f => f.Bot!);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
-        {
-            log.LogWarning(ex, "no se pudieron leer los bots de los slots");
-            return new Dictionary<string, string>();
         }
     }
 

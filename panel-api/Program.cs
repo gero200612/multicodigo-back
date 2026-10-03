@@ -624,6 +624,80 @@ api.MapPost("/slots/{slot}/login/token", async (
     }
 });
 
+// --- la cuenta de Claude de Homero y de Patán ------------------------------
+//
+// Se cargan con el mismo login que un slot, pero el destino es el bot: la
+// credencial queda en /srv/homes/<bot>, el HOME que monta su contenedor. Así
+// cada bot usa la cuenta que se le conecte, sin mover credenciales de un HOME
+// a otro. Solo el dueño de Homero (HOMERO_USUARIO_ID), como el resto de Homero.
+
+IResult? BotInvalido(string bot, HttpContext ctx)
+{
+    if (bot is not ("homero" or "patan")) return Results.NotFound(new { code = "bot_desconocido", message = bot });
+    var quien = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrEmpty(homeroDuenio) || quien != homeroDuenio) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return null;
+}
+
+api.MapGet("/bots/{bot}/cuenta", async (string bot, HttpContext ctx, ILoginClient login, CancellationToken ct) =>
+{
+    if (BotInvalido(bot, ctx) is { } malo) return malo;
+    try
+    {
+        return Results.Ok(await login.EstadoAsync(bot, ct));
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        return Results.Json(new { code = "login_caido", message = "no se pudo leer la cuenta" }, statusCode: 503);
+    }
+});
+
+api.MapGet("/bots/{bot}/login/start", async (string bot, HttpContext ctx, ILoginClient login, CancellationToken ct) =>
+{
+    if (BotInvalido(bot, ctx) is { } malo) return malo;
+    try
+    {
+        return Results.Ok(new { url = await login.IniciarAsync(bot, ct) });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        return Results.BadRequest(new { code = "login_failed", message = ex.Message });
+    }
+});
+
+api.MapPost("/bots/{bot}/login/code", async (
+    string bot, CuerpoCodigo cuerpo, HttpContext ctx, ILoginClient login, CancellationToken ct) =>
+{
+    if (BotInvalido(bot, ctx) is { } malo) return malo;
+    if (string.IsNullOrWhiteSpace(cuerpo.Code))
+    {
+        return Results.BadRequest(new { code = "login_failed", message = "falta el código" });
+    }
+    try
+    {
+        await login.CodigoAsync(bot, cuerpo.Code, ct);
+        return Results.Ok(new { estado = "ok" });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        return Results.BadRequest(new { code = "login_failed", message = ex.Message });
+    }
+});
+
+api.MapDelete("/bots/{bot}/login", async (string bot, HttpContext ctx, ILoginClient login, CancellationToken ct) =>
+{
+    if (BotInvalido(bot, ctx) is { } malo) return malo;
+    try
+    {
+        await login.BorrarAsync(bot, ct);
+        return Results.Ok(new { estado = "ok" });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
+    {
+        return Results.BadRequest(new { code = "login_failed", message = ex.Message });
+    }
+});
+
 api.MapDelete("/slots/{slot}/login", async (string slot, ILoginClient login, CancellationToken ct) =>
 {
     if (SlotInvalido(slot) is { } malo) return malo;
@@ -686,60 +760,6 @@ api.MapPut("/slots/{slot}/nombre", async (
         return Results.Json(
             new { code = "nombre_no_guardado", message = "no se pudo guardar el nombre" },
             statusCode: StatusCodes.Status503ServiceUnavailable);
-    }
-});
-
-/// De qué bot es la cuenta de cada slot. Sin entrada = Punchi.
-api.MapGet("/slots/bots", async (HttpContext ctx, IAgentesClient agentes, CancellationToken ct) =>
-    Results.Ok(await agentes.BotsAsync(await JwtDe(ctx), ct)));
-
-/// Asigna la cuenta de un slot a un bot. Solo el dueño del proyecto del slot:
-/// sacarle una cuenta a Punchi cambia con qué trabaja todo el equipo.
-api.MapPut("/slots/{slot}/bot", async (
-    string slot, BotDelSlot cuerpo, HttpContext ctx, IAgentesClient agentes,
-    IProyectosClient proyectos, ILoginClient login, CancellationToken ct) =>
-{
-    if (SlotInvalido(slot) is { } malo) return malo;
-    var bot = cuerpo.Bot?.Trim().ToLowerInvariant() ?? "";
-    if (bot is not ("punchi" or "homero" or "patan"))
-    {
-        return Results.BadRequest(new { code = "bot_invalido", message = "el bot es punchi, homero o patan" });
-    }
-    var jwt = await JwtDe(ctx);
-    var proyectoId = (await agentes.ProyectosPorSlotAsync(jwt, ct)).GetValueOrDefault(slot);
-    if (proyectoId is null || await proyectos.RolDeAsync(jwt, proyectoId, ct) != "dueño")
-    {
-        return Results.StatusCode(StatusCodes.Status403Forbidden);
-    }
-    var antes = (await agentes.BotsAsync(jwt, ct)).GetValueOrDefault(slot) ?? "punchi";
-    if (antes == bot) return Results.Ok(new { slot, bot });
-    try
-    {
-        // La credencial se mueve ANTES de anotar: si el login no puede, la
-        // base no queda diciendo algo que no pasó. Primero se devuelve la que
-        // tenía otro bot, después se cede al nuevo.
-        if (antes != "punchi")
-        {
-            await login.RecuperarAsync(slot, antes, ct);
-            antes = "punchi";
-            await agentes.AsignarBotAsync(jwt, slot, "punchi", ct);
-        }
-        if (bot != "punchi") await login.CederAsync(slot, bot, ct);
-    }
-    catch (UpstreamException ex)
-    {
-        app.Logger.LogWarning("no se pudo mover la cuenta de {Slot} a {Bot}: {Motivo}", slot, bot, ex.Message);
-        return Results.Conflict(new { code = "cuenta_no_movida", message = ex.Message });
-    }
-    try
-    {
-        return await agentes.AsignarBotAsync(jwt, slot, bot, ct)
-            ? Results.Ok(new { slot, bot })
-            : Results.StatusCode(StatusCodes.Status403Forbidden);
-    }
-    catch (UpstreamException)
-    {
-        return Results.Json(new { code = "bot_no_guardado", message = "no se pudo guardar" }, statusCode: 503);
     }
 });
 
