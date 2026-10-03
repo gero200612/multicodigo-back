@@ -171,7 +171,16 @@ public interface IBridgeClient
     Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
         IReadOnlyList<Repo> repos, string? githubToken,
-        IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default);
+        IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default,
+        bool publicar = false);
+
+    /// <summary>
+    /// Pasamano a las rutas de despliegue del bridge (`/interno/despliegue/…`).
+    /// Devuelve el status y el cuerpo tal cual: los mensajes ya vienen en
+    /// castellano y sin tokens.
+    /// </summary>
+    Task<(int Status, string Cuerpo)> DespliegueAsync(
+        HttpMethod metodo, string ruta, object? cuerpo, CancellationToken ct = default);
 
     /// <summary>
     /// Abre una corrida con el pliego de Desarrollo, en el Telegram vinculado
@@ -502,7 +511,8 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     public async Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
         IReadOnlyList<Repo> repos, string? githubToken,
-        IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default)
+        IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default,
+        bool publicar = false)
     {
         var res = await http.PostAsJsonAsync(
             "/turnos",
@@ -533,6 +543,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
                 }),
                 // Null = el default del agente. Ya validado en el endpoint.
                 modo,
+                publicar,
             },
             Json.Opciones,
             ct);
@@ -552,6 +563,15 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
 
     private sealed record ErrorUpstream(string? Code);
     private sealed record CorridaAbierta(string? CorridaId);
+
+    public async Task<(int Status, string Cuerpo)> DespliegueAsync(
+        HttpMethod metodo, string ruta, object? cuerpo, CancellationToken ct = default)
+    {
+        using var req = new HttpRequestMessage(metodo, ruta);
+        if (cuerpo is not null) req.Content = JsonContent.Create(cuerpo, options: Json.Opciones);
+        var res = await http.SendAsync(req, ct);
+        return ((int)res.StatusCode, await res.Content.ReadAsStringAsync(ct));
+    }
 
     public async Task<ResultadoDesarrollo> DesarrolloAsync(
         string usuarioId, CuerpoDesarrollo cuerpo, CancellationToken ct = default)

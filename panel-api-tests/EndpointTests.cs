@@ -495,6 +495,32 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         f.Bridge.RespuestaDesarrollo = new(true, "c-1", null);
     }
 
+    /// <summary>
+    /// Despliegue: las conexiones van al bridge con el usuario del JWT, una app
+    /// inventada no pasa, y publicar/elegir app es del dueño.
+    /// </summary>
+    [Fact]
+    public async Task DespliegueVaAlBridgeYPublicarEsDelDueno()
+    {
+        var put = await Cliente().PutAsJsonAsync("/api/despliegue/conexiones/vercel", new { token = "vc_123", extra = new { teamId = "t" } });
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        Assert.Contains("vc_123", f.Bridge.Despliegues[^1].Cuerpo);
+        Assert.Contains("usuarioId", f.Bridge.Despliegues[^1].Cuerpo);
+
+        var otra = await Cliente().PutAsJsonAsync("/api/despliegue/conexiones/heroku", new { token = "x" });
+        Assert.Equal(HttpStatusCode.NotFound, otra.StatusCode);
+
+        f.Proyectos.Roles[ProyectoDePrueba] = "miembro";
+        var miembro = await Cliente().PostAsJsonAsync($"/api/proyectos/{ProyectoDePrueba}/publicar", new { agente = "c2" });
+        Assert.Equal(HttpStatusCode.Forbidden, miembro.StatusCode);
+
+        f.Proyectos.Roles[ProyectoDePrueba] = "dueño";
+        var dueno = await Cliente().PostAsJsonAsync($"/api/proyectos/{ProyectoDePrueba}/publicar", new { agente = "c2" });
+        Assert.Equal(HttpStatusCode.OK, dueno.StatusCode);
+        Assert.Equal("/interno/despliegue/publicar", f.Bridge.Despliegues[^1].Ruta);
+        f.Proyectos.Roles.Remove(ProyectoDePrueba);
+    }
+
     // --- desvincular GitHub ---
 
     /// <summary>

@@ -380,6 +380,20 @@ public sealed class BridgeFalso : IBridgeClient
     /// <summary>El token de github que viajo con cada turno. Null cuando fue por SSH.</summary>
     public List<string?> TokensDeCadaTurno { get; } = [];
 
+    /// <summary>Si cada turno pidió publicar al terminar.</summary>
+    public List<bool> PublicarDeCadaTurno { get; } = [];
+
+    /// <summary>Las llamadas de despliegue que pasaron al bridge, y qué contestar.</summary>
+    public List<(HttpMethod Metodo, string Ruta, string Cuerpo)> Despliegues { get; } = [];
+    public (int Status, string Cuerpo) RespuestaDespliegue { get; set; } = (200, "{}");
+
+    public Task<(int Status, string Cuerpo)> DespliegueAsync(
+        HttpMethod metodo, string ruta, object? cuerpo, CancellationToken ct = default)
+    {
+        Despliegues.Add((metodo, ruta, cuerpo is null ? "" : System.Text.Json.JsonSerializer.Serialize(cuerpo)));
+        return Task.FromResult(RespuestaDespliegue);
+    }
+
     /// <summary>El modo de permisos de cada turno. Null = el default del agente.</summary>
     public List<string?> ModosDeCadaTurno { get; } = [];
 
@@ -389,8 +403,10 @@ public sealed class BridgeFalso : IBridgeClient
     public Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
         IReadOnlyList<Repo> repos, string? githubToken,
-        IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default)
+        IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default,
+        bool publicar = false)
     {
+        PublicarDeCadaTurno.Add(publicar);
         ModosDeCadaTurno.Add(modo);
         DocsDeCadaTurno.Add(documentos);
         if (TurnoFalla is not null) throw new UpstreamException(TurnoFalla);

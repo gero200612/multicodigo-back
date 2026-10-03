@@ -263,7 +263,19 @@ public sealed record CuerpoInstalacion(
 /// </remarks>
 public sealed record CuerpoTurno(
     [property: JsonPropertyName("prompt")] string? Prompt,
-    [property: JsonPropertyName("modo")] string? Modo = null);
+    [property: JsonPropertyName("modo")] string? Modo = null,
+    [property: JsonPropertyName("publicar")] bool? Publicar = null);
+
+/// <summary>Conectar una app de despliegue: el token y lo que pida cada una (team, instalación).</summary>
+public sealed record CuerpoConexionDespliegue(
+    [property: JsonPropertyName("token")] string? Token,
+    [property: JsonPropertyName("extra")] Dictionary<string, string>? Extra = null);
+
+/// <summary>En qué app se publica un repo; null = ninguna elegida.</summary>
+public sealed record CuerpoDestino([property: JsonPropertyName("destino")] string? Destino);
+
+/// <summary>Publicar lo que hizo un ticket: la rama de ese agente.</summary>
+public sealed record CuerpoPublicar([property: JsonPropertyName("agente")] string? Agente);
 
 /// <summary>
 /// Desarrollo desde el panel: un pliego que se abre como corrida (ver

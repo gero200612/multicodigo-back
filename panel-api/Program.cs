@@ -1958,7 +1958,8 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
         var docs = await documentos.ParaElTurnoAsync(jwt, proyectoId, ct);
 
         var r = await bridge.TurnoAsync(
-            proyectoId, nombre, slot, usuarioId, prompt, vinculados, githubToken, docs, cuerpo.Modo, ct);
+            proyectoId, nombre, slot, usuarioId, prompt, vinculados, githubToken, docs, cuerpo.Modo, ct,
+            publicar: cuerpo.Publicar == true);
         return Results.Ok(r);
     }
     catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
@@ -1972,6 +1973,71 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
             new { code, message = "el agente no pudo contestar" },
             statusCode: StatusCodes.Status502BadGateway);
     }
+});
+
+// --- despliegue: las apps de cada persona -----------------------------------
+//
+// Los tokens viven en el bridge, cifrados: el panel solo hace de pasamano con
+// el usuario del JWT. Ver `publicar-ticket.ts` y `proveedores.ts` del bridge.
+
+string[] Proveedores = ["render", "vercel", "netlify", "railway"];
+
+IResult Pasamano((int Status, string Cuerpo) r) =>
+    Results.Content(r.Cuerpo, "application/json", System.Text.Encoding.UTF8, r.Status == 0 ? 502 : r.Status);
+
+api.MapGet("/despliegue/conexiones", async (HttpContext ctx, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    return Pasamano(await bridge.DespliegueAsync(
+        HttpMethod.Get, $"/interno/despliegue/conexiones?usuarioId={Uri.EscapeDataString(usuarioId)}", null, ct));
+});
+
+api.MapPut("/despliegue/conexiones/{proveedor}", async (
+    string proveedor, CuerpoConexionDespliegue cuerpo, HttpContext ctx, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (!Proveedores.Contains(proveedor)) return Results.NotFound(new { code = "proveedor_desconocido", message = "esa app no está" });
+    if (string.IsNullOrWhiteSpace(cuerpo.Token)) return Results.BadRequest(new { code = "sin_token", message = "pegá el token" });
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Put, "/interno/despliegue/conexiones",
+        new { usuarioId, proveedor, token = cuerpo.Token.Trim(), extra = cuerpo.Extra ?? new Dictionary<string, string>() }, ct));
+});
+
+api.MapDelete("/despliegue/conexiones/{proveedor}", async (
+    string proveedor, HttpContext ctx, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (!Proveedores.Contains(proveedor)) return Results.NotFound(new { code = "proveedor_desconocido", message = "esa app no está" });
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, "/interno/despliegue/desconectar", new { usuarioId, proveedor }, ct));
+});
+
+// Elegir la app de un repo y publicar son del DUEÑO, igual que escribir en el
+// repo: publicar pasa una rama a main.
+api.MapPut("/proyectos/{proyectoId}/repos/{repo}/destino", async (
+    string proyectoId, string repo, CuerpoDestino cuerpo, HttpContext ctx,
+    IProyectosClient proyectos, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (await proyectos.RolDeAsync(await JwtDe(ctx), proyectoId, ct) != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
+    var destino = string.IsNullOrWhiteSpace(cuerpo.Destino) ? null : cuerpo.Destino;
+    if (destino is not null && !Proveedores.Contains(destino)) return Results.BadRequest(new { code = "proveedor_desconocido", message = "esa app no está" });
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Put, "/interno/despliegue/destino",
+        new { usuarioId, proyectoId, repo, destino }, ct));
+});
+
+api.MapPost("/proyectos/{proyectoId}/publicar", async (
+    string proyectoId, CuerpoPublicar cuerpo, HttpContext ctx,
+    IProyectosClient proyectos, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (SlotInvalido(cuerpo.Agente ?? "") is { } malo) return malo;
+    if (await proyectos.RolDeAsync(await JwtDe(ctx), proyectoId, ct) != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, "/interno/despliegue/publicar",
+        new { usuarioId, proyectoId, agente = cuerpo.Agente }, ct));
 });
 
 // --- desarrollo: un pliego que se abre como corrida -------------------------
