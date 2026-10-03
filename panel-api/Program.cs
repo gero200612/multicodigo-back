@@ -1643,7 +1643,10 @@ api.MapPost("/proyectos/{proyectoId}/repos/{nombre}/archivos", async (
     IReposClient repos, IRepoArbolClient arbol, CancellationToken ct) =>
 {
     var jwt = await JwtDe(ctx);
-    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    // Escribir es del DUEÑO, como instalar la App. Un miembro puede vincular
+    // cualquier repo que vea la instalación; si además pudiera escribir,
+    // escribiría en repos que no son de este proyecto.
+    if (await proyectos.RolDeAsync(jwt, proyectoId, ct) != "dueño")
     {
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     }
@@ -1663,7 +1666,7 @@ api.MapPost("/proyectos/{proyectoId}/repos/{nombre}/archivos", async (
 
     var form = await ctx.Request.ReadFormAsync(ct);
     var carpeta = (form["carpeta"].ToString() ?? "").Trim().Trim('/');
-    if (carpeta.Length > 0 && !RepoArbolClient.RutaValida(carpeta))
+    if (carpeta.Length > 0 && !RepoArbolClient.RutaEscribible(carpeta))
     {
         return Results.BadRequest(new { code = "ruta_invalida", message = "esa carpeta no es válida" });
     }
@@ -1683,7 +1686,7 @@ api.MapPost("/proyectos/{proyectoId}/repos/{nombre}/archivos", async (
     {
         var nombreArchivo = Path.GetFileName(archivo.FileName);
         var ruta = carpeta.Length > 0 ? $"{carpeta}/{nombreArchivo}" : nombreArchivo;
-        if (!RepoArbolClient.RutaValida(ruta) || archivo.Length == 0)
+        if (!RepoArbolClient.RutaEscribible(ruta) || archivo.Length == 0)
         {
             fallidos.Add(new { archivo = nombreArchivo, motivo = "ruta_invalida" });
             continue;
@@ -1716,7 +1719,10 @@ api.MapPost("/proyectos/{proyectoId}/repos/{nombre}/carpetas", async (
     IReposClient repos, IRepoArbolClient arbol, CancellationToken ct) =>
 {
     var jwt = await JwtDe(ctx);
-    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    // Escribir es del DUEÑO, como instalar la App. Un miembro puede vincular
+    // cualquier repo que vea la instalación; si además pudiera escribir,
+    // escribiría en repos que no son de este proyecto.
+    if (await proyectos.RolDeAsync(jwt, proyectoId, ct) != "dueño")
     {
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     }
@@ -1730,7 +1736,7 @@ api.MapPost("/proyectos/{proyectoId}/repos/{nombre}/carpetas", async (
         return Results.Json(new { code = "solo_lectura", message = "es un repo de referencia: no se escribe en él" }, statusCode: 403);
     }
     var ruta = (cuerpo.Ruta ?? "").Trim().Trim('/');
-    if (!RepoArbolClient.RutaValida(ruta))
+    if (!RepoArbolClient.RutaEscribible(ruta))
     {
         return Results.BadRequest(new { code = "ruta_invalida", message = "ese nombre de carpeta no es válido" });
     }

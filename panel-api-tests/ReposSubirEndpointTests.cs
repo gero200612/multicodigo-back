@@ -27,6 +27,7 @@ public class ReposSubirEndpointTests(PanelFactory f) : IClassFixture<PanelFactor
     private void Limpio()
     {
         f.Proyectos.Mios[Proyecto] = "sincroresto";
+        f.Proyectos.Roles[Proyecto] = "dueño";
         f.Repos.Filas.Clear();
         f.Repos.Filas.Add(new Repo("front", "sincrosns/SincroResto-frontend"));
         f.Repos.Filas.Add(new Repo("referencia", "Sincro-arg/referencia-front", SoloLectura: true));
@@ -97,6 +98,37 @@ public class ReposSubirEndpointTests(PanelFactory f) : IClassFixture<PanelFactor
         Limpio();
         var r = await Cliente().PostAsync($"/api/proyectos/{Ajeno}/repos/front/archivos", Form("", ("a.md", "x")));
         Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+    }
+
+    /// <summary>
+    /// Un miembro puede vincular cualquier repo de la instalación; si pudiera
+    /// escribir, escribiría en repos que no son del proyecto.
+    /// </summary>
+    [Fact]
+    public async Task UnMiembroQueNoEsDuenioNoEscribe()
+    {
+        Limpio();
+        f.Proyectos.Roles[Proyecto] = "miembro";
+        var r = await Cliente().PostAsync($"/api/proyectos/{Proyecto}/repos/front/archivos", Form("", ("a.md", "x")));
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+        var c = await Cliente().PostAsJsonAsync($"/api/proyectos/{Proyecto}/repos/front/carpetas", new { ruta = "x" });
+        Assert.Equal(HttpStatusCode.Forbidden, c.StatusCode);
+        Assert.Empty(f.Arbol.Subidos);
+    }
+
+    /// <summary>Un workflow de Actions corre con los secretos del repo: no se sube desde acá.</summary>
+    [Theory]
+    [InlineData(".github/workflows")]
+    [InlineData(".GitHub")]
+    [InlineData("src/.git")]
+    public async Task NoSeEscribeEnGithubNiEnGit(string carpeta)
+    {
+        Limpio();
+        var r = await Cliente().PostAsync($"/api/proyectos/{Proyecto}/repos/front/archivos", Form(carpeta, ("deploy.yml", "x")));
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        var c = await Cliente().PostAsJsonAsync($"/api/proyectos/{Proyecto}/repos/front/carpetas", new { ruta = carpeta });
+        Assert.Equal(HttpStatusCode.BadRequest, c.StatusCode);
+        Assert.Empty(f.Arbol.Subidos);
     }
 
     [Fact]

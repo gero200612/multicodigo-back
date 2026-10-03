@@ -130,6 +130,15 @@ public sealed class RepoArbolClient(
     /// <c>RutaSegura</c> en los documentos: no depender de que el otro lado lo
     /// haga bien. Sin barra al principio y sin ningún segmento <c>..</c>.
     /// </remarks>
+    /// <summary>
+    /// Una ruta donde el panel puede escribir: válida, y fuera de `.github/`
+    /// (los workflows de Actions corren con los secretos del repo) y de `.git`.
+    /// </summary>
+    public static bool RutaEscribible(string? ruta) =>
+        RutaValida(ruta)
+        && !ruta!.Split('/')[0].Equals(".github", StringComparison.OrdinalIgnoreCase)
+        && !ruta.Split('/').Any(seg => seg.Equals(".git", StringComparison.OrdinalIgnoreCase));
+
     public static bool RutaValida(string? ruta) =>
         !string.IsNullOrWhiteSpace(ruta)
         && !ruta.StartsWith('/')
@@ -224,7 +233,7 @@ public sealed class RepoArbolClient(
         string jwt, string proyectoId, string fullName, string ruta, byte[] contenido,
         string mensaje, CancellationToken ct = default)
     {
-        if (!RutaValida(ruta)) throw new UpstreamException("ruta_invalida");
+        if (!RutaEscribible(ruta)) throw new UpstreamException("ruta_invalida");
         if (contenido.Length > MaximoBytesASubir) throw new UpstreamException("muy_grande");
         var token = await TokenAsync(jwt, proyectoId, ct);
         var url = $"https://api.github.com/repos/{fullName}/contents/{Uri.EscapeDataString(ruta).Replace("%2F", "/")}";
