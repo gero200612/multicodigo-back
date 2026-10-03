@@ -347,10 +347,9 @@ const pipelineDeps = {
                 })
               : undefined;
 
-          const usuarioDeLaCorrida = await store.usuarioDeChat(corrida.chatId);
-          const conexiones = usuarioDeLaCorrida
-            ? await store.conexionesDeDespliegue(usuarioDeLaCorrida).catch(() => [])
-            : [];
+          // Con las cuentas del DUEÑO del proyecto, no de quien abrió la corrida.
+          const dueno = await store.duenoDeProyecto(proyectoId).catch(() => undefined);
+          const conexiones = dueno ? await store.conexionesDeDespliegue(dueno).catch(() => []) : [];
           return publicar(proyectoId, corrida.proyecto, agentes, {
             store,
             enDestino: (repo) =>
@@ -606,8 +605,12 @@ await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start(
  */
 function despliegueDelPanel() {
   const clave = claveDe(env.CONEXIONES_CLAVE ?? env.BRIDGE_API_TOKEN);
+  // Del DUEÑO y no de cualquier miembro: publicar pasa ramas a main y usa las
+  // cuentas de despliegue del dueño.
   const esSuyo = async (usuarioId: string, proyectoId: string) =>
-    (await store.proyectosDeUsuario(usuarioId)).find((x) => x.id === proyectoId);
+    (await store.duenoDeProyecto(proyectoId)) === usuarioId
+      ? (await store.proyectosDeUsuario(usuarioId)).find((x) => x.id === proyectoId)
+      : undefined;
 
   return {
     conexiones: async (usuarioId: string) =>
@@ -640,7 +643,7 @@ function despliegueDelPanel() {
       repo: string,
       destino: Parameters<typeof verificar>[0] | null,
     ) => {
-      if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'ese proyecto no es tuyo' };
+      if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'solo el dueño del proyecto elige dónde se publica' };
       if (!(await store.reposDeProyecto(proyectoId)).some((x) => x.nombre === repo)) {
         return { ok: false as const, motivo: 'ese repo no está en el proyecto' };
       }
@@ -649,7 +652,7 @@ function despliegueDelPanel() {
     },
     publicar: async (usuarioId: string, proyectoId: string, agente: string, explicito: boolean) => {
       const proyecto = await esSuyo(usuarioId, proyectoId);
-      if (!proyecto) return { ok: false as const, motivo: 'ese proyecto no es tuyo' };
+      if (!proyecto) return { ok: false as const, motivo: 'solo el dueño del proyecto puede publicar' };
       if (!env.GATEWAY_ADMIN_TOKEN) return { ok: false as const, motivo: 'este servidor no puede pasar ramas a main (falta GATEWAY_ADMIN_TOKEN)' };
       const admin = { gatewayUrl: env.GATEWAY_URL, adminToken: env.GATEWAY_ADMIN_TOKEN };
       const instalacion = await store.instalacionDeProyecto(proyectoId);

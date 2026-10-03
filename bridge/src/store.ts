@@ -585,6 +585,12 @@ export interface Store {
     soloLectura?: boolean,
     creadoPorElBot?: boolean,
   ): Promise<void>;
+  /**
+   * El dueño del proyecto. Publicar y elegir app son suyos, y se publica con
+   * SUS cuentas: con las de quien pide, un miembro podía atar el repo del
+   * proyecto a su propia cuenta de Vercel y cambiar la URL publicada.
+   */
+  duenoDeProyecto(proyectoId: string): Promise<string | undefined>;
   /** Las conexiones de despliegue de una persona. */
   conexionesDeDespliegue(usuarioId: string): Promise<ConexionGuardada[]>;
   guardarConexionDeDespliegue(usuarioId: string, c: Omit<ConexionGuardada, 'creadoEn'>): Promise<void>;
@@ -1348,6 +1354,11 @@ export class InMemoryStore implements Store {
   }
 
   private readonly conexionesDespliegue = new Map<string, ConexionGuardada[]>();
+
+  async duenoDeProyecto(proyectoId: string): Promise<string | undefined> {
+    // En memoria la primera membresía es la del que lo creó.
+    return this.membresias.find((m) => m.proyectoId === proyectoId)?.usuarioId;
+  }
 
   async conexionesDeDespliegue(usuarioId: string): Promise<ConexionGuardada[]> {
     return this.conexionesDespliegue.get(usuarioId) ?? [];
@@ -2443,6 +2454,14 @@ export class PgStore implements Store {
     } catch {
       return [];
     }
+  }
+
+  async duenoDeProyecto(proyectoId: string): Promise<string | undefined> {
+    const r = await this.pool.query<{ usuario_id: string }>(
+      `SELECT usuario_id FROM miembros WHERE proyecto_id = $1 AND rol = 'dueño' LIMIT 1`,
+      [proyectoId],
+    );
+    return r.rows[0]?.usuario_id;
   }
 
   async conexionesDeDespliegue(usuarioId: string): Promise<ConexionGuardada[]> {
