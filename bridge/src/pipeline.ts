@@ -1475,10 +1475,12 @@ export async function ejecutarTurnoConRelevo(
       return { ...r, relevos, agente: turno.agente };
     } catch (err) {
       const codigo = err instanceof ErrorDeTurno ? err.codigo : '';
-      // Solo por tokens. Cualquier otro fallo se propaga: relevar un
+      // Solo por la CUENTA: sin tokens, o con la sesion vencida. Las dos son de
+      // ese slot y no del pedido, asi que otro slot con su propia cuenta lo
+      // puede hacer. Cualquier otro fallo se propaga: relevar un
       // `worktree_dirty` o un `git_failed` lo unico que hace es repetir el mismo
       // error en otro slot y esconder la causa.
-      if (codigo !== 'usage_limit') throw err;
+      if (codigo !== 'usage_limit' && codigo !== 'auth_expired') throw err;
 
       const siguiente = await elegirRelevo(deps, turno.proyecto, probados);
       if (!siguiente) throw err;

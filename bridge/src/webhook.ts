@@ -417,6 +417,11 @@ export function buildWebhookServer(
           )
           .max(50)
           .optional(),
+        // Cuánto pregunta el agente en ESTE turno, de la configuración de
+        // Punchi. `desatendido` entra: es lo que deja terminar un ticket solo,
+        // vale para este turno y nada más, y lo seguro no cambia —el gateway
+        // solo pushea a `claude/<agente>/…`—. Ausente = el default del agente.
+        modo: z.enum(['preguntar', 'ediciones', 'todo', 'desatendido']).nullish(),
       });
 
       /**
@@ -440,7 +445,12 @@ export function buildWebhookServer(
         }
 
         try {
-          const r = await ejecutarTurnoConRelevo(pipeline, { ...cuerpo.data, origen: 'panel' });
+          const { modo, ...resto } = cuerpo.data;
+          const r = await ejecutarTurnoConRelevo(pipeline, {
+            ...resto,
+            ...(modo ? { modo } : {}),
+            origen: 'panel',
+          });
           return reply.send({ jobId: r.jobId, texto: r.texto });
         } catch (e) {
           // 502 y no 500: lo que fallo es el agente del otro lado, y el `code`

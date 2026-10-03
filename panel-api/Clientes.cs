@@ -171,7 +171,7 @@ public interface IBridgeClient
     Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
         IReadOnlyList<Repo> repos, string? githubToken,
-        IReadOnlyList<DocumentoDelTurno> documentos, CancellationToken ct = default);
+        IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -494,7 +494,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     public async Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
         IReadOnlyList<Repo> repos, string? githubToken,
-        IReadOnlyList<DocumentoDelTurno> documentos, CancellationToken ct = default)
+        IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default)
     {
         var res = await http.PostAsJsonAsync(
             "/turnos",
@@ -523,6 +523,8 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
                     ruta = d.Ruta,
                     ruta_texto = d.RutaTexto,
                 }),
+                // Null = el default del agente. Ya validado en el endpoint.
+                modo,
             },
             Json.Opciones,
             ct);

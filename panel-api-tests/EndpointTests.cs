@@ -444,6 +444,32 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         Assert.Null(f.Bridge.TokensDeCadaTurno[^1]);
     }
 
+    /// <summary>
+    /// El modo de permisos de la configuración de Punchi viaja hasta el bridge;
+    /// sin él, el agente corría siempre en el más estricto y un ticket no podía
+    /// terminar solo. Un modo inventado no pasa.
+    /// </summary>
+    [Fact]
+    public async Task ElModoDelTurnoViajaYUnoInventadoNoPasa()
+    {
+        f.Proyectos.Mios[ProyectoDePrueba] = "mi-proyecto";
+        var url = $"/api/proyectos/{ProyectoDePrueba}/agentes/c1/turnos";
+
+        var ok = await Cliente().PostAsJsonAsync(url, new { prompt = "hola", modo = "desatendido" });
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        Assert.Equal("desatendido", f.Bridge.ModosDeCadaTurno[^1]);
+
+        var sin = await Cliente().PostAsJsonAsync(url, new { prompt = "hola" });
+        Assert.Equal(HttpStatusCode.OK, sin.StatusCode);
+        Assert.Null(f.Bridge.ModosDeCadaTurno[^1]);
+
+        var malo = await Cliente().PostAsJsonAsync(url, new { prompt = "hola", modo = "root" });
+        Assert.Equal(HttpStatusCode.BadRequest, malo.StatusCode);
+
+        // El fixture es compartido: otros tests esperan el bridge sin turnos.
+        f.Bridge.Turnos.Clear();
+    }
+
     // --- desvincular GitHub ---
 
     /// <summary>

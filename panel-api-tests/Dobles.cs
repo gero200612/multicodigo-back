@@ -380,14 +380,18 @@ public sealed class BridgeFalso : IBridgeClient
     /// <summary>El token de github que viajo con cada turno. Null cuando fue por SSH.</summary>
     public List<string?> TokensDeCadaTurno { get; } = [];
 
+    /// <summary>El modo de permisos de cada turno. Null = el default del agente.</summary>
+    public List<string?> ModosDeCadaTurno { get; } = [];
+
     /// <summary>Los documentos que viajaron con cada turno.</summary>
     public List<IReadOnlyList<DocumentoDelTurno>> DocsDeCadaTurno { get; } = [];
 
     public Task<RespuestaTurno> TurnoAsync(
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
         IReadOnlyList<Repo> repos, string? githubToken,
-        IReadOnlyList<DocumentoDelTurno> documentos, CancellationToken ct = default)
+        IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default)
     {
+        ModosDeCadaTurno.Add(modo);
         DocsDeCadaTurno.Add(documentos);
         if (TurnoFalla is not null) throw new UpstreamException(TurnoFalla);
         Turnos.Add((proyectoId, proyecto, slot, usuarioId, prompt));

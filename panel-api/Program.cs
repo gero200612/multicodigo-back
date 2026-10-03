@@ -1915,6 +1915,15 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
         return Results.BadRequest(new { code = "prompt_vacio", message = "escribí algo" });
     }
 
+    // `desatendido` entra acá a propósito: es lo que deja a Punchi terminar un
+    // ticket solo. Vale para ESTE turno y no queda prendido, y lo que lo hace
+    // seguro no cambia: el gateway solo deja pushear a `claude/<agente>/…`,
+    // nunca a main, y crear bases o migrar sigue preguntando.
+    if (cuerpo.Modo is { } m && m is not ("preguntar" or "ediciones" or "todo" or "desatendido"))
+    {
+        return Results.BadRequest(new { code = "modo_invalido", message = "modo de permisos desconocido" });
+    }
+
     var usuarioId = ctx.User.FindFirst("sub")?.Value;
     if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
 
@@ -1949,7 +1958,7 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
         var docs = await documentos.ParaElTurnoAsync(jwt, proyectoId, ct);
 
         var r = await bridge.TurnoAsync(
-            proyectoId, nombre, slot, usuarioId, prompt, vinculados, githubToken, docs, ct);
+            proyectoId, nombre, slot, usuarioId, prompt, vinculados, githubToken, docs, cuerpo.Modo, ct);
         return Results.Ok(r);
     }
     catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)

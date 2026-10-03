@@ -256,8 +256,14 @@ public sealed record CuerpoRepoInterno(
 public sealed record CuerpoInstalacion(
     [property: JsonPropertyName("installation_id")] long InstallationId);
 
+/// <remarks>
+/// <see cref="Modo"/> sale de la configuración de Punchi en el panel: cuánto
+/// pregunta el agente en ESTE turno. Ausente = el default del agente, que es el
+/// más estricto.
+/// </remarks>
 public sealed record CuerpoTurno(
-    [property: JsonPropertyName("prompt")] string? Prompt);
+    [property: JsonPropertyName("prompt")] string? Prompt,
+    [property: JsonPropertyName("modo")] string? Modo = null);
 
 public sealed record RespuestaTurno(
     [property: JsonPropertyName("jobId")] string JobId,

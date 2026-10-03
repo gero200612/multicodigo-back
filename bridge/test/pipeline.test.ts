@@ -722,6 +722,20 @@ describe('el relevo cuando un slot se queda sin tokens', () => {
     ).rejects.toThrow('usage_limit');
   });
 
+  // Una sesion vencida es de la cuenta de ESE slot: otro con su cuenta sigue.
+  // Antes cortaba aca, y un ticket moria en c4 con c2 libre y con cuenta.
+  it('releva tambien cuando la sesion de la cuenta vencio', async () => {
+    const pedidos: string[] = [];
+    const ask = vi.fn(async (req: { jobId: string; agent: string }) => {
+      pedidos.push(req.agent);
+      if (req.agent === 'c1') throw new Error('auth_expired');
+      return { jobId: req.jobId, sessionId: 's', text: 'listo', turns: 1 };
+    });
+    const r = await ejecutarTurnoConRelevo(deps({ ask, listarAgentes: async () => CON_CUENTA }), TURNO);
+    expect(r.texto).toBe('listo');
+    expect(pedidos).toEqual(['c1', 'c2']);
+  });
+
   // Relevar cualquier fallo repetiria el mismo error en otro slot y esconderia
   // la causa: un worktree sucio lo sigue estando desde el slot que sea.
   it('no releva por un error que no es de tokens', async () => {
