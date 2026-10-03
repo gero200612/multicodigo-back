@@ -1988,7 +1988,8 @@ api.MapPost("/corridas", async (
     // La misma forma que valida `/corrida proyecto=`: un nombre con espacios
     // no entra en el comando y la corrida caeria en el proyecto activo del chat.
     var proyecto = cuerpo.Proyecto?.Trim() ?? "";
-    if (!System.Text.RegularExpressions.Regex.IsMatch(proyecto, "^[A-Za-z0-9._-]{1,60}$"))
+    var porId = Guid.TryParse(cuerpo.ProyectoId, out _);
+    if (!porId && !System.Text.RegularExpressions.Regex.IsMatch(proyecto, "^[A-Za-z0-9._-]{1,60}$"))
     {
         return Results.BadRequest(new { code = "nombre_invalido", message = "el nombre del proyecto va sin espacios: letras, números, guiones o puntos" });
     }
@@ -2003,7 +2004,10 @@ api.MapPost("/corridas", async (
     // ese nombre, lo crea a su nombre).
     try
     {
-        var r = await bridge.DesarrolloAsync(usuarioId, cuerpo with { Proyecto = proyecto, Pliego = pliego }, ct);
+        var r = await bridge.DesarrolloAsync(
+            usuarioId,
+            porId ? cuerpo with { Proyecto = null, Pliego = pliego } : cuerpo with { Proyecto = proyecto, ProyectoId = null, Pliego = pliego },
+            ct);
         return r.Ok
             ? Results.Ok(new { corridaId = r.CorridaId })
             : Results.Json(new { code = "no_abierta", message = r.Motivo }, statusCode: StatusCodes.Status409Conflict);

@@ -21,7 +21,11 @@ import { arrancarCola, renderOutcome, textoDePlan, type BridgeDeps } from './tel
 
 export interface PedidoDeDemo {
   chatId: number;
-  proyecto: string;
+  /**
+   * Sin proyecto, la corrida va al proyecto ACTIVO del chat: es como se apunta
+   * a uno existente cuyo nombre no entra en `proyecto=` (tiene espacios).
+   */
+  proyecto?: string;
   pliego: string;
   /**
    * Opciones extra de `/corrida` (`repos=`, `referencia=`, `org=`,
@@ -66,7 +70,7 @@ export async function abrirDemo(
   if (!usuarioId) return { ok: false, motivo: 'ese chat no esta vinculado a una cuenta del panel' };
 
   const out = await handleIncoming(
-    { chatId: p.chatId, messageId: 0, text: `/corrida proyecto=${p.proyecto} ${p.opciones ?? 'publico=si'}\n${p.pliego}` },
+    { chatId: p.chatId, messageId: 0, text: `/corrida ${p.proyecto ? `proyecto=${p.proyecto} ` : ''}${p.opciones ?? 'publico=si'}\n${p.pliego}` },
     deps,
   );
   if (out.kind !== 'corrida' || !out.recienAbierta || !out.corrida) {
@@ -152,7 +156,10 @@ export async function estadoDeDemo(
  */
 export interface PedidoDeDesarrollo {
   usuarioId: string;
-  proyecto: string;
+  /** Un proyecto nuevo (o existente) por nombre… */
+  proyecto?: string;
+  /** …o uno existente por id, para los nombres con espacios. */
+  proyectoId?: string;
   pliego: string;
   repos?: string[];
   referencia?: string[];
@@ -190,10 +197,26 @@ export async function abrirDesarrollo(
       motivo: 'Para que Punchi trabaje con un pliego necesitás Telegram vinculado (Configuración → Telegram): ahí te avisa el plan y el avance.',
     };
   }
+  let proyecto = p.proyecto;
+  if (p.proyectoId) {
+    // Solo los de ESTA persona: el id lo manda el panel, pero el bridge no
+    // confía en que sea de quien lo pide.
+    const elegido = (await deps.store.proyectosDeUsuario(p.usuarioId)).find((x) => x.id === p.proyectoId);
+    if (!elegido) return { ok: false, motivo: 'ese proyecto no es tuyo o ya no existe' };
+    if (/^[A-Za-z0-9._-]+$/.test(elegido.nombre)) {
+      proyecto = elegido.nombre;
+    } else {
+      // Con espacios no entra en `proyecto=`: se lo deja activo en el chat y
+      // la corrida va a ese.
+      await deps.store.setActiveProject(chatId, elegido.nombre);
+      proyecto = undefined;
+    }
+  }
+  if (!proyecto && !p.proyectoId) return { ok: false, motivo: 'falta el proyecto' };
   return abrirDemo(
     {
       chatId,
-      proyecto: p.proyecto,
+      ...(proyecto ? { proyecto } : {}),
       pliego: p.pliego,
       opciones: opcionesDeDesarrollo(p),
       aviso: (proyecto) =>

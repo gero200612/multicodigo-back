@@ -561,7 +561,8 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
             new
             {
                 usuarioId,
-                proyecto = cuerpo.Proyecto,
+                proyecto = string.IsNullOrWhiteSpace(cuerpo.Proyecto) ? null : cuerpo.Proyecto,
+                proyectoId = string.IsNullOrWhiteSpace(cuerpo.ProyectoId) ? null : cuerpo.ProyectoId,
                 pliego = cuerpo.Pliego,
                 repos = cuerpo.Repos ?? [],
                 referencia = cuerpo.Referencia ?? [],

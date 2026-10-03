@@ -276,7 +276,8 @@ public sealed record CuerpoDesarrollo(
     [property: JsonPropertyName("repos")] List<string>? Repos = null,
     [property: JsonPropertyName("referencia")] List<string>? Referencia = null,
     [property: JsonPropertyName("org")] string? Org = null,
-    [property: JsonPropertyName("publico")] bool? Publico = null);
+    [property: JsonPropertyName("publico")] bool? Publico = null,
+    [property: JsonPropertyName("proyectoId")] string? ProyectoId = null);
 
 /// <summary>Si se abrió la corrida, o por qué no (el motivo ya viene en castellano).</summary>
 public sealed record ResultadoDesarrollo(bool Ok, string? CorridaId, string? Motivo);

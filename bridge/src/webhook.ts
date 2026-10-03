@@ -138,7 +138,8 @@ export interface ApiDeps {
 
 const CuerpoDesarrollo = z.object({
   usuarioId: z.string().uuid(),
-  proyecto: z.string().regex(/^[a-zA-Z0-9._-]+$/).max(60),
+  proyecto: z.string().regex(/^[a-zA-Z0-9._-]+$/).max(60).optional(),
+  proyectoId: z.string().uuid().optional(),
   pliego: z.string().min(20).max(60_000),
   repos: z.array(z.string().max(100)).max(10).optional(),
   referencia: z.array(z.string().max(100)).max(10).optional(),

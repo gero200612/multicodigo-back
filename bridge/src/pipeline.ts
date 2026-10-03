@@ -876,10 +876,14 @@ export async function handleIncoming(
       );
     }
     const prompt = armarTicket(command.texto, proyecto)!;
+    // Autónomo SOLO si el chat ya eligió `todo` con /permisos: /ticket no puede
+    // subirle los permisos a un chat que pidió que le pregunten.
+    const modoChat = await deps.store.modoDeChat(input.chatId).catch(() => undefined);
+    const modoDelTicket = modoChat === 'todo' ? ('desatendido' as const) : undefined;
     // El mismo camino que un mensaje comun —agente activo, relevo, ocupado,
     // documentos—, con el prompt del formulario Ticket y en desatendido.
     return handleIncoming(
-      { chatId: input.chatId, messageId: input.messageId, text: prompt, proyectoForzado: proyecto, modoForzado: 'desatendido' },
+      { chatId: input.chatId, messageId: input.messageId, text: prompt, proyectoForzado: proyecto, ...(modoDelTicket ? { modoForzado: modoDelTicket } : {}) },
       deps,
     );
   }
