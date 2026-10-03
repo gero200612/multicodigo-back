@@ -69,6 +69,8 @@ export type ParsedCommand =
    * `/cambio` la reabre con un pedido. `numero` falta = la ultima.
    */
   | { kind: 'corridas' }
+  /** `/ticket título\ndescripción`: lo mismo que el formulario Ticket del panel. */
+  | { kind: 'ticket'; texto: string }
   | { kind: 'consulta'; numero?: number; texto: string }
   | { kind: 'cambio'; numero?: number; texto: string }
   /** Pide un codigo para atar este chat a una cuenta del panel. */
@@ -121,6 +123,9 @@ export function parseCommand(raw: string): ParsedCommand {
   if (command === 'reanudar') return { kind: 'reanudar' };
 
   if (command === 'corridas') return { kind: 'corridas' };
+
+  // `[\s\S]` por lo mismo que /cola: la descripción viene abajo del título.
+  if (command === 'ticket') return { kind: 'ticket', texto: rest };
 
   // `/consulta 2 por que...` o `/consulta por que...`: el numero, si viene, es
   // el de `/corridas`. Con `[\s\S]` por lo mismo que /cola: un pedido puede

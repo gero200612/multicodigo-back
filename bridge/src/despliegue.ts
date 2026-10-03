@@ -69,5 +69,8 @@ export function conDespliegue(
   repos: readonly RepoPublicable[] | undefined,
 ): string {
   const bloque = bloqueDeDespliegue(repos);
-  return bloque ? `${bloque}\n\n${prompt}` : prompt;
+  if (!bloque) return prompt;
+  // Un pedido con etiqueta (`[TICKET · …]`, de /ticket) la conserva primera:
+  // la cola de tickets del panel los reconoce por cómo EMPIEZAN.
+  return prompt.startsWith('[') ? `${prompt}\n\n${bloque}` : `${bloque}\n\n${prompt}`;
 }

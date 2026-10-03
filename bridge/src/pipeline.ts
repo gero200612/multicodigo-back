@@ -1,4 +1,5 @@
 import type { Publicado } from './publicar.js';
+import { TIPO_GRANDE, armarTicket, partirTicket, pliegoDeTicket } from './ticket.js';
 import {
   agentesQueTrabajaron,
   promptDeRelevo,
@@ -77,7 +78,11 @@ export interface IncomingMessage {
    * `preguntar`, que pide OK antes de cualquier edicion. No los manda Telegram.
    */
   proyectoForzado?: string;
-  modoForzado?: 'preguntar';
+  /**
+   * `preguntar` para /consulta; `desatendido` para /ticket, que tiene que
+   * terminar solo (main sigue inalcanzable desde el gateway).
+   */
+  modoForzado?: ModoDeTurno;
 }
 
 export interface PipelineDeps {
@@ -376,6 +381,7 @@ export type PipelineOutcome =
    * —igual que la cola— porque el handler de Telegram tiene que contestar ya.
    */
   | { kind: 'corrida_planificando'; corrida: Corrida }
+  | { kind: 'ticket_uso' }
   | { kind: 'cola_cancelada'; cuantas: number; corridaCerrada: boolean }
   /**
    * Se reanudo una corrida que se habia cortado sin terminar.
@@ -852,6 +858,30 @@ export async function handleIncoming(
     // sin salida.
     await deps.store.borrarBorrador(input.chatId).catch(() => undefined);
     return { kind: 'cola_cancelada', cuantas: n, corridaCerrada: Boolean(abierta) };
+  }
+
+  if (command.kind === 'ticket') {
+    const proyecto = input.proyectoForzado ?? (await proyectoDelChat(input.chatId, usuarioId, deps));
+    const partes = partirTicket(command.texto);
+    if (!partes) return { kind: 'ticket_uso' };
+    // Grande = pliego: la corrida lo parte en tareas y las reparte.
+    if (partes.tipo === TIPO_GRANDE) {
+      return handleIncoming(
+        {
+          chatId: input.chatId,
+          messageId: input.messageId,
+          text: `/corrida proyecto=${proyecto} publico=si\n${pliegoDeTicket(partes.titulo, partes.descripcion)}`,
+        },
+        deps,
+      );
+    }
+    const prompt = armarTicket(command.texto, proyecto)!;
+    // El mismo camino que un mensaje comun —agente activo, relevo, ocupado,
+    // documentos—, con el prompt del formulario Ticket y en desatendido.
+    return handleIncoming(
+      { chatId: input.chatId, messageId: input.messageId, text: prompt, proyectoForzado: proyecto, modoForzado: 'desatendido' },
+      deps,
+    );
   }
 
   if (command.kind === 'corridas') {

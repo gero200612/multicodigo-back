@@ -35,7 +35,7 @@ import {
 } from './documentos.js';
 import { buildBot, retomarCorridas } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
-import { abrirDemo, estadoDeDemo } from './demo-homero.js';
+import { abrirDemo, abrirDesarrollo, estadoDeDemo } from './demo-homero.js';
 import { partirParaTelegram } from './codigo.js';
 import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
@@ -591,6 +591,12 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
         }
       }),
     estado: (chatId, id) => estadoDeDemo(chatId, id, botDeps),
+    desarrollo: (p) =>
+      abrirDesarrollo(p, botDeps, (chatId) => async (html) => {
+        for (const parte of partirParaTelegram(html)) {
+          await bot.api.sendMessage(chatId, parte, { parse_mode: 'HTML' });
+        }
+      }),
   },
   // Los documentos que ESCRIBE el agente. Las mismas deps que los que llegan
   // por Telegram: mismo disco, misma tabla, mismo conversor — solo cambia la

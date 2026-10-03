@@ -172,6 +172,14 @@ public interface IBridgeClient
         string proyectoId, string proyecto, string slot, string usuarioId, string prompt,
         IReadOnlyList<Repo> repos, string? githubToken,
         IReadOnlyList<DocumentoDelTurno> documentos, string? modo = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Abre una corrida con el pliego de Desarrollo, en el Telegram vinculado
+    /// de la persona. Un "no" (sin Telegram, ya hay una corrida…) vuelve como
+    /// <see cref="ResultadoDesarrollo"/> con motivo; lo demás, como excepción.
+    /// </summary>
+    Task<ResultadoDesarrollo> DesarrolloAsync(
+        string usuarioId, CuerpoDesarrollo cuerpo, CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -543,6 +551,39 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     }
 
     private sealed record ErrorUpstream(string? Code);
+    private sealed record CorridaAbierta(string? CorridaId);
+
+    public async Task<ResultadoDesarrollo> DesarrolloAsync(
+        string usuarioId, CuerpoDesarrollo cuerpo, CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync(
+            "/interno/corrida/desde-panel",
+            new
+            {
+                usuarioId,
+                proyecto = cuerpo.Proyecto,
+                pliego = cuerpo.Pliego,
+                repos = cuerpo.Repos ?? [],
+                referencia = cuerpo.Referencia ?? [],
+                org = string.IsNullOrWhiteSpace(cuerpo.Org) ? null : cuerpo.Org,
+                publico = cuerpo.Publico ?? true,
+            },
+            Json.Opciones,
+            ct);
+
+        if (res.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            var e = await res.Content.ReadFromJsonAsync<ErrorConMensaje>(Json.Opciones, ct);
+            return new ResultadoDesarrollo(false, null, e?.Message ?? "no se pudo abrir la corrida");
+        }
+        if (!res.IsSuccessStatusCode)
+        {
+            var e = await res.Content.ReadFromJsonAsync<ErrorUpstream>(Json.Opciones, ct);
+            throw new UpstreamException(e?.Code ?? "corrida_fallo");
+        }
+        var ok = await res.Content.ReadFromJsonAsync<CorridaAbierta>(Json.Opciones, ct);
+        return new ResultadoDesarrollo(true, ok?.CorridaId, null);
+    }
 
     public async Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default)
     {

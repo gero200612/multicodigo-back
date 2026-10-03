@@ -23,6 +23,13 @@ export interface PedidoDeDemo {
   chatId: number;
   proyecto: string;
   pliego: string;
+  /**
+   * Opciones extra de `/corrida` (`repos=`, `referencia=`, `org=`,
+   * `publico=`), ya validadas por quien llama. Homero no las manda.
+   */
+  opciones?: string;
+  /** El aviso al abrir. Por defecto, el de Homero. */
+  aviso?: (proyecto: string) => string;
 }
 
 export type ResultadoDeDemo = { ok: true; corridaId: string } | { ok: false; motivo: string };
@@ -59,7 +66,7 @@ export async function abrirDemo(
   if (!usuarioId) return { ok: false, motivo: 'ese chat no esta vinculado a una cuenta del panel' };
 
   const out = await handleIncoming(
-    { chatId: p.chatId, messageId: 0, text: `/corrida proyecto=${p.proyecto} publico=si\n${p.pliego}` },
+    { chatId: p.chatId, messageId: 0, text: `/corrida proyecto=${p.proyecto} ${p.opciones ?? 'publico=si'}\n${p.pliego}` },
     deps,
   );
   if (out.kind !== 'corrida' || !out.recienAbierta || !out.corrida) {
@@ -71,7 +78,9 @@ export async function abrirDemo(
 
   const corrida = out.corrida;
   await avisar(
-    `🤝 Homero me pidio una demo: <b>${escaparHtml(corrida.proyecto)}</b>. Armo el plan y arranco solo, sin esperar tu OK.`,
+    p.aviso
+      ? p.aviso(corrida.proyecto)
+      : `🤝 Homero me pidio una demo: <b>${escaparHtml(corrida.proyecto)}</b>. Armo el plan y arranco solo, sin esperar tu OK.`,
   ).catch(() => undefined);
 
   // Sin await: planificar es un turno de minutos y la cola puede durar horas.
@@ -129,4 +138,68 @@ export async function estadoDeDemo(
     ...(corrida.motivoDeCierre ? { motivoDeCierre: corrida.motivoDeCierre } : {}),
     ...(url ? { url } : {}),
   };
+}
+
+/**
+ * Desarrollo desde el panel: el formulario arma el pliego y la corrida se abre
+ * en el chat de Telegram vinculado a la persona, por el MISMO camino que una
+ * demo de Homero (proyecto, repos, plan sin preguntas y cola andando). El
+ * avance llega a ese chat y se ve en Actividad → Corridas.
+ *
+ * Telegram es obligatorio a proposito: la corrida vive en un chat —ahi avisa,
+ * ahi pregunta si se traba, ahi se cancela— y no hay otra forma de seguirla
+ * de noche.
+ */
+export interface PedidoDeDesarrollo {
+  usuarioId: string;
+  proyecto: string;
+  pliego: string;
+  repos?: string[];
+  referencia?: string[];
+  org?: string;
+  publico?: boolean;
+}
+
+/** Los nombres de repo que entran en `repos=`/`referencia=`: los mismos que acepta `/corrida`. */
+const NOMBRE = /^[A-Za-z0-9._-]{1,100}$/;
+
+export function opcionesDeDesarrollo(p: PedidoDeDesarrollo): string {
+  const lista = (xs?: string[]) => [...new Set((xs ?? []).filter((x) => NOMBRE.test(x) && x !== '.' && x !== '..'))].slice(0, 10);
+  const repos = lista(p.repos);
+  const referencia = lista(p.referencia);
+  return [
+    p.org && NOMBRE.test(p.org) ? `org=${p.org}` : '',
+    repos.length ? `repos=${repos.join(',')}` : '',
+    referencia.length ? `referencia=${referencia.join(',')}` : '',
+    p.publico === false ? 'publico=no' : 'publico=si',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+export async function abrirDesarrollo(
+  p: PedidoDeDesarrollo,
+  deps: BridgeDeps,
+  avisarEn: (chatId: number) => (html: string) => Promise<void>,
+): Promise<ResultadoDeDemo> {
+  const chats = await deps.store.chatsDeUsuario(p.usuarioId);
+  const chatId = chats[0];
+  if (chatId === undefined) {
+    return {
+      ok: false,
+      motivo: 'Para que Punchi trabaje con un pliego necesitás Telegram vinculado (Configuración → Telegram): ahí te avisa el plan y el avance.',
+    };
+  }
+  return abrirDemo(
+    {
+      chatId,
+      proyecto: p.proyecto,
+      pliego: p.pliego,
+      opciones: opcionesDeDesarrollo(p),
+      aviso: (proyecto) =>
+        `🛠️ Desarrollo pedido desde el panel: <b>${escaparHtml(proyecto)}</b>. Armo el plan y arranco solo; te voy avisando acá.`,
+    },
+    deps,
+    avisarEn(chatId),
+  );
 }

@@ -9,7 +9,7 @@ import { FORMATOS_GENERABLES } from './documentos.js';
 import { EJES, sinRepetidas } from './corrida.js';
 import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
-import type { EstadoDeDemo, PedidoDeDemo, ResultadoDeDemo } from './demo-homero.js';
+import type { EstadoDeDemo, PedidoDeDemo, PedidoDeDesarrollo, ResultadoDeDemo } from './demo-homero.js';
 
 /** Tope duro. Sin esto, un `?limit=` de la URL deja pedir la tabla entera. */
 const MAX_JOBS = 50;
@@ -131,8 +131,20 @@ export interface ApiDeps {
   demos?: {
     abrir: (p: PedidoDeDemo) => Promise<ResultadoDeDemo>;
     estado: (chatId: number, corridaId: string) => Promise<EstadoDeDemo | undefined>;
+    /** Desarrollo desde el panel: ver `abrirDesarrollo`. */
+    desarrollo?: (p: PedidoDeDesarrollo) => Promise<ResultadoDeDemo>;
   };
 }
+
+const CuerpoDesarrollo = z.object({
+  usuarioId: z.string().uuid(),
+  proyecto: z.string().regex(/^[a-zA-Z0-9._-]+$/).max(60),
+  pliego: z.string().min(20).max(60_000),
+  repos: z.array(z.string().max(100)).max(10).optional(),
+  referencia: z.array(z.string().max(100)).max(10).optional(),
+  org: z.string().max(100).optional(),
+  publico: z.boolean().optional(),
+});
 
 const CuerpoDemo = z.object({
   chatId: z.coerce.number().int(),
@@ -645,6 +657,25 @@ export function buildWebhookServer(
         return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta chatId, proyecto o pliego' });
       }
       const r = await api.demos.abrir(cuerpo.data);
+      return r.ok
+        ? reply.code(200).send({ corridaId: r.corridaId })
+        : reply.code(409).send({ code: 'no_abierta', message: r.motivo });
+    });
+
+    /**
+     * Desarrollo desde el panel: el panel ya validó al usuario (el JWT), y
+     * `/corrida proyecto=` solo encuentra o crea proyectos de ESA persona.
+     */
+    app.post('/interno/corrida/desde-panel', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      if (!api.demos?.desarrollo) return reply.code(503).send({ code: 'sin_corridas', message: 'corridas no configuradas' });
+      const cuerpo = CuerpoDesarrollo.safeParse(request.body);
+      if (!cuerpo.success) {
+        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto o el pliego' });
+      }
+      const r = await api.demos.desarrollo(cuerpo.data);
       return r.ok
         ? reply.code(200).send({ corridaId: r.corridaId })
         : reply.code(409).send({ code: 'no_abierta', message: r.motivo });

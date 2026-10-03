@@ -1974,6 +1974,49 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
     }
 });
 
+// --- desarrollo: un pliego que se abre como corrida -------------------------
+
+api.MapPost("/corridas", async (
+    CuerpoDesarrollo cuerpo,
+    HttpContext ctx,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+
+    // La misma forma que valida `/corrida proyecto=`: un nombre con espacios
+    // no entra en el comando y la corrida caeria en el proyecto activo del chat.
+    var proyecto = cuerpo.Proyecto?.Trim() ?? "";
+    if (!System.Text.RegularExpressions.Regex.IsMatch(proyecto, "^[A-Za-z0-9._-]{1,60}$"))
+    {
+        return Results.BadRequest(new { code = "nombre_invalido", message = "el nombre del proyecto va sin espacios: letras, números, guiones o puntos" });
+    }
+    var pliego = cuerpo.Pliego?.Trim() ?? "";
+    if (pliego.Length < 20)
+    {
+        return Results.BadRequest(new { code = "pliego_corto", message = "contá un poco más qué hay que hacer" });
+    }
+
+    // Sin chequear que el proyecto sea de la persona, y no es un olvido: el
+    // bridge solo encuentra los proyectos de ESTE usuario (y si no hay uno con
+    // ese nombre, lo crea a su nombre).
+    try
+    {
+        var r = await bridge.DesarrolloAsync(usuarioId, cuerpo with { Proyecto = proyecto, Pliego = pliego }, ct);
+        return r.Ok
+            ? Results.Ok(new { corridaId = r.CorridaId })
+            : Results.Json(new { code = "no_abierta", message = r.Motivo }, statusCode: StatusCodes.Status409Conflict);
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        app.Logger.LogError(ex, "no se pudo abrir la corrida de {Proyecto}", proyecto);
+        return Results.Json(
+            new { code = ex is UpstreamException ? ex.Message : "corrida_fallo", message = "no se pudo abrir la corrida" },
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
 // --- aprobaciones ---------------------------------------------------------
 
 api.MapPost("/aprobaciones/{id}/decision", async (

@@ -470,6 +470,31 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         f.Bridge.Turnos.Clear();
     }
 
+    /// <summary>
+    /// Desarrollo abre una corrida con el pliego; un nombre con espacios no
+    /// pasa (caería en el proyecto activo del chat) y el "no" del bridge
+    /// llega con su motivo.
+    /// </summary>
+    [Fact]
+    public async Task DesarrolloAbreUnaCorridaYValidaElNombre()
+    {
+        var ok = await Cliente().PostAsJsonAsync("/api/corridas",
+            new { proyecto = "vete", pliego = "Una veterinaria con turnos y fichas de mascotas" });
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        Assert.Equal("vete", f.Bridge.Desarrollos[^1].Cuerpo.Proyecto);
+
+        var malo = await Cliente().PostAsJsonAsync("/api/corridas",
+            new { proyecto = "mi vete", pliego = "Una veterinaria con turnos y fichas de mascotas" });
+        Assert.Equal(HttpStatusCode.BadRequest, malo.StatusCode);
+
+        f.Bridge.RespuestaDesarrollo = new(false, null, "necesitás Telegram vinculado");
+        var no = await Cliente().PostAsJsonAsync("/api/corridas",
+            new { proyecto = "vete", pliego = "Una veterinaria con turnos y fichas de mascotas" });
+        Assert.Equal(HttpStatusCode.Conflict, no.StatusCode);
+        Assert.Contains("Telegram", await no.Content.ReadAsStringAsync());
+        f.Bridge.RespuestaDesarrollo = new(true, "c-1", null);
+    }
+
     // --- desvincular GitHub ---
 
     /// <summary>

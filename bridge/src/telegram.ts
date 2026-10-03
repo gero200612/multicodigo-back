@@ -1,4 +1,5 @@
 import { Bot, InlineKeyboard } from 'grammy';
+import { USO_DE_TICKET } from './ticket.js';
 import type { AgentId, ApprovalDecision, ApprovalRequest } from '@multicodigo/shared';
 import type { PipelineDeps, PipelineOutcome, LoCreado } from './pipeline.js';
 import {
@@ -164,6 +165,8 @@ ${cuerpo}`;
         'Sin numero, es la 1.',
       ].join('\n');
     }
+    case 'ticket_uso':
+      return `Para armar un ticket:\n<code>${escaparHtml(USO_DE_TICKET)}</code>\n\nVa al proyecto y al agente activos de este chat, y aparece en la Cola de tickets del panel.`;
     case 'sin_seguir': {
       const uso = outcome.comando === 'consulta' ? '/consulta 2 &lt;pregunta&gt;' : '/cambio 2 &lt;pedido&gt;';
       switch (outcome.motivo) {
@@ -968,6 +971,7 @@ const COMANDOS = [
   // Abajo de /cola a proposito: es la version larga de lo mismo, y quien no
   // sabe que existe la cola no tiene por que empezar por una corrida de ocho
   // horas.
+  { command: 'ticket', description: 'Armar un ticket: /ticket <título> y la descripción abajo' },
   { command: 'corrida', description: 'Dejarme trabajando toda la noche sobre un pliego' },
   { command: 'cancelar', description: 'Cortar lo que queda en la cola' },
   { command: 'reanudar', description: 'Seguir una corrida que se corto sin terminar' },

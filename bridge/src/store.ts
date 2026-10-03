@@ -638,6 +638,8 @@ export interface Store {
   slotsDeOtrosBots(): Promise<Set<string>>;
   /** El usuario del panel dueño de este chat, o undefined si no esta vinculado. */
   usuarioDeChat(chatId: number): Promise<string | undefined>;
+  /** Los chats de Telegram vinculados a una persona, el más viejo primero. */
+  chatsDeUsuario(usuarioId: string): Promise<number[]>;
   /**
    * Como llamar a un usuario delante de otra persona.
    *
@@ -1409,6 +1411,10 @@ export class InMemoryStore implements Store {
 
   async usuarioDeChat(chatId: number): Promise<string | undefined> {
     return this.vinculos.get(chatId);
+  }
+
+  async chatsDeUsuario(usuarioId: string): Promise<number[]> {
+    return [...this.vinculos.entries()].filter(([, u]) => u === usuarioId).map(([c]) => c);
   }
 
   async desvincularChat(chatId: number, usuarioId: string): Promise<boolean> {
@@ -2617,6 +2623,14 @@ export class PgStore implements Store {
     return new Map(
       r.rows.map((f) => [f.slot, { resets: f.resets ?? undefined, vistoEn: f.visto_en }]),
     );
+  }
+
+  async chatsDeUsuario(usuarioId: string): Promise<number[]> {
+    const r = await this.pool.query<{ chat_id: string | number }>(
+      'SELECT chat_id FROM telegram_vinculos WHERE usuario_id = $1 ORDER BY vinculado_en ASC',
+      [usuarioId],
+    );
+    return r.rows.map((f) => Number(f.chat_id));
   }
 
   async usuarioDeChat(chatId: number): Promise<string | undefined> {

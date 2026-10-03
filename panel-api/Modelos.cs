@@ -265,6 +265,22 @@ public sealed record CuerpoTurno(
     [property: JsonPropertyName("prompt")] string? Prompt,
     [property: JsonPropertyName("modo")] string? Modo = null);
 
+/// <summary>
+/// Desarrollo desde el panel: un pliego que se abre como corrida (ver
+/// <c>abrirDesarrollo</c> en el bridge). El proyecto puede ser nuevo o uno
+/// existente de la persona.
+/// </summary>
+public sealed record CuerpoDesarrollo(
+    [property: JsonPropertyName("proyecto")] string? Proyecto,
+    [property: JsonPropertyName("pliego")] string? Pliego,
+    [property: JsonPropertyName("repos")] List<string>? Repos = null,
+    [property: JsonPropertyName("referencia")] List<string>? Referencia = null,
+    [property: JsonPropertyName("org")] string? Org = null,
+    [property: JsonPropertyName("publico")] bool? Publico = null);
+
+/// <summary>Si se abrió la corrida, o por qué no (el motivo ya viene en castellano).</summary>
+public sealed record ResultadoDesarrollo(bool Ok, string? CorridaId, string? Motivo);
+
 public sealed record RespuestaTurno(
     [property: JsonPropertyName("jobId")] string JobId,
     [property: JsonPropertyName("texto")] string Texto);

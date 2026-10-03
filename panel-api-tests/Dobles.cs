@@ -400,6 +400,17 @@ public sealed class BridgeFalso : IBridgeClient
         return Task.FromResult(new RespuestaTurno("11111111-1111-4111-8111-111111111111", TextoQueDevuelve));
     }
 
+    /// <summary>Los pedidos de Desarrollo que llegaron, y qué contestar.</summary>
+    public List<(string UsuarioId, CuerpoDesarrollo Cuerpo)> Desarrollos { get; } = [];
+    public ResultadoDesarrollo RespuestaDesarrollo { get; set; } = new(true, "c-1", null);
+
+    public Task<ResultadoDesarrollo> DesarrolloAsync(
+        string usuarioId, CuerpoDesarrollo cuerpo, CancellationToken ct = default)
+    {
+        Desarrollos.Add((usuarioId, cuerpo));
+        return Task.FromResult(RespuestaDesarrollo);
+    }
+
     public Task CanjearVinculoAsync(string codigo, string usuarioId, CancellationToken ct = default)
     {
         if (Falla) throw new HttpRequestException("bridge caído");
