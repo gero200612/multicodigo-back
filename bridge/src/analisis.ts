@@ -150,6 +150,8 @@ export async function guardarAnalisis(
     titulo: string;
     resumen: string;
     secciones: SeccionDeAnalisis[];
+    /** El turno que lo pidió: va en el nombre para atar el PDF a su ticket. */
+    jobId?: string;
     ahora?: Date;
   },
   deps: DepsDeAnalisis,
@@ -173,7 +175,9 @@ export async function guardarAnalisis(
   }
 
   const pdf = await armarPdf({ ...entrada, fecha: ahora }, imagenes);
-  const nombre = nombreConSello(`analisis-funcional-${entrada.titulo}`, 'pdf', ahora);
+  // `j` + 8 del jobId: Actividad lo busca así para mostrarlo en su ticket.
+  const marca = entrada.jobId ? `j${entrada.jobId.replace(/-/g, '').slice(0, 8)}-` : '';
+  const nombre = nombreConSello(`analisis-funcional-${marca}${entrada.titulo}`, 'pdf', ahora);
   const ruta = `${entrada.proyectoId}/${nombre}`;
   await escribir(ruta, pdf, deps);
 

@@ -77,10 +77,15 @@ describe('análisis funcional', () => {
       d,
     );
     expect(r.nombre).toMatch(/^analisis-funcional-Exportar-ventas-a-Excel-\d+\.pdf$/);
+    const conJob = await guardarAnalisis(
+      { proyectoId: PROYECTO, usuarioId: USUARIO, proyecto: 'x', titulo: 'T', resumen: 'r', jobId: 'abcd1234-5678-4abc-8def-111111111111', secciones: [{ titulo: 's', texto: 't' }] },
+      d,
+    );
+    expect(conJob.nombre).toMatch(/^analisis-funcional-jabcd1234-T-\d+\.pdf$/);
     expect(r.faltantes).toEqual(['no-existe.png']);
     const pdf = disco.get(`/srv/docs/${PROYECTO}/${r.nombre}`)!;
     expect(Buffer.from(pdf.slice(0, 5)).toString()).toBe('%PDF-');
-    expect(filas.at(-1)).toMatchObject({ tipo: 'pdf', origen: 'agente', carpeta: 'Análisis funcional (Sincro Resto)' });
+    expect(filas.find((f) => f.nombre === r.nombre)).toMatchObject({ tipo: 'pdf', origen: 'agente', carpeta: 'Análisis funcional (Sincro Resto)' });
     expect(disco.has(`/srv/docs/${PROYECTO}/${r.nombre}.md`)).toBe(true);
   });
 

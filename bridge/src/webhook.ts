@@ -87,6 +87,7 @@ export interface ApiDeps {
     titulo: string;
     resumen: string;
     secciones: { titulo: string; texto: string; capturas?: string[] }[];
+    jobId?: string;
   }) => Promise<{ nombre: string; bytes: number; faltantes: string[] }>;
   nombreDeProyecto?: (proyectoId: string) => Promise<string | undefined>;
   /**
