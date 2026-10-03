@@ -686,7 +686,8 @@ public sealed record EstadoGoogle(bool Conectada, string? Email);
 /// logueado.
 /// </summary>
 /// <summary>Un repo vinculado a un proyecto.</summary>
-public sealed record Repo(string Nombre, string GithubRepo);
+/// <summary>`SoloLectura`: un repo de referencia; el panel no escribe en él.</summary>
+public sealed record Repo(string Nombre, string GithubRepo, bool SoloLectura = false);
 
 /// <summary>
 /// Los repos de cada proyecto, en Supabase.
@@ -808,7 +809,7 @@ public sealed class InstalacionesClient(
 public sealed class ReposClient(HttpClient http, string anonKey, ILogger<ReposClient> log)
     : IReposClient
 {
-    private sealed record Fila(string Nombre, string GithubRepo);
+    private sealed record Fila(string Nombre, string GithubRepo, bool? SoloLectura = null);
 
     private HttpRequestMessage Pedido(HttpMethod metodo, string url, string jwt)
     {
@@ -824,7 +825,7 @@ public sealed class ReposClient(HttpClient http, string anonKey, ILogger<ReposCl
         // Orden explícito: sin esto PostgREST devuelve las filas en el orden que
         // le convenga y la lista de la pantalla salta de lugar entre recargas.
         var url = $"/rest/v1/repos?proyecto_id=eq.{proyectoId}"
-                + "&select=nombre,github_repo&order=nombre";
+                + "&select=nombre,github_repo,solo_lectura&order=nombre";
         var res = await http.SendAsync(Pedido(HttpMethod.Get, url, jwt), ct);
         if (!res.IsSuccessStatusCode)
         {
@@ -832,7 +833,7 @@ public sealed class ReposClient(HttpClient http, string anonKey, ILogger<ReposCl
             return [];
         }
         var filas = await res.Content.ReadFromJsonAsync<List<Fila>>(Json.Supabase, ct);
-        return [.. (filas ?? []).Select(f => new Repo(f.Nombre, f.GithubRepo))];
+        return [.. (filas ?? []).Select(f => new Repo(f.Nombre, f.GithubRepo, f.SoloLectura ?? false))];
     }
 
     public async Task VincularAsync(

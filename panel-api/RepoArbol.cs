@@ -42,6 +42,14 @@ public interface IRepoArbolClient
     Task<byte[]?> ArchivoAsync(
         string jwt, string proyectoId, string fullName, string ruta,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Crea o reemplaza un archivo en la rama por defecto, con un commit.
+    /// Devuelve el sha del commit.
+    /// </summary>
+    Task<string> SubirAsync(
+        string jwt, string proyectoId, string fullName, string ruta, byte[] contenido,
+        string mensaje, CancellationToken ct = default);
 }
 
 /// <remarks>
@@ -204,5 +212,51 @@ public sealed class RepoArbolClient(
         if (res.Content.Headers.ContentLength > MaximoBytesDeArchivo) return null;
 
         return await res.Content.ReadAsByteArrayAsync(ct);
+    }
+
+    /// <summary>
+    /// Lo que deja subir el panel por archivo. La API de contenidos acepta más,
+    /// pero un repo no es un depósito de binarios grandes.
+    /// </summary>
+    public const int MaximoBytesASubir = 10 * 1024 * 1024;
+
+    public async Task<string> SubirAsync(
+        string jwt, string proyectoId, string fullName, string ruta, byte[] contenido,
+        string mensaje, CancellationToken ct = default)
+    {
+        if (!RutaValida(ruta)) throw new UpstreamException("ruta_invalida");
+        if (contenido.Length > MaximoBytesASubir) throw new UpstreamException("muy_grande");
+        var token = await TokenAsync(jwt, proyectoId, ct);
+        var url = $"https://api.github.com/repos/{fullName}/contents/{Uri.EscapeDataString(ruta).Replace("%2F", "/")}";
+
+        // Si ya existe hay que mandar su sha: sin él GitHub contesta 422 en vez
+        // de reemplazarlo.
+        string? sha = null;
+        using (var previo = Pedido(HttpMethod.Get, url, token))
+        using (var res = await http.SendAsync(previo, ct))
+        {
+            if (res.IsSuccessStatusCode)
+            {
+                var cuerpo = await res.Content.ReadFromJsonAsync<JsonElement>(ct);
+                if (cuerpo.ValueKind == JsonValueKind.Object && cuerpo.TryGetProperty("sha", out var s)) sha = s.GetString();
+            }
+        }
+
+        using var pedido = Pedido(HttpMethod.Put, url, token);
+        pedido.Content = JsonContent.Create(new Dictionary<string, string?>
+        {
+            ["message"] = mensaje,
+            ["content"] = Convert.ToBase64String(contenido),
+            ["sha"] = sha,
+        }.Where(kv => kv.Value is not null).ToDictionary(kv => kv.Key, kv => kv.Value));
+
+        using var put = await http.SendAsync(pedido, ct);
+        if (!put.IsSuccessStatusCode)
+        {
+            log.LogWarning("github respondio {Codigo} al subir {Ruta} a {Repo}", (int)put.StatusCode, ruta, fullName);
+            throw new UpstreamException($"github_{(int)put.StatusCode}");
+        }
+        var hecho = await put.Content.ReadFromJsonAsync<JsonElement>(ct);
+        return hecho.TryGetProperty("commit", out var c) && c.TryGetProperty("sha", out var cs) ? cs.GetString() ?? "" : "";
     }
 }

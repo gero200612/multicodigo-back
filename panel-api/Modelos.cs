@@ -262,3 +262,6 @@ public sealed record CuerpoTurno(
 public sealed record RespuestaTurno(
     [property: JsonPropertyName("jobId")] string JobId,
     [property: JsonPropertyName("texto")] string Texto);
+
+/// <summary>El cuerpo de "carpeta nueva" en un repo.</summary>
+public sealed record CarpetaNueva(string? Ruta);

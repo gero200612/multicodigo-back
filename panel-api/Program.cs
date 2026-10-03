@@ -1080,6 +1080,11 @@ api.MapPost("/proyectos/{proyectoId}/documentos", async (
     {
         return Results.BadRequest(new { code = "sin_archivo", message = "falta el archivo" });
     }
+    var carpetaDelDoc = form["carpeta"].ToString().Trim().Trim('/');
+    if (!Documentos.CarpetaValida(carpetaDelDoc))
+    {
+        return Results.BadRequest(new { code = "carpeta_invalida", message = "esa carpeta no es válida" });
+    }
     if (archivo.Length > Documentos.MaximoBytes)
     {
         return Results.BadRequest(new
@@ -1125,7 +1130,7 @@ api.MapPost("/proyectos/{proyectoId}/documentos", async (
         // a prueba del próximo parámetro que se agregue.
         var doc = await documentos.SubirAsync(
             jwt, proyectoId, nombre, archivo.FileName, tipo, datos,
-            conversion.Texto, conversion.Error, ct: ct);
+            conversion.Texto, conversion.Error, ct: ct, carpeta: carpetaDelDoc);
         // 200 aunque la conversion falle: el documento se guardo y el `error`
         // viaja adentro para que la pantalla lo muestre al lado del archivo. Un
         // 400 aca haria perder el original que la persona ya subio.
@@ -1542,8 +1547,8 @@ api.MapPost("/proyectos/{proyectoId}/github/repos", async (
 /// recrea por turno— y vive en la maquina de los agentes, que este proceso no
 /// monta. Ademas un proyecto puede no tener ningun slot prendido.
 ///
-/// SOLO LECTURA. Escribir en un repo es trabajo del agente, con aprobacion y
-/// commit; un boton de guardar aca seria un camino que se saltea todo eso.
+/// Leer es libre; escribir va por los endpoints de `/archivos` y `/carpetas`
+/// de abajo, que hacen un commit por archivo y nunca tocan una referencia.
 ///
 /// El repo se pide por su NOMBRE corto y el `full_name` sale de la fila del
 /// proyecto. Eso NO es cosmetico: la instalacion de la App puede dar acceso a
@@ -1622,6 +1627,122 @@ api.MapGet("/proyectos/{proyectoId}/repos/{nombre}/archivo", async (
     catch (UpstreamException ex)
     {
         return Results.Conflict(new { code = ex.Message, message = "no se pudo leer el archivo" });
+    }
+});
+
+
+/// Subir archivos a un repo, a mano, desde Archivos.
+///
+/// Cada archivo es un commit en la rama por defecto, con la identidad de la
+/// GitHub App y el usuario en el mensaje. Los repos de referencia (solo
+/// lectura) no se tocan. El repo se resuelve por nombre corto contra los repos
+/// del proyecto, igual que el árbol: así no se escribe en otro repo de la
+/// instalación.
+api.MapPost("/proyectos/{proyectoId}/repos/{nombre}/archivos", async (
+    string proyectoId, string nombre, HttpContext ctx, IProyectosClient proyectos,
+    IReposClient repos, IRepoArbolClient arbol, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    var repo = (await repos.DeProyectoAsync(jwt, proyectoId, ct)).FirstOrDefault(r => r.Nombre == nombre);
+    if (repo is null)
+    {
+        return Results.NotFound(new { code = "no_esta", message = "ese repo no es de este proyecto" });
+    }
+    if (repo.SoloLectura)
+    {
+        return Results.Json(new { code = "solo_lectura", message = "es un repo de referencia: no se escribe en él" }, statusCode: 403);
+    }
+    if (!ctx.Request.HasFormContentType)
+    {
+        return Results.BadRequest(new { code = "sin_archivo", message = "faltan los archivos" });
+    }
+
+    var form = await ctx.Request.ReadFormAsync(ct);
+    var carpeta = (form["carpeta"].ToString() ?? "").Trim().Trim('/');
+    if (carpeta.Length > 0 && !RepoArbolClient.RutaValida(carpeta))
+    {
+        return Results.BadRequest(new { code = "ruta_invalida", message = "esa carpeta no es válida" });
+    }
+    if (form.Files.Count == 0)
+    {
+        return Results.BadRequest(new { code = "sin_archivo", message = "faltan los archivos" });
+    }
+    if (form.Files.Count > 20)
+    {
+        return Results.BadRequest(new { code = "muchos", message = "de a 20 archivos como máximo" });
+    }
+
+    var quien = ctx.User.FindFirst("email")?.Value ?? "alguien";
+    var subidos = new List<string>();
+    var fallidos = new List<object>();
+    foreach (var archivo in form.Files)
+    {
+        var nombreArchivo = Path.GetFileName(archivo.FileName);
+        var ruta = carpeta.Length > 0 ? $"{carpeta}/{nombreArchivo}" : nombreArchivo;
+        if (!RepoArbolClient.RutaValida(ruta) || archivo.Length == 0)
+        {
+            fallidos.Add(new { archivo = nombreArchivo, motivo = "ruta_invalida" });
+            continue;
+        }
+        if (archivo.Length > RepoArbolClient.MaximoBytesASubir)
+        {
+            fallidos.Add(new { archivo = nombreArchivo, motivo = "muy_grande" });
+            continue;
+        }
+        using var ms = new MemoryStream();
+        await archivo.CopyToAsync(ms, ct);
+        try
+        {
+            await arbol.SubirAsync(jwt, proyectoId, repo.GithubRepo, ruta, ms.ToArray(),
+                $"Subido desde el panel: {ruta} ({quien})", ct);
+            subidos.Add(ruta);
+        }
+        catch (UpstreamException ex)
+        {
+            fallidos.Add(new { archivo = nombreArchivo, motivo = ex.Message });
+        }
+    }
+    return Results.Ok(new { subidos, fallidos });
+}).DisableAntiforgery();
+
+/// Una carpeta nueva en un repo. Git no guarda carpetas vacías, así que se
+/// crea con un `.gitkeep` adentro.
+api.MapPost("/proyectos/{proyectoId}/repos/{nombre}/carpetas", async (
+    string proyectoId, string nombre, CarpetaNueva cuerpo, HttpContext ctx, IProyectosClient proyectos,
+    IReposClient repos, IRepoArbolClient arbol, CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    var repo = (await repos.DeProyectoAsync(jwt, proyectoId, ct)).FirstOrDefault(r => r.Nombre == nombre);
+    if (repo is null)
+    {
+        return Results.NotFound(new { code = "no_esta", message = "ese repo no es de este proyecto" });
+    }
+    if (repo.SoloLectura)
+    {
+        return Results.Json(new { code = "solo_lectura", message = "es un repo de referencia: no se escribe en él" }, statusCode: 403);
+    }
+    var ruta = (cuerpo.Ruta ?? "").Trim().Trim('/');
+    if (!RepoArbolClient.RutaValida(ruta))
+    {
+        return Results.BadRequest(new { code = "ruta_invalida", message = "ese nombre de carpeta no es válido" });
+    }
+    try
+    {
+        await arbol.SubirAsync(jwt, proyectoId, repo.GithubRepo, $"{ruta}/.gitkeep", [],
+            $"Carpeta nueva desde el panel: {ruta} ({ctx.User.FindFirst("email")?.Value ?? "alguien"})", ct);
+        return Results.Ok(new { ruta });
+    }
+    catch (UpstreamException ex)
+    {
+        return Results.Conflict(new { code = ex.Message, message = "no se pudo crear la carpeta" });
     }
 });
 

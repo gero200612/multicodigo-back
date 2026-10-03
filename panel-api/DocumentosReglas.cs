@@ -104,6 +104,23 @@ public static partial class Documentos
     /// original se guarda aparte, con sus espacios y acentos, para mostrarlo y
     /// para que la descarga conserve lo que la persona reconoce.
     /// </summary>
+    /// <summary>
+    /// Una carpeta de Archivos: `a/b`, con letras (acentos incluidos),
+    /// números, espacios y `._-()`. Sin `..`, sin barra al principio ni al
+    /// final, hasta 150 caracteres. Vacía es la raíz.
+    /// </summary>
+    public static bool CarpetaValida(string? carpeta)
+    {
+        if (string.IsNullOrEmpty(carpeta)) return true;
+        if (carpeta.Length > 150) return false;
+        foreach (var seg in carpeta.Split('/'))
+        {
+            if (seg.Trim().Length == 0 || seg is "." or "..") return false;
+            if (!seg.All(c => char.IsLetterOrDigit(c) || c is ' ' or '.' or '_' or '-' or '(' or ')')) return false;
+        }
+        return true;
+    }
+
     public static string NombreDeArchivo(string nombreOriginal, string tipo)
     {
         // `GetFileName` descarta cualquier ruta. Es REDUNDANTE con la lista blanca

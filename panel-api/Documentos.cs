@@ -27,7 +27,12 @@ public sealed record Documento(
     /// </summary>
     [property: JsonPropertyName("origen")] string Origen = "panel",
     /// <summary>Cuándo se guardó. Para ordenar por lo último primero.</summary>
-    [property: JsonPropertyName("creadoEn")] string? CreadoEn = null);
+    [property: JsonPropertyName("creadoEn")] string? CreadoEn = null,
+    /// <summary>
+    /// La carpeta en Archivos, como `a/b`; vacía es la raíz. Es solo
+    /// organización: en el disco y en el `_docs` del agente siguen planos.
+    /// </summary>
+    [property: JsonPropertyName("carpeta")] string Carpeta = "");
 
 /// <summary>Lo que viaja con el turno: el nombre y de dónde bajarlo.</summary>
 /// <summary>
@@ -76,7 +81,7 @@ public interface IDocumentosClient
     Task<Documento> SubirAsync(
         string jwt, string proyectoId, string nombre, string nombreOriginal, string tipo,
         byte[] datos, string? texto, string? error, bool esInstruccion = false,
-        CancellationToken ct = default);
+        CancellationToken ct = default, string carpeta = "");
 
     Task BorrarAsync(string jwt, string proyectoId, string nombre, CancellationToken ct = default);
 
@@ -120,7 +125,7 @@ public sealed class DocumentosClient(
     private sealed record Fila(
         string Id, string Nombre, string NombreOriginal, string Tipo, long Bytes,
         string? Error, string Ruta, string? RutaTexto, bool EsInstruccion = false,
-        string Origen = "panel", string? CreadoEn = null);
+        string Origen = "panel", string? CreadoEn = null, string? Carpeta = null);
 
     private HttpRequestMessage Pedido(HttpMethod metodo, string url, string jwt)
     {
@@ -132,7 +137,7 @@ public sealed class DocumentosClient(
 
     private const string Columnas =
         "select=id,nombre,nombre_original,tipo,bytes,error,ruta,ruta_texto,es_instruccion," +
-        "origen,creado_en&order=nombre";
+        "origen,creado_en,carpeta&order=nombre";
 
     private async Task<List<Fila>> FilasAsync(string jwt, string proyectoId, CancellationToken ct)
     {
@@ -158,7 +163,7 @@ public sealed class DocumentosClient(
                 .Where(f => !f.EsInstruccion)
                 .Select(f => new Documento(
                     f.Id, f.Nombre, f.NombreOriginal, f.Tipo, f.Bytes, f.Error,
-                    EsInstruccion: false, Origen: f.Origen, CreadoEn: f.CreadoEn))];
+                    EsInstruccion: false, Origen: f.Origen, CreadoEn: f.CreadoEn, Carpeta: f.Carpeta ?? ""))];
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -192,7 +197,7 @@ public sealed class DocumentosClient(
     public async Task<Documento> SubirAsync(
         string jwt, string proyectoId, string nombre, string nombreOriginal, string tipo,
         byte[] datos, string? texto, string? error, bool esInstruccion = false,
-        CancellationToken ct = default)
+        CancellationToken ct = default, string carpeta = "")
     {
         var ruta = $"{proyectoId}/{nombre}";
         await GuardarArchivoAsync(jwt, ruta, datos, ct);
@@ -224,6 +229,7 @@ public sealed class DocumentosClient(
                 bytes = datos.LongLength,
                 error,
                 es_instruccion = esInstruccion,
+                carpeta,
             },
             options: Json.Opciones);
 

@@ -153,11 +153,11 @@ public sealed class DocumentosFalso : IDocumentosClient
     public Task<Documento> SubirAsync(
         string jwt, string proyectoId, string nombre, string nombreOriginal, string tipo,
         byte[] datos, string? texto, string? error, bool esInstruccion = false,
-        CancellationToken ct = default)
+        CancellationToken ct = default, string carpeta = "")
     {
         Subidos.Add((nombre, texto, error));
         var doc = new Documento(
-            "id", nombre, nombreOriginal, tipo, datos.LongLength, error, esInstruccion);
+            "id", nombre, nombreOriginal, tipo, datos.LongLength, error, esInstruccion, Carpeta: carpeta);
         Filas.Add(doc);
         return Task.FromResult(doc);
     }
@@ -549,5 +549,17 @@ public sealed class ArbolFalso : IRepoArbolClient
         Pedidos.Add(fullName);
         return Task.FromResult<byte[]?>(
             System.Text.Encoding.UTF8.GetBytes($"contenido de {ruta} en {fullName}"));
+    }
+
+    /// <summary>Lo que se subió: (full_name, ruta, bytes, mensaje).</summary>
+    public List<(string Repo, string Ruta, int Bytes, string Mensaje)> Subidos { get; } = [];
+
+    public Task<string> SubirAsync(
+        string jwt, string proyectoId, string fullName, string ruta, byte[] contenido,
+        string mensaje, CancellationToken ct = default)
+    {
+        if (Falla is not null) throw new UpstreamException(Falla);
+        Subidos.Add((fullName, ruta, contenido.Length, mensaje));
+        return Task.FromResult("sha-falso");
     }
 }
