@@ -135,6 +135,27 @@ public class PanoramaTests
     }
 
     /// <summary>
+    /// Las peticiones, igual que los agentes: solo las de mis slots. El bridge
+    /// devuelve las últimas de toda la máquina, con los prompts de otros.
+    /// </summary>
+    [Fact]
+    public async Task SoloSeVenLasPeticionesDeMisAgentes()
+    {
+        var (svc, g, _, b, _, a) = Armar();
+        g.Agentes = [new("c1", true, "ajeno"), new("c3", true, "mio")];
+        a.PorSlot.Clear();
+        a.PorSlot["c3"] = "33333333-3333-4333-8333-333333333333";
+        b.Jobs = [
+            new("j1", "c1", "ajeno", "secreto de otro", "running", "2026-10-03T00:00:00Z"),
+            new("j2", "c3", "mio", "lo mio", "running", "2026-10-03T00:00:00Z"),
+        ];
+
+        var p = await svc.VerAsync("jwt");
+
+        Assert.Equal(["j2"], p.Jobs.Select(j => j.Id).ToArray());
+    }
+
+    /// <summary>
     /// Sin ningún slot propio, la lista viene vacía y no completa.
     ///
     /// Es el caso de alguien recién invitado, y el que más importa: es

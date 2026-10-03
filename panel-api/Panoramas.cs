@@ -79,7 +79,12 @@ public sealed class PanoramaService(
         var slots = await Task.WhenAll(
             mios.Select(a => VerSlotAsync(jwt, a, porSlot, sinCuota, consumo, ct)));
 
-        return new Panorama(slots, cola, jobs, corridas);
+        // Las peticiones, con el mismo filtro que los agentes: el bridge devuelve
+        // las últimas de TODA la máquina, y sin esto "Te está esperando" y el
+        // contador mostraban los prompts de otros usuarios.
+        var misJobs = jobs.Where(j => porSlot.ContainsKey(j.Agent)).ToList();
+
+        return new Panorama(slots, cola, misJobs, corridas);
     }
 
     private async Task<SlotVista> VerSlotAsync(
