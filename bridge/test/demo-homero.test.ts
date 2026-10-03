@@ -16,7 +16,7 @@ async function vincular(store: Store, chatId: number): Promise<void> {
 
 describe('rutas de demos de Homero', () => {
   const demos = {
-    abrir: vi.fn(async (p: { proyecto: string }) =>
+    abrir: vi.fn(async (p: { proyecto?: string }) =>
       p.proyecto === 'ocupado'
         ? ({ ok: false, motivo: 'Punchi esta ocupado con la corrida de x' } as const)
         : ({ ok: true, corridaId: 'c-1' } as const),

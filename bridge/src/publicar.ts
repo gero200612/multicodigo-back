@@ -42,6 +42,8 @@ export interface PublicarDeps {
    * bug que esto arregla — el repo se salteaba en silencio.
    */
   tienePackageJson: (agent: string, project: string, repo: string) => Promise<boolean>;
+  /** Publica en la app elegida un repo que ya está en main. Ver `aDestino`. */
+  enDestino?: (repo: RepoDelProyecto) => Promise<{ ok: true; url: string } | { ok: false; motivo: string }>;
   usaSqlite?: (agent: string, project: string, repo: string) => Promise<boolean>;
   /**
    * Si el repo se puede ARRANCAR: si su `package.json` tiene script `start`.
@@ -282,7 +284,9 @@ export async function publicar(
     //
     // Se mira ANTES de inspeccionar los worktrees: es el chequeo mas barato de
     // los dos y ahorra una llamada al gateway por agente.
-    if (repo.render_service_id) {
+    // Un repo con app elegida se publica en ESA app (más abajo, después del
+    // merge), no en el Render del sistema.
+    if (repo.render_service_id && !repo.destino) {
       // Pero NO se saltea sin mas: hay que desplegar lo que la corrida acaba de
       // mergear. Los servicios se crean con `autoDeploy: 'no'` —con un repo
       // publico Render no se entera de los push— asi que saltear dejaria el
@@ -367,6 +371,16 @@ export async function publicar(
     // por un conflicto en la segunda rama seria castigar el trabajo que si
     // entro.
     if (mergeados.length === 0) continue;
+
+    // La app que eligió la persona para este repo (Render, Vercel, Netlify o
+    // Railway, con SU cuenta). Lo de abajo —start, Dockerfile, servicio en el
+    // Render del sistema— es el camino de los repos sin app elegida.
+    if (repo.destino && deps.enDestino) {
+      const r = await deps.enDestino(repo);
+      if (r.ok) publicados.push({ repo: repo.nombre, url: r.url });
+      else pendientes.push(r.motivo);
+      continue;
+    }
 
     // Y ANTES de crear nada: que el proyecto se pueda arrancar.
     //

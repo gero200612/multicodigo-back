@@ -188,6 +188,24 @@ export interface RepoDelProyecto {
    * habia forma de contestar "cual era el link" sin entrar al dashboard.
    */
   render_url: string | null;
+  /** Donde se publica: la app que eligio la persona. Ausente = como antes. */
+  destino?: Proveedor | null;
+  /** El id del lado del proveedor (servicio, proyecto, sitio). */
+  destino_id?: string | null;
+  destino_url?: string | null;
+}
+
+/** Las apps donde se puede publicar un repo. */
+export const PROVEEDORES = ['render', 'vercel', 'netlify', 'railway'] as const;
+export type Proveedor = (typeof PROVEEDORES)[number];
+
+/** Una conexion guardada: el token va CIFRADO (ver cifrado.ts). */
+export interface ConexionGuardada {
+  proveedor: Proveedor;
+  tokenCifrado: string;
+  extra: Record<string, string>;
+  cuenta: string | null;
+  creadoEn: string;
 }
 
 export const MODOS_PERMISO = ['preguntar', 'ediciones', 'todo'] as const;
@@ -567,6 +585,14 @@ export interface Store {
     soloLectura?: boolean,
     creadoPorElBot?: boolean,
   ): Promise<void>;
+  /** Las conexiones de despliegue de una persona. */
+  conexionesDeDespliegue(usuarioId: string): Promise<ConexionGuardada[]>;
+  guardarConexionDeDespliegue(usuarioId: string, c: Omit<ConexionGuardada, 'creadoEn'>): Promise<void>;
+  borrarConexionDeDespliegue(usuarioId: string, proveedor: Proveedor): Promise<void>;
+  /** Elige donde se publica un repo. Cambiarlo olvida el vinculo anterior. */
+  guardarDestino(proyectoId: string, repo: string, destino: Proveedor | null): Promise<void>;
+  /** El servicio/proyecto/sitio que se creo del lado del proveedor. */
+  guardarVinculoDeDestino(proyectoId: string, repo: string, id: string, url: string): Promise<void>;
   /** El servicio de Render ya creado para ese repo. Da idempotencia. */
   guardarRenderServiceId(
     proyectoId: string,
@@ -1319,6 +1345,38 @@ export class InMemoryStore implements Store {
   async conexionDeBaseDelJob(jobId: string): Promise<string | undefined> {
     const ctx = this.contextos.get(jobId);
     return ctx?.proyectoId ? this.conexiones.get(ctx.proyectoId) : undefined;
+  }
+
+  private readonly conexionesDespliegue = new Map<string, ConexionGuardada[]>();
+
+  async conexionesDeDespliegue(usuarioId: string): Promise<ConexionGuardada[]> {
+    return this.conexionesDespliegue.get(usuarioId) ?? [];
+  }
+
+  async guardarConexionDeDespliegue(usuarioId: string, c: Omit<ConexionGuardada, 'creadoEn'>): Promise<void> {
+    const otras = (this.conexionesDespliegue.get(usuarioId) ?? []).filter((x) => x.proveedor !== c.proveedor);
+    this.conexionesDespliegue.set(usuarioId, [...otras, { ...c, creadoEn: new Date().toISOString() }]);
+  }
+
+  async borrarConexionDeDespliegue(usuarioId: string, proveedor: Proveedor): Promise<void> {
+    this.conexionesDespliegue.set(
+      usuarioId,
+      (this.conexionesDespliegue.get(usuarioId) ?? []).filter((x) => x.proveedor !== proveedor),
+    );
+  }
+
+  async guardarDestino(proyectoId: string, repo: string, destino: Proveedor | null): Promise<void> {
+    const repos = this.reposPorProyecto.get(proyectoId) ?? [];
+    const i = repos.findIndex((x) => x.nombre === repo);
+    if (i >= 0 && repos[i]!.destino !== destino) {
+      repos[i] = { ...repos[i]!, destino, destino_id: null, destino_url: null };
+    }
+  }
+
+  async guardarVinculoDeDestino(proyectoId: string, repo: string, id: string, url: string): Promise<void> {
+    const repos = this.reposPorProyecto.get(proyectoId) ?? [];
+    const i = repos.findIndex((x) => x.nombre === repo);
+    if (i >= 0) repos[i] = { ...repos[i]!, destino_id: id, destino_url: url };
   }
 
   async guardarRenderServiceId(
@@ -2341,6 +2399,9 @@ export class PgStore implements Store {
         creado_por_el_bot: boolean;
         render_service_id: string | null;
         render_url: string | null;
+        destino: Proveedor | null;
+        destino_id: string | null;
+        destino_url: string | null;
       }>(
         // `COALESCE` en `solo_lectura` porque la columna es de la migracion
         // 024: contra una base que todavia no la corrio, el SELECT fallaria
@@ -2354,7 +2415,10 @@ export class PgStore implements Store {
         // repos —el link es una comodidad, los repos son el trabajo—.
         `SELECT nombre, github_repo, COALESCE(solo_lectura, false) solo_lectura,
                 creado_por_el_bot, render_service_id,
-                (to_jsonb(repos) ->> 'render_url') render_url
+                (to_jsonb(repos) ->> 'render_url') render_url,
+                (to_jsonb(repos) ->> 'destino') destino,
+                (to_jsonb(repos) ->> 'destino_id') destino_id,
+                (to_jsonb(repos) ->> 'destino_url') destino_url
            FROM repos WHERE proyecto_id = $1 ORDER BY nombre`,
         [proyectoId],
       );
@@ -2372,10 +2436,71 @@ export class PgStore implements Store {
         creado_por_el_bot: f.creado_por_el_bot,
         render_service_id: f.render_service_id,
         render_url: f.render_url,
+        destino: f.destino,
+        destino_id: f.destino_id,
+        destino_url: f.destino_url,
       }));
     } catch {
       return [];
     }
+  }
+
+  async conexionesDeDespliegue(usuarioId: string): Promise<ConexionGuardada[]> {
+    const r = await this.pool.query<{
+      proveedor: Proveedor;
+      token_cifrado: string;
+      extra: Record<string, string> | null;
+      cuenta: string | null;
+      creado_en: Date;
+    }>(
+      `SELECT proveedor, token_cifrado, extra, cuenta, creado_en
+         FROM conexiones_despliegue WHERE usuario_id = $1 ORDER BY proveedor`,
+      [usuarioId],
+    );
+    return r.rows.map((f) => ({
+      proveedor: f.proveedor,
+      tokenCifrado: f.token_cifrado,
+      extra: f.extra ?? {},
+      cuenta: f.cuenta,
+      creadoEn: f.creado_en.toISOString(),
+    }));
+  }
+
+  async guardarConexionDeDespliegue(usuarioId: string, c: Omit<ConexionGuardada, 'creadoEn'>): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO conexiones_despliegue (usuario_id, proveedor, token_cifrado, extra, cuenta)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (usuario_id, proveedor)
+       DO UPDATE SET token_cifrado = EXCLUDED.token_cifrado, extra = EXCLUDED.extra,
+                     cuenta = EXCLUDED.cuenta, creado_en = now()`,
+      [usuarioId, c.proveedor, c.tokenCifrado, JSON.stringify(c.extra), c.cuenta],
+    );
+  }
+
+  async borrarConexionDeDespliegue(usuarioId: string, proveedor: Proveedor): Promise<void> {
+    await this.pool.query('DELETE FROM conexiones_despliegue WHERE usuario_id = $1 AND proveedor = $2', [
+      usuarioId,
+      proveedor,
+    ]);
+  }
+
+  async guardarDestino(proyectoId: string, repo: string, destino: Proveedor | null): Promise<void> {
+    // Cambiar de app olvida el vinculo anterior: el id de un proyecto de Vercel
+    // no sirve en Netlify. Elegir la MISMA no lo borra.
+    await this.pool.query(
+      `UPDATE repos SET destino = $3,
+              destino_id = CASE WHEN destino IS DISTINCT FROM $3 THEN NULL ELSE destino_id END,
+              destino_url = CASE WHEN destino IS DISTINCT FROM $3 THEN NULL ELSE destino_url END
+        WHERE proyecto_id = $1 AND nombre = $2`,
+      [proyectoId, repo, destino],
+    );
+  }
+
+  async guardarVinculoDeDestino(proyectoId: string, repo: string, id: string, url: string): Promise<void> {
+    await this.pool.query(
+      'UPDATE repos SET destino_id = $3, destino_url = $4 WHERE proyecto_id = $1 AND nombre = $2',
+      [proyectoId, repo, id, url],
+    );
   }
 
   async guardarRenderServiceId(

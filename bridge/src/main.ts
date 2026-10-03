@@ -36,6 +36,9 @@ import {
 import { buildBot, retomarCorridas } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
 import { abrirDemo, abrirDesarrollo, estadoDeDemo } from './demo-homero.js';
+import { cifrar, claveDe } from './cifrado.js';
+import { verificar } from './proveedores.js';
+import { aDestino, publicarCambios, textoDePublicacion } from './publicar-ticket.js';
 import { partirParaTelegram } from './codigo.js';
 import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
@@ -156,6 +159,8 @@ const Env = z.object({
   RENDER_API_KEY: opcional(z.string().min(1)),
   RENDER_OWNER_ID: opcional(z.string().min(1)),
   GATEWAY_ADMIN_TOKEN: opcional(z.string().min(16)),
+  /** Con qué se cifran los tokens de Render/Vercel/Netlify/Railway. Sin ella, se deriva del BRIDGE_API_TOKEN. */
+  CONEXIONES_CLAVE: opcional(z.string().min(16)),
 });
 
 const env = Env.parse(process.env);
@@ -202,6 +207,7 @@ const MIGRACIONES = [
   '036_resultado.sql',
   '037_fichas.sql',
   '038_agentes_bot.sql',
+  '039_despliegue.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 
@@ -313,8 +319,11 @@ const pipelineDeps = {
    * `publicar()` quiere el id del proyecto y los agentes. Traducir aca deja al
    * pipeline sin tener que aprender de donde sale cada cosa.
    */
+  // Sin Render del sistema igual se publica: los repos con app elegida van a
+  // la cuenta de la persona. Sin GATEWAY_ADMIN_TOKEN no hay merge, y sin merge
+  // no hay nada que publicar.
   publicar:
-    env.RENDER_API_KEY && env.GATEWAY_ADMIN_TOKEN
+    env.GATEWAY_ADMIN_TOKEN
       ? async (corrida: Corrida, agentes: readonly string[]) => {
           const proyectoId = await store.idDeProyecto(corrida.proyecto);
           // Sin proyecto en la base no hay repos que publicar. Pasa cuando la
@@ -338,8 +347,17 @@ const pipelineDeps = {
                 })
               : undefined;
 
+          const usuarioDeLaCorrida = await store.usuarioDeChat(corrida.chatId);
+          const conexiones = usuarioDeLaCorrida
+            ? await store.conexionesDeDespliegue(usuarioDeLaCorrida).catch(() => [])
+            : [];
           return publicar(proyectoId, corrida.proyecto, agentes, {
             store,
+            enDestino: (repo) =>
+              aDestino(repo, conexiones, proyectoId, {
+                store,
+                clave: claveDe(env.CONEXIONES_CLAVE ?? env.BRIDGE_API_TOKEN),
+              }),
             render: { apiKey: env.RENDER_API_KEY, ownerId: env.RENDER_OWNER_ID },
             mergear: (req) => mergearEnGateway(req, githubToken, admin),
             // El `agent` viene de arriba y no se cierra aca: el worktree es de
@@ -579,10 +597,98 @@ const bot = buildBot(botDeps);
 
 await bot.init(); // necesario antes de handleUpdate cuando no se usa bot.start()
 
+/**
+ * El despliegue a la app de cada persona. Ver `publicar-ticket.ts`.
+ *
+ * El merge a main va por la puerta de admin del gateway, igual que el de las
+ * corridas: sin `GATEWAY_ADMIN_TOKEN` se puede conectar cuentas y elegir apps,
+ * pero publicar contesta que falta configurarlo.
+ */
+function despliegueDelPanel() {
+  const clave = claveDe(env.CONEXIONES_CLAVE ?? env.BRIDGE_API_TOKEN);
+  const esSuyo = async (usuarioId: string, proyectoId: string) =>
+    (await store.proyectosDeUsuario(usuarioId)).find((x) => x.id === proyectoId);
+
+  return {
+    conexiones: async (usuarioId: string) =>
+      (await store.conexionesDeDespliegue(usuarioId)).map((c) => ({
+        proveedor: c.proveedor,
+        cuenta: c.cuenta,
+        creadoEn: c.creadoEn,
+      })),
+    conectar: async (
+      usuarioId: string,
+      proveedor: Parameters<typeof verificar>[0],
+      token: string,
+      extra: Record<string, string>,
+    ) => {
+      const v = await verificar(proveedor, token, extra);
+      if (!v.ok) return v;
+      await store.guardarConexionDeDespliegue(usuarioId, {
+        proveedor,
+        tokenCifrado: cifrar(token, clave),
+        extra: v.extra,
+        cuenta: v.cuenta,
+      });
+      return { ok: true as const, cuenta: v.cuenta };
+    },
+    desconectar: (usuarioId: string, proveedor: Parameters<typeof verificar>[0]) =>
+      store.borrarConexionDeDespliegue(usuarioId, proveedor),
+    elegirDestino: async (
+      usuarioId: string,
+      proyectoId: string,
+      repo: string,
+      destino: Parameters<typeof verificar>[0] | null,
+    ) => {
+      if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'ese proyecto no es tuyo' };
+      if (!(await store.reposDeProyecto(proyectoId)).some((x) => x.nombre === repo)) {
+        return { ok: false as const, motivo: 'ese repo no está en el proyecto' };
+      }
+      await store.guardarDestino(proyectoId, repo, destino);
+      return { ok: true as const };
+    },
+    publicar: async (usuarioId: string, proyectoId: string, agente: string, explicito: boolean) => {
+      const proyecto = await esSuyo(usuarioId, proyectoId);
+      if (!proyecto) return { ok: false as const, motivo: 'ese proyecto no es tuyo' };
+      if (!env.GATEWAY_ADMIN_TOKEN) return { ok: false as const, motivo: 'este servidor no puede pasar ramas a main (falta GATEWAY_ADMIN_TOKEN)' };
+      const admin = { gatewayUrl: env.GATEWAY_URL, adminToken: env.GATEWAY_ADMIN_TOKEN };
+      const instalacion = await store.instalacionDeProyecto(proyectoId);
+      const githubToken =
+        instalacion !== undefined && env.PANEL_URL
+          ? await firmarToken(instalacion, { panelUrl: env.PANEL_URL, token: env.BRIDGE_API_TOKEN })
+          : undefined;
+      const resultado = await publicarCambios(
+        { usuarioId, proyectoId, proyecto: proyecto.nombre, agente, explicito },
+        {
+          store,
+          clave,
+          mergear: (req) => mergearEnGateway(req, githubToken, admin),
+          ...(env.RENDER_API_KEY
+            ? { renderDelSistema: { apiKey: env.RENDER_API_KEY, ...(env.RENDER_OWNER_ID ? { ownerId: env.RENDER_OWNER_ID } : {}) } }
+            : {}),
+        },
+      );
+      const texto = textoDePublicacion(resultado);
+      // La publicación automática no tiene a nadie mirando el panel: el
+      // resultado va al Telegram vinculado, si hay.
+      if (!explicito) {
+        const [chat] = await store.chatsDeUsuario(usuarioId).catch(() => [] as number[]);
+        if (chat !== undefined) {
+          await bot.api
+            .sendMessage(chat, `📦 ${proyecto.nombre}\n${texto}`)
+            .catch((err: unknown) => console.error('[bridge] no pude avisar la publicacion:', err));
+        }
+      }
+      return { ok: true as const, resultado, texto };
+    },
+  };
+}
+
 export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   store,
   apiToken: env.BRIDGE_API_TOKEN,
   // Las demos de Homero avisan en el chat de Punchi como cualquier corrida.
+  despliegue: despliegueDelPanel(),
   demos: {
     abrir: (p) =>
       abrirDemo(p, botDeps, async (html) => {

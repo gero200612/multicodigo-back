@@ -46,7 +46,7 @@ async function pedir(
  * ahi.
  */
 export async function mergearEnGateway(
-  req: { agent: string; project: string; repo: string; creadoPorElBot: boolean },
+  req: { agent: string; project: string; repo: string; creadoPorElBot: boolean; autorizadoPorPersona?: boolean },
   githubToken: string | undefined,
   deps: GatewayAdminDeps,
 ): Promise<{ ok: boolean; output: string }> {

@@ -10,6 +10,8 @@ import { EJES, sinRepetidas } from './corrida.js';
 import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
 import type { EstadoDeDemo, PedidoDeDemo, PedidoDeDesarrollo, ResultadoDeDemo } from './demo-homero.js';
+import type { ResultadoDePublicacion } from './publicar-ticket.js';
+import { PROVEEDORES, type Proveedor } from './store.js';
 
 /** Tope duro. Sin esto, un `?limit=` de la URL deja pedir la tabla entera. */
 const MAX_JOBS = 50;
@@ -128,6 +130,33 @@ export interface ApiDeps {
    * Las demos que pide Homero. Se inyectan porque abrir una necesita el bot
    * (para avisar en el chat) y el pipeline entero. Sin esto las rutas dan 503.
    */
+  /**
+   * Despliegue a la app de cada persona (Render, Vercel, Netlify, Railway).
+   * El panel ya validó el JWT; el bridge vuelve a mirar que el proyecto sea de
+   * esa persona. Sin esto las rutas dan 503. Ver `publicar-ticket.ts`.
+   */
+  despliegue?: {
+    conexiones: (usuarioId: string) => Promise<{ proveedor: string; cuenta: string | null; creadoEn: string }[]>;
+    conectar: (
+      usuarioId: string,
+      proveedor: Proveedor,
+      token: string,
+      extra: Record<string, string>,
+    ) => Promise<{ ok: true; cuenta: string } | { ok: false; motivo: string }>;
+    desconectar: (usuarioId: string, proveedor: Proveedor) => Promise<void>;
+    elegirDestino: (
+      usuarioId: string,
+      proyectoId: string,
+      repo: string,
+      destino: Proveedor | null,
+    ) => Promise<{ ok: true } | { ok: false; motivo: string }>;
+    publicar: (
+      usuarioId: string,
+      proyectoId: string,
+      agente: string,
+      explicito: boolean,
+    ) => Promise<{ ok: true; resultado: ResultadoDePublicacion; texto: string } | { ok: false; motivo: string }>;
+  };
   demos?: {
     abrir: (p: PedidoDeDemo) => Promise<ResultadoDeDemo>;
     estado: (chatId: number, corridaId: string) => Promise<EstadoDeDemo | undefined>;
@@ -145,6 +174,26 @@ const CuerpoDesarrollo = z.object({
   referencia: z.array(z.string().max(100)).max(10).optional(),
   org: z.string().max(100).optional(),
   publico: z.boolean().optional(),
+});
+
+const ProveedorZ = z.enum(PROVEEDORES);
+const CuerpoConectar = z.object({
+  usuarioId: z.string().uuid(),
+  proveedor: ProveedorZ,
+  token: z.string().min(8).max(500),
+  extra: z.record(z.string().max(100)).optional(),
+});
+const CuerpoDesconectar = z.object({ usuarioId: z.string().uuid(), proveedor: ProveedorZ });
+const CuerpoDestino = z.object({
+  usuarioId: z.string().uuid(),
+  proyectoId: z.string().uuid(),
+  repo: z.string().min(1).max(100),
+  destino: ProveedorZ.nullable(),
+});
+const CuerpoPublicar = z.object({
+  usuarioId: z.string().uuid(),
+  proyectoId: z.string().uuid(),
+  agente: AgentId,
 });
 
 const CuerpoDemo = z.object({
@@ -435,6 +484,9 @@ export function buildWebhookServer(
         // vale para este turno y nada más, y lo seguro no cambia —el gateway
         // solo pushea a `claude/<agente>/…`—. Ausente = el default del agente.
         modo: z.enum(['preguntar', 'ediciones', 'todo', 'desatendido']).nullish(),
+        // La persona apagó "preguntar antes de desplegar": al terminar bien, se
+        // publica solo (solo los repos que creó el bot, ver publicar-ticket.ts).
+        publicar: z.boolean().nullish(),
       });
 
       /**
@@ -458,12 +510,19 @@ export function buildWebhookServer(
         }
 
         try {
-          const { modo, ...resto } = cuerpo.data;
+          const { modo, publicar, ...resto } = cuerpo.data;
           const r = await ejecutarTurnoConRelevo(pipeline, {
             ...resto,
             ...(modo ? { modo } : {}),
             origen: 'panel',
           });
+          // Sin await: publicar tarda (merge + deploy) y el turno ya terminó.
+          // El resultado le llega por Telegram, ver `despliegue.publicar`.
+          if (publicar && api.despliegue) {
+            void api.despliegue
+              .publicar(resto.usuarioId, resto.proyectoId, r.agente, false)
+              .catch((err: unknown) => console.error('[bridge] no se pudo publicar solo:', err));
+          }
           return reply.send({ jobId: r.jobId, texto: r.texto });
         } catch (e) {
           // 502 y no 500: lo que fallo es el agente del otro lado, y el `code`
@@ -642,6 +701,56 @@ export function buildWebhookServer(
       // completa. Un `.min(1)` aca haria que la unica forma de terminar bien
       // fuera no llamar la herramienta, o sea lo mismo que fallar.
       huecos: z.array(z.string().min(1).max(2000)).max(50),
+    });
+
+    // --- despliegue ------------------------------------------------------
+    const conBearer = (request: { headers: { authorization?: string } }) =>
+      isTokenValid(request.headers.authorization, api.apiToken);
+
+    app.get<{ Querystring: { usuarioId?: string } }>('/interno/despliegue/conexiones', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
+      const u = z.string().uuid().safeParse(request.query.usuarioId);
+      if (!u.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta usuarioId' });
+      return reply.send({ conexiones: await api.despliegue.conexiones(u.data) });
+    });
+
+    app.put('/interno/despliegue/conexiones', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
+      const c = CuerpoConectar.safeParse(request.body);
+      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proveedor o el token' });
+      const r = await api.despliegue.conectar(c.data.usuarioId, c.data.proveedor, c.data.token.trim(), c.data.extra ?? {});
+      return r.ok ? reply.send({ cuenta: r.cuenta }) : reply.code(422).send({ code: 'token_invalido', message: r.motivo });
+    });
+
+    app.post('/interno/despliegue/desconectar', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
+      const c = CuerpoDesconectar.safeParse(request.body);
+      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proveedor' });
+      await api.despliegue.desconectar(c.data.usuarioId, c.data.proveedor);
+      return reply.send({ ok: true });
+    });
+
+    app.put('/interno/despliegue/destino', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
+      const c = CuerpoDestino.safeParse(request.body);
+      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el repo o la app' });
+      const r = await api.despliegue.elegirDestino(c.data.usuarioId, c.data.proyectoId, c.data.repo, c.data.destino);
+      return r.ok ? reply.send({ ok: true }) : reply.code(404).send({ code: 'no_existe', message: r.motivo });
+    });
+
+    app.post('/interno/despliegue/publicar', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
+      const c = CuerpoPublicar.safeParse(request.body);
+      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto o el agente' });
+      const r = await api.despliegue.publicar(c.data.usuarioId, c.data.proyectoId, c.data.agente, true);
+      return r.ok
+        ? reply.send({ ...r.resultado, texto: r.texto })
+        : reply.code(409).send({ code: 'no_publicado', message: r.motivo });
     });
 
     /**
