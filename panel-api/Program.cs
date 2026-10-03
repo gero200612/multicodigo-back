@@ -697,7 +697,7 @@ api.MapGet("/slots/bots", async (HttpContext ctx, IAgentesClient agentes, Cancel
 /// sacarle una cuenta a Punchi cambia con qué trabaja todo el equipo.
 api.MapPut("/slots/{slot}/bot", async (
     string slot, BotDelSlot cuerpo, HttpContext ctx, IAgentesClient agentes,
-    IProyectosClient proyectos, CancellationToken ct) =>
+    IProyectosClient proyectos, ILoginClient login, CancellationToken ct) =>
 {
     if (SlotInvalido(slot) is { } malo) return malo;
     var bot = cuerpo.Bot?.Trim().ToLowerInvariant() ?? "";
@@ -710,6 +710,26 @@ api.MapPut("/slots/{slot}/bot", async (
     if (proyectoId is null || await proyectos.RolDeAsync(jwt, proyectoId, ct) != "dueño")
     {
         return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+    var antes = (await agentes.BotsAsync(jwt, ct)).GetValueOrDefault(slot) ?? "punchi";
+    if (antes == bot) return Results.Ok(new { slot, bot });
+    try
+    {
+        // La credencial se mueve ANTES de anotar: si el login no puede, la
+        // base no queda diciendo algo que no pasó. Primero se devuelve la que
+        // tenía otro bot, después se cede al nuevo.
+        if (antes != "punchi")
+        {
+            await login.RecuperarAsync(slot, antes, ct);
+            antes = "punchi";
+            await agentes.AsignarBotAsync(jwt, slot, "punchi", ct);
+        }
+        if (bot != "punchi") await login.CederAsync(slot, bot, ct);
+    }
+    catch (UpstreamException ex)
+    {
+        app.Logger.LogWarning("no se pudo mover la cuenta de {Slot} a {Bot}: {Motivo}", slot, bot, ex.Message);
+        return Results.Conflict(new { code = "cuenta_no_movida", message = ex.Message });
     }
     try
     {

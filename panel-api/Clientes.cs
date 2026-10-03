@@ -88,6 +88,10 @@ public interface ILoginClient
     Task CodigoAsync(string slot, string code, CancellationToken ct = default);
     Task TokenAsync(string slot, string token, string account, CancellationToken ct = default);
     Task BorrarAsync(string slot, CancellationToken ct = default);
+    /// <summary>Mueve la credencial del slot al HOME del bot (homero, patan).</summary>
+    Task CederAsync(string slot, string bot, CancellationToken ct = default);
+    /// <summary>Se la devuelve al slot y repone la propia del bot.</summary>
+    Task RecuperarAsync(string slot, string bot, CancellationToken ct = default);
 }
 
 public interface IBridgeClient
@@ -410,6 +414,18 @@ public sealed class LoginClient(HttpClient http) : ILoginClient
     {
         using var cts = Topes.De(ct, 30);
         await LanzarSiFallo(await http.DeleteAsync($"/login/{slot}", cts.Token), cts.Token);
+    }
+
+    public async Task CederAsync(string slot, string bot, CancellationToken ct = default)
+    {
+        using var cts = Topes.De(ct, 30);
+        await LanzarSiFallo(await http.PostAsJsonAsync($"/cuentas/{slot}/ceder", new { bot }, cts.Token), cts.Token);
+    }
+
+    public async Task RecuperarAsync(string slot, string bot, CancellationToken ct = default)
+    {
+        using var cts = Topes.De(ct, 30);
+        await LanzarSiFallo(await http.PostAsJsonAsync($"/cuentas/{slot}/recuperar", new { bot }, cts.Token), cts.Token);
     }
 
     /// <summary>

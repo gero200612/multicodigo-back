@@ -33,6 +33,43 @@ public class BotDelSlotTests(PanelFactory f) : IClassFixture<PanelFactory>
     }
 
     [Fact]
+    public async Task AsignarAHomeroCedeLaCredencial()
+    {
+        f.Proyectos.Roles[ProyectoDeC1] = "dueño";
+        f.Agentes.Bots.Clear();
+        f.Login.Cesiones.Clear();
+        f.Login.FallaCeder = null;
+        await Cliente().PutAsJsonAsync("/api/slots/c1/bot", new { bot = "homero" });
+        Assert.Equal([("ceder", "c1", "homero")], f.Login.Cesiones);
+    }
+
+    [Fact]
+    public async Task DePatanAHomeroPrimeroDevuelveYDespuesCede()
+    {
+        f.Proyectos.Roles[ProyectoDeC1] = "dueño";
+        f.Agentes.Bots.Clear();
+        f.Agentes.Bots["c1"] = "patan";
+        f.Login.Cesiones.Clear();
+        f.Login.FallaCeder = null;
+        await Cliente().PutAsJsonAsync("/api/slots/c1/bot", new { bot = "homero" });
+        Assert.Equal([("recuperar", "c1", "patan"), ("ceder", "c1", "homero")], f.Login.Cesiones);
+        Assert.Equal("homero", f.Agentes.Bots["c1"]);
+    }
+
+    [Fact]
+    public async Task SiElLoginNoPuedeMoverlaNoSeAnota()
+    {
+        f.Proyectos.Roles[ProyectoDeC1] = "dueño";
+        f.Agentes.Bots.Clear();
+        f.Login.Cesiones.Clear();
+        f.Login.FallaCeder = "homero ya tiene la cuenta de c2";
+        var r = await Cliente().PutAsJsonAsync("/api/slots/c1/bot", new { bot = "homero" });
+        Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
+        Assert.False(f.Agentes.Bots.ContainsKey("c1"));
+        f.Login.FallaCeder = null;
+    }
+
+    [Fact]
     public async Task UnMiembroNoCambiaElBot()
     {
         f.Proyectos.Roles[ProyectoDeC1] = "miembro";

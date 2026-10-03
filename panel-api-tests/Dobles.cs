@@ -301,6 +301,24 @@ public sealed class AgentesFalso : IAgentesClient
 
 public sealed class LoginFalso : ILoginClient
 {
+    /// <summary>Lo que se movió: ("ceder"|"recuperar", slot, bot).</summary>
+    public List<(string Accion, string Slot, string Bot)> Cesiones { get; } = [];
+    /// <summary>Si no es null, ceder falla con este mensaje (p. ej. el bot ya tiene otra).</summary>
+    public string? FallaCeder { get; set; }
+
+    public Task CederAsync(string slot, string bot, CancellationToken ct = default)
+    {
+        if (FallaCeder is not null) throw new UpstreamException(FallaCeder);
+        Cesiones.Add(("ceder", slot, bot));
+        return Task.CompletedTask;
+    }
+
+    public Task RecuperarAsync(string slot, string bot, CancellationToken ct = default)
+    {
+        Cesiones.Add(("recuperar", slot, bot));
+        return Task.CompletedTask;
+    }
+
     public Dictionary<string, EstadoCredencial> Estados { get; } = [];
     public bool Falla { get; set; }
     public string Url { get; set; } = "https://claude.ai/oauth/x";

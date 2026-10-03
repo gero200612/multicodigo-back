@@ -1,43 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { cuentaDeClaude } from '../src/cuenta.js';
 import { pedirTexto } from '../src/ia.js';
 
-describe('cuenta de Claude asignada', () => {
-  it('usa el HOME del slot asignado si tiene credencial', async () => {
-    const c = cuentaDeClaude(async () => 'c3', { dir: '/srv/slots', existe: () => true });
-    expect((await c.home('homero'))?.split('\\').join('/')).toBe('/srv/slots/c3');
+describe('cuenta de Claude de cada bot', () => {
+  it('Homero usa siempre su HOME (ahí el login deja la cedida)', () => {
+    expect(cuentaDeClaude({ existe: () => true }).home('homero')).toBeUndefined();
   });
 
-  it('sin asignar, o sin credencial, sigue con la propia', async () => {
-    expect(await cuentaDeClaude(async () => undefined, { existe: () => true }).home('homero')).toBeUndefined();
-    expect(await cuentaDeClaude(async () => 'c3', { existe: () => false }).home('homero')).toBeUndefined();
+  it('Patán usa la suya si tiene credencial, si no la de Homero', () => {
+    expect(cuentaDeClaude({ homePatan: '/home/patan', existe: () => true }).home('patan')).toBe('/home/patan');
+    expect(cuentaDeClaude({ homePatan: '/home/patan', existe: () => false }).home('patan')).toBeUndefined();
   });
 
-  it('si la base falla, sigue con la propia', async () => {
-    const c = cuentaDeClaude(async () => { throw new Error('caida'); }, { existe: () => true });
-    expect(await c.home('homero')).toBeUndefined();
-  });
-
-  it('no arma rutas con un slot raro', async () => {
-    const existe = vi.fn(() => true);
-    expect(await cuentaDeClaude(async () => '../homero', { existe }).home('homero')).toBeUndefined();
-    expect(existe).not.toHaveBeenCalled();
-  });
-
-  it('pregunta a la base una vez por minuto como mucho', async () => {
-    let t = 0;
-    const buscar = vi.fn(async () => 'c3');
-    const c = cuentaDeClaude(buscar, { existe: () => true, ahora: () => t });
-    await c.home('homero');
-    t = 30_000;
-    await c.home('homero');
-    expect(buscar).toHaveBeenCalledTimes(1);
-    t = 61_000;
-    await c.home('homero');
-    expect(buscar).toHaveBeenCalledTimes(2);
-  });
-
-  it('pedirTexto pasa el HOME al SDK', async () => {
+  it('pedirTexto pasa el HOME al SDK solo si hay uno', async () => {
     let opciones: Record<string, unknown> = {};
     const query = (a: { prompt: string; options: Record<string, unknown> }) => {
       opciones = a.options;
@@ -45,8 +20,8 @@ describe('cuenta de Claude asignada', () => {
         yield { type: 'result', subtype: 'success', result: 'hola' };
       })();
     };
-    await pedirTexto('x', { sistema: 's', home: '/srv/slots/c3', query });
-    expect((opciones.env as Record<string, string>).HOME).toBe('/srv/slots/c3');
+    await pedirTexto('x', { sistema: 's', home: '/home/patan', query });
+    expect((opciones.env as Record<string, string>).HOME).toBe('/home/patan');
     await pedirTexto('x', { sistema: 's', query });
     expect(opciones.env).toBeUndefined();
   });

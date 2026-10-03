@@ -77,8 +77,8 @@ export interface OpcionesDeIa {
   sistema: string;
   modelo?: string;
   /**
-   * El HOME con la cuenta de Claude a usar (la de un agente asignado a este
-   * bot). Sin esto, el del proceso: la cuenta propia de Homero.
+   * El HOME con la cuenta de Claude a usar (la de Patán, si tiene una cedida).
+   * Sin esto, el del proceso: el de Homero.
    */
   home?: string;
   query?: QueryFn;

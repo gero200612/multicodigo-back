@@ -51,8 +51,9 @@ async function main() {
   const { bot, avisar, proponer, conectar, cambiarBotones } = crearBot(config, store);
 
   const aviso = (t: string) => avisar(t).catch((e) => console.error('[homero] no pude avisar:', e));
-  // La cuenta de Claude asignada desde el panel; sin asignar, la propia.
-  const cuenta = cuentaDeClaude((b) => store.slotDelBot(b));
+  // La cuenta de Claude de cada bot (ver cuenta.ts): Homero, su HOME; Patán,
+  // la suya si tiene una cedida, si no la de Homero.
+  const cuenta = cuentaDeClaude();
   const deps: DepsDeCola = {
     store,
     correo: correoGmail,
@@ -67,15 +68,9 @@ async function main() {
         console.error('[homero] no pude mandar la tarjeta:', e);
         return undefined;
       }),
-    pedirIa: async (prompt) =>
-      pedirTexto(prompt, { sistema: SISTEMA, modelo: config.modelo, home: await cuenta.home('homero') }),
-    // Patán usa la suya si tiene; si no, la de Homero.
-    pedirIaPatan: async (prompt) =>
-      pedirTexto(prompt, {
-        sistema: SISTEMA,
-        modelo: config.modelo,
-        home: (await cuenta.home('patan')) ?? (await cuenta.home('homero')),
-      }),
+    pedirIa: (prompt) => pedirTexto(prompt, { sistema: SISTEMA, modelo: config.modelo }),
+    pedirIaPatan: (prompt) =>
+      pedirTexto(prompt, { sistema: SISTEMA, modelo: config.modelo, home: cuenta.home('patan') }),
     fuente: config.placesKey ? fuenteGoogle(config.placesKey) : fuenteOsm,
     nombreDeFuente: config.placesKey ? 'google' : 'osm',
     leerSitio: (web) => leerSitio(web),
