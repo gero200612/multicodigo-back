@@ -80,6 +80,16 @@ public interface IAgentesClient
     /// <summary>Hasta cuándo está sin cuota cada slot. Sin entrada = tiene cuota.</summary>
     Task<IReadOnlyDictionary<string, string>> SinCuotaAsync(
         string jwt, CancellationToken ct = default);
+
+    /// <summary>
+    /// Borra la fila de `agentes` de ese slot en ese proyecto. No borra el
+    /// contenedor (lo decide el gateway) ni el historial de jobs/test_runs.
+    ///
+    /// Devuelve true si borró una fila. False si el slot no existe o no es de
+    /// ese proyecto — RLS hace que, para un usuario que no es miembro, sea lo
+    /// mismo que si no existiera.
+    /// </summary>
+    Task<bool> BorrarAsync(string jwt, string proyectoId, string slot, CancellationToken ct = default);
 }
 
 public interface ILoginClient
@@ -1456,6 +1466,36 @@ public sealed class AgentesClient(HttpClient http, string anonKey, ILogger<Agent
         {
             log.LogError(ex, "no se pudo anotar el agente {Slot}", slot);
             throw new UpstreamException("no se pudo anotar el agente");
+        }
+    }
+
+    public async Task<bool> BorrarAsync(
+        string jwt, string proyectoId, string slot, CancellationToken ct = default)
+    {
+        if (!Slot.EsValido(slot)) return false;
+        try
+        {
+            var url = $"/rest/v1/agentes?slot=eq.{slot}&proyecto_id=eq.{proyectoId}";
+            var req = new HttpRequestMessage(HttpMethod.Delete, url);
+            req.Headers.TryAddWithoutValidation("apikey", anonKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+            // return=representation para poder distinguir "borró una fila" de
+            // "no había ninguna": PostgREST contesta 204 en los dos casos si no
+            // se pide el cuerpo.
+            req.Headers.TryAddWithoutValidation("Prefer", "return=representation");
+            var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                log.LogError("no se pudo borrar el agente {Slot}: {Status}", slot, (int)res.StatusCode);
+                throw new UpstreamException("no se pudo borrar el agente");
+            }
+            var filas = await res.Content.ReadFromJsonAsync<List<FilaSlot>>(Json.Supabase, ct);
+            return (filas ?? []).Count > 0;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            log.LogError(ex, "no se pudo borrar el agente {Slot}", slot);
+            throw new UpstreamException("no se pudo borrar el agente");
         }
     }
 }

@@ -303,6 +303,20 @@ public sealed class AgentesFalso : IAgentesClient
         Registrados.Add((jwt, proyectoId, slot));
         return Task.CompletedTask;
     }
+
+    public List<(string Jwt, string ProyectoId, string Slot)> Borrados { get; } = [];
+    /// <summary>El slot válido pero no encontrado (o de otro proyecto): BorrarAsync devuelve false.</summary>
+    public bool NoEncontrado { get; set; }
+    /// <summary>El upstream (Supabase) falla: BorrarAsync tira UpstreamException.</summary>
+    public bool FallaBorrar { get; set; }
+
+    public Task<bool> BorrarAsync(string jwt, string proyectoId, string slot, CancellationToken ct = default)
+    {
+        if (FallaBorrar) throw new UpstreamException("no se pudo borrar el agente");
+        if (NoEncontrado) return Task.FromResult(false);
+        Borrados.Add((jwt, proyectoId, slot));
+        return Task.FromResult(true);
+    }
 }
 
 public sealed class LoginFalso : ILoginClient
