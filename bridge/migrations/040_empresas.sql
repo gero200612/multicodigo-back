@@ -268,14 +268,20 @@ BEGIN
     IF v_check IS NOT NULL THEN
       v_sql := v_sql || ' WITH CHECK (' || v_check || ')';
     END IF;
-    -- Cada una en su propio bloque: las de `storage.objects` son de una tabla
-    -- que no es de `postgres`, y si Supabase no deja tocarlas, esa queda como
-    -- estaba (el DROP se deshace) en vez de frenar el arranque entero. Las
-    -- subidas de documentos igual pasan por el panel, que ya frena al lector.
+    -- Cada una en su propio bloque, y solo se tolera una falla en `storage`:
+    -- `storage.objects` no es de `postgres`, y si Supabase no deja tocarla, esa
+    -- policy queda como estaba (el DROP se deshace) en vez de frenar el
+    -- arranque. Ese bucket ya no lo usa nada (los documentos van al disco del
+    -- servidor), asi que lo peor es un lector subiendo a un bucket que nadie
+    -- lee. En cualquier otro esquema la falla se propaga: mejor no arrancar
+    -- que dejar escribir a un lector.
     BEGIN
       EXECUTE format('DROP POLICY %I ON %I.%I', r.policyname, r.schemaname, r.tablename);
       EXECUTE v_sql;
     EXCEPTION WHEN insufficient_privilege THEN
+      IF r.schemaname <> 'storage' THEN
+        RAISE;
+      END IF;
       RAISE WARNING 'no se pudo pasar a puede_escribir la policy % de %.%', r.policyname, r.schemaname, r.tablename;
     END;
   END LOOP;
