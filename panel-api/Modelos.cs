@@ -11,7 +11,7 @@ namespace MultiCodigo.Panel;
 /// `Proyecto` es el NOMBRE, no el id: es lo que el gateway maneja, porque es lo
 /// que va en la ruta del worktree. El gateway no sabe que existe Supabase.
 /// </summary>
-public sealed record Agente(string Id, bool Arriba, string? Proyecto = null);
+public sealed record Agente(string Id, bool Arriba, string? Proyecto = null, bool Trabajando = false);
 
 /// <summary>
 /// Metadata de la credencial de un slot. NUNCA incluye el token: el panel no
@@ -101,7 +101,13 @@ public sealed record SlotVista(
     /// es lo que hace comparable el número: se puede mirar contra lo que había
     /// gastado la vez que se quedó sin cuota.
     /// </remarks>
-    Consumo? Consumo = null);
+    Consumo? Consumo = null,
+    /// <summary>
+    /// Tiene un turno en vuelo AHORA, segun el gateway (que es quien lo tiene).
+    /// No sale de `jobs`: ahi quedan filas en "running" de turnos que murieron
+    /// con un reinicio, y el agente se veria trabajando para siempre.
+    /// </summary>
+    bool Trabajando = false);
 
 /// <summary>Lo gastado por un agente: tokens de entrada y salida, y dólares.</summary>
 public sealed record Consumo(long Tokens, decimal CostoUsd);

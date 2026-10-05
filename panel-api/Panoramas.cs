@@ -117,7 +117,8 @@ public sealed class PanoramaService(
             Proyecto: a.Proyecto,
             ProyectoId: porSlot.TryGetValue(a.Id, out var pid) ? pid : null,
             SinCuotaHasta: sinCuota.TryGetValue(a.Id, out var hasta) ? hasta : null,
-            Consumo: consumo.TryGetValue(a.Id, out var gasto) ? gasto : null);
+            Consumo: consumo.TryGetValue(a.Id, out var gasto) ? gasto : null,
+            Trabajando: a.Trabajando);
     }
 
     /// <summary>
