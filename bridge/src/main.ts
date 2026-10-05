@@ -36,7 +36,7 @@ import {
 import { buildBot, retomarCorridas } from './telegram.js';
 import { buildWebhookServer } from './webhook.js';
 import { abrirDemo, abrirDesarrollo, estadoDeDemo } from './demo-homero.js';
-import { cifrar, claveDe } from './cifrado.js';
+import { cifrar, claveDe, descifrar } from './cifrado.js';
 import { verificar } from './proveedores.js';
 import { aDestino, publicarCambios, textoDePublicacion } from './publicar-ticket.js';
 import { partirParaTelegram } from './codigo.js';
@@ -617,6 +617,8 @@ function despliegueDelPanel() {
   const clave = claveDe(env.CONEXIONES_CLAVE ?? env.BRIDGE_API_TOKEN);
   // Del DUEÑO y no de cualquier miembro: publicar pasa ramas a main y usa las
   // cuentas de despliegue del dueño.
+  const puedeEscribir = async (usuarioId: string, proyectoId: string) =>
+    (await store.proyectosDeUsuario(usuarioId)).some((x) => x.id === proyectoId);
   const esSuyo = async (usuarioId: string, proyectoId: string) =>
     (await store.duenoDeProyecto(proyectoId)) === usuarioId
       ? (await store.proyectosDeUsuario(usuarioId)).find((x) => x.id === proyectoId)
@@ -693,6 +695,46 @@ function despliegueDelPanel() {
         }
       }
       return { ok: true as const, resultado, texto };
+    },
+    /**
+     * La cuenta de demo de un proyecto (043): la carga quien puede ESCRIBIR en
+     * el, no solo el dueño — el que pide el ticket es el que sabe con que
+     * cuenta se ve su cambio. La contraseña nunca vuelve al panel.
+     */
+    cuentaDemo: async (usuarioId: string, proyectoId: string) => {
+      if (!(await puedeEscribir(usuarioId, proyectoId))) return undefined;
+      const c = await store.cuentaDemo(proyectoId);
+      return { cuenta: c ? { ruta: c.ruta, usuario: c.usuario } : null };
+    },
+    guardarCuentaDemo: async (
+      usuarioId: string,
+      proyectoId: string,
+      c: { ruta: string; usuario: string; password: string },
+    ) => {
+      if (!(await puedeEscribir(usuarioId, proyectoId))) return false;
+      await store.guardarCuentaDemo(
+        proyectoId,
+        { ruta: c.ruta, usuario: c.usuario, passwordCifrada: cifrar(c.password, clave) },
+        usuarioId,
+      );
+      return true;
+    },
+    borrarCuentaDemo: async (usuarioId: string, proyectoId: string) => {
+      if (!(await puedeEscribir(usuarioId, proyectoId))) return false;
+      await store.borrarCuentaDemo(proyectoId);
+      return true;
+    },
+    /** Para el gateway (`mirar`), por nombre de proyecto: con la contraseña en claro. */
+    loginDeDemo: async (proyecto: string) => {
+      const id = await store.idDeProyecto(proyecto);
+      const c = id ? await store.cuentaDemo(id) : undefined;
+      if (!c) return undefined;
+      try {
+        return { ruta: c.ruta, email: c.usuario, password: descifrar(c.passwordCifrada, clave) };
+      } catch (err) {
+        console.error('[bridge] no pude descifrar la cuenta de demo de', proyecto, err);
+        return undefined;
+      }
     },
   };
 }

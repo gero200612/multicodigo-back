@@ -2086,6 +2086,42 @@ api.MapDelete("/despliegue/conexiones/{proveedor}", async (
     return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, "/interno/despliegue/desconectar", new { usuarioId, proveedor }, ct));
 });
 
+// La cuenta de demo del proyecto (bridge, migración 043): con la que `mirar`
+// entra a la app para las capturas del análisis funcional. El permiso
+// (escribir en el proyecto) lo mira el bridge; la contraseña nunca vuelve.
+api.MapGet("/proyectos/{proyectoId}/cuenta-demo", async (
+    string proyectoId, HttpContext ctx, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (!Guid.TryParse(proyectoId, out _)) return Results.NotFound();
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Get,
+        $"/interno/despliegue/cuenta-demo?usuarioId={Uri.EscapeDataString(usuarioId)}&proyectoId={proyectoId}", null, ct));
+});
+
+api.MapPut("/proyectos/{proyectoId}/cuenta-demo", async (
+    string proyectoId, CuerpoCuentaDemo cuerpo, HttpContext ctx, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (!Guid.TryParse(proyectoId, out _)) return Results.NotFound();
+    if (string.IsNullOrWhiteSpace(cuerpo.Usuario) || string.IsNullOrEmpty(cuerpo.Password))
+        return Results.BadRequest(new { code = "faltan_datos", message = "poné el usuario y la contraseña" });
+    var ruta = string.IsNullOrWhiteSpace(cuerpo.Ruta) ? "/login" : cuerpo.Ruta.Trim();
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Put, "/interno/despliegue/cuenta-demo",
+        new { usuarioId, proyectoId, ruta, usuario = cuerpo.Usuario.Trim(), password = cuerpo.Password }, ct));
+});
+
+api.MapDelete("/proyectos/{proyectoId}/cuenta-demo", async (
+    string proyectoId, HttpContext ctx, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (!Guid.TryParse(proyectoId, out _)) return Results.NotFound();
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, "/interno/despliegue/cuenta-demo/borrar",
+        new { usuarioId, proyectoId }, ct));
+});
+
 // Elegir la app de un repo y publicar son del DUEÑO, igual que escribir en el
 // repo: publicar pasa una rama a main.
 api.MapPut("/proyectos/{proyectoId}/repos/{repo}/destino", async (

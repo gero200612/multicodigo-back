@@ -153,6 +153,14 @@ export interface ApiDeps {
       extra: Record<string, string>,
     ) => Promise<{ ok: true; cuenta: string } | { ok: false; motivo: string }>;
     desconectar: (usuarioId: string, proveedor: Proveedor) => Promise<void>;
+    cuentaDemo?: (usuarioId: string, proyectoId: string) => Promise<{ cuenta: { ruta: string; usuario: string } | null } | undefined>;
+    guardarCuentaDemo?: (
+      usuarioId: string,
+      proyectoId: string,
+      c: { ruta: string; usuario: string; password: string },
+    ) => Promise<boolean>;
+    borrarCuentaDemo?: (usuarioId: string, proyectoId: string) => Promise<boolean>;
+    loginDeDemo?: (proyecto: string) => Promise<{ ruta: string; email: string; password: string } | undefined>;
     elegirDestino: (
       usuarioId: string,
       proyectoId: string,
@@ -186,6 +194,13 @@ const CuerpoDesarrollo = z.object({
 });
 
 const ProveedorZ = z.enum(PROVEEDORES);
+const CuerpoCuentaDemo = z.object({
+  usuarioId: z.string().uuid(),
+  proyectoId: z.string().uuid(),
+  ruta: z.string().regex(/^\/[A-Za-z0-9._~/-]{0,99}$/).default('/login'),
+  usuario: z.string().trim().min(1).max(200),
+  password: z.string().min(1).max(200),
+});
 const CuerpoConectar = z.object({
   usuarioId: z.string().uuid(),
   proveedor: ProveedorZ,
@@ -731,6 +746,57 @@ export function buildWebhookServer(
       if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proveedor o el token' });
       const r = await api.despliegue.conectar(c.data.usuarioId, c.data.proveedor, c.data.token.trim(), c.data.extra ?? {});
       return r.ok ? reply.send({ cuenta: r.cuenta }) : reply.code(422).send({ code: 'token_invalido', message: r.motivo });
+    });
+
+    // --- cuenta de demo (043): con la que `mirar` entra a la app ---------------
+
+    app.get<{ Querystring: { usuarioId?: string; proyectoId?: string } }>(
+      '/interno/despliegue/cuenta-demo',
+      async (request, reply) => {
+        if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+        if (!api.despliegue?.cuentaDemo) return reply.code(503).send({ code: 'sin_despliegue', message: 'no configurado' });
+        const u = z.string().uuid().safeParse(request.query.usuarioId);
+        const p = z.string().uuid().safeParse(request.query.proyectoId);
+        if (!u.success || !p.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta usuarioId o proyectoId' });
+        const r = await api.despliegue.cuentaDemo(u.data, p.data);
+        return r ? reply.send(r) : reply.code(403).send({ code: 'sin_permiso', message: 'no podés escribir en ese proyecto' });
+      },
+    );
+
+    app.put('/interno/despliegue/cuenta-demo', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue?.guardarCuentaDemo) return reply.code(503).send({ code: 'sin_despliegue', message: 'no configurado' });
+      const c = CuerpoCuentaDemo.safeParse(request.body);
+      if (!c.success) {
+        return reply.code(400).send({
+          code: 'cuerpo_invalido',
+          message: 'falta el usuario o la contraseña, o la ruta del login no empieza con /',
+        });
+      }
+      const { usuarioId, proyectoId, ...cuenta } = c.data;
+      return (await api.despliegue.guardarCuentaDemo(usuarioId, proyectoId, cuenta))
+        ? reply.send({ ok: true })
+        : reply.code(403).send({ code: 'sin_permiso', message: 'no podés escribir en ese proyecto' });
+    });
+
+    app.post('/interno/despliegue/cuenta-demo/borrar', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue?.borrarCuentaDemo) return reply.code(503).send({ code: 'sin_despliegue', message: 'no configurado' });
+      const c = z.object({ usuarioId: z.string().uuid(), proyectoId: z.string().uuid() }).safeParse(request.body);
+      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta usuarioId o proyectoId' });
+      return (await api.despliegue.borrarCuentaDemo(c.data.usuarioId, c.data.proyectoId))
+        ? reply.send({ ok: true })
+        : reply.code(403).send({ code: 'sin_permiso', message: 'no podés escribir en ese proyecto' });
+    });
+
+    // Del gateway, para `mirar`: la contraseña en claro, por eso solo con el
+    // token interno y nunca hacia el panel.
+    app.get<{ Querystring: { proyecto?: string } }>('/interno/mirar/login', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      const p = z.string().min(1).max(100).safeParse(request.query.proyecto);
+      if (!p.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto' });
+      const login = await api.despliegue?.loginDeDemo?.(p.data);
+      return reply.send({ login: login ?? null });
     });
 
     app.post('/interno/despliegue/desconectar', async (request, reply) => {

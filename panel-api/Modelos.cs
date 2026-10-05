@@ -324,3 +324,9 @@ public sealed record RespuestaTurno(
 
 /// <summary>El cuerpo de "carpeta nueva" en un repo.</summary>
 public sealed record CarpetaNueva(string? Ruta);
+
+/// <summary>La cuenta con la que `mirar` entra a la app del proyecto (ver bridge, migración 043).</summary>
+public sealed record CuerpoCuentaDemo(
+    [property: JsonPropertyName("ruta")] string? Ruta,
+    [property: JsonPropertyName("usuario")] string? Usuario,
+    [property: JsonPropertyName("password")] string? Password);

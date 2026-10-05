@@ -596,6 +596,10 @@ export interface Store {
   conexionesDeDespliegue(usuarioId: string): Promise<ConexionGuardada[]>;
   guardarConexionDeDespliegue(usuarioId: string, c: Omit<ConexionGuardada, 'creadoEn'>): Promise<void>;
   borrarConexionDeDespliegue(usuarioId: string, proveedor: Proveedor): Promise<void>;
+  /** La cuenta con la que `mirar` entra a la app del proyecto (migracion 043). */
+  cuentaDemo(proyectoId: string): Promise<CuentaDemo | undefined>;
+  guardarCuentaDemo(proyectoId: string, c: CuentaDemo, usuarioId: string): Promise<void>;
+  borrarCuentaDemo(proyectoId: string): Promise<void>;
   /** Elige donde se publica un repo. Cambiarlo olvida el vinculo anterior. */
   guardarDestino(proyectoId: string, repo: string, destino: Proveedor | null): Promise<void>;
   /** El servicio/proyecto/sitio que se creo del lado del proveedor. */
@@ -1087,6 +1091,13 @@ export interface Store {
   ): Promise<{ id: string; nombre: string } | undefined>;
 }
 
+/** La cuenta de demo de un proyecto, con la contraseña CIFRADA (ver cifrado.ts). */
+export interface CuentaDemo {
+  ruta: string;
+  usuario: string;
+  passwordCifrada: string;
+}
+
 export class InMemoryStore implements Store {
   private active = new Map<number, AgentId>();
   private activeProject = new Map<number, string>();
@@ -1385,6 +1396,20 @@ export class InMemoryStore implements Store {
   async guardarConexionDeDespliegue(usuarioId: string, c: Omit<ConexionGuardada, 'creadoEn'>): Promise<void> {
     const otras = (this.conexionesDespliegue.get(usuarioId) ?? []).filter((x) => x.proveedor !== c.proveedor);
     this.conexionesDespliegue.set(usuarioId, [...otras, { ...c, creadoEn: new Date().toISOString() }]);
+  }
+
+  private cuentasDemo = new Map<string, CuentaDemo>();
+
+  async cuentaDemo(proyectoId: string): Promise<CuentaDemo | undefined> {
+    return this.cuentasDemo.get(proyectoId);
+  }
+
+  async guardarCuentaDemo(proyectoId: string, c: CuentaDemo): Promise<void> {
+    this.cuentasDemo.set(proyectoId, { ...c });
+  }
+
+  async borrarCuentaDemo(proyectoId: string): Promise<void> {
+    this.cuentasDemo.delete(proyectoId);
   }
 
   async borrarConexionDeDespliegue(usuarioId: string, proveedor: Proveedor): Promise<void> {
@@ -2533,6 +2558,31 @@ export class PgStore implements Store {
                      cuenta = EXCLUDED.cuenta, creado_en = now()`,
       [usuarioId, c.proveedor, c.tokenCifrado, JSON.stringify(c.extra), c.cuenta],
     );
+  }
+
+  async cuentaDemo(proyectoId: string): Promise<CuentaDemo | undefined> {
+    const r = await this.pool.query<{ ruta_login: string; usuario: string; password_cifrada: string }>(
+      'SELECT ruta_login, usuario, password_cifrada FROM cuentas_demo WHERE proyecto_id = $1',
+      [proyectoId],
+    );
+    const f = r.rows[0];
+    return f ? { ruta: f.ruta_login, usuario: f.usuario, passwordCifrada: f.password_cifrada } : undefined;
+  }
+
+  async guardarCuentaDemo(proyectoId: string, c: CuentaDemo, usuarioId: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO cuentas_demo (proyecto_id, ruta_login, usuario, password_cifrada, actualizado_por)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (proyecto_id)
+       DO UPDATE SET ruta_login = EXCLUDED.ruta_login, usuario = EXCLUDED.usuario,
+                     password_cifrada = EXCLUDED.password_cifrada,
+                     actualizado_por = EXCLUDED.actualizado_por, actualizado_en = now()`,
+      [proyectoId, c.ruta, c.usuario, c.passwordCifrada, usuarioId],
+    );
+  }
+
+  async borrarCuentaDemo(proyectoId: string): Promise<void> {
+    await this.pool.query('DELETE FROM cuentas_demo WHERE proyecto_id = $1', [proyectoId]);
   }
 
   async borrarConexionDeDespliegue(usuarioId: string, proveedor: Proveedor): Promise<void> {
