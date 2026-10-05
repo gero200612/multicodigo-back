@@ -2077,6 +2077,11 @@ export class PgStore implements Store {
 
   static async connect(connectionString: string, migrationPaths: string[]): Promise<PgStore> {
     const pool = new Pool({ connectionString });
+    // Una conexion OCIOSA que se corta (el pooler de Supabase, un ETIMEDOUT)
+    // emite 'error' en el pool, y sin listener eso es una excepcion no
+    // capturada: el 2026-10-05 tiro el bridge entero. El pool ya la descarta y
+    // abre otra en el proximo pedido; aca solo se anota.
+    pool.on('error', (err) => console.error('[bridge] se cayo una conexion ociosa de postgres:', err.message));
     // En orden: cada archivo es idempotente (IF NOT EXISTS), asi que correrlos
     // en cada arranque es seguro y evita un runner de migraciones aparte.
     for (const path of migrationPaths) {
