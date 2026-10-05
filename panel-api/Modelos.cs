@@ -198,7 +198,18 @@ public sealed record CuerpoAutorizado(
     [property: JsonPropertyName("id")] string? Id);
 
 public sealed record CuerpoProyecto(
-    [property: JsonPropertyName("nombre")] string? Nombre);
+    [property: JsonPropertyName("nombre")] string? Nombre,
+    [property: JsonPropertyName("visibilidad")] string? Visibilidad = null);
+
+/// <summary>La contraseña que eligió quien abrió el link de alta.</summary>
+public sealed record CuerpoAlta(
+    [property: JsonPropertyName("clave")] string? Clave);
+
+/// <summary>
+/// Lo que contestó el bridge al alta. Con <c>Ok</c> falso, <c>Code</c> y
+/// <c>Message</c> vienen del bridge y el mensaje está pensado para la persona.
+/// </summary>
+public sealed record ResultadoAlta(bool Ok, string? Email, string? Code, string? Message);
 
 public sealed record CuerpoInvitacion(
     [property: JsonPropertyName("email")] string? Email,

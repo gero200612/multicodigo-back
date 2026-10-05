@@ -202,12 +202,30 @@ public sealed class ProyectosFalso : IProyectosClient
     /// <summary>Un nombre que ya existe: el UNIQUE de la tabla lo rechaza.</summary>
     public bool NombreRepetido { get; set; }
 
-    public Task<string> CrearAsync(string jwt, string nombre, CancellationToken ct = default)
+    /// <summary>Quien llama no es admin: la funcion de la base contesta 403.</summary>
+    public bool NoEsAdmin { get; set; }
+    public List<string> Visibilidades { get; } = [];
+
+    public Task<string> CrearAsync(string jwt, string nombre, string visibilidad, CancellationToken ct = default)
     {
+        if (NoEsAdmin) throw new UpstreamException("solo_admin");
         if (NombreRepetido) throw new UpstreamException("nombre_repetido");
         Creados.Add((nombre, jwt));
+        Visibilidades.Add(visibilidad);
         return Task.FromResult(IdQueDevuelve);
     }
+
+    /// <summary>Proyectos donde el usuario es lector: los ve pero no escribe.</summary>
+    public HashSet<string> SoloLectura { get; } = [];
+
+    public Task<bool> PuedeEscribirAsync(string jwt, string proyectoId, CancellationToken ct = default)
+        => Task.FromResult(!SoloLectura.Contains(proyectoId));
+
+    /// <summary>Aprobaciones que el usuario NO puede decidir.</summary>
+    public HashSet<string> SinDecidir { get; } = [];
+
+    public Task<bool> PuedeDecidirAsync(string jwt, string aprobacionId, CancellationToken ct = default)
+        => Task.FromResult(!SinDecidir.Contains(aprobacionId));
 
     /// <summary>El rol del usuario por proyecto. Ausente = no es miembro.</summary>
     public Dictionary<string, string> Roles { get; } = [];
@@ -501,6 +519,17 @@ public sealed class BridgeFalso : IBridgeClient
         if (Falla) throw new HttpRequestException("bridge caído");
         Desvinculados.Add((chatId, usuarioId));
         return Task.FromResult(HayQueDesvincular);
+    }
+
+    public List<(string Token, string Clave)> Altas { get; } = [];
+    /// <summary>Lo que contesta el bridge al alta.</summary>
+    public ResultadoAlta RespuestaAlta { get; set; } = new(true, "pedro@multicodigo.app", null, null);
+
+    public Task<ResultadoAlta> DarDeAltaAsync(string token, string clave, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        Altas.Add((token, clave));
+        return Task.FromResult(RespuestaAlta);
     }
 }
 

@@ -444,7 +444,64 @@ app.MapPost("/interno/github/repo", async (
     }
 }).AllowAnonymous();
 
+// --- el alta de una cuenta --------------------------------------------------
+//
+// Sin sesion: quien abre el link todavia no tiene cuenta. Lo que autoriza es el
+// token del link (256 bits, de un solo uso, vence), y lo valida el bridge en
+// la misma transaccion en la que crea la cuenta.
+app.MapPost("/api/altas/{token}", async (
+    string token,
+    CuerpoAlta cuerpo,
+    IBridgeClient bridge,
+    CancellationToken ct) =>
+{
+    var clave = cuerpo.Clave ?? "";
+    if (token.Length is 0 or > 128 || clave.Length is 0 or > 512)
+    {
+        return Results.BadRequest(new { code = "cuerpo_invalido", message = "faltan datos del alta" });
+    }
+    try
+    {
+        var r = await bridge.DarDeAltaAsync(token, clave, ct);
+        return r.Ok
+            ? Results.Ok(new { email = r.Email })
+            : Results.BadRequest(new { code = r.Code, message = r.Message });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        app.Logger.LogError(ex, "no se pudo dar de alta");
+        return Results.Json(
+            new { code = "alta_fallo", message = "no pudimos crear la cuenta. Probá de nuevo." },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+}).AllowAnonymous();
+
 var api = app.MapGroup("/api").RequireAuthorization();
+
+// El lector mira y no escribe. Toda escritura sobre un proyecto pasa por una
+// ruta `/api/proyectos/{proyectoId}/...`, asi que un solo filtro la cubre
+// entera —turnos, agentes, archivos, repos, publicar— sin tener que acordarse
+// de chequearlo en cada endpoint nuevo. La base lo vuelve a frenar (policies
+// con puede_escribir); esto es para contestar un 403 claro antes de tocar el
+// gateway o el bridge, que no pasan por RLS.
+api.AddEndpointFilter(async (ctx, next) =>
+{
+    var http = ctx.HttpContext;
+    if (!HttpMethods.IsGet(http.Request.Method)
+        && !HttpMethods.IsHead(http.Request.Method)
+        && http.Request.RouteValues.TryGetValue("proyectoId", out var valor)
+        && valor is string proyectoId)
+    {
+        var proyectos = http.RequestServices.GetRequiredService<IProyectosClient>();
+        if (!await proyectos.PuedeEscribirAsync(await JwtDe(http), proyectoId, http.RequestAborted))
+        {
+            return Results.Json(
+                new { code = "solo_lectura", message = "en este proyecto solo podés mirar" },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+    }
+    return await next(ctx);
+});
 
 /// El JWT crudo del usuario, ya verificado por el middleware. Se lo reenvia a
 /// Supabase para que RLS decida: el panel no tiene credencial de escritura.
@@ -784,17 +841,29 @@ api.MapPost("/proyectos", async (
         });
     }
 
+    var visibilidad = cuerpo.Visibilidad ?? "privado";
+    if (visibilidad is not ("publico" or "privado"))
+    {
+        return Results.BadRequest(new { code = "visibilidad_invalida", message = "público o privado" });
+    }
+
     try
     {
         // Crear el proyecto y quedar como dueño son UNA operacion, en la base:
         // un proyecto sin dueño no lo puede ver nadie, ni siquiera quien lo
         // creo, y no habria forma de arreglarlo desde la aplicacion.
-        var id = await proyectos.CrearAsync(await JwtDe(ctx), nombre, ct);
-        return Results.Created($"/api/proyectos/{id}", new { id, nombre });
+        var id = await proyectos.CrearAsync(await JwtDe(ctx), nombre, visibilidad, ct);
+        return Results.Created($"/api/proyectos/{id}", new { id, nombre, visibilidad });
     }
     catch (UpstreamException ex) when (ex.Message == "nombre_repetido")
     {
         return Results.Conflict(new { code = "nombre_repetido", message = "ya existe un proyecto con ese nombre" });
+    }
+    catch (UpstreamException ex) when (ex.Message == "solo_admin")
+    {
+        return Results.Json(
+            new { code = "solo_admin", message = "los proyectos los crea el admin de tu empresa" },
+            statusCode: StatusCodes.Status403Forbidden);
     }
     catch (Exception ex) when (ex is UpstreamException or HttpRequestException)
     {
@@ -2094,6 +2163,7 @@ api.MapPost("/aprobaciones/{id}/decision", async (
     CuerpoDecision cuerpo,
     HttpContext ctx,
     IBridgeClient bridge,
+    IProyectosClient proyectos,
     CancellationToken ct) =>
 {
     if (cuerpo.Decision is not ("allow" or "deny"))
@@ -2105,6 +2175,15 @@ api.MapPost("/aprobaciones/{id}/decision", async (
     // el navegador manda seria dejar que cualquiera firme la decision de otro.
     var usuarioId = ctx.User.FindFirst("sub")?.Value;
     if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+
+    // Aprobar es escribir: deja al agente tocar el repo. Un lector ve la
+    // aprobacion pero no la decide, y alguien de otra empresa ni la ve.
+    if (!await proyectos.PuedeDecidirAsync(await JwtDe(ctx), id, ct))
+    {
+        return Results.Json(
+            new { code = "sin_permiso", message = "no podés decidir esta aprobación" },
+            statusCode: StatusCodes.Status403Forbidden);
+    }
 
     try
     {

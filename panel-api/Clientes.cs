@@ -32,8 +32,18 @@ public interface IProyectosClient
 {
     /// <summary>El nombre del proyecto, o null si el usuario no es miembro.</summary>
     Task<string?> NombreSiEsMiembroAsync(string jwt, string proyectoId, CancellationToken ct = default);
-    /// <summary>Crea el proyecto y deja al usuario como dueño. Devuelve su id.</summary>
-    Task<string> CrearAsync(string jwt, string nombre, CancellationToken ct = default);
+    /// <summary>
+    /// Crea el proyecto en la empresa del usuario y lo deja como dueño.
+    /// Devuelve su id. Solo admins: si no, <c>UpstreamException("solo_admin")</c>.
+    /// </summary>
+    Task<string> CrearAsync(string jwt, string nombre, string visibilidad, CancellationToken ct = default);
+    /// <summary>
+    /// Si el usuario puede escribir en el proyecto (no es lector, es de la
+    /// empresa y lo ve). Falso también si no es miembro.
+    /// </summary>
+    Task<bool> PuedeEscribirAsync(string jwt, string proyectoId, CancellationToken ct = default);
+    /// <summary>Si el usuario puede decidir esa aprobación: es escribir en su proyecto.</summary>
+    Task<bool> PuedeDecidirAsync(string jwt, string aprobacionId, CancellationToken ct = default);
     /// <summary>El rol del usuario en el proyecto, o null si no es miembro.</summary>
     Task<string?> RolDeAsync(string jwt, string proyectoId, CancellationToken ct = default);
     /// <summary>Invita por mail y devuelve el token. Solo para dueños.</summary>
@@ -117,6 +127,16 @@ public interface IBridgeClient
     /// borraria nada y fallaria en silencio.
     /// </remarks>
     Task<bool> DesvincularTelegramAsync(long chatId, string usuarioId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Canjea un link de alta y crea la cuenta con la contraseña elegida.
+    /// </summary>
+    /// <remarks>
+    /// Lo hace el bridge porque crear una cuenta de Supabase pide la
+    /// service_role o escribir en `auth`, y este proceso —el único expuesto a
+    /// internet— no tiene ninguna de las dos a propósito.
+    /// </remarks>
+    Task<ResultadoAlta> DarDeAltaAsync(string token, string clave, CancellationToken ct = default);
 
     // --- Drive en vivo ----------------------------------------------------
     //
@@ -621,6 +641,25 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         catch (JsonException) { /* sin cuerpo util; se usa el status */ }
 
         throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
+    }
+
+    private sealed record RespuestaAlta(string? Email, string? Code, string? Message);
+
+    public async Task<ResultadoAlta> DarDeAltaAsync(string token, string clave, CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync("/interno/alta", new { token, clave }, Json.Opciones, ct);
+        RespuestaAlta? cuerpo = null;
+        try { cuerpo = await res.Content.ReadFromJsonAsync<RespuestaAlta>(Json.Opciones, ct); }
+        catch (JsonException) { /* sin cuerpo util; se usa el status */ }
+
+        if (res.IsSuccessStatusCode) return new ResultadoAlta(true, cuerpo?.Email, null, null);
+        // 400 es un rechazo que la persona puede entender (vencido, usado,
+        // clave corta): su mensaje viaja tal cual. Lo demas es una falla nuestra.
+        if (res.StatusCode == HttpStatusCode.BadRequest && cuerpo?.Code is not null)
+        {
+            return new ResultadoAlta(false, null, cuerpo.Code, cuerpo.Message);
+        }
+        throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
     }
 
     private sealed record RespuestaDesvinculo(bool Desvinculado);
@@ -1179,12 +1218,20 @@ public sealed class ProyectosClient(HttpClient http, string anonKey, ILogger<Pro
         return await http.SendAsync(req, ct);
     }
 
-    public async Task<string> CrearAsync(string jwt, string nombre, CancellationToken ct = default)
+    public async Task<string> CrearAsync(
+        string jwt, string nombre, string visibilidad, CancellationToken ct = default)
     {
-        var res = await RpcAsync(jwt, "crear_proyecto", new { p_nombre = nombre }, ct);
+        var res = await RpcAsync(
+            jwt, "crear_proyecto_en_empresa", new { p_nombre = nombre, p_visibilidad = visibilidad }, ct);
         if (!res.IsSuccessStatusCode)
         {
             var detalle = await res.Content.ReadAsStringAsync(ct);
+            // 403 = no es admin (o no tiene empresa): crear proyectos es del
+            // admin, y la funcion es la que lo decide.
+            if (res.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+            {
+                throw new UpstreamException("solo_admin");
+            }
             log.LogError("no se pudo crear el proyecto {Nombre}: {Status} {Detalle}",
                 nombre, (int)res.StatusCode, detalle);
             // Un nombre repetido choca con el UNIQUE de la tabla. Es lo unico
@@ -1196,6 +1243,33 @@ public sealed class ProyectosClient(HttpClient http, string anonKey, ILogger<Pro
         // Una funcion que devuelve un escalar vuelve como JSON pelado: "uuid".
         return (await res.Content.ReadFromJsonAsync<string>(Json.Opciones, ct))
                ?? throw new UpstreamException("proyecto_no_creado");
+    }
+
+    public async Task<bool> PuedeEscribirAsync(string jwt, string proyectoId, CancellationToken ct = default)
+        => Guid.TryParse(proyectoId, out _)
+           && await BoolAsync(jwt, "puede_escribir", new { p_proyecto = proyectoId }, ct);
+
+    public async Task<bool> PuedeDecidirAsync(string jwt, string aprobacionId, CancellationToken ct = default)
+        => Guid.TryParse(aprobacionId, out _)
+           && await BoolAsync(jwt, "puede_decidir", new { p_aprobacion = aprobacionId }, ct);
+
+    /// <summary>
+    /// Una funcion de la base que contesta si o no. Ante cualquier falla
+    /// contesta NO: es un permiso, y en la duda se niega.
+    /// </summary>
+    private async Task<bool> BoolAsync(string jwt, string funcion, object cuerpo, CancellationToken ct)
+    {
+        try
+        {
+            var res = await RpcAsync(jwt, funcion, cuerpo, ct);
+            if (!res.IsSuccessStatusCode) return false;
+            return await res.Content.ReadFromJsonAsync<bool>(Json.Opciones, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            log.LogError(ex, "no se pudo consultar {Funcion}", funcion);
+            return false;
+        }
     }
 
     public async Task<string?> RolDeAsync(string jwt, string proyectoId, CancellationToken ct = default)
