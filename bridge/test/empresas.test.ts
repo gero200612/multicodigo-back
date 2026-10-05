@@ -265,17 +265,40 @@ describe('empresas, altas y aislamiento', () => {
   it('por REST un programador no hace publico un privado ni se lleva el proyecto a otra empresa', async () => {
     await como(U.ana, () => q('SELECT public.asignar($1, $2)', [privado, U.otro]));
     const multicodigo = (await q<{ id: string }>(`SELECT id FROM empresas WHERE slug = 'multicodigo'`))[0]!.id;
+    // Por REST nadie escribe proyectos: lo frena el GRANT.
     expect(
       await error(() => como(U.otro, () => q(`UPDATE proyectos SET visibilidad = 'publico' WHERE id = $1`, [privado]))),
-    ).toMatch(/solo_admin/);
-    expect(
-      await error(() => como(U.otro, () => q('UPDATE proyectos SET empresa_id = $1 WHERE id = $2', [multicodigo, privado]))),
-    ).toMatch(/no_se_cambia_de_empresa/);
+    ).toMatch(/permission denied/);
     expect(
       await error(() => como(U.ana, () => q('UPDATE proyectos SET empresa_id = $1 WHERE id = $2', [multicodigo, privado]))),
-    ).toMatch(/no_se_cambia_de_empresa/);
+    ).toMatch(/permission denied/);
+    expect(
+      await error(() => como(U.otro, () => q(`UPDATE proyectos SET tareas = '{"test":["sh","-c","x"]}' WHERE id = $1`, [privado]))),
+    ).toMatch(/permission denied/);
+
+    // Y si un GRANT futuro lo reabre, queda el trigger: se prueba solo,
+    // dandole UPDATE a mano a `authenticated`.
+    await db.exec('GRANT UPDATE ON public.proyectos TO authenticated');
+    try {
+      expect(
+        await error(() => como(U.otro, () => q(`UPDATE proyectos SET visibilidad = 'publico' WHERE id = $1`, [privado]))),
+      ).toMatch(/solo_admin/);
+      expect(
+        await error(() => como(U.ana, () => q('UPDATE proyectos SET empresa_id = $1 WHERE id = $2', [multicodigo, privado]))),
+      ).toMatch(/no_se_cambia_de_empresa/);
+    } finally {
+      await db.exec('REVOKE UPDATE ON public.proyectos FROM authenticated');
+    }
+
     await como(U.ana, () => q('SELECT public.cambiar_visibilidad($1, $2)', [privado, 'privado']));
     await como(U.ana, () => q('SELECT public.desasignar($1, $2)', [privado, U.otro]));
+  });
+
+  it('la connection string de la base del proyecto no se lee por REST', async () => {
+    await db.query(`UPDATE proyectos SET db_conexion = 'postgres://x:secreta@h/db' WHERE id = $1`, [publico]);
+    expect(await error(() => como(U.lucia, () => q('SELECT db_conexion FROM proyectos')))).toMatch(/permission denied/);
+    expect(await error(() => como(U.ana, () => q('SELECT * FROM proyectos')))).toMatch(/permission denied/);
+    expect(await como(U.lucia, () => q('SELECT id, nombre, visibilidad FROM proyectos'))).toHaveLength(1);
   });
 
   it('un alta es siempre de un usuario interno, nunca de un mail ajeno', async () => {

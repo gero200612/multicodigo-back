@@ -318,6 +318,22 @@ CREATE TRIGGER proyectos_proteger
   BEFORE UPDATE ON public.proyectos
   FOR EACH ROW EXECUTE FUNCTION public._proteger_proyecto();
 
+-- Permisos por COLUMNA sobre proyectos, para el navegador.
+--
+-- `db_conexion` es la connection string (con contraseña) de la base del
+-- proyecto: se guarda del lado del servidor para que la lea `publicar()`, y
+-- por REST la leia cualquier miembro —ahora tambien un lector—. `tareas` son
+-- comandos que corre el gateway: si se pudieran escribir por REST, cualquiera
+-- que escriba en el proyecto elegiria que se ejecuta.
+--
+-- Nadie escribe proyectos por REST: crear, cambiar visibilidad y asignar van
+-- por funciones, y lo demas lo escribe el bridge como `postgres`. Una columna
+-- nueva NO queda legible sola: hay que sumarla aca a proposito.
+REVOKE INSERT, UPDATE, DELETE ON public.proyectos FROM anon, authenticated;
+REVOKE SELECT ON public.proyectos FROM anon, authenticated;
+GRANT SELECT (id, nombre, repo_url, creado_en, empresa_id, visibilidad)
+  ON public.proyectos TO authenticated;
+
 -- --- lecturas de las tablas nuevas ------------------------------------------
 
 DROP POLICY IF EXISTS "empresas: leer la mia" ON public.empresas;
