@@ -211,6 +211,15 @@ public sealed record CuerpoAlta(
 /// </summary>
 public sealed record ResultadoAlta(bool Ok, string? Email, string? Code, string? Message);
 
+/// <summary>Un agente con cambios sin mergear. <c>Proyecto</c> es null si es de uno que no ves.</summary>
+public sealed record TrabajoEnCurso(
+    [property: JsonPropertyName("agente")] string Agente,
+    [property: JsonPropertyName("proyecto")] string? Proyecto,
+    [property: JsonPropertyName("repo")] string Repo,
+    [property: JsonPropertyName("rama")] string Rama,
+    [property: JsonPropertyName("archivos")] IReadOnlyList<string> Archivos,
+    [property: JsonPropertyName("sinCommitear")] bool SinCommitear);
+
 public sealed record CuerpoInvitacion(
     [property: JsonPropertyName("email")] string? Email,
     [property: JsonPropertyName("rol")] string? Rol);

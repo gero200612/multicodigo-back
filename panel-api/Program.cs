@@ -2158,6 +2158,30 @@ api.MapPost("/corridas", async (
 
 // --- aprobaciones ---------------------------------------------------------
 
+// --- trabajo en curso -----------------------------------------------------
+
+/// <remarks>
+/// Qué agentes de la empresa tienen cambios sin mergear y en qué archivos. El
+/// bridge filtra por empresa y esconde los proyectos que el usuario no ve; el
+/// usuario sale del JWT, como en el resto de los pasamanos al bridge.
+/// </remarks>
+api.MapGet("/trabajo", async (HttpContext ctx, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    try
+    {
+        return Results.Ok(new { trabajo = await bridge.TrabajoAsync(usuarioId, ct) });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        app.Logger.LogError(ex, "no se pudo leer el trabajo en curso");
+        return Results.Json(
+            new { code = "trabajo_fallo", message = "no se pudo leer el trabajo en curso" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
 api.MapPost("/aprobaciones/{id}/decision", async (
     string id,
     CuerpoDecision cuerpo,

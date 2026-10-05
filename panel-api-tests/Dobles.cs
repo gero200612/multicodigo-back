@@ -531,6 +531,16 @@ public sealed class BridgeFalso : IBridgeClient
         Altas.Add((token, clave));
         return Task.FromResult(RespuestaAlta);
     }
+
+    public List<TrabajoEnCurso> Trabajo { get; set; } = [];
+    public List<string> TrabajoPedido { get; } = [];
+
+    public Task<IReadOnlyList<TrabajoEnCurso>> TrabajoAsync(string usuarioId, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        TrabajoPedido.Add(usuarioId);
+        return Task.FromResult<IReadOnlyList<TrabajoEnCurso>>(Trabajo);
+    }
 }
 
 public sealed class HistorialFalso : IHistorialClient

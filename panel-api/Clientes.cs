@@ -138,6 +138,13 @@ public interface IBridgeClient
     /// </remarks>
     Task<ResultadoAlta> DarDeAltaAsync(string token, string clave, CancellationToken ct = default);
 
+    /// <summary>
+    /// El trabajo en curso de la empresa del usuario: qué agentes tienen
+    /// cambios sin mergear, dónde y en qué archivos. Ya viene filtrado por
+    /// empresa y sin el nombre de los proyectos que no ve.
+    /// </summary>
+    Task<IReadOnlyList<TrabajoEnCurso>> TrabajoAsync(string usuarioId, CancellationToken ct = default);
+
     // --- Drive en vivo ----------------------------------------------------
     //
     // Ver `multicodigo-vm/docs/superpowers/specs/2026-09-04-drive-en-vivo-design.md`.
@@ -641,6 +648,16 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         catch (JsonException) { /* sin cuerpo util; se usa el status */ }
 
         throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
+    }
+
+    private sealed record RespuestaTrabajo(List<TrabajoEnCurso>? Trabajo);
+
+    public async Task<IReadOnlyList<TrabajoEnCurso>> TrabajoAsync(string usuarioId, CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync("/interno/trabajo", new { usuarioId }, Json.Opciones, ct);
+        if (!res.IsSuccessStatusCode) throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
+        var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaTrabajo>(Json.Opciones, ct);
+        return cuerpo?.Trabajo ?? [];
     }
 
     private sealed record RespuestaAlta(string? Email, string? Code, string? Message);

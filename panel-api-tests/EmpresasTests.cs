@@ -127,6 +127,22 @@ public class EmpresasTests(PanelFactory f) : IClassFixture<PanelFactory>
     }
 
     [Fact]
+    public async Task ElTrabajoEnCursoEsDelUsuarioDelJwt()
+    {
+        var c = new PanelFactory();
+        c.Bridge.Trabajo = [new TrabajoEnCurso("c3", null, "web", "claude/c3/trabajo", ["src/a.ts"], true)];
+        var cliente = c.CreateClient();
+        cliente.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", AuthDePrueba.TokenValido);
+
+        var r = await cliente.GetAsync("/api/trabajo");
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var texto = await r.Content.ReadAsStringAsync();
+        Assert.Contains("src/a.ts", texto, StringComparison.Ordinal);
+        Assert.Equal([AuthDePrueba.Usuario], c.Bridge.TrabajoPedido);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await c.CreateClient().GetAsync("/api/trabajo")).StatusCode);
+    }
+
+    [Fact]
     public async Task UnAltaSinClaveNoLlegaAlBridge()
     {
         var antes = f.Bridge.Altas.Count;
