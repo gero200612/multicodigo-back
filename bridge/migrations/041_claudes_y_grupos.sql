@@ -41,22 +41,21 @@ ALTER TABLE public.grupo_miembros ENABLE ROW LEVEL SECURITY;
 
 -- --- dueño del slot ----------------------------------------------------------
 
--- `DEFAULT auth.uid()`: el panel anota el slot con el JWT de quien lo creo, y
--- asi queda a su nombre sin que nadie lo mande. Del bridge (que entra como
--- `postgres`, sin JWT) sale NULL: un slot compartido, como los de antes.
-ALTER TABLE public.agentes ADD COLUMN IF NOT EXISTS usuario_id UUID DEFAULT auth.uid();
+-- El dueño lo escribe el BRIDGE al registrar un slot recien creado (el panel se
+-- lo pide despues de que el gateway arma el contenedor). Las filas que ya
+-- existian quedan en NULL: slots de antes, del proyecto.
+ALTER TABLE public.agentes ADD COLUMN IF NOT EXISTS usuario_id UUID;
 ALTER TABLE public.agentes ADD COLUMN IF NOT EXISTS grupo_id UUID REFERENCES public.grupos(id) ON DELETE SET NULL;
-ALTER TABLE public.agentes ALTER COLUMN usuario_id SET DEFAULT auth.uid();
+ALTER TABLE public.agentes ALTER COLUMN usuario_id DROP DEFAULT;
 
 CREATE INDEX IF NOT EXISTS agentes_usuario_idx ON public.agentes (usuario_id);
 
--- Por REST no se elige el dueño ni el grupo: el dueño sale del JWT (el
--- DEFAULT de arriba) y compartir va por `compartir_claude`. Si `usuario_id`
--- fuera escribible, cualquiera se quedaria con el Claude de otro poniendose de
--- dueño. Se escribe: el slot y su proyecto al crearlo, el nombre, y la marca
--- de cuota que deja el panel despues de un test.
+-- Por REST no se crea ni se apropia ningun slot. Registrar uno es del bridge:
+-- con INSERT abierto, cualquiera anotaria a su nombre un slot que ya existe
+-- (con la cuenta de Claude de otra persona adentro) y se quedaria con el.
+-- Compartir va por `compartir_claude`. Por REST queda solo cambiarle el
+-- nombre y la marca de cuota que deja el panel despues de un test.
 REVOKE INSERT, UPDATE ON public.agentes FROM anon, authenticated;
-GRANT INSERT (slot, proyecto_id, nombre) ON public.agentes TO authenticated;
 GRANT UPDATE (nombre) ON public.agentes TO authenticated;
 DO $do$
 BEGIN
@@ -101,14 +100,15 @@ BEGIN
   IF p_usuario IS NULL THEN
     RETURN false;
   END IF;
-  SELECT * INTO a FROM public.agentes WHERE slot = p_slot;
-  -- Un slot sin fila es de los que se configuraban a mano antes de que el
-  -- panel los creara: sigue como estaba.
-  IF a.slot IS NULL THEN
-    RETURN true;
-  END IF;
   IF public._es_superadmin(p_usuario) THEN
     RETURN true;
+  END IF;
+  SELECT * INTO a FROM public.agentes WHERE slot = p_slot;
+  -- Un slot sin fila no es de nadie que el sistema conozca: puede tener la
+  -- cuenta de cualquiera adentro, y dejarlo abierto lo usaria gente de
+  -- cualquier empresa. Solo el superadmin (arriba).
+  IF a.slot IS NULL THEN
+    RETURN false;
   END IF;
   IF a.usuario_id = p_usuario THEN
     RETURN true;
@@ -393,6 +393,8 @@ BEGIN
   DELETE FROM public.grupo_miembros
    WHERE usuario_id = p_usuario
      AND grupo_id IN (SELECT id FROM public.grupos WHERE empresa_id = p_empresa);
+  -- Sus Claudes tienen SU cuenta de Claude adentro: dejan de estar compartidos.
+  UPDATE public.agentes SET grupo_id = NULL WHERE usuario_id = p_usuario;
   -- Los grupos que era dueño quedan sin dueño: se borran, y sus Claudes
   -- compartidos vuelven a ser solo de quien los creo.
   DELETE FROM public.grupos g

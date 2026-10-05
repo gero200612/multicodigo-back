@@ -532,6 +532,15 @@ public sealed class BridgeFalso : IBridgeClient
         return Task.FromResult(RespuestaAlta);
     }
 
+    public List<(string UsuarioId, string ProyectoId, string Slot)> ClaudesRegistrados { get; } = [];
+
+    public Task RegistrarClaudeAsync(string usuarioId, string proyectoId, string slot, CancellationToken ct = default)
+    {
+        if (Falla) throw new HttpRequestException("bridge caído");
+        ClaudesRegistrados.Add((usuarioId, proyectoId, slot));
+        return Task.CompletedTask;
+    }
+
     public List<TrabajoEnCurso> Trabajo { get; set; } = [];
     public List<string> TrabajoPedido { get; } = [];
 

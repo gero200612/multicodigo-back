@@ -145,6 +145,17 @@ public interface IBridgeClient
     /// </summary>
     Task<IReadOnlyList<TrabajoEnCurso>> TrabajoAsync(string usuarioId, CancellationToken ct = default);
 
+    /// <summary>
+    /// Anota el slot que el gateway acaba de crear a nombre de quien lo pidió.
+    /// </summary>
+    /// <remarks>
+    /// Por el bridge y no por REST: con el INSERT abierto al navegador,
+    /// cualquiera anotaría a su nombre un slot que ya existe, con la cuenta de
+    /// Claude de otra persona adentro. Lanza <c>UpstreamException("solo_lectura")</c>
+    /// si la persona no puede escribir en el proyecto.
+    /// </remarks>
+    Task RegistrarClaudeAsync(string usuarioId, string proyectoId, string slot, CancellationToken ct = default);
+
     // --- Drive en vivo ----------------------------------------------------
     //
     // Ver `multicodigo-vm/docs/superpowers/specs/2026-09-04-drive-en-vivo-design.md`.
@@ -648,6 +659,17 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         catch (JsonException) { /* sin cuerpo util; se usa el status */ }
 
         throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
+    }
+
+    public async Task RegistrarClaudeAsync(
+        string usuarioId, string proyectoId, string slot, CancellationToken ct = default)
+    {
+        var res = await http.PostAsJsonAsync(
+            "/interno/claudes/registrar", new { usuarioId, proyectoId, slot }, Json.Opciones, ct);
+        if (res.IsSuccessStatusCode) return;
+        throw new UpstreamException(res.StatusCode == HttpStatusCode.Forbidden
+            ? "solo_lectura"
+            : $"el bridge respondió {(int)res.StatusCode}");
     }
 
     private sealed record RespuestaTrabajo(List<TrabajoEnCurso>? Trabajo);

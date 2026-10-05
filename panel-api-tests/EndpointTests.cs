@@ -1096,7 +1096,9 @@ public class EndpointTests(PanelFactory f) : IClassFixture<PanelFactory>
         // Al gateway le va el NOMBRE del proyecto, no el id: es lo que termina
         // en la etiqueta del contenedor y en la ruta del worktree.
         Assert.Contains("demo", f.Gateway.SlotsCreados);
-        Assert.Contains(f.Agentes.Registrados, a => a.ProyectoId == ProyectoDePrueba && a.Slot == "c1");
+        // Queda a nombre de quien lo creo: el usuario sale del JWT, no del cuerpo.
+        Assert.Contains(f.Bridge.ClaudesRegistrados, a =>
+            a.UsuarioId == AuthDePrueba.Usuario && a.ProyectoId == ProyectoDePrueba && a.Slot == "c1");
     }
 
     /// <summary>

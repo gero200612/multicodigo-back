@@ -389,11 +389,11 @@ describe('041: Claudes por persona y grupos', () => {
     await db.query(`INSERT INTO empresa_miembros (empresa_id, usuario_id, rango) VALUES ($1, $2, 'programador')`, [acme, U.ana]);
   });
 
-  it('el slot que crea una persona por REST queda a su nombre, y no puede elegir otro dueño', async () => {
-    await como(U.otro, () => q(`INSERT INTO agentes (slot, proyecto_id) VALUES ('c60', $1)`, [web]));
-    expect(await q('SELECT usuario_id FROM agentes WHERE slot = $1', ['c60'])).toEqual([{ usuario_id: U.otro }]);
+  it('por REST nadie registra ni se apropia un slot; el nombre si se cambia', async () => {
+    // Lo registra el bridge (`registrarClaude`), como postgres.
+    await db.query(`INSERT INTO agentes (slot, proyecto_id, usuario_id) VALUES ('c60', $1, $2)`, [web, U.otro]);
     expect(
-      await error(() => como(U.ana, () => q(`INSERT INTO agentes (slot, proyecto_id, usuario_id) VALUES ('c61', $1, $2)`, [web, U.otro]))),
+      await error(() => como(U.ana, () => q(`INSERT INTO agentes (slot, proyecto_id) VALUES ('c61', $1)`, [web]))),
     ).toMatch(/permission denied/);
     expect(
       await error(() => como(U.ana, () => q(`UPDATE agentes SET usuario_id = $1 WHERE slot = 'c60'`, [U.ana]))),
@@ -411,6 +411,9 @@ describe('041: Claudes por persona y grupos', () => {
     expect(await usa(U.lucia, 'c50')).toBe(false);
     expect(await usa(U.pepe, 'c50')).toBe(false);
     expect(await usa(U.gero, 'c60')).toBe(true);
+    // Un slot sin fila puede tener la cuenta de cualquiera: solo el superadmin.
+    expect(await usa(U.otro, 'c99')).toBe(false);
+    expect(await usa(U.gero, 'c99')).toBe(true);
   });
 
   it('compartir con un grupo le da el Claude a los del grupo y a nadie mas', async () => {
@@ -439,6 +442,19 @@ describe('041: Claudes por persona y grupos', () => {
     await como(U.otro, () => q('SELECT public.borrar_grupo($1)', [grupo]));
     expect(await usa(U.ana, 'c60')).toBe(false);
     expect(await q('SELECT grupo_id FROM agentes WHERE slot = $1', ['c60'])).toEqual([{ grupo_id: null }]);
+  });
+
+  it('quien sale de la empresa deja de compartir sus Claudes', async () => {
+    const g = (await como(U.ana, () => q<{ id: string }>(`SELECT public.crear_grupo('front') AS id`)))[0]!.id;
+    await como(U.ana, () => q('SELECT public.sumar_a_grupo($1, $2)', [g, U.otro]));
+    await como(U.otro, () => q('SELECT public.compartir_claude($1, $2)', ['c60', g]));
+    expect(await usa(U.ana, 'c60')).toBe(true);
+    await db.query(`UPDATE empresa_miembros SET rango = 'admin' WHERE usuario_id = $1`, [U.ana]);
+    await como(U.ana, () => q('SELECT public.quitar_de_empresa($1, $2)', [acme, U.otro]));
+    expect(await q('SELECT grupo_id FROM agentes WHERE slot = $1', ['c60'])).toEqual([{ grupo_id: null }]);
+    expect(await usa(U.ana, 'c60')).toBe(false);
+    // Vuelve para los tests de abajo.
+    await db.query(`INSERT INTO empresa_miembros (empresa_id, usuario_id, rango) VALUES ($1, $2, 'programador')`, [acme, U.otro]);
   });
 
   it('companeros lista la gente de mi empresa, no la de otras', async () => {

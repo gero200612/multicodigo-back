@@ -11,6 +11,7 @@ import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
 import { registrarAltas, type AltasDeps } from './altas.js';
 import { registrarTrabajo, type TrabajoVisible } from './trabajo.js';
+import { registrarClaudes } from './claudes.js';
 import type { EstadoDeDemo, PedidoDeDemo, PedidoDeDesarrollo, ResultadoDeDemo } from './demo-homero.js';
 import type { ResultadoDePublicacion } from './publicar-ticket.js';
 import { PROVEEDORES, type Proveedor } from './store.js';
@@ -106,6 +107,8 @@ export interface ApiDeps {
   altas?: AltasDeps['darDeAlta'];
   /** El trabajo en curso de la empresa de una persona. Ver `trabajo.ts`. */
   trabajo?: (usuarioId: string) => Promise<TrabajoVisible[]>;
+  /** Anota un slot recien creado a nombre de quien lo pidio. Ver `claudes.ts`. */
+  registrarClaude?: (usuarioId: string, proyectoId: string, slot: string) => Promise<boolean>;
   /**
    * Con que ejecutar un turno pedido desde el panel.
    *
@@ -1168,6 +1171,7 @@ export function buildWebhookServer(
      */
     registrarAltas(app, { apiToken: api.apiToken, darDeAlta: api.altas });
     registrarTrabajo(app, { apiToken: api.apiToken, trabajo: api.trabajo });
+    registrarClaudes(app, { apiToken: api.apiToken, registrar: api.registrarClaude });
 
     registrarSupabase(app, {
       ...(api.supabase ?? {}),

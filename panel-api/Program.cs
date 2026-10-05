@@ -1916,10 +1916,12 @@ api.MapPost("/proyectos/{proyectoId}/agentes", async (
     HttpContext ctx,
     IProyectosClient proyectos,
     IGatewayClient gateway,
-    IAgentesClient agentes,
+    IBridgeClient bridge,
     CancellationToken ct) =>
 {
     var jwt = await JwtDe(ctx);
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
 
     // La membresia se valida ACA. El gateway no sabe que es un proyecto ni un
     // usuario —es deliberado, ver el spec— asi que si el panel no chequea, no
@@ -1937,7 +1939,9 @@ api.MapPost("/proyectos/{proyectoId}/agentes", async (
         // etiqueta del contenedor y en la ruta del worktree, y es lo unico del
         // proyecto que ese lado del sistema entiende.
         var slot = await gateway.CrearSlotAsync(nombre, ct);
-        await agentes.RegistrarAsync(jwt, proyectoId, slot, ct);
+        // Queda a nombre de quien lo creó (parte B de empresas): es su Claude,
+        // con su cuenta, y solo lo usa él o un grupo con el que lo comparta.
+        await bridge.RegistrarClaudeAsync(usuarioId, proyectoId, slot, ct);
         return Results.Created($"/api/proyectos/{proyectoId}/agentes/{slot}", new { slot });
     }
     catch (UpstreamException ex) when (ex.Message == "sin_slots")

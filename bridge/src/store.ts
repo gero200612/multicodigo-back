@@ -657,7 +657,7 @@ export interface Store {
     usuarioId: string,
     nombres: string[],
   ): Promise<Array<{ nombre: string; visible: boolean }>>;
-  /** Los repos (nombre local) de todos los proyectos de la empresa de la persona. */
+  /** Los repos (nombre local) de los proyectos que la persona puede ver. */
   reposDeMiEmpresa(usuarioId: string): Promise<string[]>;
   /** Anota que el slot pertenece al proyecto. NO crea el contenedor. */
   registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void>;
@@ -2704,6 +2704,27 @@ export class PgStore implements Store {
     );
   }
 
+  /**
+   * Anota un slot RECIEN creado a nombre de quien lo pidio. Solo lo llama el
+   * panel, despues de que el gateway armo el contenedor: por eso puede pisar
+   * una fila vieja del mismo numero (un slot que se borro y se recreo) sin
+   * heredarle dueño ni grupo.
+   *
+   * Devuelve false si la persona no puede escribir en ese proyecto.
+   */
+  async registrarClaude(usuarioId: string, proyectoId: string, slot: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `INSERT INTO agentes (slot, proyecto_id, usuario_id)
+       SELECT $3, $2::uuid, $1::uuid
+        WHERE public.acceso_a_proyecto($1::uuid, $2::uuid) = 'escribir'
+       ON CONFLICT (slot) DO UPDATE
+         SET proyecto_id = EXCLUDED.proyecto_id, usuario_id = EXCLUDED.usuario_id,
+             grupo_id = NULL, nombre = NULL`,
+      [usuarioId, proyectoId, slot],
+    );
+    return (r.rowCount ?? 0) > 0;
+  }
+
   async puedeUsarSlot(usuarioId: string, slot: string): Promise<boolean> {
     const r = await this.pool.query<{ p: boolean }>(
       'SELECT public.puede_usar_slot($1::uuid, $2) AS p',
@@ -2731,12 +2752,15 @@ export class PgStore implements Store {
 
   async reposDeMiEmpresa(usuarioId: string): Promise<string[]> {
     try {
+      // Solo repos de proyectos que la persona VE: de un privado ajeno no se
+      // le muestra ni el repo ni sus archivos. Si ese privado comparte un repo
+      // con uno suyo, su trabajo igual aparece (es el mismo repo que ella ve),
+      // que es justo el caso en que se pisarian.
       const r = await this.pool.query<{ nombre: string }>(
         `SELECT DISTINCT r.nombre
            FROM repos r
-           JOIN proyectos p ON p.id = r.proyecto_id
-           JOIN empresa_miembros em ON em.empresa_id = p.empresa_id AND em.usuario_id = $1::uuid
           WHERE NOT r.solo_lectura
+            AND public.acceso_a_proyecto($1::uuid, r.proyecto_id) IS NOT NULL
           ORDER BY r.nombre`,
         [usuarioId],
       );

@@ -753,6 +753,8 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
     env.SUPABASE_ACCESS_TOKEN && env.SUPABASE_ORG_ID
       ? { accessToken: env.SUPABASE_ACCESS_TOKEN, orgId: env.SUPABASE_ORG_ID }
       : {},
+  registrarClaude: (usuarioId: string, proyectoId: string, slot: string) =>
+    store.registrarClaude(usuarioId, proyectoId, slot),
   // El trabajo en curso de la empresa, para la sección "En curso" del panel.
   trabajo: env.GATEWAY_ADMIN_TOKEN
     ? async (usuarioId: string) =>
