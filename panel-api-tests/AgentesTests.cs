@@ -46,6 +46,11 @@ public class AgentesTests(PanelFactory f) : IClassFixture<PanelFactory>
     [Fact]
     public async Task Borrar_agente_con_slot_invalido_da_404_unknown_agent()
     {
+        // f.Agentes vive en el fixture de la clase entera: sin este Clear, un
+        // Borrado que dejo otro [Fact] (p.ej. el de 204) hace que la lista ya
+        // no este vacia y el assert de abajo falle sin que este test rompa nada.
+        f.Agentes.Borrados.Clear();
+
         var r = await Cliente().DeleteAsync($"/api/proyectos/{ProyectoDePrueba}/agentes/x1");
 
         Assert.Equal(HttpStatusCode.NotFound, r.StatusCode);
