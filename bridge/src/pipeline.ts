@@ -3458,8 +3458,11 @@ export async function correrCola(
       : [];
     // En revision no se reparte: sin merge a main, el slot siguiente no veria
     // lo que hizo el anterior. Todo va al mismo, en su rama.
+    // Sin `ultimoSlot` (el bridge se reinicio a mitad), el que construyo sale
+    // de las tareas cerradas: es el unico que tiene el trabajo en su rama.
     const elegido = corrida?.enRevision
-      ? ultimoSlot
+      ? (ultimoSlot ??
+        agentesQueTrabajaron(await deps.store.tareasDeCorrida(corrida.id).catch(() => [])).at(-1))
       : corrida && deps.mergearTrabajo && mios.length > 0
         ? clavarEn ??
           slotParaLaTarea(

@@ -4919,3 +4919,21 @@ describe('corrida en revision', () => {
     expect(cierre).toContain('NO lo pases a main');
   });
 });
+
+describe('corrida en revision, retomada', () => {
+  it('sin ultimo slot en memoria, la tarea va al que ya construyo', async () => {
+    const d = arnes({ analista: () => [], slots: ['c1', 'c2'], mergearTrabajo: async () => ({ ok: true }) });
+    await conSlotsDelProyecto(d, ['c1', 'c2']);
+    await abrir(d);
+    const c = (await d.store.corridaAbierta(7))!;
+    await d.store.marcarEnRevision(c.id);
+    await encolarEnLaCorrida(d, ['uno']);
+    // La primera la hace c2 (como si hubiera sido antes de un reinicio).
+    const [t] = await d.store.tareasDeCorrida(c.id);
+    await d.store.cerrarTarea(t!.id, 'lista', undefined, 'c2');
+    await encolarEnLaCorrida(d, ['dos']);
+    await correr(d);
+    const dos = d.ask.mock.calls.map((x) => x[0] as { agent?: string; prompt: string }).find((x) => x.prompt.includes('dos') && !x.prompt.includes('--- PLIEGO ---'));
+    expect(dos?.agent).toBe('c2');
+  });
+});
