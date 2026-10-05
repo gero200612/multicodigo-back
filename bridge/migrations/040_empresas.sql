@@ -227,7 +227,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = ''
 AS $$
-  SELECT public.acceso_a_proyecto((SELECT auth.uid()), p_proyecto) = 'escribir';
+  SELECT COALESCE(public.acceso_a_proyecto((SELECT auth.uid()), p_proyecto) = 'escribir', false);
 $$;
 
 REVOKE EXECUTE ON FUNCTION public.puede_escribir(UUID) FROM PUBLIC, anon;

@@ -64,6 +64,8 @@ import { aHoraArgentina } from './horas.js';
 import { conCodigoParaTelegram, escaparHtml } from './codigo.js';
 import type { Quien } from './agents-client.js';
 import { LimitePorChat, MINUTOS_DE_CODIGO } from './vinculacion.js';
+import type { EnCurso } from './gateway-admin.js';
+import { avisoDeTrabajo, trabajoDeMiEmpresa } from './trabajo.js';
 
 /** Cuantas corridas se pueden elegir con `/consulta` y `/cambio`. */
 const CORRIDAS_ELEGIBLES = 10;
@@ -87,6 +89,12 @@ export interface IncomingMessage {
 
 export interface PipelineDeps {
   store: Store;
+  /**
+   * Lo que los agentes tienen sin mergear en unos repos (gateway `/trabajo`).
+   * Opcional: sin el token de admin del gateway no hay aviso, y el turno sigue
+   * igual. Ver `trabajo.ts`.
+   */
+  trabajoEnCurso?: (repos: string[]) => Promise<EnCurso[]>;
   defaultAgent: AgentId;
   project: string;
   /** Cuantos codigos de vinculacion puede pedir cada chat. */
@@ -589,6 +597,10 @@ const porDefectoDormir = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
 const ERROR_TEXT: Record<string, string> = {
+  // Parte B de empresas: cada Claude es de su dueño (y del grupo con el que lo
+  // comparta). Se dice que hacer, no solo que no.
+  slot_ajeno:
+    'Ese Claude es de otra persona. Usá uno tuyo, o pedile a su dueño que lo comparta con un grupo tuyo.',
   auth_expired: 'Ese agente necesita re-login: su credencial vencio.',
   // Distinto de auth_expired a proposito: ahi habia una cuenta y se vencio, aca
   // nunca hubo ninguna. La accion del usuario es otra, asi que el mensaje no
@@ -1516,7 +1528,7 @@ export async function ejecutarTurnoConRelevo(
       // error en otro slot y esconder la causa.
       if (codigo !== 'usage_limit' && codigo !== 'auth_expired') throw err;
 
-      const siguiente = await elegirRelevo(deps, turno.proyecto, probados);
+      const siguiente = await elegirRelevo(deps, turno.proyecto, probados, t.usuarioId);
       if (!siguiente) throw err;
 
       // El hilo del slot que se agoto, no del que releva: es donde esta lo que
@@ -1546,10 +1558,20 @@ async function elegirRelevo(
   deps: PipelineDeps,
   proyecto: string,
   probados: readonly string[],
+  usuarioId?: string,
 ): Promise<string | undefined> {
   if (!deps.listarAgentes) return undefined;
   try {
-    return proximoSlot(await deps.listarAgentes(proyecto), probados);
+    const agentes = await deps.listarAgentes(proyecto);
+    // Solo Claudes que esta persona puede usar: relevar al de otra persona
+    // terminaria en `slot_ajeno`, que es peor que el error original.
+    const descartados = [...probados];
+    for (;;) {
+      const candidato = proximoSlot(agentes, descartados);
+      if (!candidato) return undefined;
+      if (!usuarioId || (await deps.store.puedeUsarSlot(usuarioId, candidato))) return candidato;
+      descartados.push(candidato);
+    }
   } catch {
     // Si el gateway no contesta, no hay relevo: el error original sube y dice
     // que paso. Inventar un slot seria peor.
@@ -1567,6 +1589,13 @@ export async function ejecutarTurno(
   if (ajenos.has(t.agente)) {
     // Sin job: se corta antes de crearlo. El código viaja como `message`.
     throw new ErrorDeTurno('', 'agente_de_otro_bot');
+  }
+  // Cada Claude es de su dueño y de los grupos con los que lo comparte (parte
+  // B de empresas). Va ACA y no en cada entrada: panel, Telegram y corridas
+  // pasan todos por este lugar. Sin usuario (procesos internos viejos) no hay
+  // a quien preguntarle y sigue como siempre.
+  if (t.usuarioId && !(await deps.store.puedeUsarSlot(t.usuarioId, t.agente))) {
+    throw new ErrorDeTurno('', 'slot_ajeno');
   }
   // `sesionLimpia` gana sobre el proyecto: ver el campo en `Turno` para por que
   // los turnos de una corrida no heredan la conversacion.
@@ -1608,12 +1637,33 @@ export async function ejecutarTurno(
     // `multicodigo-vm/docs/superpowers/specs/2026-09-03-instrucciones-de-proyecto-design.md`.
     const separados = separarInstructivo(t.documentos);
 
+    // Lo que otros agentes de la empresa tienen sin mergear en estos repos, para
+    // que este no se los pise (parte C). Va delante del pedido que recibe el
+    // agente —`instrucciones` es un documento, no texto, y el contrato con el
+    // gateway no tiene otro lugar—. El job guarda el pedido ORIGINAL: el panel
+    // y el historial muestran lo que escribio la persona. Nunca frena el
+    // turno: sin aviso, sigue.
+    const aviso =
+      deps.trabajoEnCurso && t.usuarioId && t.repos && t.repos.length > 0
+        ? avisoDeTrabajo(
+            await trabajoDeMiEmpresa(
+              t.usuarioId,
+              t.repos
+                .filter((r) => !(r as { solo_lectura?: boolean }).solo_lectura)
+                .map((r) => r.nombre),
+              { store: deps.store, trabajoEnCurso: deps.trabajoEnCurso },
+              t.agente,
+            ).catch(() => []),
+          )
+        : undefined;
+    const prompt = aviso ? `${aviso}\n\n## El pedido\n\n${t.prompt}` : t.prompt;
+
     const r = await deps.ask(
       {
         jobId,
         agent: t.agente,
         project: t.proyecto,
-        prompt: t.prompt,
+        prompt,
         sessionId,
         repos: t.repos,
         githubToken: t.githubToken,

@@ -25,7 +25,7 @@ import { asegurarDockerfile } from './dockerfile-back.js';
 import { asegurarOutputPathDeAngular } from './angular-output.js';
 import { verificarDespliegue, tareaDeProblema } from './verificar.js';
 import type { Corrida } from './corrida.js';
-import { mergearEnGateway, guardarEnGateway, inspeccionarRepo } from './gateway-admin.js';
+import { mergearEnGateway, guardarEnGateway, inspeccionarRepo, trabajoEnGateway } from './gateway-admin.js';
 import { fetchPending, sendDecision } from './approvals.js';
 import { transcribeAudio } from './transcribe.js';
 import {
@@ -43,6 +43,7 @@ import { partirParaTelegram } from './codigo.js';
 import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
 import { crearUsuarioPorApi, crearUsuarioPorSql } from './altas.js';
+import { trabajoDeMiEmpresa } from './trabajo.js';
 
 /**
  * Una variable opcional que el compose entrega como cadena vacia.
@@ -210,6 +211,7 @@ const MIGRACIONES = [
   '038_agentes_bot.sql',
   '039_despliegue.sql',
   '040_empresas.sql',
+  '041_claudes_y_grupos.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 
@@ -286,6 +288,12 @@ const pipelineDeps = {
   project: env.DEFAULT_PROJECT,
   limite: new LimitePorChat(),
   ask: (req: Parameters<typeof askAgent>[0]) => askAgent(req, gatewayDeps),
+  // El aviso de trabajo en curso (parte C de empresas). `/trabajo` es ruta de
+  // admin del gateway: sin ese token no hay aviso y el turno sigue igual.
+  trabajoEnCurso: env.GATEWAY_ADMIN_TOKEN
+    ? (repos: string[]) =>
+        trabajoEnGateway(repos, { gatewayUrl: env.GATEWAY_URL, adminToken: env.GATEWAY_ADMIN_TOKEN! })
+    : undefined,
   // Sin PANEL_URL no se pasa la funcion: `tokenDelProyecto` la trata como
   // ausente y devuelve undefined, que es el camino SSH.
   firmarToken: env.PANEL_URL
@@ -745,6 +753,15 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
     env.SUPABASE_ACCESS_TOKEN && env.SUPABASE_ORG_ID
       ? { accessToken: env.SUPABASE_ACCESS_TOKEN, orgId: env.SUPABASE_ORG_ID }
       : {},
+  // El trabajo en curso de la empresa, para la sección "En curso" del panel.
+  trabajo: env.GATEWAY_ADMIN_TOKEN
+    ? async (usuarioId: string) =>
+        trabajoDeMiEmpresa(usuarioId, await store.reposDeMiEmpresa(usuarioId), {
+          store,
+          trabajoEnCurso: (repos) =>
+            trabajoEnGateway(repos, { gatewayUrl: env.GATEWAY_URL, adminToken: env.GATEWAY_ADMIN_TOKEN! }),
+        })
+    : undefined,
   // Con la service_role, la cuenta se crea por la Admin API (el camino
   // oficial); sin ella, escribiendo en `auth` desde esta misma conexion.
   altas: (token: string, clave: string) =>

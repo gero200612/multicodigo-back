@@ -642,6 +642,23 @@ export interface Store {
    * dice de quien es un slot.
    */
   agentesDeUsuario(usuarioId: string): Promise<AgenteResumen[]>;
+  /**
+   * Si esa persona puede mandarle trabajo a ese Claude: es suyo, de un grupo
+   * suyo, o es un slot de antes (sin dueño) de un proyecto donde escribe.
+   * Ver la migracion 041.
+   */
+  puedeUsarSlot(usuarioId: string, slot: string): Promise<boolean>;
+  /**
+   * Para el aviso de trabajo en curso: de los proyectos nombrados, cuales son
+   * de la MISMA empresa que la persona, y cuales puede ver. Los de otra
+   * empresa no vuelven: no existen para ella.
+   */
+  proyectosDeMiEmpresa(
+    usuarioId: string,
+    nombres: string[],
+  ): Promise<Array<{ nombre: string; visible: boolean }>>;
+  /** Los repos (nombre local) de todos los proyectos de la empresa de la persona. */
+  reposDeMiEmpresa(usuarioId: string): Promise<string[]>;
   /** Anota que el slot pertenece al proyecto. NO crea el contenedor. */
   registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void>;
 
@@ -1436,6 +1453,24 @@ export class InMemoryStore implements Store {
   async registrarAgente(proyectoId: string, slot: AgentId, nombre?: string): Promise<void> {
     const previo = this.agentes.get(slot);
     this.agentes.set(slot, { proyectoId, nombre: nombre ?? previo?.nombre, cuenta: previo?.cuenta });
+  }
+
+  // En memoria no hay empresas ni dueños: todo slot es usable y todo proyecto
+  // es de la misma empresa. Las reglas reales se prueban contra Postgres
+  // (test/empresas.test.ts).
+  async puedeUsarSlot(_usuarioId: string, _slot: string): Promise<boolean> {
+    return true;
+  }
+
+  async proyectosDeMiEmpresa(
+    _usuarioId: string,
+    nombres: string[],
+  ): Promise<Array<{ nombre: string; visible: boolean }>> {
+    return nombres.map((nombre) => ({ nombre, visible: true }));
+  }
+
+  async reposDeMiEmpresa(): Promise<string[]> {
+    return [];
   }
 
   async agentesDeUsuario(usuarioId: string): Promise<AgenteResumen[]> {
@@ -2669,6 +2704,48 @@ export class PgStore implements Store {
     );
   }
 
+  async puedeUsarSlot(usuarioId: string, slot: string): Promise<boolean> {
+    const r = await this.pool.query<{ p: boolean }>(
+      'SELECT public.puede_usar_slot($1::uuid, $2) AS p',
+      [usuarioId, slot],
+    );
+    return r.rows[0]?.p === true;
+  }
+
+  async proyectosDeMiEmpresa(
+    usuarioId: string,
+    nombres: string[],
+  ): Promise<Array<{ nombre: string; visible: boolean }>> {
+    if (nombres.length === 0) return [];
+    // La empresa del usuario contra la del proyecto: lo de otra empresa no
+    // vuelve, ni siquiera como "otro proyecto".
+    const r = await this.pool.query<{ nombre: string; visible: boolean }>(
+      `SELECT p.nombre, public.acceso_a_proyecto($1::uuid, p.id) IS NOT NULL AS visible
+         FROM proyectos p
+         JOIN empresa_miembros em ON em.empresa_id = p.empresa_id AND em.usuario_id = $1::uuid
+        WHERE p.nombre = ANY($2::text[])`,
+      [usuarioId, nombres],
+    );
+    return r.rows;
+  }
+
+  async reposDeMiEmpresa(usuarioId: string): Promise<string[]> {
+    try {
+      const r = await this.pool.query<{ nombre: string }>(
+        `SELECT DISTINCT r.nombre
+           FROM repos r
+           JOIN proyectos p ON p.id = r.proyecto_id
+           JOIN empresa_miembros em ON em.empresa_id = p.empresa_id AND em.usuario_id = $1::uuid
+          WHERE NOT r.solo_lectura
+          ORDER BY r.nombre`,
+        [usuarioId],
+      );
+      return r.rows.map((f) => f.nombre);
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * El alta de una persona en su empresa (ver `altas.ts`). Todo en una
    * transaccion: si algo falla no queda la cuenta a medias ni el link quemado.
@@ -2747,9 +2824,13 @@ export class PgStore implements Store {
    */
   async agentesDeUsuario(usuarioId: string): Promise<AgenteResumen[]> {
     const r = await this.pool.query<{ slot: AgentId; nombre: string | null; cuenta: string | null }>(
+      // Los que puede USAR (suyos, de sus grupos, o de antes) en proyectos
+      // donde escribe. Las corridas eligen de aca: no pueden tomar el Claude
+      // de otra persona.
       `SELECT a.slot, a.nombre, a.cuenta
          FROM agentes a
         WHERE public.acceso_a_proyecto($1::uuid, a.proyecto_id) = 'escribir'
+          AND public.puede_usar_slot($1::uuid, a.slot)
         ORDER BY a.slot`,
       [usuarioId],
     );

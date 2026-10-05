@@ -150,3 +150,38 @@ export async function inspeccionarRepo(
     return { tienePackageJson: true, usaSqlite: false, tieneStart: true };
   }
 }
+
+/** Lo que devuelve el gateway por cada agente con cambios sin mergear. Ver `trabajo.ts` del gateway. */
+export interface EnCurso {
+  agente: string;
+  proyecto: string;
+  repo: string;
+  rama: string;
+  archivos: string[];
+  sinCommitear: boolean;
+}
+
+/**
+ * El trabajo en curso sobre esos repos, de TODOS los agentes.
+ *
+ * Corto a proposito (8 s): se pide antes de cada turno, y un gateway lento no
+ * puede demorar el turno por un aviso. Ante cualquier falla, lista vacia: sin
+ * aviso el turno sigue como siempre.
+ */
+export async function trabajoEnGateway(repos: string[], deps: GatewayAdminDeps): Promise<EnCurso[]> {
+  if (repos.length === 0) return [];
+  try {
+    const doFetch = deps.fetchImpl ?? fetch;
+    const res = await doFetch(`${deps.gatewayUrl.replace(/\/$/, '')}/trabajo`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${deps.adminToken}` },
+      body: JSON.stringify({ repos: repos.slice(0, 30) }),
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return [];
+    const cuerpo = (await res.json()) as { trabajo?: EnCurso[] };
+    return Array.isArray(cuerpo.trabajo) ? cuerpo.trabajo : [];
+  } catch {
+    return [];
+  }
+}

@@ -10,6 +10,7 @@ import { EJES, sinRepetidas } from './corrida.js';
 import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
 import { registrarAltas, type AltasDeps } from './altas.js';
+import { registrarTrabajo, type TrabajoVisible } from './trabajo.js';
 import type { EstadoDeDemo, PedidoDeDemo, PedidoDeDesarrollo, ResultadoDeDemo } from './demo-homero.js';
 import type { ResultadoDePublicacion } from './publicar-ticket.js';
 import { PROVEEDORES, type Proveedor } from './store.js';
@@ -103,6 +104,8 @@ export interface ApiDeps {
   decisiones?: DecidirDeps;
   /** El alta de una persona en una empresa. Ver `altas.ts`. */
   altas?: AltasDeps['darDeAlta'];
+  /** El trabajo en curso de la empresa de una persona. Ver `trabajo.ts`. */
+  trabajo?: (usuarioId: string) => Promise<TrabajoVisible[]>;
   /**
    * Con que ejecutar un turno pedido desde el panel.
    *
@@ -1164,6 +1167,7 @@ export function buildWebhookServer(
      * que lo manda a inventar otra forma de crear la base.
      */
     registrarAltas(app, { apiToken: api.apiToken, darDeAlta: api.altas });
+    registrarTrabajo(app, { apiToken: api.apiToken, trabajo: api.trabajo });
 
     registrarSupabase(app, {
       ...(api.supabase ?? {}),

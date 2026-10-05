@@ -69,7 +69,9 @@ async function como<T>(usuario: string | null, fn: () => Promise<T>): Promise<T>
   try {
     return await fn();
   } finally {
-    await db.exec('RESET ROLE;');
+    // Sin JWT despues, como el bridge: si quedara cargado, un INSERT "de la base"
+    // tomaria como dueño al ultimo usuario simulado.
+    await db.exec("RESET ROLE; SELECT set_config('request.jwt.claim.sub', '', false);");
   }
 }
 
@@ -370,5 +372,79 @@ describe('empresas, altas y aislamiento', () => {
     await migrar();
     expect(await q('SELECT 1 FROM empresa_miembros WHERE usuario_id = $1', [U.ana])).toEqual([]);
     expect(await q('SELECT id FROM empresas')).toHaveLength(2);
+  });
+});
+
+describe('041: Claudes por persona y grupos', () => {
+  let acme = '';
+  let web = '';
+  let grupo = '';
+  const usa = (u: string, slot: string) =>
+    q<{ p: boolean }>('SELECT public.puede_usar_slot($1, $2) AS p', [u, slot]).then((r) => r[0]!.p);
+
+  beforeAll(async () => {
+    acme = (await q<{ id: string }>(`SELECT id FROM empresas WHERE slug = 'acme'`))[0]!.id;
+    web = (await q<{ id: string }>(`SELECT id FROM proyectos WHERE nombre = 'acme-web'`))[0]!.id;
+    // ana volvio a la empresa como programadora (la 040 la habia sacado).
+    await db.query(`INSERT INTO empresa_miembros (empresa_id, usuario_id, rango) VALUES ($1, $2, 'programador')`, [acme, U.ana]);
+  });
+
+  it('el slot que crea una persona por REST queda a su nombre, y no puede elegir otro dueño', async () => {
+    await como(U.otro, () => q(`INSERT INTO agentes (slot, proyecto_id) VALUES ('c60', $1)`, [web]));
+    expect(await q('SELECT usuario_id FROM agentes WHERE slot = $1', ['c60'])).toEqual([{ usuario_id: U.otro }]);
+    expect(
+      await error(() => como(U.ana, () => q(`INSERT INTO agentes (slot, proyecto_id, usuario_id) VALUES ('c61', $1, $2)`, [web, U.otro]))),
+    ).toMatch(/permission denied/);
+    expect(
+      await error(() => como(U.ana, () => q(`UPDATE agentes SET usuario_id = $1 WHERE slot = 'c60'`, [U.ana]))),
+    ).toMatch(/permission denied/);
+    // El nombre si se cambia.
+    expect(await como(U.otro, () => q(`UPDATE agentes SET nombre = 'mio' WHERE slot = 'c60' RETURNING slot`))).toHaveLength(1);
+  });
+
+  it('un Claude propio lo usa solo su dueño; uno de antes (sin dueño), quien escribe en el proyecto', async () => {
+    expect(await usa(U.otro, 'c60')).toBe(true);
+    expect(await usa(U.ana, 'c60')).toBe(false);
+    expect(await usa(U.lucia, 'c60')).toBe(false);
+    // c50 lo inserto la base sin JWT: es de antes.
+    expect(await usa(U.ana, 'c50')).toBe(true);
+    expect(await usa(U.lucia, 'c50')).toBe(false);
+    expect(await usa(U.pepe, 'c50')).toBe(false);
+    expect(await usa(U.gero, 'c60')).toBe(true);
+  });
+
+  it('compartir con un grupo le da el Claude a los del grupo y a nadie mas', async () => {
+    grupo = (await como(U.otro, () => q<{ id: string }>(`SELECT public.crear_grupo('backend') AS id`)))[0]!.id;
+    await como(U.otro, () => q('SELECT public.sumar_a_grupo($1, $2)', [grupo, U.ana]));
+    expect(await error(() => como(U.otro, () => q('SELECT public.sumar_a_grupo($1, $2)', [grupo, U.pepe])))).toMatch(/no_es_de_la_empresa/);
+    expect(await error(() => como(U.otro, () => q('SELECT public.sumar_a_grupo($1, $2)', [grupo, U.lucia])))).toMatch(/no_es_de_la_empresa/);
+    expect(await error(() => como(U.ana, () => q('SELECT public.compartir_claude($1, $2)', ['c60', grupo])))).toMatch(/no_es_tu_claude/);
+    expect(await error(() => como(U.lucia, () => q(`SELECT public.crear_grupo('x')`)))).toMatch(/solo_lectura/);
+
+    await como(U.otro, () => q('SELECT public.compartir_claude($1, $2)', ['c60', grupo]));
+    expect(await usa(U.ana, 'c60')).toBe(true);
+    expect(await usa(U.lucia, 'c60')).toBe(false);
+
+    const deAna = await como(U.ana, () => q<{ slot: string; es_mio: boolean }>('SELECT slot, es_mio FROM public.mis_claudes()'));
+    expect(deAna.map((x) => x.slot)).toEqual(['c50', 'c60']);
+    const grupos = await como(U.ana, () => q<{ nombre: string; soy_duenio: boolean }>('SELECT nombre, soy_duenio FROM public.mis_grupos()'));
+    expect(grupos).toEqual([{ nombre: 'backend', soy_duenio: false }]);
+    expect(await como(U.pepe, () => q('SELECT id FROM grupos'))).toEqual([]);
+  });
+
+  it('salir del grupo, o que lo borren, le saca el Claude', async () => {
+    await como(U.ana, () => q('SELECT public.sacar_de_grupo($1, $2)', [grupo, U.ana]));
+    expect(await usa(U.ana, 'c60')).toBe(false);
+    await como(U.otro, () => q('SELECT public.sumar_a_grupo($1, $2)', [grupo, U.ana]));
+    await como(U.otro, () => q('SELECT public.borrar_grupo($1)', [grupo]));
+    expect(await usa(U.ana, 'c60')).toBe(false);
+    expect(await q('SELECT grupo_id FROM agentes WHERE slot = $1', ['c60'])).toEqual([{ grupo_id: null }]);
+  });
+
+  it('companeros lista la gente de mi empresa, no la de otras', async () => {
+    const c = await como(U.ana, () => q<{ usuario_id: string }>('SELECT usuario_id FROM public.companeros()'));
+    expect(c.map((x) => x.usuario_id)).toContain(U.otro);
+    expect(c.map((x) => x.usuario_id)).not.toContain(U.pepe);
+    expect(await error(() => como(U.ana, () => q('SELECT public.puede_usar_slot($1, $2)', [U.otro, 'c60'])))).not.toBe('');
   });
 });
