@@ -182,15 +182,19 @@ export interface ApiDeps {
   };
 }
 
+// El panel (C#) manda los campos vacios como `null`, no los omite: `.optional()`
+// solo acepta que falten, y un ticket con `proyectoId` y `"proyecto": null`
+// rebotaba como cuerpo_invalido. `null` vale lo mismo que no venir.
+const opcional = <T extends z.ZodTypeAny>(t: T) => t.nullish().transform((v) => v ?? undefined);
 const CuerpoDesarrollo = z.object({
   usuarioId: z.string().uuid(),
-  proyecto: z.string().regex(/^[a-zA-Z0-9._-]+$/).max(60).optional(),
-  proyectoId: z.string().uuid().optional(),
+  proyecto: opcional(z.string().regex(/^[a-zA-Z0-9._-]+$/).max(60)),
+  proyectoId: opcional(z.string().uuid()),
   pliego: z.string().min(20).max(60_000),
-  repos: z.array(z.string().max(100)).max(10).optional(),
-  referencia: z.array(z.string().max(100)).max(10).optional(),
-  org: z.string().max(100).optional(),
-  publico: z.boolean().optional(),
+  repos: opcional(z.array(z.string().max(100)).max(10)),
+  referencia: opcional(z.array(z.string().max(100)).max(10)),
+  org: opcional(z.string().max(100)),
+  publico: opcional(z.boolean()),
 });
 
 const ProveedorZ = z.enum(PROVEEDORES);
