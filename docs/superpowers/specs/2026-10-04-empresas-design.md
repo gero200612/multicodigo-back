@@ -108,7 +108,24 @@ cuenta la crea el back:
 5. El front entra con usuario y contraseña.
 
 El usuario se escribe como en el login (`pedro` → `pedro@multicodigo.app`).
+**Solo nombres de usuario, nunca un mail completo**: con un mail, el admin de
+cualquier empresa podría crear la cuenta de `alguien@gmail.com` antes que esa
+persona. El usuario es único en toda la plataforma (conviene `juan.acme`).
 Usuario repetido → error claro "ese usuario ya existe".
+
+## Seguridad (agregado en la revisión)
+
+- `proyectos` por columna: el navegador lee solo `id, nombre, repo_url,
+  creado_en, empresa_id, visibilidad` y no escribe por REST. `db_conexion`
+  (connection string con contraseña) y `tareas` (comandos del gateway)
+  quedan fuera. Una columna nueva no queda legible sola.
+- Trigger `proyectos_proteger`: aunque un GRANT futuro reabra el UPDATE, por
+  REST no se cambia `empresa_id` y la visibilidad solo la cambia un admin.
+- `puede_decidir(aprobación)`: aprobar es escribir. El panel lo consulta antes
+  de mandar la decisión al bridge.
+- Si Supabase no deja reescribir alguna policy de `storage.objects`, esa queda
+  como estaba (WARNING) en vez de frenar el arranque; las subidas igual pasan
+  por el panel, que frena al lector.
 
 ## Panel (.NET)
 
