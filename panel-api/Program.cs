@@ -1564,7 +1564,7 @@ api.MapPost("/proyectos/{proyectoId}/repos", async (
 
     try
     {
-        await repos.VincularAsync(jwt, proyectoId, new Repo(nombre, github), ct);
+        await repos.VincularAsync(jwt, proyectoId, new Repo(nombre, github, cuerpo.SoloLectura == true), ct);
         return Results.Ok(new { estado = "ok" });
     }
     catch (UpstreamException ex)

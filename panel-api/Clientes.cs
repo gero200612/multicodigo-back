@@ -986,7 +986,7 @@ public sealed class ReposClient(HttpClient http, string anonKey, ILogger<ReposCl
         // no necesita permiso de SELECT sobre lo recién insertado.
         req.Headers.TryAddWithoutValidation("Prefer", "return=minimal");
         req.Content = JsonContent.Create(
-            new { proyecto_id = proyectoId, nombre = repo.Nombre, github_repo = repo.GithubRepo },
+            new { proyecto_id = proyectoId, nombre = repo.Nombre, github_repo = repo.GithubRepo, solo_lectura = repo.SoloLectura },
             options: Json.Opciones);
 
         var res = await http.SendAsync(req, ct);

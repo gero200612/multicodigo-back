@@ -736,6 +736,21 @@ describe('el relevo cuando un slot se queda sin tokens', () => {
     expect(pedidos).toEqual(['c1', 'c2']);
   });
 
+  // Desconectar la cuenta a mitad de un ticket deja al slot sin cuenta: otro
+  // sigue, y el aviso dice lo que paso (no "sin tokens").
+  it('releva cuando al slot le desconectaron la cuenta', async () => {
+    const pedidos: { agent: string; prompt: string }[] = [];
+    const ask = vi.fn(async (req: { jobId: string; agent: string; prompt: string }) => {
+      pedidos.push({ agent: req.agent, prompt: req.prompt });
+      if (req.agent === 'c1') throw new Error('sin_cuenta');
+      return { jobId: req.jobId, sessionId: 's', text: 'listo', turns: 1 };
+    });
+    const r = await ejecutarTurnoConRelevo(deps({ ask, listarAgentes: async () => CON_CUENTA }), TURNO);
+    expect(r.texto).toBe('listo');
+    expect(pedidos.map((p) => p.agent)).toEqual(['c1', 'c2']);
+    expect(pedidos[1]!.prompt).toContain('se quedo sin cuenta');
+  });
+
   // Relevar cualquier fallo repetiria el mismo error en otro slot y esconderia
   // la causa: un worktree sucio lo sigue estando desde el slot que sea.
   it('no releva por un error que no es de tokens', async () => {

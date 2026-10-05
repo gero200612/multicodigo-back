@@ -419,6 +419,7 @@ describe('041: Claudes por persona y grupos', () => {
   it('compartir con un grupo le da el Claude a los del grupo y a nadie mas', async () => {
     grupo = (await como(U.otro, () => q<{ id: string }>(`SELECT public.crear_grupo('backend') AS id`)))[0]!.id;
     await como(U.otro, () => q('SELECT public.sumar_a_grupo($1, $2)', [grupo, U.ana]));
+    await como(U.ana, () => q('SELECT public.responder_invitacion($1, true)', [grupo]));
     expect(await error(() => como(U.otro, () => q('SELECT public.sumar_a_grupo($1, $2)', [grupo, U.pepe])))).toMatch(/no_es_de_la_empresa/);
     expect(await error(() => como(U.otro, () => q('SELECT public.sumar_a_grupo($1, $2)', [grupo, U.lucia])))).toMatch(/no_es_de_la_empresa/);
     expect(await error(() => como(U.ana, () => q('SELECT public.compartir_claude($1, $2)', ['c60', grupo])))).toMatch(/no_es_tu_claude/);
@@ -439,19 +440,21 @@ describe('041: Claudes por persona y grupos', () => {
     await como(U.ana, () => q('SELECT public.sacar_de_grupo($1, $2)', [grupo, U.ana]));
     expect(await usa(U.ana, 'c60')).toBe(false);
     await como(U.otro, () => q('SELECT public.sumar_a_grupo($1, $2)', [grupo, U.ana]));
+    await como(U.ana, () => q('SELECT public.responder_invitacion($1, true)', [grupo]));
     await como(U.otro, () => q('SELECT public.borrar_grupo($1)', [grupo]));
     expect(await usa(U.ana, 'c60')).toBe(false);
-    expect(await q('SELECT grupo_id FROM agentes WHERE slot = $1', ['c60'])).toEqual([{ grupo_id: null }]);
+    expect(await q('SELECT grupo_id FROM claude_grupos WHERE slot = $1', ['c60'])).toEqual([]);
   });
 
   it('quien sale de la empresa deja de compartir sus Claudes', async () => {
     const g = (await como(U.ana, () => q<{ id: string }>(`SELECT public.crear_grupo('front') AS id`)))[0]!.id;
     await como(U.ana, () => q('SELECT public.sumar_a_grupo($1, $2)', [g, U.otro]));
+    await como(U.otro, () => q('SELECT public.responder_invitacion($1, true)', [g]));
     await como(U.otro, () => q('SELECT public.compartir_claude($1, $2)', ['c60', g]));
     expect(await usa(U.ana, 'c60')).toBe(true);
     await db.query(`UPDATE empresa_miembros SET rango = 'admin' WHERE usuario_id = $1`, [U.ana]);
     await como(U.ana, () => q('SELECT public.quitar_de_empresa($1, $2)', [acme, U.otro]));
-    expect(await q('SELECT grupo_id FROM agentes WHERE slot = $1', ['c60'])).toEqual([{ grupo_id: null }]);
+    expect(await q('SELECT grupo_id FROM claude_grupos WHERE slot = $1', ['c60'])).toEqual([]);
     expect(await usa(U.ana, 'c60')).toBe(false);
     // Vuelve para los tests de abajo.
     await db.query(`INSERT INTO empresa_miembros (empresa_id, usuario_id, rango) VALUES ($1, $2, 'programador')`, [acme, U.otro]);
@@ -462,5 +465,70 @@ describe('041: Claudes por persona y grupos', () => {
     expect(c.map((x) => x.usuario_id)).toContain(U.otro);
     expect(c.map((x) => x.usuario_id)).not.toContain(U.pepe);
     expect(await error(() => como(U.ana, () => q('SELECT public.puede_usar_slot($1, $2)', [U.otro, 'c60'])))).not.toBe('');
+  });
+});
+
+describe('042: invitaciones y un Claude en varios grupos', () => {
+  const usa = (u: string, slot: string) =>
+    q<{ p: boolean }>('SELECT public.puede_usar_slot($1, $2) AS p', [u, slot]).then((r) => r[0]!.p);
+  let g1 = '';
+  let g2 = '';
+
+  it('invitar no suma: entra recien cuando acepta, y puede rechazar', async () => {
+    g1 = (await como(U.otro, () => q<{ id: string }>(`SELECT public.crear_grupo('uno') AS id`)))[0]!.id;
+    g2 = (await como(U.otro, () => q<{ id: string }>(`SELECT public.crear_grupo('dos') AS id`)))[0]!.id;
+    await como(U.otro, () => q('SELECT public.invitar_a_grupo($1, $2)', [g1, U.ana]));
+    await como(U.otro, () => q('SELECT public.invitar_a_grupo($1, $2)', [g2, U.ana]));
+    // Solo el dueño invita.
+    expect(await error(() => como(U.ana, () => q('SELECT public.invitar_a_grupo($1, $2)', [g1, U.gero])))).toMatch(/solo_duenio_del_grupo/);
+
+    const inv = await como(U.ana, () => q<{ grupo: string }>('SELECT grupo FROM public.mis_invitaciones()'));
+    expect(inv.map((i) => i.grupo).sort()).toEqual(['dos', 'uno']);
+    // Invitada todavia no es del grupo.
+    expect(await como(U.ana, () => q('SELECT id FROM public.grupos_mios() WHERE id = $1', [g1]))).toEqual([]);
+    const delDuenio = await como(U.otro, () => q<{ invitados: { usuario_id: string }[] }>('SELECT invitados FROM public.grupos_mios() WHERE id = $1', [g1]));
+    expect(delDuenio[0]!.invitados.map((i) => i.usuario_id)).toEqual([U.ana]);
+
+    await como(U.ana, () => q('SELECT public.responder_invitacion($1, true)', [g1]));
+    await como(U.ana, () => q('SELECT public.responder_invitacion($1, true)', [g2]));
+    expect(await como(U.ana, () => q('SELECT grupo FROM public.mis_invitaciones()'))).toEqual([]);
+    expect(await error(() => como(U.ana, () => q('SELECT public.responder_invitacion($1, true)', [g1])))).toMatch(/sin_invitacion/);
+    expect(await error(() => como(U.otro, () => q('SELECT public.invitar_a_grupo($1, $2)', [g1, U.ana])))).toMatch(/ya_es_del_grupo/);
+  });
+
+  it('rechazar no suma, y el dueño puede cancelar una invitacion', async () => {
+    const g = (await como(U.otro, () => q<{ id: string }>(`SELECT public.crear_grupo('tres') AS id`)))[0]!.id;
+    await como(U.otro, () => q('SELECT public.invitar_a_grupo($1, $2)', [g, U.ana]));
+    await como(U.ana, () => q('SELECT public.responder_invitacion($1, false)', [g]));
+    expect(await como(U.ana, () => q('SELECT id FROM public.grupos_mios() WHERE id = $1', [g]))).toEqual([]);
+    await como(U.otro, () => q('SELECT public.invitar_a_grupo($1, $2)', [g, U.ana]));
+    await como(U.otro, () => q('SELECT public.cancelar_invitacion($1, $2)', [g, U.ana]));
+    expect(await como(U.ana, () => q('SELECT grupo FROM public.mis_invitaciones()'))).toEqual([]);
+  });
+
+  it('un Claude se prende y apaga grupo por grupo', async () => {
+    await como(U.otro, () => q('SELECT public.compartir_en_grupo($1, $2, true)', ['c60', g1]));
+    await como(U.otro, () => q('SELECT public.compartir_en_grupo($1, $2, true)', ['c60', g2]));
+    expect(await usa(U.ana, 'c60')).toBe(true);
+    const c = await como(U.ana, () => q<{ slot: string; grupos: { nombre: string }[] }>('SELECT slot, grupos FROM public.claudes_disponibles() WHERE slot = $1', ['c60']));
+    expect(c[0]!.grupos.map((x) => x.nombre)).toEqual(['dos', 'uno']);
+    expect(await error(() => como(U.ana, () => q('SELECT public.compartir_en_grupo($1, $2, true)', ['c60', g1])))).toMatch(/no_es_tu_claude/);
+
+    // Apagado en uno sigue por el otro.
+    await como(U.otro, () => q('SELECT public.compartir_en_grupo($1, $2, false)', ['c60', g1]));
+    expect(await usa(U.ana, 'c60')).toBe(true);
+    await como(U.otro, () => q('SELECT public.compartir_en_grupo($1, $2, false)', ['c60', g2]));
+    expect(await usa(U.ana, 'c60')).toBe(false);
+  });
+
+  it('quien sale de un grupo deja de compartir ahi sus Claudes', async () => {
+    const g = (await como(U.ana, () => q<{ id: string }>(`SELECT public.crear_grupo('cuatro') AS id`)))[0]!.id;
+    await como(U.ana, () => q('SELECT public.invitar_a_grupo($1, $2)', [g, U.otro]));
+    await como(U.otro, () => q('SELECT public.responder_invitacion($1, true)', [g]));
+    await como(U.otro, () => q('SELECT public.compartir_en_grupo($1, $2, true)', ['c60', g]));
+    expect(await usa(U.ana, 'c60')).toBe(true);
+    await como(U.otro, () => q('SELECT public.sacar_de_grupo($1, $2)', [g, U.otro]));
+    expect(await usa(U.ana, 'c60')).toBe(false);
+    expect(await q('SELECT 1 FROM claude_grupos WHERE grupo_id = $1', [g])).toEqual([]);
   });
 });

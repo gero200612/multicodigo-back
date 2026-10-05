@@ -76,10 +76,18 @@ export function proximoSlot(
  * Sin eso, el modelo recibe un pedido a mitad de camino sin saber que hubo un
  * antes, y lo mas probable es que empiece de cero y pise lo que ya estaba hecho.
  */
+const QUE_LE_PASO: Record<string, string> = {
+  usage_limit: 'se quedo sin tokens',
+  auth_expired: 'perdio la sesion de su cuenta',
+  sin_cuenta: 'se quedo sin cuenta (la desconectaron)',
+};
+
 export function promptDeRelevo(
   original: string,
   turnos: ReadonlyArray<{ prompt: string; respuesta: string }>,
   slotAnterior: string,
+  /** El error que corto al anterior: el aviso dice lo que paso de verdad. */
+  motivo = 'usage_limit',
 ): string {
   const hilo = turnos
     .slice(-TURNOS_DE_CONTEXTO)
@@ -94,7 +102,7 @@ export function promptDeRelevo(
       : hilo;
 
   const partes = [
-    `Estas continuando el trabajo de otro agente (${slotAnterior}), que se quedo sin tokens.`,
+    `Estas continuando el trabajo de otro agente (${slotAnterior}), que ${QUE_LE_PASO[motivo] ?? 'no pudo seguir'}.`,
     '',
     'IMPORTANTE: el codigo que se escribio hasta ahora YA ESTA en tu worktree, en',
     'disco. No lo rehagas: leelo primero y segui desde donde quedo.',

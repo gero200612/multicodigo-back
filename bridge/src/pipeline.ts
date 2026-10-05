@@ -1504,6 +1504,9 @@ const TOPE_DE_RELEVOS = 10;
  * El contexto se reinyecta como texto porque no se puede resumir la sesion desde
  * otro slot. Ver relevo.ts.
  */
+/** Los errores de un turno que son de la cuenta del slot, no del pedido. */
+const CODIGOS_DE_RELEVO = new Set(['usage_limit', 'auth_expired', 'sin_cuenta']);
+
 export async function ejecutarTurnoConRelevo(
   deps: PipelineDeps,
   t: Turno,
@@ -1521,12 +1524,13 @@ export async function ejecutarTurnoConRelevo(
       return { ...r, relevos, agente: turno.agente };
     } catch (err) {
       const codigo = err instanceof ErrorDeTurno ? err.codigo : '';
-      // Solo por la CUENTA: sin tokens, o con la sesion vencida. Las dos son de
-      // ese slot y no del pedido, asi que otro slot con su propia cuenta lo
-      // puede hacer. Cualquier otro fallo se propaga: relevar un
-      // `worktree_dirty` o un `git_failed` lo unico que hace es repetir el mismo
-      // error en otro slot y esconder la causa.
-      if (codigo !== 'usage_limit' && codigo !== 'auth_expired') throw err;
+      // Solo por la CUENTA: sin tokens, con la sesion vencida, o sin cuenta
+      // (la desconectaron, incluso a mitad de un ticket). Son de ese slot y no
+      // del pedido, asi que otro slot con su propia cuenta lo puede hacer.
+      // Cualquier otro fallo se propaga: relevar un `worktree_dirty` o un
+      // `git_failed` lo unico que hace es repetir el mismo error en otro slot y
+      // esconder la causa.
+      if (!CODIGOS_DE_RELEVO.has(codigo)) throw err;
 
       const siguiente = await elegirRelevo(deps, turno.proyecto, probados, t.usuarioId);
       if (!siguiente) throw err;
@@ -1543,7 +1547,7 @@ export async function ejecutarTurnoConRelevo(
       turno = {
         ...turno,
         agente: siguiente as Turno['agente'],
-        prompt: promptDeRelevo(t.prompt, historia, turno.agente),
+        prompt: promptDeRelevo(t.prompt, historia, turno.agente, codigo),
       };
     }
   }

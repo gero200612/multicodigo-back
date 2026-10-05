@@ -230,7 +230,11 @@ public sealed record CuerpoDecision(
 
 public sealed record CuerpoRepo(
     [property: JsonPropertyName("nombre")] string? Nombre,
-    [property: JsonPropertyName("github_repo")] string? GithubRepo);
+    [property: JsonPropertyName("github_repo")] string? GithubRepo,
+    // Un repo público ajeno, traído por link: se lee, no se escribe (ver la
+    // migración 024). Pedir false para uno ajeno no da nada: sin la App
+    // instalada ahí, el gateway no tiene con qué pushear.
+    [property: JsonPropertyName("solo_lectura")] bool? SoloLectura = null);
 
 /// <summary>
 /// Un repo a CREAR en GitHub, no a vincular.

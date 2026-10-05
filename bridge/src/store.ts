@@ -2722,7 +2722,10 @@ export class PgStore implements Store {
              grupo_id = NULL, nombre = NULL`,
       [usuarioId, proyectoId, slot],
     );
-    return (r.rowCount ?? 0) > 0;
+    if ((r.rowCount ?? 0) === 0) return false;
+    // Lo compartido era del dueño anterior (042): con dueño nuevo no se hereda.
+    await this.pool.query('DELETE FROM claude_grupos WHERE slot = $1', [slot]);
+    return true;
   }
 
   async puedeUsarSlot(usuarioId: string, slot: string): Promise<boolean> {
