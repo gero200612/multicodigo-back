@@ -42,6 +42,7 @@ import { aDestino, publicarCambios, textoDePublicacion } from './publicar-ticket
 import { partirParaTelegram } from './codigo.js';
 import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
+import { crearUsuarioPorApi, crearUsuarioPorSql } from './altas.js';
 
 /**
  * Una variable opcional que el compose entrega como cadena vacia.
@@ -208,6 +209,7 @@ const MIGRACIONES = [
   '037_fichas.sql',
   '038_agentes_bot.sql',
   '039_despliegue.sql',
+  '040_empresas.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 
@@ -743,6 +745,16 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
     env.SUPABASE_ACCESS_TOKEN && env.SUPABASE_ORG_ID
       ? { accessToken: env.SUPABASE_ACCESS_TOKEN, orgId: env.SUPABASE_ORG_ID }
       : {},
+  // Con la service_role, la cuenta se crea por la Admin API (el camino
+  // oficial); sin ella, escribiendo en `auth` desde esta misma conexion.
+  altas: (token: string, clave: string) =>
+    store.darDeAlta(
+      token,
+      clave,
+      env.SUPABASE_URL && env.SUPABASE_SERVICE_KEY
+        ? crearUsuarioPorApi(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY)
+        : crearUsuarioPorSql,
+    ),
   // El MISMO camino que usan los botones del chat. El panel no escribe la
   // tabla por su cuenta: decidir tambien es avisarle al gateway y editar el
   // mensaje de Telegram, y el bot es el unico que puede hacer lo ultimo.

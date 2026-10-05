@@ -2257,7 +2257,17 @@ async function armarProyecto(
         proyectoId = await deps.store.crearProyecto(opciones.proyecto, usuarioId);
         proyecto = opciones.proyecto;
         creado.proyecto = opciones.proyecto;
-      } catch {
+      } catch (e) {
+        // Crear proyectos es del admin de la empresa: se dice a quien pedirselo.
+        const motivo = e instanceof Error ? e.message : '';
+        if (motivo === 'solo_admin' || motivo === 'sin_empresa') {
+          return {
+            ok: false,
+            motivo:
+              `no pude crear el proyecto "${opciones.proyecto}": los proyectos los crea el admin ` +
+              'de tu empresa. Pedile que lo cree desde el panel y que te lo asigne.',
+          };
+        }
         // El motivo mas probable es el nombre repetido de OTRO usuario: la
         // tabla lo tiene unico y global. Se dice como se arregla en vez de
         // mostrar el error de Postgres.

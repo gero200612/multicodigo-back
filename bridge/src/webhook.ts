@@ -9,6 +9,7 @@ import { FORMATOS_GENERABLES } from './documentos.js';
 import { EJES, sinRepetidas } from './corrida.js';
 import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
+import { registrarAltas, type AltasDeps } from './altas.js';
 import type { EstadoDeDemo, PedidoDeDemo, PedidoDeDesarrollo, ResultadoDeDemo } from './demo-homero.js';
 import type { ResultadoDePublicacion } from './publicar-ticket.js';
 import { PROVEEDORES, type Proveedor } from './store.js';
@@ -100,6 +101,8 @@ export interface ApiDeps {
    * editar el mensaje del chat.
    */
   decisiones?: DecidirDeps;
+  /** El alta de una persona en una empresa. Ver `altas.ts`. */
+  altas?: AltasDeps['darDeAlta'];
   /**
    * Con que ejecutar un turno pedido desde el panel.
    *
@@ -1160,6 +1163,8 @@ export function buildWebhookServer(
      * gateway contestaria 404 y el modelo leeria "esa herramienta no existe",
      * que lo manda a inventar otra forma de crear la base.
      */
+    registrarAltas(app, { apiToken: api.apiToken, darDeAlta: api.altas });
+
     registrarSupabase(app, {
       ...(api.supabase ?? {}),
       apiToken: api.apiToken,

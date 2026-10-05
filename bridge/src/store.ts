@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import type { AgentId, ApprovalDecision } from '@multicodigo/shared';
 import type { Encargo, Tarea } from './cola.js';
+import { darDeAlta, type CrearUsuario, type ResultadoAlta } from './altas.js';
 import { EJES, SE_PUEDE_REANUDAR } from './corrida.js';
 import type { Corrida, Eje, MotivoDeCierre, Veredicto } from './corrida.js';
 
@@ -2371,10 +2372,13 @@ export class PgStore implements Store {
 
   async proyectosDeUsuario(usuarioId: string): Promise<Proyecto[]> {
     const r = await this.pool.query<{ id: string; nombre: string }>(
+      // `acceso_a_proyecto` y no un JOIN a `miembros`: es la misma regla que
+      // usa RLS (empresa, publico/privado, rango), asi el bot y el panel no
+      // pueden ver cosas distintas. 'escribir' porque Telegram es para
+      // trabajar: un lector no ve proyectos aca.
       `SELECT p.id, p.nombre
          FROM proyectos p
-         JOIN miembros m ON m.proyecto_id = p.id
-        WHERE m.usuario_id = $1
+        WHERE public.acceso_a_proyecto($1::uuid, p.id) = 'escribir'
         ORDER BY p.nombre`,
       [usuarioId],
     );
@@ -2603,8 +2607,8 @@ export class PgStore implements Store {
       const r = await this.pool.query<{ installation_id: string; cuenta: string }>(
         `SELECT gi.installation_id, gi.cuenta
            FROM github_instalaciones gi
-           JOIN miembros m ON m.proyecto_id = gi.proyecto_id
-          WHERE m.usuario_id = $1 AND gi.cuenta ILIKE $2
+          WHERE public.acceso_a_proyecto($1::uuid, gi.proyecto_id) = 'escribir'
+            AND gi.cuenta ILIKE $2
           LIMIT 1`,
         [usuarioId, cuenta],
       );
@@ -2665,6 +2669,25 @@ export class PgStore implements Store {
     );
   }
 
+  /**
+   * El alta de una persona en su empresa (ver `altas.ts`). Todo en una
+   * transaccion: si algo falla no queda la cuenta a medias ni el link quemado.
+   */
+  async darDeAlta(token: string, clave: string, crearUsuario: CrearUsuario): Promise<ResultadoAlta> {
+    const cliente = await this.pool.connect();
+    try {
+      await cliente.query('BEGIN');
+      const r = await darDeAlta(cliente, token, clave, crearUsuario);
+      await cliente.query(r.estado === 'ok' ? 'COMMIT' : 'ROLLBACK');
+      return r;
+    } catch (e) {
+      await cliente.query('ROLLBACK');
+      throw e;
+    } finally {
+      cliente.release();
+    }
+  }
+
   async crearProyecto(nombre: string, dueñoId: string): Promise<string> {
     // Las dos filas van juntas o no va ninguna: un proyecto sin dueño no lo ve
     // nadie —la policy pregunta por membresia— y quedaria invisible para
@@ -2672,9 +2695,21 @@ export class PgStore implements Store {
     const cliente = await this.pool.connect();
     try {
       await cliente.query('BEGIN');
+      // Crear proyectos es de admins (spec de empresas). El proyecto va a la
+      // empresa de quien lo crea.
+      const quien = await cliente.query<{ empresa_id: string; rango: string; superadmin: boolean }>(
+        `SELECT em.empresa_id, em.rango,
+                EXISTS (SELECT 1 FROM superadmins s WHERE s.usuario_id = $1) AS superadmin
+           FROM empresa_miembros em
+          WHERE em.usuario_id = $1`,
+        [dueñoId],
+      );
+      const fila = quien.rows[0];
+      if (!fila) throw new Error('sin_empresa');
+      if (fila.rango !== 'admin' && !fila.superadmin) throw new Error('solo_admin');
       const r = await cliente.query<{ id: string }>(
-        `INSERT INTO proyectos (nombre) VALUES ($1) RETURNING id`,
-        [nombre],
+        `INSERT INTO proyectos (nombre, empresa_id) VALUES ($1, $2) RETURNING id`,
+        [nombre, fila.empresa_id],
       );
       const id = r.rows[0]!.id;
       await cliente.query(
@@ -2714,8 +2749,7 @@ export class PgStore implements Store {
     const r = await this.pool.query<{ slot: AgentId; nombre: string | null; cuenta: string | null }>(
       `SELECT a.slot, a.nombre, a.cuenta
          FROM agentes a
-         JOIN miembros m ON m.proyecto_id = a.proyecto_id
-        WHERE m.usuario_id = $1
+        WHERE public.acceso_a_proyecto($1::uuid, a.proyecto_id) = 'escribir'
         ORDER BY a.slot`,
       [usuarioId],
     );
@@ -3525,8 +3559,7 @@ export class PgStore implements Store {
       const r = await this.pool.query<{ installation_id: string; cuenta: string }>(
         `SELECT DISTINCT gi.installation_id, gi.cuenta
            FROM github_instalaciones gi
-           JOIN miembros m ON m.proyecto_id = gi.proyecto_id
-          WHERE m.usuario_id = $1
+          WHERE public.acceso_a_proyecto($1::uuid, gi.proyecto_id) = 'escribir'
           ORDER BY gi.cuenta`,
         [usuarioId],
       );
@@ -3565,8 +3598,8 @@ export class PgStore implements Store {
       const r = await this.pool.query<{ nombre: string }>(
         `SELECT DISTINCT r.nombre
            FROM repos r
-           JOIN miembros m ON m.proyecto_id = r.proyecto_id
-          WHERE m.usuario_id = $1 AND r.solo_lectura
+          WHERE public.acceso_a_proyecto($1::uuid, r.proyecto_id) = 'escribir'
+            AND r.solo_lectura
           ORDER BY r.nombre`,
         [usuarioId],
       );
