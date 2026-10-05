@@ -262,6 +262,28 @@ describe('empresas, altas y aislamiento', () => {
     expect(await nombres(U.gero)).toEqual(['acme-secreto', 'acme-web', 'viejo']);
   });
 
+  it('por REST un programador no hace publico un privado ni se lleva el proyecto a otra empresa', async () => {
+    await como(U.ana, () => q('SELECT public.asignar($1, $2)', [privado, U.otro]));
+    const multicodigo = (await q<{ id: string }>(`SELECT id FROM empresas WHERE slug = 'multicodigo'`))[0]!.id;
+    expect(
+      await error(() => como(U.otro, () => q(`UPDATE proyectos SET visibilidad = 'publico' WHERE id = $1`, [privado]))),
+    ).toMatch(/solo_admin/);
+    expect(
+      await error(() => como(U.otro, () => q('UPDATE proyectos SET empresa_id = $1 WHERE id = $2', [multicodigo, privado]))),
+    ).toMatch(/no_se_cambia_de_empresa/);
+    expect(
+      await error(() => como(U.ana, () => q('UPDATE proyectos SET empresa_id = $1 WHERE id = $2', [multicodigo, privado]))),
+    ).toMatch(/no_se_cambia_de_empresa/);
+    await como(U.ana, () => q('SELECT public.cambiar_visibilidad($1, $2)', [privado, 'privado']));
+    await como(U.ana, () => q('SELECT public.desasignar($1, $2)', [privado, U.otro]));
+  });
+
+  it('un alta es siempre de un usuario interno, nunca de un mail ajeno', async () => {
+    expect(
+      await error(() => como(U.ana, () => q(`SELECT public.crear_alta($1, 'alguien@gmail.com', 'lector')`, [acme]))),
+    ).toMatch(/usuario_invalido/);
+  });
+
   it('asignar abre un privado, solo a gente de la misma empresa', async () => {
     await como(U.ana, () => q('SELECT public.asignar($1, $2)', [privado, U.otro]));
     expect(await nombres(U.otro)).toEqual(['acme-secreto', 'acme-web']);
@@ -278,6 +300,21 @@ describe('empresas, altas y aislamiento', () => {
     expect(await como(U.lucia, () => q('SELECT slot FROM agentes'))).toHaveLength(1);
     expect(await como(U.pepe, () => q('SELECT slot FROM agentes'))).toEqual([]);
     expect((await como(U.lucia, () => q<{ p: boolean }>('SELECT public.puede_escribir($1) AS p', [publico])))[0]!.p).toBe(false);
+  });
+
+  it('aprobar es escribir: el lector ve la aprobacion pero no la decide', async () => {
+    const id = '20000000-0000-4000-8000-000000000001';
+    await db.query(
+      `INSERT INTO approvals (approval_id, job_id, chat_id, message_id, agent, tool, summary, proyecto_id)
+       VALUES ($1, gen_random_uuid(), 1, 1, 'c50', 'Bash', 'git push', $2)`,
+      [id, publico],
+    );
+    const decide = (u: string) =>
+      como(u, () => q<{ p: boolean }>('SELECT public.puede_decidir($1) AS p', [id])).then((r) => r[0]!.p);
+    expect(await como(U.lucia, () => q('SELECT approval_id FROM approvals'))).toHaveLength(1);
+    expect(await decide(U.lucia)).toBe(false);
+    expect(await decide(U.otro)).toBe(true);
+    expect(await decide(U.pepe)).toBe(false);
   });
 
   it('el bridge usa la misma regla: acceso_a_proyecto', async () => {

@@ -278,6 +278,46 @@ $do$;
 -- admins y pasa por `crear_proyecto_en_empresa`.
 DROP POLICY IF EXISTS "proyectos: crear" ON public.proyectos;
 
+-- "proyectos: editar los mios" deja a quien puede escribir hacer UPDATE por
+-- REST, y su chequeo mira el `id`, que no cambia. Sin esto, un programador
+-- haria publico un privado, o se llevaria el proyecto a OTRA empresa
+-- cambiando `empresa_id`. Un trigger y no columnas en el GRANT: el chequeo de
+-- la visibilidad depende de QUIEN la cambia.
+--
+-- Sin `auth.uid()` es el bridge (que entra como `postgres`) o una migracion:
+-- esos pasan.
+CREATE OR REPLACE FUNCTION public._proteger_proyecto()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_usuario UUID := (SELECT auth.uid());
+BEGIN
+  IF v_usuario IS NULL THEN
+    RETURN NEW;
+  END IF;
+  IF NEW.empresa_id IS DISTINCT FROM OLD.empresa_id THEN
+    RAISE EXCEPTION 'no_se_cambia_de_empresa' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF NEW.visibilidad IS DISTINCT FROM OLD.visibilidad
+     AND NOT public._es_superadmin(v_usuario)
+     AND NOT EXISTS (
+       SELECT 1 FROM public.empresa_miembros
+        WHERE empresa_id = OLD.empresa_id AND usuario_id = v_usuario AND rango = 'admin'
+     ) THEN
+    RAISE EXCEPTION 'solo_admin' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS proyectos_proteger ON public.proyectos;
+CREATE TRIGGER proyectos_proteger
+  BEFORE UPDATE ON public.proyectos
+  FOR EACH ROW EXECUTE FUNCTION public._proteger_proyecto();
+
 -- --- lecturas de las tablas nuevas ------------------------------------------
 
 DROP POLICY IF EXISTS "empresas: leer la mia" ON public.empresas;
@@ -338,9 +378,13 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION public._exigir_admin(UUID) FROM PUBLIC, anon, authenticated;
 
--- `pedro` -> `pedro@multicodigo.app`; un mail entra igual. Mismo criterio que
--- `aEmail` del front: tienen que coincidir o el alta crea una cuenta con la que
--- despues no se puede entrar.
+-- `pedro` -> `pedro@multicodigo.app`. Mismo dominio que `aEmail` del front:
+-- tienen que coincidir o el alta crea una cuenta con la que despues no se
+-- puede entrar.
+--
+-- Solo nombres de usuario, NUNCA un mail completo: con un mail, el admin de
+-- cualquier empresa podria crear la cuenta de `alguien@gmail.com` antes que
+-- esa persona y quedarse con su direccion. El dominio interno no es de nadie.
 CREATE OR REPLACE FUNCTION public._email_de_usuario(p_usuario TEXT)
 RETURNS TEXT
 LANGUAGE plpgsql
@@ -350,12 +394,6 @@ AS $$
 DECLARE
   v TEXT := lower(btrim(COALESCE(p_usuario, '')));
 BEGIN
-  IF position('@' IN v) > 0 THEN
-    IF v !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' THEN
-      RAISE EXCEPTION 'usuario_invalido' USING ERRCODE = 'check_violation';
-    END IF;
-    RETURN v;
-  END IF;
   IF v !~ '^[a-z0-9][a-z0-9._-]{1,39}$' THEN
     RAISE EXCEPTION 'usuario_invalido' USING ERRCODE = 'check_violation';
   END IF;
@@ -911,3 +949,24 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION public.aceptar_invitacion(TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.aceptar_invitacion(TEXT) TO authenticated;
+
+-- --- decidir una aprobacion -------------------------------------------------
+
+-- El panel la consulta antes de mandar la decision al bridge. Aprobar es
+-- escribir: deja al agente tocar el repo. Un lector ve las aprobaciones (RLS)
+-- pero no las decide.
+CREATE OR REPLACE FUNCTION public.puede_decidir(p_aprobacion UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+  SELECT COALESCE(
+    (SELECT public.acceso_a_proyecto((SELECT auth.uid()), a.proyecto_id) = 'escribir'
+       FROM public.approvals a WHERE a.approval_id = p_aprobacion),
+    false);
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.puede_decidir(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.puede_decidir(UUID) TO authenticated;
