@@ -157,3 +157,37 @@ Usuario repetido → error claro "ese usuario ya existe".
 - Bridge: tests de `alta` (vigencia, usuario repetido, transacción) con dobles.
 - Panel: tests de endpoints con los dobles existentes.
 - Front: build de producción.
+
+## Parte B: Claudes por persona y grupos (migración 041)
+
+- Un slot nuevo queda a nombre de quien lo crea (`agentes.usuario_id`). Lo
+  registra el **bridge** (`/interno/claudes/registrar`), que lo llama el panel
+  después de que el gateway crea el contenedor. Por REST no se inserta en
+  `agentes`: si se pudiera, cualquiera se anotaría un slot ajeno con la cuenta
+  de Claude de otra persona adentro.
+- `puede_usar_slot(usuario, slot)`: superadmin; dueño; miembro del grupo con el
+  que está compartido; o, si el slot es de antes (sin dueño ni grupo), quien
+  escribe en su proyecto. Un slot sin fila: solo el superadmin.
+- Grupos (`grupos`, `grupo_miembros`): los crea cualquiera de la empresa que no
+  sea lector; el creador es dueño y suma gente de la **misma empresa**
+  (directo, sin invitación). El dueño de un Claude lo comparte con un grupo
+  suyo (`compartir_claude`). Quien sale de la empresa deja de compartir sus
+  Claudes y pierde sus grupos.
+- El bridge lo aplica en `ejecutarTurno` (panel, Telegram y corridas pasan por
+  ahí) con el error `slot_ajeno`; el relevo saltea los Claudes ajenos.
+- Front: `/punchi/claudes`.
+
+## Parte C: trabajo en curso, para no pisarse
+
+- Gateway `POST /trabajo` (ruta de admin, un agente no la llama): por repo,
+  `git worktree list` sobre el base y `diff origin/main...HEAD` + `status` en
+  cada worktree `claude/<agente>/trabajo`. No sabe de empresas.
+- Bridge: antes de cada turno pide el trabajo de los repos del turno, lo filtra
+  a la empresa de la persona, esconde el nombre de los proyectos que no ve, y
+  lo antepone al pedido que recibe el agente (el job guarda el pedido
+  original). Los nombres pasan por un filtro de caracteres de ruta y van
+  marcados como datos: un nombre de archivo no puede inyectar instrucciones.
+- Es un aviso, no un candado: el agente lo usa para evitar esos archivos; el
+  choque real, si pasa, aparece en el merge como siempre.
+- Panel `GET /api/trabajo` y front `/punchi/en-curso`: lo mismo, mirando solo
+  repos de proyectos que la persona ve.
