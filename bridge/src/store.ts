@@ -841,6 +841,8 @@ export interface Store {
   corridaDeJob(jobId: string): Promise<Corrida | undefined>;
   /** Cierra la corrida con su motivo. Idempotente: cerrar dos veces no rompe. */
   cerrarCorrida(id: string, motivo: MotivoDeCierre): Promise<void>;
+  /** La corrida no toca main: va a revision al cerrar (044). */
+  marcarEnRevision(id: string): Promise<void>;
   /** Pasa a la ronda siguiente y devuelve el numero nuevo. */
   avanzarRonda(id: string): Promise<number>;
   /**
@@ -1726,6 +1728,11 @@ export class InMemoryStore implements Store {
     const chatId = this.chatsDeJob.get(jobId);
     if (chatId === undefined) return undefined;
     return this.corridaAbierta(chatId);
+  }
+
+  async marcarEnRevision(id: string): Promise<void> {
+    const c = this.corridas.get(id);
+    if (c) c.enRevision = true;
   }
 
   async cerrarCorrida(id: string, motivo: MotivoDeCierre): Promise<void> {
@@ -3229,7 +3236,7 @@ export class PgStore implements Store {
   private static readonly CAMPOS_CORRIDA =
     'id, chat_id, proyecto, md, ronda, techo_rondas, techo_hora, ' +
     'fallos_seguidos, huecos_de_ronda, pendientes, preguntas, respuestas, ' +
-    'preguntado_en, estado, motivo_de_cierre, creado_en, veredictos, contrato, fichas';
+    'preguntado_en, estado, motivo_de_cierre, creado_en, veredictos, contrato, fichas, en_revision';
 
   private aCorrida(f: Record<string, unknown>): Corrida {
     return {
@@ -3264,6 +3271,7 @@ export class PgStore implements Store {
       ...(veredictosDeFila(f.veredictos).length > 0
         ? { veredictos: veredictosDeFila(f.veredictos) }
         : {}),
+      ...(f.en_revision === true ? { enRevision: true } : {}),
     };
   }
 
@@ -3344,6 +3352,10 @@ export class PgStore implements Store {
    * intento por tener `cerrado_en` ya puesto. Con esto el segundo no toca nada
    * en vez de tirar.
    */
+  async marcarEnRevision(id: string): Promise<void> {
+    await this.pool.query('UPDATE corridas SET en_revision = true WHERE id = $1', [id]);
+  }
+
   async cerrarCorrida(id: string, motivo: MotivoDeCierre): Promise<void> {
     await this.pool.query(
       `UPDATE corridas SET estado = 'cerrada', motivo_de_cierre = $2, cerrado_en = now()

@@ -103,6 +103,11 @@ export interface Corrida {
    */
   veredictos?: Veredicto[];
   /**
+   * Va a revision (migracion 044): sin merge a main ni publicacion; al cerrar
+   * abre un chat en Actividad para que la persona publique.
+   */
+  enRevision?: boolean;
+  /**
    * El contrato entre el front y el back: las rutas, que reciben y que devuelven.
    *
    * Lo fija el planificador ANTES de escribir las tareas, y se inyecta en el

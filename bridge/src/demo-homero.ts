@@ -213,7 +213,7 @@ export async function abrirDesarrollo(
     }
   }
   if (!proyecto && !p.proyectoId) return { ok: false, motivo: 'falta el proyecto' };
-  return abrirDemo(
+  const r = await abrirDemo(
     {
       chatId,
       ...(proyecto ? { proyecto } : {}),
@@ -225,4 +225,8 @@ export async function abrirDesarrollo(
     deps,
     avisarEn(chatId),
   );
+  // Sobre un proyecto que YA existe (vino con proyectoId): nada a main hasta
+  // que la persona publique desde el chat de Actividad. Ver migracion 044.
+  if (r.ok && p.proyectoId) await deps.store.marcarEnRevision(r.corridaId);
+  return r;
 }

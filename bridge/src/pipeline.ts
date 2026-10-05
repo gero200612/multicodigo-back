@@ -1,5 +1,6 @@
 import type { Publicado } from './publicar.js';
 import { TIPO_GRANDE, armarTicket, partirTicket, pliegoDeTicket } from './ticket.js';
+import { promptDeRevision } from './revision.js';
 import {
   agentesQueTrabajaron,
   promptDeRelevo,
@@ -2540,6 +2541,48 @@ async function contextoDeCola(
 }
 
 /**
+ * El chat de Actividad de un pliego en revision: un turno del que construyo,
+ * con la marca del ticket, que junta el trabajo en su rama, saca el analisis
+ * funcional y resume. Ver `revision.ts`.
+ */
+async function abrirChatDeRevision(
+  corrida: Corrida,
+  motivo: MotivoDeCierre,
+  trabajaron: string[],
+  paraNombrar: string[],
+  resumen: ResumenDeTareas,
+  deps: PipelineDeps,
+): Promise<void> {
+  const usuarioId = await deps.store.usuarioDeChat(corrida.chatId);
+  if (!usuarioId) return;
+  const agente = (trabajaron.at(-1) ?? paraNombrar[0] ?? deps.defaultAgent) as AgentId;
+  const ctx = await contextoDeCola(corrida.chatId, corrida.proyecto, usuarioId, deps);
+  await ejecutarTurnoConRelevo(deps, {
+    proyectoId: ctx.proyectoId,
+    proyecto: corrida.proyecto,
+    agente,
+    usuarioId,
+    prompt: promptDeRevision({
+      md: corrida.md,
+      proyecto: corrida.proyecto,
+      agente,
+      otros: trabajaron.filter((a) => a !== agente),
+      hechas: resumen.hechas,
+      sinResolver: resumen.sinResolver.map((t) => t.texto.replace(/\s+/g, ' ').slice(0, 160)),
+      completo: motivo === 'completo',
+    }),
+    modo: 'desatendido',
+    sesionLimpia: true,
+    modelo: ctx.modelo,
+    repos: ctx.repos,
+    githubToken: ctx.githubToken,
+    documentos: ctx.documentos,
+    // `panel`: es lo que lee la cola de tickets de Actividad.
+    origen: 'panel',
+  });
+}
+
+/**
  * Cierra la corrida y manda el informe.
  *
  * El cierre va ANTES del aviso, y ese orden importa: si Telegram falla —o el
@@ -2619,7 +2662,8 @@ async function cerrarConInforme(
   // Los "no pude mergear" que el cierre dejo sin efecto: se sacan de la fila
   // y TAMBIEN de la lista del informe, que se arma con la copia en memoria.
   const prefijosResueltos: string[] = [];
-  if (motivo === 'completo' && deps.publicar) {
+  // En revision no se publica: eso lo hace la persona desde el chat de Actividad.
+  if (motivo === 'completo' && deps.publicar && !corrida.enRevision) {
     try {
       // `trabajaron` y no `paraNombrar`: sin trabajo no hay nada que mergear, y
       // el default de ahi arriba sirve para nombrar una rama, no para ir a
@@ -2665,6 +2709,12 @@ async function cerrarConInforme(
   // ahora, al publicar— y la que recibio esta funcion es de cuando el ciclo la
   // leyo por ultima vez.
   const ahora = await deps.store.corridaAbierta(corrida.chatId);
+  // En revision: el chat de Actividad, de fondo. El informe sale igual.
+  if (corrida.enRevision) {
+    void abrirChatDeRevision(corrida, motivo, trabajaron, paraNombrar, resumen, deps).catch((err) =>
+      console.error('[bridge] no pude abrir el chat de revision:', err),
+    );
+  }
   await avisar(
     textoDeInforme(
       corrida,
@@ -2916,9 +2966,15 @@ async function tandaDeAnalisis(
   // `correrCola`.
   const mios = (await deps.store.agentesDeUsuario(usuarioId).catch(() => [])).map((a) => a.slot);
   let ultimo: string | undefined;
+  // En revision el trabajo NO esta en main: esta en la rama del que construyo.
+  // El analista tiene que mirar ESE worktree; en otro slot veria main y
+  // volveria a pedir todo lo que ya esta hecho.
+  const constructor = corrida.enRevision
+    ? agentesQueTrabajaron(await deps.store.tareasDeCorrida(corrida.id).catch(() => [])).at(-1)
+    : undefined;
 
   for (const eje of porRevisar) {
-    const agente = await slotDeRevision(corrida.proyecto, mios, ultimo, deps);
+    const agente = constructor ?? (await slotDeRevision(corrida.proyecto, mios, ultimo, deps));
     if (agente) ultimo = agente;
     const elegido = (agente ??
       (await deps.store.getActiveAgent(chatId)) ??
@@ -3400,8 +3456,11 @@ export async function correrCola(
     const mios = corrida
       ? (await deps.store.agentesDeUsuario(usuarioId).catch(() => [])).map((a) => a.slot)
       : [];
-    const elegido =
-      corrida && deps.mergearTrabajo && mios.length > 0
+    // En revision no se reparte: sin merge a main, el slot siguiente no veria
+    // lo que hizo el anterior. Todo va al mismo, en su rama.
+    const elegido = corrida?.enRevision
+      ? ultimoSlot
+      : corrida && deps.mergearTrabajo && mios.length > 0
         ? clavarEn ??
           slotParaLaTarea(
             (await deps.listarAgentes?.(tarea.proyecto).catch(() => []) ?? []).filter((c) =>
@@ -3513,7 +3572,7 @@ export async function correrCola(
       // `r.agente` y no `agente`: si hubo relevo, el trabajo quedo en el
       // worktree del que contesto, y ese es el que hay que mergear.
       ultimoSlot = r.agente;
-      if (corrida && deps.mergearTrabajo) {
+      if (corrida && !corrida.enRevision && deps.mergearTrabajo) {
         // Que el merge falle no tira la corrida: el trabajo esta commiteado y
         // pusheado en la rama del slot, y el cierre lo reintenta. Lo que si
         // cambia es a quien le toca la que viene.
@@ -3597,7 +3656,7 @@ export async function correrCola(
       //
       // Un fallo aca no toca la corrida: el codigo esta mergeado igual, y el
       // cierre vuelve a intentar publicar.
-      if (corrida && deps.publicar) {
+      if (corrida && !corrida.enRevision && deps.publicar) {
         try {
           const pub = await deps.publicar(corrida, [r.agente]);
           if (!yaPublico && pub.publicados.length > 0) {
@@ -3716,7 +3775,7 @@ export async function correrCola(
             // Y si se guardo, entra a main como cualquier trabajo terminado: es
             // lo que hace que el que la retome —este slot u otro, da igual—
             // arranque de lo que ya hay en vez de escribirlo de nuevo.
-            if (g.ok && corrida && deps.mergearTrabajo) {
+            if (g.ok && corrida && !corrida.enRevision && deps.mergearTrabajo) {
               await deps.mergearTrabajo(tarea.proyecto, tarea.agente).catch(() => undefined);
             }
             if (!g.ok && corrida) {

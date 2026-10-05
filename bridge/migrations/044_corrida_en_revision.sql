@@ -1,0 +1,12 @@
+-- Pliegos que NO tocan main hasta que la persona lo pide.
+--
+-- Un pliego mergeaba a main cada tarea al cerrarla, y al final publicaba. En un
+-- proyecto que ya esta andando (un Ticket "Nueva funcionalidad", un Desarrollo
+-- adentro de un proyecto existente) eso es mandar a produccion trabajo que
+-- nadie miro: en Punchi, main de multicodigo-* se despliega solo.
+--
+-- `en_revision`: las tareas van todas al mismo agente, en su rama, sin merge
+-- ni publicacion. Al cerrar, el bridge abre un chat en Actividad (un job con la
+-- marca del ticket) con el resumen y el analisis funcional; desde ahi se
+-- publica con el boton, que es el que pasa la rama a main.
+ALTER TABLE public.corridas ADD COLUMN IF NOT EXISTS en_revision BOOLEAN NOT NULL DEFAULT false;

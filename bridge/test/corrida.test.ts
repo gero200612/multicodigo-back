@@ -4863,3 +4863,59 @@ describe('los archivos que sube la persona se usan tal cual', () => {
     expect(promptDeAnalisis('# x', 2, { eje: 'visual' })).toContain('copiar_documento');
   });
 });
+
+/**
+ * Un pliego sobre un proyecto que ya existe va a REVISION (044): nada a main
+ * hasta que la persona publica desde el chat de Actividad.
+ */
+describe('corrida en revision', () => {
+  async function enRevision(d: ReturnType<typeof arnes>): Promise<void> {
+    const c = await d.store.corridaAbierta(7);
+    await d.store.marcarEnRevision(c!.id);
+  }
+
+  it('no mergea, no reparte y no publica', async () => {
+    const mergeados: string[] = [];
+    let publico = false;
+    const d = arnes({
+      analista: () => [],
+      slots: ['c1', 'c2'],
+      mergearTrabajo: async (_p, agente) => {
+        mergeados.push(agente);
+        return { ok: true };
+      },
+      publicar: async () => {
+        publico = true;
+        return { publicados: [], pendientes: [] };
+      },
+    });
+    await conSlotsDelProyecto(d, ['c1', 'c2']);
+    await abrir(d);
+    await enRevision(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos']);
+    await correr(d);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mergeados).toEqual([]);
+    expect(publico).toBe(false);
+    const tareas = d.ask.mock.calls
+      .map((c) => c[0] as { agent?: string; prompt: string })
+      .filter((c) => c.prompt.includes('uno') || c.prompt.includes('dos'))
+      .filter((c) => !c.prompt.includes('--- PLIEGO ---') && !c.prompt.startsWith('['));
+    expect(new Set(tareas.map((t) => t.agent)).size).toBe(1);
+  });
+
+  it('al cerrar abre el chat de Actividad: un turno con la marca del ticket, sin tocar main', async () => {
+    const d = arnes({ analista: () => [], mergearTrabajo: async () => ({ ok: true }) });
+    await abrir(d);
+    await enRevision(d);
+    await encolarEnLaCorrida(d, ['uno']);
+    await correr(d);
+    await new Promise((r) => setTimeout(r, 20));
+    const cierre = d.ask.mock.calls
+      .map((c) => (c[0] as { prompt: string }).prompt)
+      .find((p) => p.includes('CIERRE DEL PLIEGO'));
+    expect(cierre).toBeDefined();
+    expect(cierre!.startsWith('[')).toBe(true);
+    expect(cierre).toContain('NO lo pases a main');
+  });
+});
