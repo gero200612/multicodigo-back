@@ -290,7 +290,10 @@ const pipelineDeps = {
   defaultAgent: env.DEFAULT_AGENT,
   project: env.DEFAULT_PROJECT,
   limite: new LimitePorChat(),
-  ask: (req: Parameters<typeof askAgent>[0]) => askAgent(req, gatewayDeps),
+  // `quien` se pasa: sin él el gateway toma el slot como de un desconocido, y
+  // tu propio turno siguiente rebota con agente_ocupado en vez de esperar.
+  ask: (req: Parameters<typeof askAgent>[0], quien: Parameters<typeof askAgent>[2]) =>
+    askAgent(req, gatewayDeps, quien),
   // El aviso de trabajo en curso (parte C de empresas). `/trabajo` es ruta de
   // admin del gateway: sin ese token no hay aviso y el turno sigue igual.
   trabajoEnCurso: env.GATEWAY_ADMIN_TOKEN
