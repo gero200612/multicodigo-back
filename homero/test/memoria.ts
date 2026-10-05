@@ -298,6 +298,10 @@ export class MemoriaStore implements Store {
   async estadosConPrefijo(prefijo: string) {
     return [...this.estado].filter(([k]) => k.startsWith(prefijo)).map(([clave, valor]) => ({ clave, valor: copia(valor) }));
   }
+  async recibidosDesde(_desde: Date) {
+    // El mock no guarda los datos completos, solo la clave. Para tests se devuelve vacío.
+    return [] as { de: string; asunto: string; recibidoEn: Date }[];
+  }
   async salientesEnBorrador(tipos: TipoDeSaliente[]) {
     return this.salientes.filter((s) => s.estado === 'borrador' && tipos.includes(s.tipo)).map((s) => ({ ...s }));
   }

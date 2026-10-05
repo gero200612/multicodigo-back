@@ -249,6 +249,8 @@ export interface Store {
   // ---- Lo que usa la web
   /** Todas las claves de homero.estado que empiezan asi (p. ej. `eleccion:`). */
   estadosConPrefijo(prefijo: string): Promise<{ clave: string; valor: unknown }[]>;
+  /** Mails recibidos desde esa fecha, del mas reciente al mas viejo (para mostrar en Respuestas). */
+  recibidosDesde(desde: Date): Promise<{ de: string; asunto: string; recibidoEn: Date }[]>;
   /** Los borradores de esos tipos, del mas viejo al mas nuevo. */
   salientesEnBorrador(tipos: TipoDeSaliente[]): Promise<Saliente[]>;
   listarLeads(f: FiltroDeLeads): Promise<{ total: number; leads: (Lead & { creado: Date })[] }>;
@@ -743,6 +745,14 @@ export class PgStore implements Store {
       [prefijo],
     );
     return r.rows.map((f) => ({ clave: f.clave as string, valor: f.valor as unknown }));
+  }
+
+  async recibidosDesde(desde: Date) {
+    const r = await this.pool.query(
+      `SELECT de, asunto, recibido_en FROM homero.recibidos WHERE guardado >= $1 ORDER BY recibido_en DESC LIMIT 50`,
+      [desde],
+    );
+    return r.rows.map((f) => ({ de: f.de as string, asunto: f.asunto as string, recibidoEn: f.recibido_en as Date }));
   }
 
   async salientesEnBorrador(tipos: TipoDeSaliente[]) {

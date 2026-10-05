@@ -101,7 +101,9 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       const reunion = s.reunionId ? await store.reunion(s.reunionId) : undefined;
       salientes.push({ saliente: s, lead: (await store.lead(s.leadId)) ?? null, reunion: reunion ?? null });
     }
-    return { elecciones, salientes };
+    // Los recibidos de hoy: para que se vea lo que cuenta el número del panel general.
+    const recibidos = await store.recibidosDesde(inicioDelDia(d.ahora()));
+    return { elecciones, salientes, recibidos };
   });
 
   app.get('/reuniones', async () => {
