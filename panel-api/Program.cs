@@ -227,6 +227,17 @@ builder.Services.AddHttpClient<IRepoArbolClient, RepoArbolClient>(
         sp.GetRequiredService<IInstalacionesClient>(),
         sp.GetRequiredService<ILogger<RepoArbolClient>>()));
 
+// El commit de la rama por defecto y el desfase de las ramas en curso, para el
+// tab "Versión". Mismo timeout que el árbol: son un par de pedidos chicos a la
+// API de GitHub, nada de JSON pesado.
+builder.Services.AddHttpClient<IVersionClient, VersionClient>(
+        c => c.Timeout = TimeSpan.FromSeconds(15))
+    .AddTypedClient<IVersionClient>((http, sp) => new VersionClient(
+        http,
+        sp.GetRequiredService<AppDeGitHub>(),
+        sp.GetRequiredService<IInstalacionesClient>(),
+        sp.GetRequiredService<ILogger<VersionClient>>()));
+
 builder.Services.AddHttpClient<INombresClient, NombresClient>(c =>
     {
         c.BaseAddress = new Uri(supabaseUrl);
@@ -1727,6 +1738,46 @@ api.MapGet("/proyectos/{proyectoId}/repos/{nombre}/arbol", async (
         // que se arreglan configurando algo, y un arbol vacio se leeria como
         // "el repo no tiene archivos" — que es falso y no sugiere la accion.
         return Results.Conflict(new { code = ex.Message, message = "no se pudieron leer los archivos del repo" });
+    }
+});
+
+/// El commit de la rama por defecto de un repo y, si se pide `?rama=`, cuanto
+/// se desvio esa rama de la por defecto. Para el tab "Version".
+///
+/// Mismo patron de permisos y de 404 que `/arbol`: el repo se pide por su
+/// NOMBRE corto y se valida contra los repos de ESTE proyecto.
+api.MapGet("/proyectos/{proyectoId}/repos/{nombre}/version", async (
+    string proyectoId, string nombre, string? rama, HttpContext ctx,
+    IProyectosClient proyectos, IReposClient repos, IVersionClient version,
+    CancellationToken ct) =>
+{
+    var jwt = await JwtDe(ctx);
+    if (await proyectos.NombreSiEsMiembroAsync(jwt, proyectoId, ct) is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var repo = (await repos.DeProyectoAsync(jwt, proyectoId, ct))
+        .FirstOrDefault(r => r.Nombre == nombre);
+    if (repo is null)
+    {
+        return Results.NotFound(new { code = "no_esta", message = "ese repo no es de este proyecto" });
+    }
+
+    if (!string.IsNullOrEmpty(rama) && !VersionClient.RamaValida(rama))
+    {
+        return Results.BadRequest(new { code = "rama_invalida", message = "esa rama no es válida" });
+    }
+
+    try
+    {
+        return Results.Ok(await version.VersionAsync(jwt, proyectoId, repo.GithubRepo, rama, ct));
+    }
+    catch (UpstreamException ex)
+    {
+        // Mismo patron que /arbol: el code tal cual, para que la pantalla diga
+        // que hacer en vez de "el repo no tiene archivos".
+        return Results.Conflict(new { code = ex.Message, message = "no se pudo revisar la version del repo" });
     }
 });
 

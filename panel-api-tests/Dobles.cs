@@ -656,3 +656,27 @@ public sealed class ArbolFalso : IRepoArbolClient
         return Task.FromResult("sha-falso");
     }
 }
+
+/// <summary>
+/// El commit de la rama por defecto y el desfase de las ramas en curso, sin
+/// salir a GitHub.
+/// </summary>
+public sealed class VersionFalso : IVersionClient
+{
+    public VersionDeRepo Resultado { get; set; } = new(
+        "main",
+        new CommitDeRepo("abc1234", "un commit", "2026-01-01T00:00:00Z", "https://github.com/x/y/commit/abc1234"),
+        null);
+    /// <summary>Los `full_name` que se pidieron.</summary>
+    public List<string> Pedidos { get; } = [];
+    /// <summary>Fuerza un fallo de upstream: "sin_app", "sin_instalacion", "github_404".</summary>
+    public string? Falla { get; set; }
+
+    public Task<VersionDeRepo> VersionAsync(
+        string jwt, string proyectoId, string fullName, string? rama, CancellationToken ct = default)
+    {
+        if (Falla is not null) throw new UpstreamException(Falla);
+        Pedidos.Add(fullName);
+        return Task.FromResult(Resultado);
+    }
+}

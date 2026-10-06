@@ -78,6 +78,7 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
     public DocumentosFalso Documentos { get; } = new();
     public ConversorFalso Conversor { get; } = new();
     public ArbolFalso Arbol { get; } = new();
+    public VersionFalso Version { get; } = new();
 
     /// <summary>Deja el panel sin FRONT_URL, para el caso del wwwroot al lado.</summary>
     public bool SinFrontUrl { get; set; }
@@ -113,6 +114,7 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
             s.AddSingleton<IDocumentosClient>(Documentos);
             s.AddSingleton<IConversorClient>(Conversor);
             s.AddSingleton<IRepoArbolClient>(Arbol);
+            s.AddSingleton<IVersionClient>(Version);
 
             s.AddAuthentication(AuthDePrueba.Esquema)
                 .AddScheme<AuthenticationSchemeOptions, AuthDePrueba>(AuthDePrueba.Esquema, _ => { });
