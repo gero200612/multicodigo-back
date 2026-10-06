@@ -92,47 +92,75 @@ export async function guardarCapturas(
   return nombres;
 }
 
-/** El PDF: título, resumen y una sección por pantalla, con sus capturas. */
+/** El PDF: título, resumen y una sección por pantalla, con sus capturas como protagonistas. */
 export async function armarPdf(
   datos: { titulo: string; proyecto: string; resumen: string; secciones: SeccionDeAnalisis[]; fecha: Date },
   imagenes: Map<string, Uint8Array>,
 ): Promise<Uint8Array> {
-  const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: datos.titulo, Author: 'Punchi' } });
+  const doc = new PDFDocument({ size: 'A4', margin: 40, info: { Title: datos.titulo, Author: 'Punchi' } });
   const partes: Buffer[] = [];
   doc.on('data', (b: Buffer) => partes.push(b));
   const listo = new Promise<void>((ok) => doc.on('end', () => ok()));
-  const ancho = doc.page.width - 100;
+  const ancho = doc.page.width - 80;
   const texto = (t: string) => t.replace(/^#+\s*/gm, '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
 
-  doc.fillColor('#1c4ed8').fontSize(10).text('ANÁLISIS FUNCIONAL', { characterSpacing: 1 });
-  doc.moveDown(0.3).fillColor('#14181d').fontSize(22).text(texto(datos.titulo));
-  doc.moveDown(0.2).fillColor('#5b636c').fontSize(10)
+  // Cabecera compacta
+  doc.fillColor('#1c4ed8').fontSize(9).text('ANÁLISIS FUNCIONAL', { characterSpacing: 1 });
+  doc.moveDown(0.2).fillColor('#14181d').fontSize(20).text(texto(datos.titulo));
+  doc.moveDown(0.15).fillColor('#5b636c').fontSize(9)
     .text(`${datos.proyecto} · ${datos.fecha.toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Argentina/Buenos_Aires' })}`);
-  doc.moveDown(1).fillColor('#14181d').fontSize(11.5).text(texto(datos.resumen), { lineGap: 3 });
+  doc.moveDown(0.6).fillColor('#14181d').fontSize(10.5).text(texto(datos.resumen), { lineGap: 2 });
 
   for (const s of datos.secciones) {
-    doc.moveDown(1.2);
-    if (doc.y > doc.page.height - 160) doc.addPage();
-    doc.fillColor('#14181d').fontSize(15).text(texto(s.titulo));
-    doc.moveDown(0.4).fontSize(11).fillColor('#2b3138').text(texto(s.texto), { lineGap: 2.5 });
-    for (const nombre of s.capturas ?? []) {
-      const img = imagenes.get(nombre);
-      if (!img) continue;
-      // El alto escalado se calcula acá: con `fit`, pdfkit dibuja la imagen
-      // pero no corre el cursor, y el texto siguiente quedaba encima.
-      // `openImage` existe en pdfkit pero no en sus tipos.
+    // Cada sección en página nueva para que las capturas sean protagonistas
+    doc.addPage();
+
+    // Título de sección con línea decorativa
+    doc.fillColor('#1c4ed8').fontSize(13).text(texto(s.titulo));
+    doc.moveDown(0.2);
+    doc.moveTo(doc.page.margins.left, doc.y)
+      .lineTo(doc.page.margins.left + 60, doc.y)
+      .lineWidth(2)
+      .strokeColor('#1c4ed8')
+      .stroke();
+    doc.moveDown(0.5);
+
+    // PRIMERO las capturas, grandes y centradas
+    const capturasConImagen = (s.capturas ?? []).filter((n) => imagenes.has(n));
+    for (const nombre of capturasConImagen) {
+      const img = imagenes.get(nombre)!;
       const abierta = (doc as unknown as { openImage(b: Buffer): { width: number; height: number } }).openImage(Buffer.from(img));
-      const escala = Math.min(ancho / abierta.width, 340 / abierta.height, 1);
+      // Capturas más grandes: hasta 520px de alto (casi toda la página útil)
+      const escala = Math.min(ancho / abierta.width, 520 / abierta.height, 1);
       const w = abierta.width * escala;
       const h = abierta.height * escala;
-      doc.moveDown(0.6);
-      if (doc.y + h + 30 > doc.page.height - doc.page.margins.bottom) doc.addPage();
+
+      // Si no cabe, página nueva
+      if (doc.y + h + 40 > doc.page.height - doc.page.margins.bottom) doc.addPage();
+
       const y = doc.y;
-      doc.image(abierta as unknown as Buffer, doc.page.margins.left + (ancho - w) / 2, y, { width: w, height: h });
-      doc.rect(doc.page.margins.left + (ancho - w) / 2, y, w, h).lineWidth(0.5).strokeColor('#d3d8dd').stroke();
-      doc.y = y + h + 4;
+      const x = doc.page.margins.left + (ancho - w) / 2;
+
+      // Sombra sutil (un rectángulo gris detrás)
+      doc.rect(x + 3, y + 3, w, h).fill('#e5e7eb');
+      // La imagen
+      doc.image(abierta as unknown as Buffer, x, y, { width: w, height: h });
+      // Borde fino
+      doc.rect(x, y, w, h).lineWidth(0.5).strokeColor('#d1d5db').stroke();
+
+      doc.y = y + h + 8;
       doc.x = doc.page.margins.left;
-      doc.fontSize(8.5).fillColor('#5b636c').text(nombre, { align: 'center', width: ancho });
+
+      // Pie de imagen más discreto
+      const etiqueta = nombre.replace(/-\d{14}\.png$/, '').replace(/-/g, ' ');
+      doc.fontSize(8).fillColor('#6b7280').text(etiqueta, { align: 'center', width: ancho });
+      doc.moveDown(0.8);
+    }
+
+    // DESPUÉS el texto explicativo, más compacto
+    if (s.texto.trim()) {
+      doc.moveDown(0.3);
+      doc.fontSize(10).fillColor('#374151').text(texto(s.texto), { lineGap: 2, width: ancho });
     }
   }
 
