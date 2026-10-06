@@ -135,13 +135,21 @@ public static partial class Documentos
 
         // Los acentos a su letra base en vez de descartarlos: "especificación"
         // tiene que quedar "especificacion" y no "especificacin".
+        //
+        // El mapeo manual de abajo es la parte que de verdad hace el trabajo:
+        // `Normalize(NormalizationForm.FormD)` depende de que el runtime tenga
+        // datos de globalización (ICU) para descomponer "ó" en "o" + marca
+        // combinante, y en un runtime sin ICU (modo invariante) la descomposición
+        // no pasa y la letra acentuada llega intacta. El chequeo de
+        // `NonSpacingMark` se deja como capa extra para cuando sí hay ICU.
         var limpio = new StringBuilder();
         foreach (var c in sinExt.Normalize(NormalizationForm.FormD))
         {
             if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark) continue;
+            var sinAcento = QuitarAcento(c);
             // LISTA BLANCA, no negra: lo que no está acá se convierte en guión.
             // Una lista negra deja pasar lo que nadie pensó, y esto arma una ruta.
-            limpio.Append(char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-' ? c : '-');
+            limpio.Append(char.IsAsciiLetterOrDigit(sinAcento) || sinAcento is '.' or '_' or '-' ? sinAcento : '-');
         }
 
         // Los guiones repetidos se colapsan y los de los extremos se van: salen
@@ -160,6 +168,27 @@ public static partial class Documentos
             ? nombre
             : $"{nombre}.{tipo}";
     }
+
+    /// <summary>
+    /// La letra base de una vocal acentuada, ñ o ü en castellano. Cualquier
+    /// otro carácter se devuelve igual.
+    /// </summary>
+    private static char QuitarAcento(char c) => c switch
+    {
+        'á' or 'à' or 'â' or 'ä' => 'a',
+        'Á' or 'À' or 'Â' or 'Ä' => 'A',
+        'é' or 'è' or 'ê' or 'ë' => 'e',
+        'É' or 'È' or 'Ê' or 'Ë' => 'E',
+        'í' or 'ì' or 'î' or 'ï' => 'i',
+        'Í' or 'Ì' or 'Î' or 'Ï' => 'I',
+        'ó' or 'ò' or 'ô' or 'ö' => 'o',
+        'Ó' or 'Ò' or 'Ô' or 'Ö' => 'O',
+        'ú' or 'ù' or 'û' or 'ü' => 'u',
+        'Ú' or 'Ù' or 'Û' or 'Ü' => 'U',
+        'ñ' => 'n',
+        'Ñ' => 'N',
+        _ => c,
+    };
 
     [GeneratedRegex(@"^[A-Za-z0-9._-]+$")]
     private static partial Regex FormaDeNombre();
