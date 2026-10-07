@@ -7,7 +7,7 @@ import { Contenido, editarPresupuesto, guardarRegla, pedirPresupuesto, Regla, re
 import { RUBROS } from './rubros.js';
 import type { Store } from './store.js';
 import type { Acciones } from './telegram.js';
-import { claveDeEleccion, PREFIJO_DE_ELECCION, type Boton, type Eleccion } from './ventas.js';
+import type { Boton } from './ventas.js';
 
 /**
  * La API interna de Homero: lo que usa punchi.dev para manejarlo entero desde
@@ -32,7 +32,19 @@ export interface DepsDeApi {
 const DIAS_DE_REUNIONES_PASADAS = 7;
 const LEADS_POR_PAGINA = 50;
 
+const CORRIDAS_EN_LISTA = 50;
+const LARGO_DE_INFORME_EN_LISTA = 300;
+// El mismo tope que tiene el agente al escribirla (escribir_libreta): si Gero
+// pudiera guardar mas, el agente no la podria reescribir entera.
+const LARGO_DE_LIBRETA = 8_000;
+
 const Id = z.coerce.number().int().positive();
+const AgenteValido = z.enum(['buscador', 'vendedor', 'atencion']);
+
+function recortar(texto: string | undefined, largo: number): string | null {
+  if (!texto) return null;
+  return texto.length > largo ? `${texto.slice(0, largo - 1).trimEnd()}…` : texto;
+}
 const Dia = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export function crearApi(d: DepsDeApi): FastifyInstance {
@@ -81,27 +93,15 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
     return { borradores: salida };
   });
 
+  // Las respuestas llegan ya armadas por el agente de atencion: Enviar / No
+  // enviar, nada que elegir antes.
   app.get('/respuestas', async () => {
-    const elecciones = [];
-    for (const { clave, valor } of await store.estadosConPrefijo(PREFIJO_DE_ELECCION)) {
-      const leadId = Number(clave.slice(PREFIJO_DE_ELECCION.length));
-      const e = valor as Eleccion;
-      const lead = await store.lead(leadId);
-      elecciones.push({
-        leadId,
-        lead: lead ?? null,
-        resumen: e.resumen ?? null,
-        recibido: { de: e.recibido.de, asunto: e.recibido.asunto, cuerpo: e.recibido.cuerpo, recibidoEn: e.recibido.recibidoEn },
-        libres: e.libres,
-        elegidos: e.elegidos,
-      });
-    }
     const salientes = [];
     for (const s of await store.salientesEnBorrador(['respuesta', 'confirmacion', 'recordatorio'])) {
       const reunion = s.reunionId ? await store.reunion(s.reunionId) : undefined;
       salientes.push({ saliente: s, lead: (await store.lead(s.leadId)) ?? null, reunion: reunion ?? null });
     }
-    return { elecciones, salientes };
+    return { salientes };
   });
 
   app.get('/reuniones', async () => {
@@ -195,39 +195,6 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
     });
   }
 
-  // ------------------------------------------------------------ respuestas
-
-  app.post<{ Params: { leadId: string; i: string } }>('/respuestas/:leadId/horarios/:i', async (request, reply) => {
-    const leadId = Id.safeParse(request.params.leadId);
-    const i = z.coerce.number().int().min(0).safeParse(request.params.i);
-    if (!leadId.success || !i.success) return invalido(reply);
-    const botones = await acciones.alternarHorario(leadId.data, i.data);
-    if (!botones) return noSe(reply, 'esa elección ya no está vigente');
-    const e = await store.leerEstado<Eleccion>(claveDeEleccion(leadId.data));
-    if (e?.telegramMsg) await d.cambiarBotones(e.telegramMsg, botones);
-    return { elegidos: e?.elegidos ?? [] };
-  });
-
-  app.post<{ Params: { leadId: string } }>('/respuestas/:leadId/armar', async (request, reply) => {
-    const leadId = Id.safeParse(request.params.leadId);
-    if (!leadId.success) return invalido(reply);
-    const e = await store.leerEstado<Eleccion>(claveDeEleccion(leadId.data));
-    const r = await acciones.armarRespuesta(leadId.data);
-    if (r === 'sin_horarios') return noSe(reply, 'marcá al menos un horario');
-    if (r === 'vencida') return noSe(reply, 'esa elección ya no está vigente');
-    await quitar(e?.telegramMsg);
-    return { ok: true };
-  });
-
-  app.post<{ Params: { leadId: string } }>('/respuestas/:leadId/no-responder', async (request, reply) => {
-    const leadId = Id.safeParse(request.params.leadId);
-    if (!leadId.success) return invalido(reply);
-    const e = await store.leerEstado<Eleccion>(claveDeEleccion(leadId.data));
-    await acciones.noResponder(leadId.data);
-    await quitar(e?.telegramMsg);
-    return { ok: true };
-  });
-
   // ------------------------------------------------------------ comandos
 
   app.post('/buscar', async (request, reply) => {
@@ -235,7 +202,7 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       .object({
         rubro: z.string().optional(),
         ciudad: z.string().max(80).optional(),
-        // Cuantos negocios con borrador se buscan: el doble se investiga.
+        // Cuantos negocios nuevos tiene que conseguir el buscador.
         cantidad: z.number().int().min(1).max(10).optional(),
       })
       .safeParse(request.body ?? {});
@@ -312,6 +279,62 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       return { demo: r.demo };
     });
   }
+
+  // ------------------------------------------------------------ agentes
+  //
+  // La pestaña Agentes de la web: que penso cada agente en cada corrida y que
+  // anoto en su libreta. La lista va liviana (sin pasos ni objetivo, que
+  // pueden ser largos); el detalle se pide al tocar una corrida.
+
+  app.get('/agentes', async () => {
+    const [buscador, vendedor, atencion, corridas] = await Promise.all([
+      store.libreta('buscador'),
+      store.libreta('vendedor'),
+      store.libreta('atencion'),
+      store.corridas({ limite: CORRIDAS_EN_LISTA }),
+    ]);
+    // Varias corridas suelen ser del mismo lead: se busca cada nombre una vez.
+    const nombres = new Map<number, string | null>();
+    for (const c of corridas) {
+      if (c.leadId != null && !nombres.has(c.leadId)) nombres.set(c.leadId, (await store.lead(c.leadId))?.nombre ?? null);
+    }
+    return {
+      libretas: { buscador, vendedor, atencion },
+      corridas: corridas.map((c) => ({
+        id: c.id,
+        agente: c.agente,
+        estado: c.estado,
+        slot: c.slot ?? null,
+        turnos: c.turnos ?? null,
+        informe: recortar(c.informe, LARGO_DE_INFORME_EN_LISTA),
+        error: c.error ?? null,
+        inicio: c.inicio,
+        fin: c.fin ?? null,
+        leadId: c.leadId ?? null,
+        lead: c.leadId != null ? (nombres.get(c.leadId) ?? null) : null,
+      })),
+    };
+  });
+
+  app.get<{ Params: { id: string } }>('/agentes/corridas/:id', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
+    if (!id.success) return invalido(reply);
+    const c = await store.corrida(id.data);
+    if (!c) return reply.code(404).send({ code: 'no_existe', message: 'esa corrida no existe' });
+    const lead = c.leadId != null ? ((await store.lead(c.leadId))?.nombre ?? null) : null;
+    return { corrida: { ...c, pasos: c.pasos ?? [], lead } };
+  });
+
+  // Gero corrige lo que el agente aprendio: el agente la lee al arrancar la
+  // proxima corrida, asi que lo que se escribe aca manda.
+  app.put<{ Params: { agente: string } }>('/agentes/libretas/:agente', async (request, reply) => {
+    const agente = AgenteValido.safeParse(request.params.agente);
+    const b = z.object({ contenido: z.string().max(LARGO_DE_LIBRETA) }).safeParse(request.body);
+    if (!agente.success) return invalido(reply, 'agente desconocido');
+    if (!b.success) return invalido(reply, `la libreta va como texto, de hasta ${LARGO_DE_LIBRETA} caracteres`);
+    await store.guardarLibreta(agente.data, b.data.contenido.trim());
+    return { agente: agente.data, contenido: await store.libreta(agente.data) };
+  });
 
   // ------------------------------------------------------------ patán
   //

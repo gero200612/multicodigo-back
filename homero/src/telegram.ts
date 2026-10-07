@@ -2,8 +2,8 @@ import { Bot, InlineKeyboard } from 'grammy';
 import { diaArgentino, horarioEnCastellano } from './agenda.js';
 import type { Config } from './config.js';
 import { horaArgentina, inicioDelDia } from './horas.js';
-import { ErrorDeCuenta, ErrorDeLimite, pedirTexto } from './ia.js';
-import { SISTEMA } from './prompts.js';
+import { ErrorDeCuenta, ErrorDeLimite } from './ia.js';
+import { SinLugar } from './gateway.js';
 import { CIUDADES } from './rubros.js';
 import type { CambioDeEnsayo, EstadoDeHomero } from './comandos.js';
 import { cortarBusquedas, pausar, pedirBusqueda, ponerModo, seguir } from './comandos.js';
@@ -55,16 +55,14 @@ export interface Acciones {
   prioridad(n: number): Promise<number>;
   /** Cuantos mails nuevos entran hoy. */
   lugaresHoy(): Promise<{ quedan: number; cupo: number; ventanaAbierta: boolean }>;
-  /** Marca o desmarca un horario para ofrecer. Devuelve los botones nuevos. */
-  alternarHorario(leadId: number, i: number): Promise<Boton[] | undefined>;
-  armarRespuesta(leadId: number): Promise<'encolada' | 'sin_horarios' | 'vencida'>;
-  noResponder(leadId: number): Promise<void>;
   estado(): Promise<EstadoDeHomero>;
   cambiarEnsayo(pedido: 'off' | string | undefined): Promise<CambioDeEnsayo>;
   armarDemo(reunionId: number): Promise<ResultadoDeDemo>;
   enviarDemo(demoId: number): Promise<ResultadoDeDemo>;
   cancelarDemo(demoId: number): Promise<ResultadoDeDemo>;
   editarPliego(demoId: number, pliego: string): Promise<ResultadoDeDemo>;
+  /** Un pedido de prueba a Claude por el fondo comun de cuentas. */
+  probarIa(): Promise<string>;
 }
 
 /** El boton para pedir la demo de una reunion. */
@@ -351,11 +349,13 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   bot.command('probar_ia', async (ctx) => {
     await ctx.reply('Probando Claude…');
     try {
-      const r = await pedirTexto('Presentate en una sola oración.', { sistema: SISTEMA, modelo: config.modelo });
+      if (!acciones) return;
+      const r = await acciones.probarIa();
       await ctx.reply(`🧠 ${r}`);
     } catch (err) {
       if (err instanceof ErrorDeLimite) await ctx.reply(`⏸ Sin uso de Claude. Resetea: ${err.resets ?? 'no dijo'}.`);
       else if (err instanceof ErrorDeCuenta) await ctx.reply('⚠️ La cuenta de Claude no está cargada o venció.');
+      else if (err instanceof SinLugar) await ctx.reply('⏳ Todas las cuentas están ocupadas (Punchi primero). Probá en un rato.');
       else await ctx.reply(`❌ ${err instanceof Error ? err.message : String(err)}`);
     }
   });
@@ -387,44 +387,14 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
 
   // Los botones de las tarjetas.
   bot.on('callback_query:data', async (ctx) => {
-    const [accion, crudo, extra] = ctx.callbackQuery.data.split(':');
+    const [accion, crudo] = ctx.callbackQuery.data.split(':');
     const id = Number(crudo);
     if (!acciones || !Number.isInteger(id)) {
       await ctx.answerCallbackQuery({ text: 'No entendí ese botón.' });
       return;
     }
-    // Marcar un horario no cierra la tarjeta: se redibujan los botones.
-    if (accion === 'ho') {
-      const botones = await acciones.alternarHorario(id, Number(extra));
-      if (!botones) {
-        await ctx.answerCallbackQuery({ text: 'Esta elección ya no está vigente.' });
-        return;
-      }
-      await ctx.answerCallbackQuery();
-      await ctx.editMessageReplyMarkup({ reply_markup: teclado(botones) }).catch(() => undefined);
-      return;
-    }
-    if (accion === 'ar') {
-      const r = await acciones.armarRespuesta(id);
-      if (r === 'sin_horarios') {
-        await ctx.answerCallbackQuery({ text: 'Marcá al menos un horario.' });
-        return;
-      }
-      await ctx.answerCallbackQuery({ text: r === 'encolada' ? '✍️ La escribo y te la paso.' : 'Ya no está vigente.' });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
-      if (r === 'encolada') {
-        await ctx.reply('✍️ Escribo la respuesta con esos horarios y te la paso para enviar.', {
-          reply_parameters: { message_id: ctx.callbackQuery.message!.message_id },
-        }).catch(() => undefined);
-      }
-      return;
-    }
     let resultado: string;
     switch (accion) {
-      case 'nr':
-        await acciones.noResponder(id);
-        resultado = '🗑 No le respondo.';
-        break;
       case 'ap': {
         if (!(await acciones.aprobarLead(id))) {
           resultado = 'Ya estaba decidido.';

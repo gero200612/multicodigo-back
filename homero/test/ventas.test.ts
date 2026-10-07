@@ -1,62 +1,85 @@
 import { describe, expect, it } from 'vitest';
 import { correrSiguiente } from '../src/cola.js';
+import type { PedidoDeCorrida } from '../src/gateway.js';
 import type { Recibido } from '../src/store.js';
-import {
-  alternarHorario,
-  aprobarLead,
-  aprobarSaliente,
-  armarRespuesta,
-  descartarSaliente,
-  MODO,
-  planificar,
-  procesarRebote,
-} from '../src/ventas.js';
-import { armar, casilla } from './armar.js';
+import { aprobarLead, aprobarSaliente, descartarSaliente, MODO, planificar, procesarRebote } from '../src/ventas.js';
+import { agenteDe, armar, casilla, type Guion } from './armar.js';
 
-const borrador = JSON.stringify({
-  encaja: true,
-  motivo: 'pyme',
-  factibilidad: 8,
-  factibilidad_motivo: 'proceso manual claro',
+const mail = {
+  email: 'ventas@ladistri.com.ar',
+  asunto: 'pedidos de la distri',
+  mensaje:
+    'Hola, soy Geronimo Enrici de Sincro y les escribo con una propuesta. Vi que toman los pedidos por WhatsApp a mano y me imagino que les lleva bastante tiempo. ¿Les interesaría charlar 15 minutos?\nGero',
+  seguimiento: 'Hola, les escribo de nuevo por la propuesta. ¿Lo vemos 15 minutos?\nGero',
   resumen_empresa: 'Distribuidora de bebidas en Rosario',
   dolor: 'toman pedidos por WhatsApp a mano',
-  idea: 'bot que carga los pedidos solo',
-  asunto: 'pedidos de la distri',
-  mensaje: 'Hola, vi que toman pedidos por WhatsApp...',
-  seguimiento: 'Te escribo de nuevo, ¿lo vemos o lo dejamos para más adelante?',
-});
+  idea: 'una app que carga los pedidos sola',
+  factibilidad: 8,
+  factibilidad_motivo: 'proceso manual claro',
+};
 
-const hallazgo = { externo: 'osm:node/1', nombre: 'La Distri', web: 'https://ladistri.com.ar', fuente: 'osm' as const };
+const buscaLaDistri: Guion['buscador'] = async (usar) => {
+  const r = await usar('anotar_negocio', {
+    nombre: 'La Distri',
+    rubro: 'distribuidora',
+    zona: 'Rosario',
+    web: 'https://ladistri.com.ar',
+    por_que: 'Toma pedidos por WhatsApp y tiene volumen',
+  });
+  expect(r.error).toBe(false);
+};
+
+const leeYEscribe: Guion['vendedor'] = async (usar) => {
+  const pagina = await usar('leer_pagina', { url: 'https://ladistri.com.ar' });
+  expect(pagina.texto).toContain('<no_confiable>');
+  expect((await usar('verificar_mail', { email: mail.email })).texto).toMatch(/^SI/);
+  const r = await usar('dejar_mail_listo', mail);
+  expect(r).toEqual({ texto: 'Listo: el mail queda en la cola de envio.', error: false });
+};
+
+const paginas = { 'https://ladistri.com.ar': '<html><body>Distribuidora La Distri. Pedidos por WhatsApp. ventas@ladistri.com.ar</body></html>' };
 
 /** Corre la cola hasta que no quede nada listo ahora. */
 async function vaciar(deps: Parameters<typeof correrSiguiente>[0]) {
   for (let i = 0; i < 50 && (await correrSiguiente(deps)); i++);
 }
 
-async function hastaContactado() {
-  const h = armar({
-    hallazgos: [hallazgo],
-    sitio: { texto: 'Distribuidora La Distri. Pedidos por WhatsApp.', mails: ['ventas@ladistri.com.ar'] },
-    pedirIa: async () => borrador,
-  });
-  await h.store.encolar({ tipo: 'prospectar', payload: { cantidad: 1, rubro: 'distribuidora', ciudad: 'Rosario' }, requiereIa: false });
+async function hastaContactado(g: Guion = {}) {
+  const guion: Guion = { buscador: buscaLaDistri, vendedor: leeYEscribe, ...g };
+  const h = armar({ paginas, agente: agenteDe(guion) });
+  await h.store.encolar({ tipo: 'agente_buscar', payload: { cantidad: 1 }, requiereIa: true });
   await vaciar(h.deps);
   return h;
 }
 
 describe('de la busqueda al primer mail', () => {
-  it('encuentra, investiga y le pasa a Gero la tarjeta con el mail y su unico seguimiento', async () => {
-    const { store, tarjetas, prompts } = await hastaContactado();
+  it('el buscador anota, el vendedor investiga y a Gero le llega la tarjeta con el mail y su unico seguimiento', async () => {
+    const { store, tarjetas, corridas } = await hastaContactado();
     const lead = store.leads[0]!;
-    expect(lead).toMatchObject({ estado: 'borrador', email: 'ventas@ladistri.com.ar' });
-    expect(lead.investigacion?.idea).toBe('bot que carga los pedidos solo');
+    expect(lead).toMatchObject({ estado: 'borrador', email: 'ventas@ladistri.com.ar', fuente: 'agente' });
+    expect(lead.investigacion).toMatchObject({ idea: 'una app que carga los pedidos sola', por_que: 'Toma pedidos por WhatsApp y tiene volumen' });
     expect(store.salientes.map((s) => [s.tipo, s.paso, s.estado])).toEqual([
       ['inicial', 0, 'borrador'],
       ['seguimiento', 1, 'borrador'],
     ]);
     expect(tarjetas[0]!.datos).toEqual([`ap:${lead.id}`, `de:${lead.id}`]);
-    // La web va marcada como no confiable en el prompt.
-    expect(prompts[0]).toContain('<no_confiable>');
+    // Dos corridas, cada una con sus herramientas y sus topes.
+    expect(corridas.map((c) => c.maxTurnos)).toEqual([40, 20]);
+    expect(corridas[0]!.web).toBe(true);
+    expect(store.corridasGuardadas.map((c) => [c.agente, c.estado, c.slot])).toEqual([
+      ['buscador', 'lista', 'c3'],
+      ['vendedor', 'lista', 'c3'],
+    ]);
+  });
+
+  it('el objetivo trae la libreta del agente', async () => {
+    const h = armar({ agente: agenteDe({ buscador: async () => {} }) });
+    await h.store.guardarLibreta('buscador', '- OSM no sirve en el conurbano');
+    await h.store.encolar({ tipo: 'agente_buscar', payload: { cantidad: 2 }, requiereIa: true });
+    await vaciar(h.deps);
+    expect(h.corridas[0]!.objetivo).toContain('- OSM no sirve en el conurbano');
+    // Sin negocios nuevos, Gero se entera.
+    expect(h.avisos.some((a) => a.includes('no encontró negocios'))).toBe(true);
   });
 
   it('al aprobar sale el inicial y el unico seguimiento queda a la semana, en el mismo hilo', async () => {
@@ -76,40 +99,73 @@ describe('de la busqueda al primer mail', () => {
     h.mover(new Date('2026-10-06T17:30:00Z'));
     await vaciar(h.deps);
     expect(h.enviados[1]).toMatchObject({ asunto: 'Re: pedidos de la distri', enRespuestaA: '<m1@x>' });
-    // Y no hay un segundo seguimiento.
     h.mover(new Date('2026-10-20T17:30:00Z'));
     await vaciar(h.deps);
     expect(h.enviados).toHaveLength(2);
   });
 
   it('en modo automatico no pide aprobacion', async () => {
-    const h = armar({
-      hallazgos: [hallazgo],
-      sitio: { texto: 'x', mails: ['ventas@ladistri.com.ar'] },
-      pedirIa: async () => borrador,
-    });
+    const h = armar({ paginas, agente: agenteDe({ buscador: buscaLaDistri, vendedor: leeYEscribe }) });
     await h.store.guardarEstado(MODO, 'auto');
-    await h.store.encolar({ tipo: 'prospectar', payload: { cantidad: 1 }, requiereIa: false });
+    await h.store.encolar({ tipo: 'agente_buscar', payload: { cantidad: 1 }, requiereIa: true });
     await vaciar(h.deps);
     expect(h.tarjetas).toHaveLength(0);
     expect(h.store.leads[0]!.estado).toBe('aprobado');
   });
 
-  it('descarta la propuesta poco factible aunque encaje', async () => {
-    const flojo = JSON.stringify({ ...JSON.parse(borrador), factibilidad: 4, factibilidad_motivo: 'unipersonal' });
-    const h = armar({ hallazgos: [hallazgo], sitio: { texto: 'x', mails: ['a@ladistri.com.ar'] }, pedirIa: async () => flojo });
-    await h.store.encolar({ tipo: 'prospectar', payload: { cantidad: 1 }, requiereIa: false });
-    await vaciar(h.deps);
-    expect(h.store.leads[0]!.estado).toBe('descartado');
+  it('el vendedor puede descartar con su motivo', async () => {
+    const h = await hastaContactado({
+      vendedor: async (usar) => {
+        await usar('descartar', { motivo: 'es una franquicia' });
+      },
+    });
+    expect(h.store.leads[0]).toMatchObject({ estado: 'descartado', investigacion: { descarte: 'es una franquicia' } });
     expect(h.tarjetas).toHaveLength(0);
   });
 
-  it('descarta el negocio sin mail o que no encaja', async () => {
-    const h = armar({ hallazgos: [hallazgo], sitio: { texto: 'x', mails: [] }, pedirIa: async () => borrador });
-    await h.store.encolar({ tipo: 'prospectar', payload: { cantidad: 1 }, requiereIa: false });
-    await vaciar(h.deps);
-    expect(h.store.leads[0]!.estado).toBe('descartado');
-    expect(h.tarjetas).toHaveLength(0);
+  it('las reglas de las casillas las pone el codigo: un mail con links no se acepta', async () => {
+    let rechazo = '';
+    await hastaContactado({
+      vendedor: async (usar) => {
+        rechazo = (await usar('dejar_mail_listo', { ...mail, mensaje: `${mail.mensaje}\nhttps://sincro.ar` })).texto;
+        await usar('descartar', { motivo: 'no pude' });
+      },
+    });
+    expect(rechazo).toContain('Sin links');
+  });
+
+  it('el buscador no puede anotar mas que su cupo ni repetir un negocio', async () => {
+    let tercero = '';
+    let repetido = '';
+    await hastaContactado({
+      buscador: async (usar) => {
+        await buscaLaDistri(usar, {} as PedidoDeCorrida);
+        repetido = (await usar('ya_conocido', { web: 'https://www.ladistri.com.ar/contacto' })).texto;
+        tercero = (await usar('anotar_negocio', { nombre: 'Otro', rubro: 'imprenta', zona: 'Rosario', web: 'https://otro.com.ar', por_que: 'otro mas' })).texto;
+      },
+    });
+    expect(repetido).toContain('Ya conocido');
+    expect(tercero).toContain('cupo');
+  });
+
+  it('un vendedor que termina sin cerrar deja la corrida fallida y la tarea se reintenta', async () => {
+    const h = await hastaContactado({ vendedor: async () => {} });
+    expect(h.store.corridasGuardadas.at(-1)).toMatchObject({ agente: 'vendedor', estado: 'fallida' });
+    const tarea = h.store.tareas.find((t) => t.tipo === 'agente_vender')!;
+    expect(tarea).toMatchObject({ estado: 'pendiente', intentos: 1 });
+  });
+
+  it('despues de la corrida el token no sirve mas', async () => {
+    let guardado: { corrida: string; token: string } | undefined;
+    const h = await hastaContactado({
+      vendedor: async (usar, p) => {
+        guardado = { corrida: p.corrida, token: p.tokenCorrida };
+        await leeYEscribe(usar, p);
+      },
+    });
+    const r = await h.sesiones.usar(guardado!.corrida, guardado!.token, 'descartar', { motivo: 'tarde' });
+    expect(r.error).toBe(true);
+    expect(h.store.leads[0]!.estado).toBe('borrador');
   });
 });
 
@@ -123,51 +179,29 @@ const respuesta = (cuerpo: string, extra: Partial<Recibido> = {}): Recibido => (
   ...extra,
 });
 
-async function contactadoYRespondio(analisis: object) {
-  const h = await hastaContactado();
+async function contactado(atencion: Guion['atencion']) {
+  const h = await hastaContactado({ atencion });
   await aprobarLead(1, h.deps);
   h.mover(new Date(h.ahora().getTime() + 20 * 60_000));
   await vaciar(h.deps);
-  h.deps.pedirIa = async () => JSON.stringify(analisis);
   return h;
 }
 
 describe('cuando responden', () => {
-  it('un interesado corta el seguimiento y Gero elige los horarios antes de que se escriba la respuesta', async () => {
-    const h = await contactadoYRespondio({
-      tipo: 'interesado',
-      empresa: 'La Distri',
-      resumen: 'Quiere ver cómo sería',
-      sugerencia: 'Ofrecer reunión',
+  it('atencion arma la respuesta con horarios y a Gero le llega lista para Enviar', async () => {
+    const h = await contactado(async (usar) => {
+      expect((await usar('ver_hilo')).texto).toContain('Me interesa');
+      expect((await usar('horarios_libres')).texto).toContain('1) ');
+      await usar('proponer_respuesta', { texto: 'Hola Ana, ¿te sirve el miércoles a las 12:30 o a las 18?\nGero', horarios: [1, 3] });
     });
-    await h.store.encolar({ tipo: 'resumir_respuesta', payload: respuesta('Me interesa'), requiereIa: true });
+    await h.store.encolar({ tipo: 'agente_atender', payload: respuesta('Me interesa'), requiereIa: true });
     await vaciar(h.deps);
 
     expect(h.store.leads[0]!.estado).toBe('respondio');
     expect(h.store.salientes.filter((s) => s.tipo === 'seguimiento').every((s) => s.estado === 'cancelado')).toBe(true);
-    // Todavia no se escribio ninguna respuesta: primero elige Gero.
-    expect(h.store.salientes.some((s) => s.tipo === 'respuesta')).toBe(false);
-    const eleccion = h.tarjetas.at(-1)!;
-    expect(eleccion.texto).toContain('Qué hacen: Distribuidora de bebidas en Rosario');
-    expect(eleccion.datos.filter((d) => d.startsWith('ho:'))).toHaveLength(6);
-
-    // Sin marcar nada no arma.
-    expect(await armarRespuesta(1, h.deps)).toBe('sin_horarios');
-    const botones = await alternarHorario(1, 0, h.deps);
-    expect(botones![0]!.texto.startsWith('☑️')).toBe(true);
-    await alternarHorario(1, 2, h.deps);
-    expect(await armarRespuesta(1, h.deps)).toBe('encolada');
-
-    h.deps.pedirIa = async (p) => {
-      expect(p).toContain('miércoles 30/9 a las 12:30');
-      expect(p).toContain('miércoles 30/9 a las 18:00');
-      expect(p).not.toContain('a las 15:00');
-      return 'Hola Ana, ¿te sirve el miércoles a las 12:30 o a las 18?';
-    };
-    await vaciar(h.deps);
+    expect(h.store.ofertas.get(1)).toHaveLength(2);
     const tarjeta = h.tarjetas.at(-1)!;
     expect(tarjeta.datos[0]).toMatch(/^en:/);
-    expect(h.store.ofertas.get(1)).toHaveLength(2);
 
     // Gero toca Enviar: sale en el hilo aunque sean las 22hs.
     h.mover(new Date('2026-09-30T01:00:00Z'));
@@ -175,16 +209,51 @@ describe('cuando responden', () => {
     await vaciar(h.deps);
     expect(h.enviados.at(-1)).toMatchObject({
       para: 'ventas@ladistri.com.ar',
-      texto: 'Hola Ana, ¿te sirve el miércoles a las 12:30 o a las 18?',
+      texto: 'Hola Ana, ¿te sirve el miércoles a las 12:30 o a las 18?\nGero',
     });
   });
 
+  it('una respuesta automatica no corta el seguimiento', async () => {
+    const h = await contactado(async (usar) => {
+      await usar('cerrar_sin_responder', { motivo: 'fuera de oficina', tipo: 'automatico' });
+    });
+    await h.store.encolar({ tipo: 'agente_atender', payload: respuesta('Estoy de vacaciones'), requiereIa: true });
+    await vaciar(h.deps);
+    expect(h.store.leads[0]!.estado).toBe('contactado');
+    expect(h.store.salientes.find((s) => s.tipo === 'seguimiento')!.estado).toBe('aprobado');
+  });
+
+  it('si atencion falla, el seguimiento igual queda frenado: no se le insiste a quien contesto', async () => {
+    const h = await contactado(async () => {});
+    await h.store.encolar({ tipo: 'agente_atender', payload: respuesta('Me interesa'), requiereIa: true });
+    await vaciar(h.deps);
+    expect(h.store.corridasGuardadas.at(-1)).toMatchObject({ agente: 'atencion', estado: 'fallida' });
+    expect(h.store.salientes.find((s) => s.tipo === 'seguimiento')!.estado).toBe('cancelado');
+    h.mover(new Date('2026-10-06T17:30:00Z'));
+    const antes = h.enviados.length;
+    for (let i = 0; i < 50 && (await correrSiguiente(h.deps)); i++);
+    expect(h.enviados.filter((m) => m.asunto === 'Re: pedidos de la distri')).toHaveLength(0);
+    expect(h.enviados.length).toBe(antes);
+  });
+
+  it('una baja entra en la lista y nunca mas se le escribe', async () => {
+    const h = await contactado(async (usar) => {
+      await usar('anotar_baja', { motivo: 'no me escriban mas' });
+    });
+    await h.store.encolar({ tipo: 'agente_atender', payload: respuesta('No me escriban más'), requiereIa: true });
+    await vaciar(h.deps);
+    expect(await h.store.esBaja('ventas@ladistri.com.ar')).toBe(true);
+    expect(h.store.leads[0]!.estado).toBe('baja');
+  });
+
   async function eligioElPrimero() {
-    const h = await contactadoYRespondio({ tipo: 'eligio_horario', empresa: 'La Distri', resumen: 'El 1', sugerencia: '-', horario_elegido: 1 });
+    const h = await contactado(async (usar) => {
+      expect((await usar('confirmar_horario', { horario: 1 })).error).toBe(false);
+    });
     const horario = new Date('2026-09-30T18:00:00Z'); // miercoles 15hs AR
     await h.store.guardarOferta(1, [horario]);
     const antes = h.enviados.length;
-    await h.store.encolar({ tipo: 'resumir_respuesta', payload: respuesta('Dale, el primero'), requiereIa: true });
+    await h.store.encolar({ tipo: 'agente_atender', payload: respuesta('Dale, el primero'), requiereIa: true });
     await vaciar(h.deps);
     return { h, antes };
   }
@@ -196,7 +265,6 @@ describe('cuando responden', () => {
     expect(h.enviados).toHaveLength(antes);
     const tarjeta = h.tarjetas.at(-1)!;
     expect(tarjeta.texto).toContain('ELIGIÓ HORARIO');
-    expect(tarjeta.datos[0]).toMatch(/^en:/);
 
     await aprobarSaliente(Number(tarjeta.datos[0]!.slice(3)), h.deps);
     await vaciar(h.deps);
@@ -227,14 +295,30 @@ describe('cuando responden', () => {
   });
 
   it('si responde otra persona de la empresa, lo reconoce por el hilo y le contesta a ella', async () => {
-    const h = await contactadoYRespondio({ tipo: 'otro', empresa: 'La Distri', resumen: 'reenvio', sugerencia: '-' });
+    const h = await contactado(async (usar) => {
+      await usar('avisar_a_gero', { texto: 'Contestó el dueño, quiere hablar con vos directo.' });
+    });
     await h.store.encolar({
-      tipo: 'resumir_respuesta',
+      tipo: 'agente_atender',
       payload: respuesta('Soy Juan, el dueño', { de: 'Juan <juan@ladistri.com.ar>', enRespuestaA: '<m1@x>' }),
       requiereIa: true,
     });
     await vaciar(h.deps);
     expect(h.store.leads[0]).toMatchObject({ estado: 'respondio', email: 'juan@ladistri.com.ar' });
+  });
+
+  it('alguien que escribe solo entra como lead recien cuando se le contesta', async () => {
+    const h = armar({
+      agente: agenteDe({
+        atencion: async (usar) => {
+          await usar('proponer_respuesta', { texto: 'Hola, ¡gracias por escribir! ¿Charlamos 30 minutos?\nGero', horarios: [1] });
+        },
+      }),
+    });
+    await h.store.encolar({ tipo: 'agente_atender', payload: respuesta('Quiero automatizar mi negocio', { de: 'Pepe <pepe@nuevo.com>' }), requiereIa: true });
+    await vaciar(h.deps);
+    expect(h.store.leads).toHaveLength(1);
+    expect(h.store.leads[0]).toMatchObject({ email: 'pepe@nuevo.com', fuente: 'entrante', estado: 'respondio' });
   });
 });
 
@@ -260,8 +344,8 @@ describe('planificar', () => {
     const h = armar({ ahora: new Date('2026-09-29T11:00:00Z') }); // martes 8hs AR
     await planificar(h.deps);
     await planificar(h.deps);
-    expect(h.store.tareas.filter((t) => t.tipo === 'prospectar')).toHaveLength(1);
-    expect(h.store.tareas[0]!.payload).toEqual({ cantidad: 5 }); // el cupo entero de 5
+    expect(h.store.tareas.filter((t) => t.tipo === 'agente_buscar')).toHaveLength(1);
+    expect(h.store.tareas[0]!.payload).toEqual({ cantidad: 10 }); // el doble del cupo de 5
 
     h.mover(new Date('2026-09-29T23:45:00Z')); // 20:45 AR
     await planificar(h.deps);
@@ -271,26 +355,26 @@ describe('planificar', () => {
   it('cada dos horas vuelve a buscar lo que falta, pero no mientras la anterior sigue', async () => {
     const h = armar({ ahora: new Date('2026-09-29T10:30:00Z') }); // martes 7:30 AR
     await planificar(h.deps);
-    expect(h.store.tareas.filter((t) => t.tipo === 'prospectar')).toHaveLength(1);
+    expect(h.store.tareas.filter((t) => t.tipo === 'agente_buscar')).toHaveLength(1);
 
     // 9:30: la de las 7 sigue pendiente, no se duplica.
     h.mover(new Date('2026-09-29T12:30:00Z'));
     await planificar(h.deps);
-    expect(h.store.tareas.filter((t) => t.tipo === 'prospectar')).toHaveLength(1);
+    expect(h.store.tareas.filter((t) => t.tipo === 'agente_buscar')).toHaveLength(1);
 
     // Termino sin dar borradores: a las 11 sale de nuevo por el cupo entero.
     h.store.tareas[0]!.estado = 'lista';
     h.mover(new Date('2026-09-29T14:10:00Z'));
     await planificar(h.deps);
-    const busquedas = h.store.tareas.filter((t) => t.tipo === 'prospectar');
+    const busquedas = h.store.tareas.filter((t) => t.tipo === 'agente_buscar');
     expect(busquedas).toHaveLength(2);
-    expect(busquedas[1]!.payload).toEqual({ cantidad: 5 });
+    expect(busquedas[1]!.payload).toEqual({ cantidad: 10 });
 
     // Despues de las 17 ya no busca: no llegaria a salir hoy.
     busquedas[1]!.estado = 'lista';
     h.mover(new Date('2026-09-29T20:30:00Z')); // 17:30 AR
     await planificar(h.deps);
-    expect(h.store.tareas.filter((t) => t.tipo === 'prospectar')).toHaveLength(2);
+    expect(h.store.tareas.filter((t) => t.tipo === 'agente_buscar')).toHaveLength(2);
   });
 
   it('el fin de semana no sale a buscar', async () => {

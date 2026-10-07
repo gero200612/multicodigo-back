@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { correrSiguiente } from '../src/cola.js';
+import { cortarBusquedas } from '../src/comandos.js';
 import { linkDeFicha } from '../src/fuentes.js';
 import type { Recibido } from '../src/store.js';
 import {
-  alternarHorario,
   apagarEnsayo,
   aprobarLead,
   aprobarSaliente,
-  armarRespuesta,
   ENSAYO,
   ensayoActivo,
   mandarMuestras,
@@ -15,35 +14,46 @@ import {
   proponerPrioridad,
   lugaresHoy,
 } from '../src/ventas.js';
-import { armar } from './armar.js';
+import { agenteDe, armar, type Guion } from './armar.js';
 
-const borrador = JSON.stringify({
-  encaja: true,
-  motivo: 'pyme',
-  factibilidad: 8,
-  factibilidad_motivo: 'proceso manual claro',
+const mail = {
+  email: 'info@estudiox.com.ar',
+  asunto: 'facturas del estudio',
+  mensaje:
+    'Hola, soy Geronimo Enrici de Sincro. Vi que son un estudio contable con varios clientes y me imagino que la carga de facturas les lleva bastante tiempo. ¿Charlamos 15 minutos?\nGero',
+  seguimiento: 'Te escribo de nuevo, ¿lo vemos o lo dejamos para más adelante?\nGero',
   resumen_empresa: 'Estudio contable en Rosario',
   dolor: 'carga de facturas',
   idea: 'bot de facturas por WhatsApp',
-  asunto: 'facturas del estudio',
-  mensaje: 'Hola, vi que son estudio contable...',
-  seguimiento: 'Te escribo de nuevo, ¿lo vemos o lo dejamos para más adelante?',
-});
+  factibilidad: 8,
+  factibilidad_motivo: 'proceso manual claro',
+  fuentes: ['https://estudiox.com.ar', 'https://estudiox.com.ar/contacto'],
+};
 
+/**
+ * Un borrador hecho por los agentes, con el ensayo prendido. `guion.atencion`
+ * se cambia en cada paso de un test: es lo que "piensa" atencion esa vez.
+ */
 async function conUnBorrador() {
-  const h = armar({
-    ensayo: true,
-    hallazgos: [{ externo: 'osm:node/42', nombre: 'Estudio X', web: 'https://estudiox.com.ar', fuente: 'osm' }],
-    sitio: {
-      texto: 'Estudio X',
-      mails: ['info@estudiox.com.ar'],
-      paginas: ['https://estudiox.com.ar', 'https://estudiox.com.ar/contacto'],
+  const guion: Guion = {
+    buscador: async (usar) => {
+      await usar('anotar_negocio', {
+        nombre: 'Estudio X',
+        rubro: 'contable',
+        zona: 'Rosario',
+        web: 'https://estudiox.com.ar',
+        por_que: 'Estudio con muchos clientes y carga manual',
+      });
     },
-    pedirIa: async () => borrador,
-  });
-  await h.store.encolar({ tipo: 'prospectar', payload: { cantidad: 1 }, requiereIa: false });
+    vendedor: async (usar) => {
+      const r = await usar('dejar_mail_listo', mail);
+      expect(r.error).toBe(false);
+    },
+  };
+  const h = armar({ ensayo: true, agente: agenteDe(guion) });
+  await h.store.encolar({ tipo: 'agente_buscar', payload: { cantidad: 1 }, requiereIa: true });
   for (let i = 0; i < 10 && (await correrSiguiente(h.deps)); i++);
-  return h;
+  return { ...h, guion };
 }
 
 describe('modo ensayo', () => {
@@ -62,11 +72,10 @@ describe('modo ensayo', () => {
     expect(m.para).toBe('gero@personal.com');
     // Al mail, exactamente lo que recibiria el cliente.
     expect(m.asunto).toBe('facturas del estudio');
-    expect(m.texto).toBe('Hola, vi que son estudio contable...');
+    expect(m.texto).toBe(mail.mensaje);
     // Y la informacion, por Telegram.
     const tarjeta = h.tarjetas[0]!.texto;
     expect(tarjeta).toContain('Factibilidad: 8/10');
-    expect(tarjeta).toContain('https://www.openstreetmap.org/node/42');
     expect(tarjeta).toContain('https://estudiox.com.ar/contacto');
     expect(tarjeta).toContain('lo dejamos para más adelante');
     // Cuenta para el cupo de la casilla (cuida que no caiga en spam) y no
@@ -116,13 +125,14 @@ describe('modo ensayo', () => {
     expect((await lugaresHoy(h.deps)).quedan).toBe(4);
   });
 
-  it('/cortar cancela las busquedas e investigaciones pendientes', async () => {
+  it('/cortar cancela las busquedas y los vendedores pendientes (tambien los del guion viejo)', async () => {
     const h = armar({ ensayo: true });
+    await h.store.encolar({ tipo: 'agente_buscar', payload: { cantidad: 3 }, requiereIa: true });
+    await h.store.encolar({ tipo: 'agente_vender', payload: { leadId: 9 }, requiereIa: true });
     await h.store.encolar({ tipo: 'prospectar', payload: { cantidad: 3 }, requiereIa: false });
-    await h.store.encolar({ tipo: 'investigar', payload: { leadId: 9 }, requiereIa: true });
     await h.store.encolar({ tipo: 'resumen_diario', payload: {}, requiereIa: false });
-    expect(await h.store.cancelarTareas(['prospectar', 'investigar'])).toBe(2);
-    expect(h.store.tareas.map((t) => t.estado)).toEqual(['fallida', 'fallida', 'pendiente']);
+    expect(await cortarBusquedas(h.store)).toBe(3);
+    expect(h.store.tareas.map((t) => t.estado)).toEqual(['fallida', 'fallida', 'fallida', 'pendiente']);
   });
 
   it('la tarjeta no tiene boton de aprobar y aprobar igual no hace nada', async () => {
@@ -154,23 +164,29 @@ describe('modo ensayo', () => {
       enRespuestaA,
     });
 
-    // 1. Gero contesta la muestra como si fuera el estudio.
-    h.deps.pedirIa = async () =>
-      JSON.stringify({ tipo: 'interesado', empresa: 'Estudio X', resumen: 'Quiere verlo', sugerencia: 'Ofrecer' });
-    await h.store.encolar({ tipo: 'resumir_respuesta', payload: deGero('Me interesa, contame', '<m1@x>'), requiereIa: true });
+    // 1. Gero contesta la muestra como si fuera el estudio, y atencion arma la
+    //    respuesta con horarios: le llega a Gero ya escrita, con Enviar.
+    let hilo = '';
+    h.guion.atencion = async (usar, p) => {
+      expect(p.objetivo).toContain('ensayo');
+      hilo = (await usar('ver_hilo')).texto;
+      await usar('proponer_respuesta', { texto: 'Hola, ¿te sirve el miércoles a las 15 o el jueves a las 12:30?\nGero', horarios: [1, 2] });
+    };
+    await h.store.encolar({ tipo: 'agente_atender', payload: deGero('Me interesa, contame', '<m1@x>'), requiereIa: true });
     await vaciar();
-    const eleccion = h.tarjetas.at(-1)!;
-    expect(eleccion.texto).toContain('🧪 ENSAYO');
-    expect(eleccion.texto).toContain('Qué hacen: Estudio contable en Rosario');
-    // El negocio real no cambia de estado ni recibe el mail de Gero.
+    expect(hilo).toContain('Estudio contable en Rosario');
+    expect(hilo).toContain('Me interesa, contame');
+    const propuesta = h.tarjetas.at(-1)!;
+    expect(propuesta.texto).toContain('🧪 ENSAYO');
+    expect(propuesta.texto).toContain('Respuesta para Estudio X');
+    expect(propuesta.datos).toEqual([expect.stringMatching(/^en:/), expect.stringMatching(/^no:/)]);
+    // El negocio real no cambia de estado ni recibe el mail de Gero, y nada
+    // le sale al cliente.
     expect(h.store.leads[0]).toMatchObject({ estado: 'borrador', email: 'info@estudiox.com.ar' });
+    expect(h.enviados.every((m) => m.para === 'gero@personal.com')).toBe(true);
 
-    // 2. Elige un horario y arma la respuesta.
-    await alternarHorario(1, 1, h.deps);
-    await armarRespuesta(1, h.deps);
-    h.deps.pedirIa = async () => 'Hola, ¿te sirve el miércoles a las 15?';
-    await vaciar();
-    await aprobarSaliente(Number(h.tarjetas.at(-1)!.datos[0]!.slice(3)), h.deps);
+    // 2. Gero toca Enviar: la respuesta le llega a el, no al estudio.
+    await aprobarSaliente(Number(propuesta.datos[0]!.slice(3)), h.deps);
     await vaciar();
     const resp = h.enviados.at(-1)!;
     expect(resp.para).toBe('gero@personal.com');
@@ -178,9 +194,10 @@ describe('modo ensayo', () => {
     const idDeLaRespuesta = h.store.salientes.find((s) => s.tipo === 'respuesta')!.messageId!;
 
     // 3. Gero elige el horario: reserva, y la confirmacion con la invitacion le llega a el.
-    h.deps.pedirIa = async () =>
-      JSON.stringify({ tipo: 'eligio_horario', empresa: 'Estudio X', resumen: 'El 1', sugerencia: '-', horario_elegido: 1 });
-    await h.store.encolar({ tipo: 'resumir_respuesta', payload: deGero('Dale, el miércoles', idDeLaRespuesta), requiereIa: true });
+    h.guion.atencion = async (usar) => {
+      expect((await usar('confirmar_horario', { horario: 1 })).error).toBe(false);
+    };
+    await h.store.encolar({ tipo: 'agente_atender', payload: deGero('Dale, el miércoles', idDeLaRespuesta), requiereIa: true });
     await vaciar();
     expect(h.tarjetas.at(-1)!.texto).toContain('🧪 ENSAYO · 📅 ELIGIÓ HORARIO');
     await aprobarSaliente(Number(h.tarjetas.at(-1)!.datos[0]!.slice(3)), h.deps);
@@ -190,10 +207,24 @@ describe('modo ensayo', () => {
     expect(conf.ics).toContain('mailto:gero@personal.com');
     expect(conf.ics).not.toContain('info@estudiox.com.ar');
     expect(h.store.leads[0]!.estado).toBe('borrador');
+    expect(h.enviados.some((m) => m.para === 'info@estudiox.com.ar')).toBe(false);
 
     // 4. Al apagar el ensayo, el horario de prueba se libera.
     expect(await apagarEnsayo(h.deps)).toBe(1);
     expect(await h.store.reunionesDesde(new Date(0))).toHaveLength(0);
+  });
+
+  it('en ensayo, un mail de Gero que no responde a una muestra no lanza a atencion', async () => {
+    const h = await conUnBorrador();
+    const corridasAntes = h.corridas.length;
+    await h.store.encolar({
+      tipo: 'agente_atender',
+      payload: { cuenta: 'sincro.ventas@gmail.com', messageId: '<suelto@gmail>', de: 'gero@personal.com', asunto: 'hola', cuerpo: 'hola', recibidoEn: new Date() },
+      requiereIa: true,
+    });
+    for (let i = 0; i < 5 && (await correrSiguiente(h.deps)); i++);
+    expect(h.corridas).toHaveLength(corridasAntes);
+    expect(h.avisos.at(-1)).toContain('no respondiendo a una muestra');
   });
 
   it('el link de la ficha sale para OSM y para Google', () => {

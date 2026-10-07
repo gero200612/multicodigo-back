@@ -10,9 +10,11 @@ export type TipoDeTarea =
   | 'enviar_saliente'
   | 'recordatorio'
   | 'resumen_diario'
-  | 'redactar_respuesta'
   | 'pliego_demo'
-  | 'presupuestar';
+  | 'presupuestar'
+  | 'agente_buscar'
+  | 'agente_vender'
+  | 'agente_atender';
 
 export type EstadoDeLead =
   | 'nuevo'
@@ -41,6 +43,10 @@ export interface Investigacion {
   personas?: number;
   /** Quien usaria la app y cuantos (para Patán). */
   usuarios?: string;
+  /** Por que lo eligio el agente buscador. */
+  por_que?: string;
+  /** Por que lo descarto el vendedor. */
+  descarte?: string;
 }
 
 export interface Lead {
@@ -134,6 +140,47 @@ export interface FiltroDeLeads {
   q?: string;
   limite: number;
   desde: number;
+}
+
+export type Agente = 'buscador' | 'vendedor' | 'atencion';
+
+/** Un paso de una corrida: lo que penso o la herramienta que uso. */
+export interface Paso {
+  tipo: 'pensamiento' | 'herramienta';
+  texto: string;
+  herramienta?: string;
+}
+
+export interface Corrida {
+  id: number;
+  agente: Agente;
+  objetivo: string;
+  leadId?: number;
+  estado: 'corriendo' | 'lista' | 'fallida';
+  slot?: string;
+  turnos?: number;
+  pasos?: Paso[];
+  informe?: string;
+  error?: string;
+  inicio: Date;
+  fin?: Date;
+}
+
+export interface CierreDeCorrida {
+  estado: 'lista' | 'fallida';
+  slot?: string;
+  turnos?: number;
+  pasos?: Paso[];
+  informe?: string;
+  error?: string;
+}
+
+/** Un mail inicial que tuvo respuesta: lo que el vendedor mira para aprender. */
+export interface MailQueFunciono {
+  rubro: string;
+  asunto: string;
+  cuerpo: string;
+  resultado: 'respondio' | 'reunion' | 'cerrado';
 }
 
 export interface Rendimiento {
@@ -238,7 +285,6 @@ export interface Store {
   marcarOcupado(dia: string, ocupado: boolean): Promise<void>;
 
   registrarBusqueda(b: { rubro: string; ciudad: string; fuente: string; hallados: number }): Promise<void>;
-  busquedasDeRubro(rubro: string): Promise<{ ciudad: string; veces: number }[]>;
   rendimientoPorRubro(): Promise<Rendimiento[]>;
   /** Mails iniciales esperando aprobacion o esperando salir. */
   pipeline(): Promise<{ borradores: number; aprobados: number }>;
@@ -247,8 +293,6 @@ export interface Store {
   metricasDesde(desde: Date): Promise<{ enviados: number; respuestas: number; reuniones: number; leads: number }>;
 
   // ---- Lo que usa la web
-  /** Todas las claves de homero.estado que empiezan asi (p. ej. `eleccion:`). */
-  estadosConPrefijo(prefijo: string): Promise<{ clave: string; valor: unknown }[]>;
   /** Los borradores de esos tipos, del mas viejo al mas nuevo. */
   salientesEnBorrador(tipos: TipoDeSaliente[]): Promise<Saliente[]>;
   listarLeads(f: FiltroDeLeads): Promise<{ total: number; leads: (Lead & { creado: Date })[] }>;
@@ -264,6 +308,21 @@ export interface Store {
   demosEnviadas(): Promise<Demo[]>;
   /** Las demos que ya se mandaron a Punchi (enviada o lista), las mas nuevas primero. */
   demosPresupuestables(): Promise<Demo[]>;
+
+  // ---- Agentes
+  crearCorrida(c: { agente: Agente; objetivo: string; leadId?: number }): Promise<number>;
+  cerrarCorrida(id: number, c: CierreDeCorrida): Promise<void>;
+  /** Para la que nunca llego a correr (sin cuenta libre). */
+  borrarCorrida(id: number): Promise<void>;
+  corrida(id: number): Promise<Corrida | undefined>;
+  /** Las ultimas corridas, las mas nuevas primero. Sin `agente`, de todos. */
+  corridas(f: { agente?: Agente; limite: number }): Promise<Corrida[]>;
+  libreta(agente: Agente): Promise<string>;
+  guardarLibreta(agente: Agente, contenido: string): Promise<void>;
+  /** Las ultimas busquedas, para que el buscador no repita lo que no rindio. */
+  busquedasRecientes(limite: number): Promise<{ rubro: string; ciudad: string; fuente: string; hallados: number; hecha: Date }[]>;
+  /** Mails iniciales que tuvieron respuesta, los mas nuevos primero. */
+  mailsQueFuncionaron(limite: number): Promise<MailQueFunciono[]>;
 
   presupuesto(id: number): Promise<Presupuesto | undefined>;
   presupuestoDeDemo(demoId: number): Promise<Presupuesto | undefined>;
@@ -671,14 +730,6 @@ export class PgStore implements Store {
     );
   }
 
-  async busquedasDeRubro(rubro: string) {
-    const r = await this.pool.query(
-      'SELECT ciudad, count(*) AS veces FROM homero.busquedas WHERE rubro = $1 GROUP BY ciudad',
-      [rubro],
-    );
-    return r.rows.map((f) => ({ ciudad: f.ciudad as string, veces: Number(f.veces) }));
-  }
-
   async rendimientoPorRubro() {
     const r = await this.pool.query(
       `SELECT rubro,
@@ -735,14 +786,6 @@ export class PgStore implements Store {
       reuniones: Number(f.reuniones),
       leads: Number(f.leads),
     };
-  }
-
-  async estadosConPrefijo(prefijo: string) {
-    const r = await this.pool.query(
-      `SELECT clave, valor FROM homero.estado WHERE starts_with(clave, $1) ORDER BY actualizado`,
-      [prefijo],
-    );
-    return r.rows.map((f) => ({ clave: f.clave as string, valor: f.valor as unknown }));
   }
 
   async salientesEnBorrador(tipos: TipoDeSaliente[]) {
@@ -829,6 +872,92 @@ export class PgStore implements Store {
       `SELECT * FROM homero.demos WHERE estado IN ('enviada', 'lista') ORDER BY id DESC LIMIT 100`,
     );
     return r.rows.map(aDemo);
+  }
+
+  // ---- Agentes ----
+
+  async crearCorrida(c: { agente: Agente; objetivo: string; leadId?: number }) {
+    const r = await this.pool.query(
+      'INSERT INTO homero.corridas (agente, objetivo, lead_id) VALUES ($1, $2, $3) RETURNING id',
+      [c.agente, c.objetivo, c.leadId ?? null],
+    );
+    return Number(r.rows[0].id);
+  }
+
+  async cerrarCorrida(id: number, c: CierreDeCorrida) {
+    await this.pool.query(
+      `UPDATE homero.corridas SET estado = $2, slot = $3, turnos = $4, pasos = $5, informe = $6,
+         error = $7, fin = now() WHERE id = $1`,
+      [
+        id,
+        c.estado,
+        c.slot ?? null,
+        c.turnos ?? null,
+        c.pasos ? JSON.stringify(c.pasos) : null,
+        c.informe ?? null,
+        c.error ?? null,
+      ],
+    );
+  }
+
+  async borrarCorrida(id: number) {
+    await this.pool.query('DELETE FROM homero.corridas WHERE id = $1', [id]);
+  }
+
+  async corrida(id: number) {
+    const r = await this.pool.query('SELECT * FROM homero.corridas WHERE id = $1', [id]);
+    return r.rows[0] ? aCorrida(r.rows[0]) : undefined;
+  }
+
+  async corridas(f: { agente?: Agente; limite: number }) {
+    const r = await this.pool.query(
+      `SELECT * FROM homero.corridas WHERE ($1::text IS NULL OR agente = $1) ORDER BY id DESC LIMIT $2`,
+      [f.agente ?? null, f.limite],
+    );
+    return r.rows.map(aCorrida);
+  }
+
+  async libreta(agente: Agente) {
+    const r = await this.pool.query('SELECT contenido FROM homero.libretas WHERE agente = $1', [agente]);
+    return (r.rows[0]?.contenido as string | undefined) ?? '';
+  }
+
+  async guardarLibreta(agente: Agente, contenido: string) {
+    await this.pool.query(
+      `INSERT INTO homero.libretas (agente, contenido) VALUES ($1, $2)
+       ON CONFLICT (agente) DO UPDATE SET contenido = EXCLUDED.contenido, actualizada = now()`,
+      [agente, contenido],
+    );
+  }
+
+  async busquedasRecientes(limite: number) {
+    const r = await this.pool.query(
+      'SELECT rubro, ciudad, fuente, hallados, hecha FROM homero.busquedas ORDER BY id DESC LIMIT $1',
+      [limite],
+    );
+    return r.rows.map((f) => ({
+      rubro: f.rubro as string,
+      ciudad: f.ciudad as string,
+      fuente: f.fuente as string,
+      hallados: Number(f.hallados),
+      hecha: new Date(f.hecha),
+    }));
+  }
+
+  async mailsQueFuncionaron(limite: number) {
+    const r = await this.pool.query(
+      `SELECT l.rubro, s.asunto, s.cuerpo, l.estado
+       FROM homero.salientes s JOIN homero.leads l ON l.id = s.lead_id
+       WHERE s.tipo = 'inicial' AND s.estado = 'enviado' AND l.estado IN ('respondio', 'reunion', 'cerrado')
+       ORDER BY s.enviado_en DESC LIMIT $1`,
+      [limite],
+    );
+    return r.rows.map((f) => ({
+      rubro: f.rubro as string,
+      asunto: f.asunto as string,
+      cuerpo: f.cuerpo as string,
+      resultado: f.estado as MailQueFunciono['resultado'],
+    }));
   }
 
   async presupuesto(id: number) {
@@ -946,5 +1075,22 @@ function aDemo(f: Fila): Demo {
     url: opc(f.url),
     error: opc(f.error),
     telegramMsg: num(f.telegram_msg),
+  };
+}
+
+function aCorrida(f: Record<string, unknown>): Corrida {
+  return {
+    id: Number(f.id),
+    agente: f.agente as Agente,
+    objetivo: f.objetivo as string,
+    leadId: f.lead_id == null ? undefined : Number(f.lead_id),
+    estado: f.estado as Corrida['estado'],
+    slot: (f.slot as string | null) ?? undefined,
+    turnos: f.turnos == null ? undefined : Number(f.turnos),
+    pasos: (f.pasos as Paso[] | null) ?? undefined,
+    informe: (f.informe as string | null) ?? undefined,
+    error: (f.error as string | null) ?? undefined,
+    inicio: new Date(f.inicio as string),
+    fin: f.fin ? new Date(f.fin as string) : undefined,
   };
 }

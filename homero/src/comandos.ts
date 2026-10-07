@@ -2,7 +2,7 @@ import { PAUSA_IA, PAUSA_MANUAL } from './cola.js';
 import type { DepsDeDemos } from './demos.js';
 import { cupoDelDia } from './envio.js';
 import { inicioDelDia } from './horas.js';
-import { CIUDADES, rubroPorId, RUBROS, zonaPorNombre } from './rubros.js';
+import { CIUDADES, rubroPorId, zonaPorNombre } from './rubros.js';
 import type { Store } from './store.js';
 import {
   apagarEnsayo,
@@ -88,15 +88,13 @@ export async function pedirBusqueda(
   zonaPedida?: string,
   cantidad = 3,
 ): Promise<Busqueda> {
-  const rubro = rubroPedido ? rubroPorId(rubroPedido) : undefined;
-  if (rubroPedido && !rubro) {
-    return { ok: false, motivo: `No conozco ese rubro. Opciones: ${RUBROS.map((r) => r.id).join(', ')}` };
-  }
+  // Cualquier rubro: el buscador ya no depende de la lista de `rubros.ts`.
+  const rubro = rubroPedido?.trim() ? (rubroPorId(rubroPedido)?.nombre ?? rubroPedido.trim()) : undefined;
   const ciudad = zonaPedida ? (zonaPorNombre(zonaPedida)?.nombre ?? zonaPedida) : undefined;
-  await store.encolar({ tipo: 'prospectar', payload: { cantidad, rubro: rubro?.id, ciudad }, requiereIa: false });
+  await store.encolar({ tipo: 'agente_buscar', payload: { cantidad, rubro, zona: ciudad }, requiereIa: true });
   return {
     ok: true,
-    ...(rubro ? { rubro: rubro.nombre } : {}),
+    ...(rubro ? { rubro } : {}),
     ...(ciudad ? { ciudad } : {}),
     fueraDeZona: Boolean(ciudad && !CIUDADES.includes(ciudad)),
   };
@@ -115,7 +113,7 @@ export async function seguir(store: Store): Promise<void> {
 }
 
 export async function cortarBusquedas(store: Store): Promise<number> {
-  return store.cancelarTareas(['prospectar', 'investigar']);
+  return store.cancelarTareas(['agente_buscar', 'agente_vender', 'prospectar', 'investigar']);
 }
 
 export type CambioDeEnsayo =

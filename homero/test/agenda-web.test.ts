@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { horarioEnCastellano, horariosParaOfrecer, invitacionIcs, sigueLibre } from '../src/agenda.js';
-import { elegirRubro, RUBROS } from '../src/rubros.js';
+import { RUBROS } from '../src/rubros.js';
 import { leerDia } from '../src/telegram.js';
 import { chatbotsDeHtml, esIpPrivada, leerSitio, mailsDeHtml, textoDeHtml } from '../src/web.js';
-import { leerBorrador, promptDeBorrador } from '../src/prompts.js';
 
 describe('agenda', () => {
   const martes = new Date('2026-09-29T17:00:00Z');
@@ -83,41 +82,12 @@ describe('si ya tienen bot', () => {
     expect(chatbotsDeHtml('<p>Hablá con nuestro asistente virtual</p>')).toEqual(['un chatbot']);
     expect(chatbotsDeHtml('<a href="https://wa.me/54911">WhatsApp</a>')).toEqual([]);
   });
-
-  it('el prompt le prohibe ofrecer un bot y le pide entrar por otro proceso', () => {
-    const lead = { id: 1, nombre: 'X', rubro: 'contable', ciudad: 'Capital Federal', fuente: 'osm', estado: 'nuevo' as const };
-    const p = promptDeBorrador(lead, RUBROS[0], 'texto', 'Geronimo Enrici', ['Tidio']);
-    expect(p).toContain('YA tiene atención automática (Tidio)');
-    expect(promptDeBorrador(lead, RUBROS[0], 'texto', 'Geronimo Enrici')).not.toContain('YA tiene');
-  });
-});
-
-describe('leerBorrador', () => {
-  const base = { motivo: 'x', resumen_empresa: 'x', dolor: 'x', idea: 'x', factibilidad: 7, factibilidad_motivo: 'x' };
-  it('un descarte con los campos vacios se lee como descarte, no como error', () => {
-    const t = '```json\n' + JSON.stringify({ ...base, encaja: false, asunto: '', mensaje: '', seguimiento: '' }) + '\n```';
-    expect(leerBorrador(t)?.encaja).toBe(false);
-  });
-  it('si encaja pero no trae mail, es ilegible', () => {
-    expect(leerBorrador(JSON.stringify({ ...base, encaja: true, asunto: 'a', mensaje: '', seguimiento: 's' }))).toBeUndefined();
-  });
 });
 
 describe('rubros', () => {
-  it('son veinte y los que nunca se probaron salen al azar, no siempre el mismo', () => {
+  it('son veinte, con algo para buscarlos en el mapa', () => {
     expect(RUBROS).toHaveLength(20);
-    expect(elegirRubro([], () => 0).id).toBe(RUBROS[0]!.id);
-    expect(elegirRubro([], () => 0.99).id).toBe(RUBROS[19]!.id);
-  });
-
-  it('prueba primero los que nunca se probaron', () => {
-    const stats = RUBROS.slice(1).map((r) => ({ rubro: r.id, contactados: 10, respuestas: 5 }));
-    expect(elegirRubro(stats, () => 0).id).toBe(RUBROS[0]!.id);
-  });
-
-  it('despues se queda con el que mejor responde', () => {
-    const stats = RUBROS.map((r) => ({ rubro: r.id, contactados: 20, respuestas: r.id === 'taller' ? 6 : 1 }));
-    expect(elegirRubro(stats, () => 0.9).id).toBe('taller');
+    for (const r of RUBROS) expect(r.osm.length).toBeGreaterThan(0);
   });
 });
 

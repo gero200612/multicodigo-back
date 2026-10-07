@@ -38,10 +38,10 @@ adentro de la tarea.
   mientras falte cupo del día).
 - **Objetivo:** "Conseguí N negocios nuevos que valga la pena contactar, en tu
   zona" (N = lo que falta del cupo × 2, como hoy).
-- **Herramientas:** `WebSearch`, `WebFetch`; de Homero: `rubros_y_rendimiento`
-  (respuestas/contactados por rubro y zona), `busquedas_anteriores`,
-  `ya_conocido(dominio|email)` (incluye cadenas y bajas), `anotar_negocio(nombre,
-  rubro, ciudad, web, email?, telefono?, por_que)`, `libreta_leer/escribir`.
+- **Herramientas:** `WebSearch`; de Homero: `leer_pagina`, `ver_rendimiento`
+  (rubros y ultimas busquedas), `ya_conocido(web|email)`, `anotar_busqueda`,
+  `buscar_en_mapa` (OSM), `anotar_negocio(nombre, rubro, zona, web?, email?,
+  telefono?, por_que)`, `escribir_libreta`. La libreta va en el objetivo.
 - **Libertad:** elige fuente (buscador web, directorios, Instagram, colegios
   profesionales, cámaras), rubro y zona; puede usar rubros que no están en
   `rubros.ts` (quedan como texto libre).
@@ -52,10 +52,10 @@ adentro de la tarea.
 ### Vendedor (`agente_vender`, uno por lead)
 - **Objetivo:** "Decidí si a este negocio le sirve lo que vende Gero y, si sí,
   escribile el mejor mail posible."
-- **Herramientas:** `WebSearch`, `WebFetch`; de Homero: `ficha_del_negocio`,
-  `mails_que_funcionaron` (enviados con respuesta, anonimizados),
-  `dejar_mail_listo(asunto, mensaje, seguimiento, factibilidad, por_que)`,
-  `descartar(motivo)`, `libreta_leer/escribir`.
+- **Herramientas:** `WebSearch`; de Homero: `ver_ficha`, `leer_pagina`,
+  `mails_que_funcionaron`, `verificar_mail`, `dejar_mail_listo(email, asunto,
+  mensaje, seguimiento, ...)`, `descartar(motivo)`, `escribir_libreta`.
+  `dejar_mail_listo` rechaza links (van a spam) y mails que no reciben.
 - Sin plantilla de cinco partes ni ideas fijas por rubro. `SISTEMA` queda como
   identidad y reglas (qué vende Gero, no inventar precios, rioplatense), no como
   guion.
@@ -66,18 +66,17 @@ adentro de la tarea.
 ### Atención (`agente_atender`, uno por respuesta recibida)
 - **Objetivo:** "Entendé qué quiere esta persona y armá la mejor respuesta para
   llevarla a una reunión."
-- **Herramientas:** de Homero: `hilo_completo`, `ficha_del_negocio`,
-  `horarios_libres`, `proponer_respuesta(texto, horarios_ofrecidos[])`,
-  `proponer_confirmacion(horario)`, `anotar_baja`, `avisar_a_gero(texto)`,
-  `libreta_leer/escribir`. Sin `WebSearch`; `WebFetch` solo al dominio del
-  propio negocio (lo valida `canUseTool` contra la web del lead).
+- **Herramientas:** de Homero: `ver_hilo`, `horarios_libres`,
+  `proponer_respuesta(texto, horarios[])`, `confirmar_horario(n)`,
+  `anotar_baja`, `cerrar_sin_responder(tipo)`, `avisar_a_gero(texto)`,
+  `escribir_libreta`. Sin busqueda web.
 - Reemplaza el circuito "Gero marca horarios → Armar respuesta": la respuesta le
   llega a Gero ya armada, con un solo **Enviar / No enviar** (Telegram y web).
-  `proponer_confirmacion` arma la confirmación con .ics; se reserva recién al
-  tocar Enviar (hoy reserva antes; pasa a reservar al enviar y, si el horario ya
-  no está libre, se le avisa a Gero).
-- Cortar seguimientos al recibir respuesta sigue siendo código, antes de lanzar
-  el agente.
+  `confirmar_horario` reserva y arma la confirmación con .ics, que sale recién
+  con Enviar; "No enviar" libera el horario (como ya funcionaba).
+- Cortar seguimientos sigue siendo código: lo hace la herramienta de cierre,
+  salvo una respuesta automática (fuera de oficina), que no los corta. Quien
+  escribe por su cuenta entra como lead recién cuando se le contesta.
 
 ### Lo que no se vuelve agente
 Patán (`presupuestar`), resumen diario, pliego de demos, `/probar_ia`: siguen
@@ -123,14 +122,17 @@ vuelve a tener cuentas.
   el registro de lo ya hecho (las herramientas de escritura quedan en la base de
   Homero, así que no se repite nada). Si no queda ninguna, "sin uso" con la hora
   de reset más cercana; Homero espera sin tope, como hoy.
-- **Modo comercial del agente:** el contenedor del slot corre `runClaude` con un
-  perfil distinto: sin worktree (cwd vacío y efímero), `tools` =
-  `WebSearch`, `WebFetch` + `mcp__homero__*`; sin Bash, Read/Write/Edit, git, ni
-  los MCP de Punchi (git, drive, corrida). `settingSources: []`.
-- **Red:** los slots en modo comercial no pueden llegar a la red interna (gateway,
-  bridge, panel, base, login, dockerproxy). Salida a internet sí, privadas no,
-  salvo el MCP de Homero en una red propia `enlace_comercial` (Homero + slots).
-  `WebFetch` hacia IPs privadas queda bloqueado en la red, no en el prompt.
+- **Modo comercial del agente:** el MISMO contenedor del slot, ruta `/comercial`
+  (`agent/src/comercial.ts`): sin worktree (cwd vacío), `tools` = `WebSearch` +
+  `mcp__homero__*`; sin Bash, Read/Write/Edit, git, ni los MCP de Punchi.
+  `settingSources: []`.
+- **Red (cambio respecto del diseño charlado):** los slots solo tienen salida a
+  la API de Anthropic (docs/despliegue.md 1.b) y eso NO se abre. `WebSearch`
+  corre del lado de Anthropic, así que anda igual; leer páginas NO es `WebFetch`
+  sino `leer_pagina` de Homero, que ya baja webs validando que el host sea
+  público. El MCP llega al slot por el gateway (`/comercial/mcp/:corrida`, con el
+  bearer del slot), que lo pasa a Homero por `enlace_homero` con el token de la
+  corrida. No hace falta red nueva.
 - **Pedidos de un turno** (Patán, resumen, pliego): Homero llama la misma ruta
   con `maxTurns: 1` y sin herramientas.
 - La cuenta propia de Homero (`/srv/homes/homero`) y la de Patán se registran

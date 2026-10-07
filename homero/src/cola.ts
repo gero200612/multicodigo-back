@@ -4,16 +4,10 @@ import { enviarMail } from './envio.js';
 import { horaArgentina } from './horas.js';
 import { presupuestar } from './patan.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
+import { agenteAtender, agenteBuscar, agenteVender, type DepsDeAgentes } from './agentes.js';
+import { SinLugar } from './gateway.js';
 import type { Recibido, Tarea } from './store.js';
-import {
-  atenderRespuesta,
-  enviarSaliente,
-  investigar,
-  prospectar,
-  recordatorio,
-  redactarRespuesta,
-  resumenDiario,
-} from './ventas.js';
+import { enviarSaliente, recordatorio, resumenDiario } from './ventas.js';
 
 export { direccion } from './ventas.js';
 
@@ -27,7 +21,10 @@ interface PausaDeIa {
   motivo: 'limite' | 'cuenta';
 }
 
-export type DepsDeCola = DepsDeDemos;
+export type DepsDeCola = DepsDeDemos & DepsDeAgentes;
+
+/** Sin cuenta libre (Punchi las esta usando): se reintenta en un rato, sin gastar intento. */
+const ESPERA_SIN_LUGAR_MS = 10 * 60_000;
 
 /** Despues de tantos fallos que no son de la IA, la tarea se da por perdida. */
 const TOPE_DE_INTENTOS = 5;
@@ -80,6 +77,13 @@ export async function correrSiguiente(deps: DepsDeCola): Promise<boolean> {
 }
 
 async function manejarError(tarea: Tarea, err: unknown, deps: DepsDeCola) {
+  if (err instanceof SinLugar) {
+    await deps.store.reprogramar(tarea.id, new Date(deps.ahora().getTime() + ESPERA_SIN_LUGAR_MS), {
+      contarIntento: false,
+      error: 'sin cuenta libre',
+    });
+    return;
+  }
   if (err instanceof ErrorDeLimite || err instanceof ErrorDeCuenta) {
     // Nunca se corta: la tarea vuelve a la cola para cuando vuelva la cuenta,
     // sin gastar un intento. El limite no es culpa de la tarea.
@@ -130,20 +134,24 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       }
       return;
     }
+    // `resumir_respuesta`, `prospectar` e `investigar` son los tipos del guion
+    // viejo: los que quedaron encolados los atienden los agentes.
+    case 'agente_atender':
     case 'resumir_respuesta':
-      return atenderRespuesta(tarea.payload as Recibido, deps);
+      return agenteAtender(tarea.payload as Recibido, deps);
+    case 'agente_buscar':
+      return agenteBuscar(tarea.payload, deps);
     case 'prospectar':
-      return prospectar(tarea.payload, deps);
+      return agenteBuscar({ cantidad: (tarea.payload as { cantidad?: number }).cantidad ?? 5 }, deps);
+    case 'agente_vender':
     case 'investigar':
-      return investigar(tarea.payload, deps);
+      return agenteVender(tarea.payload, deps);
     case 'enviar_saliente':
       return enviarSaliente(tarea.payload, deps);
     case 'recordatorio':
       return recordatorio(tarea.payload, deps);
     case 'resumen_diario':
       return resumenDiario(deps);
-    case 'redactar_respuesta':
-      return redactarRespuesta(tarea.payload, deps);
     case 'pliego_demo':
       return redactarPliego(tarea.payload, deps);
     case 'presupuestar':

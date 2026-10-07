@@ -9,7 +9,8 @@ import { leerConfig } from './config.js';
 import { correoGmail } from './envio.js';
 import { fuenteGoogle, fuenteOsm } from './fuentes.js';
 import { pedirTexto } from './ia.js';
-import { cuentaDeClaude } from './cuenta.js';
+import { clienteDeGateway, type ClienteDeGateway } from './gateway.js';
+import { crearServidorMcp, SesionesMcp } from './mcp.js';
 import { SISTEMA } from './prompts.js';
 import { PgStore } from './store.js';
 import { COMANDOS, crearBot, NOMBRE, type Acciones } from './telegram.js';
@@ -18,21 +19,18 @@ import {
   aprobarSaliente,
   descartarLead,
   descartarSaliente,
-  alternarHorario,
   apagarEnsayo,
-  armarRespuesta,
   ensayoActivo,
   mandarMuestras,
-  noResponder,
   reproponerBorradores,
   proponerPrioridad,
   lugaresHoy,
   planificar,
   procesarRebote,
 } from './ventas.js';
-import { leerSitio, recibeMail } from './web.js';
+import { bajarPagina, recibeMail } from './web.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
@@ -51,9 +49,18 @@ async function main() {
   const { bot, avisar, proponer, conectar, cambiarBotones } = crearBot(config, store);
 
   const aviso = (t: string) => avisar(t).catch((e) => console.error('[homero] no pude avisar:', e));
-  // La cuenta de Claude de cada bot (ver cuenta.ts): Homero, su HOME; Patán,
-  // la suya si tiene una cedida, si no la de Homero.
-  const cuenta = cuentaDeClaude();
+  // Las cuentas de Claude son un fondo comun que maneja el gateway: Homero no
+  // tiene ninguna. Sin gateway configurado, todo lo que piensa espera en la
+  // cola (con un error que dice por que) y lo ya escrito se sigue mandando.
+  const gateway: ClienteDeGateway = config.gateway
+    ? clienteDeGateway(config.gateway)
+    : {
+        correr: async () => {
+          throw new Error('falta HOMERO_GATEWAY_URL / HOMERO_GATEWAY_TOKEN: no hay donde correr a Claude');
+        },
+      };
+  if (!config.gateway) console.error('[homero] SIN GATEWAY: los agentes no van a correr hasta configurarlo');
+  const sesiones = new SesionesMcp();
   const deps: DepsDeCola = {
     store,
     correo: correoGmail,
@@ -68,12 +75,13 @@ async function main() {
         console.error('[homero] no pude mandar la tarjeta:', e);
         return undefined;
       }),
-    pedirIa: (prompt) => pedirTexto(prompt, { sistema: SISTEMA, modelo: config.modelo }),
-    pedirIaPatan: (prompt) =>
-      pedirTexto(prompt, { sistema: SISTEMA, modelo: config.modelo, home: cuenta.home('patan') }),
+    pedirIa: (prompt) => pedirTexto(prompt, { sistema: SISTEMA, modelo: config.modelo, gateway }),
+    gateway,
+    sesiones,
+    modelo: config.modelo,
+    bajarPagina,
     fuente: config.placesKey ? fuenteGoogle(config.placesKey) : fuenteOsm,
     nombreDeFuente: config.placesKey ? 'google' : 'osm',
-    leerSitio: (web) => leerSitio(web),
     recibeMail,
     punchi:
       config.bridge && config.chatId !== undefined
@@ -91,15 +99,13 @@ async function main() {
     reproponerBorradores: () => reproponerBorradores(deps),
     prioridad: (n) => proponerPrioridad(deps, n),
     lugaresHoy: () => lugaresHoy(deps),
-    alternarHorario: (id, i) => alternarHorario(id, i, deps),
-    armarRespuesta: (id) => armarRespuesta(id, deps),
-    noResponder: (id: number) => noResponder(id, deps),
     estado: () => estadoDeHomero({ ...deps, placesKey: config.placesKey }),
     cambiarEnsayo: (p: 'off' | string | undefined) => cambiarEnsayo(deps, p),
     armarDemo: (id: number) => armarDemo(id, deps),
     enviarDemo: (id: number) => enviarDemo(id, deps),
     cancelarDemo: (id: number) => cancelarDemo(id, deps),
     editarPliego: (id: number, pliego: string) => editarPliego(id, pliego, deps),
+    probarIa: () => pedirTexto('Presentate en una sola oración.', { sistema: SISTEMA, modelo: config.modelo, gateway }),
   };
   conectar(acciones);
 
@@ -112,6 +118,12 @@ async function main() {
     await api.listen({ host: '0.0.0.0', port: config.apiPuerto });
     console.log(`[homero] API interna en :${config.apiPuerto}`);
   }
+
+  // Las herramientas de los agentes. Escucha en la red que comparte con el
+  // gateway (`enlace_homero`); cada corrida trae su propio token.
+  const mcp = crearServidorMcp(sesiones);
+  await mcp.listen({ host: '0.0.0.0', port: config.mcpPuerto });
+  console.log(`[homero] MCP de los agentes en :${config.mcpPuerto}`);
 
   let corriendo = true;
 
@@ -160,7 +172,7 @@ async function main() {
   });
 
   await aviso(
-    `🟢 ${NOMBRE} arrancó. ${config.casillas.length} casilla(s), busco en ${config.placesKey ? 'Google Places' : 'OpenStreetMap'}` +
+    `🟢 ${NOMBRE} arrancó. ${config.casillas.length} casilla(s), agentes ${config.gateway ? 'en el fondo común de cuentas' : 'SIN gateway (no piensan)'}` +
       (rescatadas > 0 ? `, retomo ${rescatadas} tarea(s) que quedaron a medias.` : '.'),
   );
 
@@ -170,6 +182,7 @@ async function main() {
     clearInterval(planificador);
     clearInterval(demos);
     await api?.close();
+    await mcp.close();
     await bot.stop();
     await bucleDeCola;
     await store.cerrar();
