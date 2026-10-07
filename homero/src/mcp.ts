@@ -32,22 +32,53 @@ export interface Herramienta<T = unknown> {
 /** Un error que el agente tiene que leer (argumento malo, tope alcanzado). */
 export class ErrorParaElAgente extends Error {}
 
+/** Lo que un agente esta haciendo ahora, para el tablero de la web. */
+export interface Actividad {
+  agente: 'buscador' | 'vendedor' | 'atencion';
+  corridaId: number;
+  desde: Date;
+  /** El negocio de la corrida, si es de uno (vendedor, atencion). */
+  lead?: string;
+  /** Cada herramienta que uso, en orden, con el dato que la identifica (la URL, el negocio...). */
+  pasos: { herramienta: string; dato?: string; en: Date; error?: boolean }[];
+}
+
+/** Los pasos en vivo que se guardan por corrida: el tablero muestra los ultimos. */
+const PASOS_EN_VIVO = 60;
+
+/** El dato de un paso: lo que Gero reconoce (la URL, el negocio, el mail). Nunca el texto entero. */
+function datoDe(args: unknown): string | undefined {
+  if (!args || typeof args !== 'object') return undefined;
+  const a = args as Record<string, unknown>;
+  for (const k of ['url', 'nombre', 'email', 'rubro', 'motivo', 'zona']) {
+    if (typeof a[k] === 'string' && a[k]) return String(a[k]).slice(0, 120);
+  }
+  return undefined;
+}
+
 interface Sesion {
   token: Buffer;
   herramientas: Map<string, Herramienta<any>>;
+  actividad?: Actividad;
 }
 
 export class SesionesMcp {
   private readonly sesiones = new Map<string, Sesion>();
 
   /** Abre la sesion de una corrida y devuelve su token. */
-  abrir(corrida: string, herramientas: Herramienta<any>[]): string {
+  abrir(corrida: string, herramientas: Herramienta<any>[], actividad?: Omit<Actividad, 'pasos'>): string {
     const token = randomBytes(24).toString('base64url');
     this.sesiones.set(corrida, {
       token: Buffer.from(token),
       herramientas: new Map(herramientas.map((h) => [h.nombre, h])),
+      actividad: actividad ? { ...actividad, pasos: [] } : undefined,
     });
     return token;
+  }
+
+  /** Lo que estan haciendo los agentes ahora mismo. */
+  enCurso(): Actividad[] {
+    return [...this.sesiones.values()].flatMap((s) => (s.actividad ? [s.actividad] : []));
   }
 
   cerrar(corrida: string): void {
@@ -117,8 +148,16 @@ async function atender(p: PedidoRpc, s: Sesion): Promise<Record<string, unknown>
       const nombre = typeof p.params?.name === 'string' ? p.params.name : '';
       const h = s.herramientas.get(nombre);
       if (!h) return error(-32602, `herramienta desconocida: ${nombre}`);
+      const vivo = s.actividad
+        ? { herramienta: nombre, dato: datoDe(p.params?.arguments), en: new Date(), error: false }
+        : undefined;
+      if (vivo && s.actividad) {
+        s.actividad.pasos.push(vivo);
+        if (s.actividad.pasos.length > PASOS_EN_VIVO) s.actividad.pasos.shift();
+      }
       const args = h.validar.safeParse(p.params?.arguments ?? {});
       if (!args.success) {
+        if (vivo) vivo.error = true;
         return ok({ content: [{ type: 'text', text: `Argumentos invalidos: ${args.error.message}` }], isError: true });
       }
       try {
@@ -128,6 +167,7 @@ async function atender(p: PedidoRpc, s: Sesion): Promise<Record<string, unknown>
       } catch (err) {
         // Al agente le llega el motivo de lo que el agente puede arreglar; el
         // resto es un error interno que no le dice nada util y queda en el log.
+        if (vivo) vivo.error = true;
         const mensaje =
           err instanceof ErrorParaElAgente ? err.message : 'Error interno de Homero; probá otra cosa o cerrá.';
         if (!(err instanceof ErrorParaElAgente)) console.error(`[homero] mcp ${nombre}:`, err);

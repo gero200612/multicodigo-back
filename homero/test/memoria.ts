@@ -77,6 +77,18 @@ export class MemoriaStore implements Store {
     });
     return true;
   }
+  async colaPorTipo() {
+    const porTipo = new Map<Fila['tipo'], Fila[]>();
+    for (const t of this.tareas.filter((x) => x.estado === 'pendiente')) {
+      porTipo.set(t.tipo, [...(porTipo.get(t.tipo) ?? []), t]);
+    }
+    return [...porTipo.entries()].map(([tipo, fs]) => ({
+      tipo,
+      pendientes: fs.length,
+      proxima: fs.map((f) => f.disponibleDesde).sort((a, b) => a.getTime() - b.getTime())[0],
+      ultimoError: fs.find((f) => f.ultimoError)?.ultimoError,
+    }));
+  }
   async tomarSiguiente(ahora: Date, iaDisponible: boolean) {
     const f = this.tareas
       .filter(

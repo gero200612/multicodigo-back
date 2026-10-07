@@ -7,6 +7,9 @@ import { Contenido, editarPresupuesto, guardarRegla, pedirPresupuesto, Regla, re
 import { RUBROS } from './rubros.js';
 import type { Store } from './store.js';
 import type { Acciones } from './telegram.js';
+import { armarTablero } from './tablero.js';
+import { CONFIG_DEL_BUSCADOR, type ConfigDelBuscador } from './agentes.js';
+import type { Actividad } from './mcp.js';
 import type { Boton } from './ventas.js';
 
 /**
@@ -27,6 +30,8 @@ export interface DepsDeApi {
   acciones: Acciones;
   cambiarBotones: (msg: number, botones: Boton[] | undefined) => Promise<void>;
   ahora: () => Date;
+  /** Lo que hacen los agentes ahora mismo (las sesiones MCP abiertas). */
+  enCurso?: () => Actividad[];
 }
 
 const DIAS_DE_REUNIONES_PASADAS = 7;
@@ -285,6 +290,31 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
   // La pestaña Agentes de la web: que penso cada agente en cada corrida y que
   // anoto en su libreta. La lista va liviana (sin pasos ni objetivo, que
   // pueden ser largos); el detalle se pide al tocar una corrida.
+
+  // El tablero: el estado de cada agente en este momento. La web lo pide
+  // seguido (cada pocos segundos mientras alguno trabaja).
+  app.get('/agentes/estado', async () =>
+    armarTablero({ store, ahora: d.ahora, enCurso: d.enCurso ?? (() => []) }),
+  );
+
+  app.get('/agentes/config/buscador', async () => ({
+    config: (await store.leerEstado<ConfigDelBuscador>(CONFIG_DEL_BUSCADOR)) ?? {},
+  }));
+
+  // Lo que Gero le indica al buscador: zonas, rubros, notas. Texto corto; va
+  // tal cual al objetivo de cada corrida.
+  const Config = z.object({
+    zonas: z.string().max(600).optional(),
+    rubrosPreferidos: z.string().max(600).optional(),
+    rubrosAEvitar: z.string().max(600).optional(),
+    notas: z.string().max(2000).optional(),
+  });
+  app.put('/agentes/config/buscador', async (request, reply) => {
+    const c = Config.safeParse(request.body);
+    if (!c.success) return invalido(reply);
+    await store.guardarEstado(CONFIG_DEL_BUSCADOR, c.data);
+    return { config: c.data };
+  });
 
   app.get('/agentes', async () => {
     const [buscador, vendedor, atencion, corridas] = await Promise.all([

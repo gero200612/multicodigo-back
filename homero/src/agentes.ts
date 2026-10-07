@@ -126,7 +126,8 @@ async function correr(
   const corrida = `r${id}`;
   const registro: Registro = { anotados: [], cerro: false };
   const propias = herramientas(registro);
-  const token = deps.sesiones.abrir(corrida, propias);
+  const lead = o.leadId != null ? (await deps.store.lead(o.leadId))?.nombre : undefined;
+  const token = deps.sesiones.abrir(corrida, propias, { agente, corridaId: id, desde: deps.ahora(), lead });
   const lista = propias.map((h) => h.nombre);
 
   let r;
@@ -188,8 +189,33 @@ const PayloadDeBusqueda = z.object({
   zona: z.string().optional(),
 });
 
+/**
+ * Lo que Gero le configura al buscador desde la web. Es de Gero, asi que va en
+ * el objetivo como indicacion (a diferencia de la libreta, que la escribe el
+ * agente y va marcada como notas).
+ */
+export const CONFIG_DEL_BUSCADOR = 'config:buscador';
+export interface ConfigDelBuscador {
+  zonas?: string;
+  rubrosPreferidos?: string;
+  rubrosAEvitar?: string;
+  notas?: string;
+}
+
+function textoDeConfig(c: ConfigDelBuscador | undefined): string {
+  if (!c) return '';
+  const lineas = [
+    c.zonas?.trim() ? `- Zonas donde buscar: ${c.zonas.trim()}` : '',
+    c.rubrosPreferidos?.trim() ? `- Rubros a priorizar: ${c.rubrosPreferidos.trim()}` : '',
+    c.rubrosAEvitar?.trim() ? `- Rubros a NO buscar: ${c.rubrosAEvitar.trim()}` : '',
+    c.notas?.trim() ? `- Indicaciones: ${c.notas.trim()}` : '',
+  ].filter(Boolean);
+  return lineas.length ? `\nLo que configuró Gero (respetalo):\n${lineas.join('\n')}` : '';
+}
+
 export async function agenteBuscar(payload: unknown, deps: DepsDeAgentes): Promise<void> {
   const { cantidad, rubro, zona } = PayloadDeBusqueda.parse(payload);
+  const config = textoDeConfig(await deps.store.leerEstado<ConfigDelBuscador>(CONFIG_DEL_BUSCADOR));
   const pedido =
     rubro || zona
       ? `\nGero pidió esta búsqueda a mano: ${rubro ? `rubro ${rubro}` : 'el rubro que te parezca'}${zona ? ` en ${zona}` : ''}. Priorizalo.`
@@ -198,7 +224,7 @@ export async function agenteBuscar(payload: unknown, deps: DepsDeAgentes): Promi
     'buscador',
     `Objetivo: conseguí ${cantidad} negocios nuevos que valga la pena contactar y anotalos con anotar_negocio.
 Zona habitual: ${CIUDADES.join(', ')} (Gran Buenos Aires norte y CABA). Podés salir de ahí si la zona no rinde; siempre Argentina.
-De cada uno el vendedor va a leer la web y decidir; algunos se descartan, por eso conviene anotar los que tengan proceso manual y volumen.${pedido}`,
+De cada uno el vendedor va a leer la web y decidir; algunos se descartan, por eso conviene anotar los que tengan proceso manual y volumen.${config}${pedido}`,
     (reg) => herramientasDelBuscador(deps, { cupo: cantidad, registro: reg }),
     { web: true, debeCerrar: false },
     deps,

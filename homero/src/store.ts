@@ -237,6 +237,8 @@ export interface Store {
   /** Las que quedaron `corriendo` por un reinicio vuelven a la cola. */
   rescatarColgadas(): Promise<number>;
   contarTareas(): Promise<{ pendientes: number; fallidas: number }>;
+  /** Lo que hay en la cola por tipo: cuantas, cuando arranca la proxima y el ultimo error. */
+  colaPorTipo(): Promise<{ tipo: TipoDeTarea; pendientes: number; proxima?: Date; ultimoError?: string }[]>;
   /** Las de esos tipos que todavia no terminaron (pendientes o corriendo). */
   tareasEnCurso(tipos: TipoDeTarea[]): Promise<number>;
   /** Cancela las pendientes de esos tipos (las da por fallidas). Devuelve cuantas. */
@@ -430,6 +432,20 @@ export class PgStore implements Store {
       `UPDATE homero.tareas SET estado = 'pendiente', actualizada = now() WHERE estado = 'corriendo'`,
     );
     return r.rowCount ?? 0;
+  }
+
+  async colaPorTipo() {
+    const r = await this.pool.query(
+      `SELECT tipo, count(*)::int AS n, min(disponible_desde) AS proxima,
+              (array_agg(ultimo_error ORDER BY actualizada DESC) FILTER (WHERE ultimo_error IS NOT NULL))[1] AS error
+       FROM homero.tareas WHERE estado = 'pendiente' GROUP BY tipo`,
+    );
+    return r.rows.map((f) => ({
+      tipo: f.tipo as TipoDeTarea,
+      pendientes: Number(f.n),
+      proxima: f.proxima ? new Date(f.proxima) : undefined,
+      ultimoError: (f.error as string | null) ?? undefined,
+    }));
   }
 
   async tareasEnCurso(tipos: TipoDeTarea[]) {

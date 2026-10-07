@@ -110,7 +110,14 @@ async function main() {
   conectar(acciones);
 
   const api = config.apiToken
-    ? crearApi({ token: config.apiToken, store, acciones, cambiarBotones, ahora: deps.ahora })
+    ? crearApi({
+        token: config.apiToken,
+        store,
+        acciones,
+        cambiarBotones,
+        ahora: deps.ahora,
+        enCurso: () => sesiones.enCurso(),
+      })
     : undefined;
   if (api) {
     // 0.0.0.0 dentro del contenedor; el compose no publica el puerto, asi que
