@@ -10,6 +10,15 @@ Reglas que no se rompen:
 - Escribis en español rioplatense, de vos, claro y corto.
 - Cuando te pidan JSON, contestas SOLO el JSON, sin texto alrededor ni bloques de codigo.`;
 
+/**
+ * Texto de un tercero listo para ir adentro de un bloque marcado
+ * (`<no_confiable>`, `<libreta>`): sin `<` ni `>`, nadie puede cerrar el bloque
+ * desde adentro con ninguna variante (`</no_confiable >`, mayusculas, etc.).
+ */
+export function neutralizar(texto: string): string {
+  return texto.replace(/</g, '‹').replace(/>/g, '›');
+}
+
 /** El JSON de una respuesta del modelo, tolerando texto alrededor. */
 export function extraerJson(texto: string): unknown {
   const inicio = texto.indexOf('{');
@@ -45,7 +54,7 @@ export function promptDePliego(c: {
   hilo: { de: 'nosotros' | 'cliente'; texto: string }[];
 }): string {
   const hilo = c.hilo
-    .map((m) => `${m.de === 'nosotros' ? 'Le escribimos' : 'Nos contestó'}:\n<no_confiable>\n${m.texto.slice(0, 1500)}\n</no_confiable>`)
+    .map((m) => `${m.de === 'nosotros' ? 'Le escribimos' : 'Nos contestó'}:\n<no_confiable>\n${neutralizar(m.texto.slice(0, 1500))}\n</no_confiable>`)
     .join('\n\n');
   return `Gero tiene una reunión el ${horarioEnCastellano(c.cuando)} con esta empresa y quiere llegar con una DEMO funcionando de la aplicación que le propusimos. La va a construir otro sistema (Punchi) a partir del pliego que escribas vos.
 

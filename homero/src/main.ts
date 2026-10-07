@@ -28,7 +28,7 @@ import {
   planificar,
   procesarRebote,
 } from './ventas.js';
-import { bajarPagina, recibeMail } from './web.js';
+import { bajarPaginaConDestino, recibeMail } from './web.js';
 
 const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
@@ -79,7 +79,7 @@ async function main() {
     gateway,
     sesiones,
     modelo: config.modelo,
-    bajarPagina,
+    bajarPagina: bajarPaginaConDestino,
     fuente: config.placesKey ? fuenteGoogle(config.placesKey) : fuenteOsm,
     nombreDeFuente: config.placesKey ? 'google' : 'osm',
     recibeMail,

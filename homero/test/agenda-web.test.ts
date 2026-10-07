@@ -61,6 +61,14 @@ describe('lookupPublico', () => {
     await expect(resolver('192.168.1.12')).rejects.toThrow(/no publico/);
   });
 
+  it('cubre las formas que se colaban: IPv6 entre corchetes, mapeada, NAT64, multicast', () => {
+    for (const ip of ['[::1]', '::ffff:127.0.0.1', '::ffff:a00:1', '64:ff9b::a00:1', '224.0.0.1', '198.18.0.1', 'fec0::1']) {
+      expect(esIpPrivada(ip), ip).toBe(true);
+    }
+    expect(esIpPrivada('1.1.1.1')).toBe(false);
+    expect(esIpPrivada('2606:4700:4700::1111')).toBe(false);
+  });
+
   it('deja pasar una publica', async () => {
     expect(await resolver('1.1.1.1')).toBe('1.1.1.1');
   });

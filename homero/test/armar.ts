@@ -63,7 +63,7 @@ export function armar(o: Opciones = {}) {
     recibeMail: async () => true,
     azar: () => 0,
     sesiones,
-    bajarPagina: async (url) => o.paginas?.[url],
+    bajarPagina: async (url) => (o.paginas?.[url] ? { html: o.paginas[url]!, url } : undefined),
     gateway: {
       async correr(p) {
         corridas.push(p);

@@ -57,6 +57,7 @@ export async function crearSecuencia(
   leadId: number,
   m: { email: string; asunto: string; mensaje: string; seguimiento: string; investigacion: Investigacion },
   deps: DepsDeVentas,
+  o: { forzarAprobacion?: boolean } = {},
 ): Promise<void> {
   await deps.store.actualizarLead(leadId, { estado: 'borrador', email: m.email, investigacion: m.investigacion });
   await deps.store.crearSaliente({ leadId, tipo: 'inicial', paso: 0, asunto: m.asunto, cuerpo: m.mensaje });
@@ -64,7 +65,7 @@ export async function crearSecuencia(
 
   const ensayo = await ensayoActivo(deps);
   const muestraEnviada = ensayo ? await mandarMuestra(leadId, ensayo, deps) : false;
-  if (!ensayo && (await modoActual(deps.store)) === 'auto') {
+  if (!ensayo && !o.forzarAprobacion && (await modoActual(deps.store)) === 'auto') {
     await aprobarLead(leadId, deps);
     return;
   }
