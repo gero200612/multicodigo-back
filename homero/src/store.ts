@@ -161,6 +161,8 @@ export interface Corrida {
   turnos?: number;
   pasos?: Paso[];
   informe?: string;
+  /** Una linea de lo que hizo, armada por el codigo (ver `Registro.resumen`). */
+  resumen?: string;
   error?: string;
   inicio: Date;
   fin?: Date;
@@ -172,6 +174,7 @@ export interface CierreDeCorrida {
   turnos?: number;
   pasos?: Paso[];
   informe?: string;
+  resumen?: string;
   error?: string;
 }
 
@@ -903,7 +906,7 @@ export class PgStore implements Store {
   async cerrarCorrida(id: number, c: CierreDeCorrida) {
     await this.pool.query(
       `UPDATE homero.corridas SET estado = $2, slot = $3, turnos = $4, pasos = $5, informe = $6,
-         error = $7, fin = now() WHERE id = $1`,
+         error = $7, resumen = $8, fin = now() WHERE id = $1`,
       [
         id,
         c.estado,
@@ -912,6 +915,7 @@ export class PgStore implements Store {
         c.pasos ? JSON.stringify(c.pasos) : null,
         c.informe ?? null,
         c.error ?? null,
+        c.resumen ?? null,
       ],
     );
   }
@@ -1105,6 +1109,7 @@ function aCorrida(f: Record<string, unknown>): Corrida {
     turnos: f.turnos == null ? undefined : Number(f.turnos),
     pasos: (f.pasos as Paso[] | null) ?? undefined,
     informe: (f.informe as string | null) ?? undefined,
+    resumen: (f.resumen as string | null) ?? undefined,
     error: (f.error as string | null) ?? undefined,
     inicio: new Date(f.inicio as string),
     fin: f.fin ? new Date(f.fin as string) : undefined,

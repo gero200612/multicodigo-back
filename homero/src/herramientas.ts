@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { horarioEnCastellano, horariosLibres, sigueLibre } from './agenda.js';
 import { dominio } from './cadenas.js';
 import { ErrorParaElAgente, type Herramienta } from './mcp.js';
+import { escribirLibreta as escribirLaLibreta, ITEMS_POR_LISTA, LARGO_DE_ITEM, Libreta } from './libreta.js';
 import { neutralizar } from './prompts.js';
 import { rubroPorId, RUBROS } from './rubros.js';
 import type { Agente, Lead, Recibido } from './store.js';
@@ -31,12 +32,15 @@ export interface DepsDeHerramientas extends DepsDeVentas {
 /** Lo que el agente dejo hecho en la corrida, para saber si cerro bien. */
 export interface Registro {
   anotados: number[];
+  /** Los nombres de lo anotado, para el resumen del buscador. */
+  nombres?: string[];
   cerro: boolean;
+  /** Lo que hizo, en una linea para Gero; lo deja la herramienta que cierra. */
+  resumen?: string;
 }
 
 /** Paginas por corrida: el freno contra un agente que se pone a leer internet entero. */
 const TOPE_DE_PAGINAS = 40;
-const LARGO_DE_LIBRETA = 8_000;
 const LARGO_DE_PAGINA = 7_000;
 
 const objeto = (props: Record<string, unknown>, requeridos: string[] = []) => ({
@@ -90,17 +94,33 @@ function leerPagina(
   };
 }
 
-function escribirLibreta(agente: Agente, deps: Pick<DepsDeVentas, 'store'>): Herramienta<{ contenido: string }> {
+function escribirLibreta(
+  agente: Agente,
+  deps: Pick<DepsDeVentas, 'store'>,
+): Herramienta<{ tener_en_cuenta: string[]; evitar: string[] }> {
+  const lista = (description: string) => ({
+    type: 'array',
+    items: { type: 'string', maxLength: LARGO_DE_ITEM },
+    maxItems: ITEMS_POR_LISTA,
+    description,
+  });
   return {
     nombre: 'escribir_libreta',
     descripcion:
-      'Reemplaza tu libreta por este texto. Usala al final de la corrida: lo que aprendiste y te sirve la proxima vez ' +
-      '(que funciono, que no, que conviene probar). Es tu memoria entre corridas; Gero tambien la lee y la corrige. ' +
-      'Mantenela corta: si crece, resumila.',
-    esquema: objeto({ contenido: texto(`La libreta entera, maximo ${LARGO_DE_LIBRETA} caracteres`) }, ['contenido']),
-    validar: z.object({ contenido: z.string().max(LARGO_DE_LIBRETA) }),
-    async correr({ contenido }) {
-      await deps.store.guardarLibreta(agente, contenido.trim());
+      'Reemplaza tu libreta. Usala al final: dos listas cortas, una idea por item, en una oracion. ' +
+      '"tener_en_cuenta" = lo que funciona y conviene repetir; "evitar" = lo que no va (fuentes que no rinden, ' +
+      'tipos de negocio que no encajan, errores). Es tu memoria entre corridas y Gero la lee como checklist: ' +
+      'sin parrafos, sin repetir, sacá lo que ya no vale.',
+    esquema: objeto(
+      { tener_en_cuenta: lista('Lo que tenés en cuenta'), evitar: lista('Lo que no va') },
+      ['tener_en_cuenta', 'evitar'],
+    ),
+    validar: z.object({
+      tener_en_cuenta: Libreta.shape.tenerEnCuenta,
+      evitar: Libreta.shape.evitar,
+    }),
+    async correr({ tener_en_cuenta, evitar }) {
+      await deps.store.guardarLibreta(agente, escribirLaLibreta({ tenerEnCuenta: tener_en_cuenta, evitar }));
       return 'Libreta guardada.';
     },
   };
@@ -273,6 +293,7 @@ export function herramientasDelBuscador(
         clave: `vender:${id}`,
       });
       ctx.registro.anotados.push(id);
+      ctx.registro.nombres = [...(ctx.registro.nombres ?? []), n.nombre.trim()];
       return `Anotado (${ctx.registro.anotados.length}/${ctx.cupo}).`;
     },
   };
@@ -433,6 +454,7 @@ export function herramientasDelVendedor(
       if (otro && otro.id !== lead.id) throw new ErrorParaElAgente(`Ese mail ya es de ${otro.nombre}.`);
       if (!(await deps.recibeMail(m.email))) throw new ErrorParaElAgente('El dominio de ese mail no recibe mail.');
       cerrar();
+      ctx.registro.resumen = `Escribió a ${lead.nombre} (${m.factibilidad}/10): ${m.asunto}`;
       await crearSecuencia(
         lead.id,
         {
@@ -470,6 +492,7 @@ export function herramientasDelVendedor(
     async correr({ motivo }) {
       const lead = await leadActual();
       cerrar();
+      ctx.registro.resumen = `Descartó ${lead.nombre}: ${motivo}`;
       await deps.store.actualizarLead(lead.id, {
         estado: 'descartado',
         investigacion: { ...(lead.investigacion ?? { resumen_empresa: '', dolor: '', idea: '' }), descarte: motivo },
@@ -618,6 +641,7 @@ export function herramientasDeAtencion(deps: DepsDeHerramientas, ctx: ContextoDe
       if (/https?:\/\/|www\./i.test(cuerpo)) throw new ErrorParaElAgente('Sin links en la respuesta.');
       const lead = await leadParaResponder();
       await cerrar();
+      ctx.registro.resumen = `Respuesta para ${lead.nombre} esperando tu OK${elegidos.length ? ` (ofrece ${elegidos.length} horarios)` : ''}`;
       await proponerRespuestaArmada(lead, ctx.recibido, cuerpo, elegidos as Date[], deps, prefijo);
       return 'Le pasé la respuesta a Gero para que la apruebe.';
     },
@@ -645,6 +669,7 @@ export function herramientasDeAtencion(deps: DepsDeHerramientas, ctx: ContextoDe
       // Despues de reservar y no antes: `reservar` deja el lead en `reunion`, y
       // cerrar no lo pisa (solo toca los que estaban esperando respuesta).
       await cerrar();
+      ctx.registro.resumen = `Reservó reunión con ${ctx.lead.nombre}: ${horarioEnCastellano(elegido)} (falta tu OK)`;
       return 'Reservado. Le pasé a Gero la confirmacion para enviar.';
     },
   };
@@ -656,6 +681,7 @@ export function herramientasDeAtencion(deps: DepsDeHerramientas, ctx: ContextoDe
     validar: z.object({ motivo: z.string().min(2).max(400) }),
     async correr({ motivo }) {
       await cerrar();
+      ctx.registro.resumen = `${nombre} pidió la baja`;
       if (!ctx.esEnsayo) {
         await deps.store.agregarBaja(ctx.de, 'la pidió por mail');
         if (ctx.lead) await deps.store.actualizarLead(ctx.lead.id, { estado: 'baja' });
@@ -677,6 +703,8 @@ export function herramientasDeAtencion(deps: DepsDeHerramientas, ctx: ContextoDe
     validar: z.object({ motivo: z.string().min(2).max(600), tipo: z.enum(['no_interesado', 'automatico', 'otro']) }),
     async correr({ motivo, tipo }) {
       await cerrar({ automatica: tipo === 'automatico' });
+      ctx.registro.resumen =
+        tipo === 'automatico' ? `${nombre}: respuesta automática, sigue el seguimiento` : `${nombre}: ${motivo}`;
       if (tipo === 'no_interesado' && ctx.lead && !ctx.esEnsayo) {
         await deps.store.actualizarLead(ctx.lead.id, { estado: 'cerrado' });
       }
@@ -696,6 +724,7 @@ export function herramientasDeAtencion(deps: DepsDeHerramientas, ctx: ContextoDe
     validar: z.object({ texto: z.string().min(5).max(2000) }),
     async correr({ texto: t }) {
       await cerrar();
+      ctx.registro.resumen = `Te avisó sobre ${nombre}`;
       await deps.avisar(`${prefijo}📩 ${nombre} (${ctx.recibido.de}):\n${t}`);
       return 'Avisado.';
     },

@@ -24,7 +24,7 @@ export interface TableroDeAgente {
   ahora?: Actividad;
   /** Tareas suyas esperando en la cola. */
   enCola: number;
-  ultima?: { id: number; estado: 'corriendo' | 'lista' | 'fallida'; fin?: Date; informe?: string; error?: string };
+  ultima?: { id: number; estado: 'corriendo' | 'lista' | 'fallida'; fin?: Date; informe?: string; resumen?: string; error?: string };
   /** Lo que hizo hoy, para los contadores grandes. */
   hoy: Record<string, number>;
 }
@@ -105,7 +105,7 @@ export async function armarTablero(
     const actividad = enCurso.find((a) => a.agente === agente);
     const ultimaC = corridas.find((c) => c.agente === agente && c.estado !== 'corriendo');
     const ultima = ultimaC
-      ? { id: ultimaC.id, estado: ultimaC.estado, fin: ultimaC.fin, informe: ultimaC.informe, error: ultimaC.error }
+      ? { id: ultimaC.id, estado: ultimaC.estado, fin: ultimaC.fin, informe: ultimaC.informe, resumen: ultimaC.resumen, error: ultimaC.error }
       : undefined;
     const hoyC = deHoy(agente);
     const hoy: Record<string, number> =

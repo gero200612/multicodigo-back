@@ -204,7 +204,12 @@ describe('API de Homero', () => {
     const r = await h.pedir('GET', '/agentes');
     expect(r.statusCode).toBe(200);
     const a = r.json();
-    expect(a.libretas).toEqual({ buscador: 'En Rosario OSM no tiene talleres: buscar en Google Maps.', vendedor: '', atencion: '' });
+    // Una libreta vieja de texto libre se lee como checklist.
+    expect(a.libretas).toEqual({
+      buscador: { tenerEnCuenta: ['En Rosario OSM no tiene talleres: buscar en Google Maps.'], evitar: [] },
+      vendedor: { tenerEnCuenta: [], evitar: [] },
+      atencion: { tenerEnCuenta: [], evitar: [] },
+    });
     expect(a.corridas.map((c: { id: number }) => c.id)).toEqual([nueva, vieja]);
     expect(a.corridas[0]).toMatchObject({ agente: 'vendedor', estado: 'fallida', error: 'no cerro con dejar_listo', leadId, lead: 'Taller Gómez' });
     // La lista no lleva lo pesado: eso viene en el detalle.
@@ -228,14 +233,16 @@ describe('API de Homero', () => {
     expect((await h.pedir('GET', '/agentes/corridas/abc')).statusCode).toBe(400);
   });
 
-  it('Gero corrige una libreta; agente desconocido o texto muy largo no', async () => {
+  it('Gero corrige una libreta como checklist; agente desconocido o items de mas no', async () => {
     const h = conApi();
-    const r = await h.pedir('PUT', '/agentes/libretas/vendedor', { contenido: '  - Los talleres contestan a la mañana.  ' });
+    const r = await h.pedir('PUT', '/agentes/libretas/vendedor', {
+      tenerEnCuenta: ['  Los talleres contestan a la mañana.  '],
+      evitar: ['Franquicias'],
+    });
     expect(r.statusCode).toBe(200);
-    expect(r.json().contenido).toBe('- Los talleres contestan a la mañana.');
-    expect(await h.store.libreta('vendedor')).toBe('- Los talleres contestan a la mañana.');
-    expect((await h.pedir('PUT', '/agentes/libretas/patan', { contenido: 'hola' })).statusCode).toBe(400);
-    expect((await h.pedir('PUT', '/agentes/libretas/vendedor', { contenido: 'x'.repeat(8001) })).statusCode).toBe(400);
-    expect((await h.pedir('PUT', '/agentes/libretas/vendedor', {})).statusCode).toBe(400);
+    expect(r.json().libreta).toEqual({ tenerEnCuenta: ['Los talleres contestan a la mañana.'], evitar: ['Franquicias'] });
+    expect((await h.pedir('PUT', '/agentes/libretas/patan', { tenerEnCuenta: [], evitar: [] })).statusCode).toBe(400);
+    expect((await h.pedir('PUT', '/agentes/libretas/vendedor', { tenerEnCuenta: Array(26).fill('x'), evitar: [] })).statusCode).toBe(400);
+    expect((await h.pedir('PUT', '/agentes/libretas/vendedor', { contenido: 'texto' })).statusCode).toBe(400);
   });
 });

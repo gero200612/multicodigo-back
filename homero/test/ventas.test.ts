@@ -66,6 +66,10 @@ describe('de la busqueda al primer mail', () => {
     // Dos corridas, cada una con sus herramientas y sus topes.
     expect(corridas.map((c) => c.maxTurnos)).toEqual([40, 20]);
     expect(corridas[0]!.web).toBe(true);
+    expect(store.corridasGuardadas.map((c) => c.resumen)).toEqual([
+      'Anotó 1: La Distri',
+      'Escribió a La Distri (8/10): pedidos de la distri',
+    ]);
     expect(store.corridasGuardadas.map((c) => [c.agente, c.estado, c.slot])).toEqual([
       ['buscador', 'lista', 'c3'],
       ['vendedor', 'lista', 'c3'],
@@ -120,6 +124,7 @@ describe('de la busqueda al primer mail', () => {
       },
     });
     expect(h.store.leads[0]).toMatchObject({ estado: 'descartado', investigacion: { descarte: 'es una franquicia' } });
+    expect(h.store.corridasGuardadas.at(-1)!.resumen).toBe('Descartó La Distri: es una franquicia');
     expect(h.tarjetas).toHaveLength(0);
   });
 

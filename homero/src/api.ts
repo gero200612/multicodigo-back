@@ -8,6 +8,7 @@ import { RUBROS } from './rubros.js';
 import type { Store } from './store.js';
 import type { Acciones } from './telegram.js';
 import { armarTablero } from './tablero.js';
+import { escribirLibreta, ITEMS_POR_LISTA, LARGO_DE_ITEM, leerLibreta, Libreta } from './libreta.js';
 import { CONFIG_DEL_BUSCADOR, type ConfigDelBuscador } from './agentes.js';
 import type { Actividad } from './mcp.js';
 import type { Boton } from './ventas.js';
@@ -39,9 +40,6 @@ const LEADS_POR_PAGINA = 50;
 
 const CORRIDAS_EN_LISTA = 50;
 const LARGO_DE_INFORME_EN_LISTA = 300;
-// El mismo tope que tiene el agente al escribirla (escribir_libreta): si Gero
-// pudiera guardar mas, el agente no la podria reescribir entera.
-const LARGO_DE_LIBRETA = 8_000;
 
 const Id = z.coerce.number().int().positive();
 const AgenteValido = z.enum(['buscador', 'vendedor', 'atencion']);
@@ -329,7 +327,7 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       if (c.leadId != null && !nombres.has(c.leadId)) nombres.set(c.leadId, (await store.lead(c.leadId))?.nombre ?? null);
     }
     return {
-      libretas: { buscador, vendedor, atencion },
+      libretas: { buscador: leerLibreta(buscador), vendedor: leerLibreta(vendedor), atencion: leerLibreta(atencion) },
       corridas: corridas.map((c) => ({
         id: c.id,
         agente: c.agente,
@@ -337,6 +335,7 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
         slot: c.slot ?? null,
         turnos: c.turnos ?? null,
         informe: recortar(c.informe, LARGO_DE_INFORME_EN_LISTA),
+        resumen: c.resumen ?? null,
         error: c.error ?? null,
         inicio: c.inicio,
         fin: c.fin ?? null,
@@ -359,11 +358,13 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
   // proxima corrida, asi que lo que se escribe aca manda.
   app.put<{ Params: { agente: string } }>('/agentes/libretas/:agente', async (request, reply) => {
     const agente = AgenteValido.safeParse(request.params.agente);
-    const b = z.object({ contenido: z.string().max(LARGO_DE_LIBRETA) }).safeParse(request.body);
     if (!agente.success) return invalido(reply, 'agente desconocido');
-    if (!b.success) return invalido(reply, `la libreta va como texto, de hasta ${LARGO_DE_LIBRETA} caracteres`);
-    await store.guardarLibreta(agente.data, b.data.contenido.trim());
-    return { agente: agente.data, contenido: await store.libreta(agente.data) };
+    const b = Libreta.safeParse(request.body);
+    if (!b.success) {
+      return invalido(reply, `la libreta va como { tenerEnCuenta, evitar }: hasta ${ITEMS_POR_LISTA} items de ${LARGO_DE_ITEM} caracteres`);
+    }
+    await store.guardarLibreta(agente.data, escribirLibreta(b.data));
+    return { agente: agente.data, libreta: leerLibreta(await store.libreta(agente.data)) };
   });
 
   // ------------------------------------------------------------ patán
