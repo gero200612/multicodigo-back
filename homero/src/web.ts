@@ -1,5 +1,7 @@
-import { promises as dns } from 'node:dns';
-import { isIP } from 'node:net';
+import dnsCallback, { promises as dns, type LookupAddress } from 'node:dns';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { isIP, type LookupFunction } from 'node:net';
 
 /**
  * Leer la web de un negocio.
@@ -27,15 +29,74 @@ export function esIpPrivada(ip: string): boolean {
   );
 }
 
-async function hostPublico(host: string): Promise<boolean> {
-  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return false;
-  if (isIP(host)) return !esIpPrivada(host);
-  try {
-    const ips = await dns.lookup(host, { all: true });
-    return ips.length > 0 && ips.every((i) => !esIpPrivada(i.address));
-  } catch {
-    return false;
-  }
+/**
+ * El `lookup` que usa cada conexion: resuelve y RECHAZA si alguna direccion es
+ * privada, en el mismo paso en que se conecta.
+ *
+ * Antes se resolvia el host para validarlo y despues `fetch` lo resolvia de
+ * nuevo para conectarse: entre las dos consultas un DNS malicioso podia cambiar
+ * la respuesta (DNS rebinding) y llevar la conexion a la red de la casa. Con el
+ * agente eligiendo las URLs —que salen de webs de terceros— eso dejo de ser
+ * teorico. Validando adentro del `lookup` no hay una segunda resolucion.
+ */
+export const lookupPublico: LookupFunction = (host, opciones, listo) => {
+  dnsCallback.lookup(host, { ...opciones, all: true }, (err, direcciones) => {
+    if (err) return listo(err, '', 0);
+    const lista = direcciones as LookupAddress[];
+    if (lista.length === 0 || lista.some((d) => esIpPrivada(d.address))) {
+      return listo(new Error(`host no publico: ${host}`), '', 0);
+    }
+    if ((opciones as { all?: boolean }).all) return (listo as unknown as (e: null, l: LookupAddress[]) => void)(null, lista);
+    listo(null, lista[0]!.address, lista[0]!.family);
+  });
+};
+
+function hostProhibido(host: string): boolean {
+  return host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') || (isIP(host) !== 0 && esIpPrivada(host));
+}
+
+/** Un GET con el `lookup` de arriba. Sin `fetch`: el de Node no deja pasar uno. */
+function pedirPagina(url: URL): Promise<{ status: number; location?: string; tipo: string; cuerpo?: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const pedir = url.protocol === 'https:' ? httpsRequest : httpRequest;
+    const req = pedir(
+      url,
+      {
+        method: 'GET',
+        lookup: lookupPublico,
+        timeout: TIEMPO_MS,
+        headers: { 'user-agent': 'Mozilla/5.0 (compatible; HomeroBot/1.0)', accept: 'text/html' },
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const tipo = String(res.headers['content-type'] ?? '');
+        if (status >= 300 && status < 400) {
+          res.resume();
+          return resolve({ status, tipo, location: res.headers.location });
+        }
+        if (status < 200 || status >= 300 || !tipo.includes('html')) {
+          res.resume();
+          return resolve({ status, tipo });
+        }
+        const partes: Buffer[] = [];
+        let largo = 0;
+        res.on('data', (c: Buffer) => {
+          largo += c.length;
+          if (largo > TAMANIO_MAXIMO) {
+            partes.push(c);
+            res.destroy();
+            return resolve({ status, tipo, cuerpo: Buffer.concat(partes).subarray(0, TAMANIO_MAXIMO) });
+          }
+          partes.push(c);
+        });
+        res.on('end', () => resolve({ status, tipo, cuerpo: Buffer.concat(partes) }));
+        res.on('error', reject);
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 export type Buscador = (url: string) => Promise<string | undefined>;
@@ -51,26 +112,20 @@ export const bajarPagina: Buscador = async (crudo) => {
   // Redirecciones a mano: cada salto se vuelve a validar.
   for (let saltos = 0; saltos < 4; saltos++) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
-    if (!(await hostPublico(url.hostname))) return undefined;
-    let r: Response;
+    if (hostProhibido(url.hostname)) return undefined;
+    let r;
     try {
-      r = await fetch(url, {
-        redirect: 'manual',
-        signal: AbortSignal.timeout(TIEMPO_MS),
-        headers: { 'user-agent': 'Mozilla/5.0 (compatible; HomeroBot/1.0)', accept: 'text/html' },
-      });
+      r = await pedirPagina(url);
     } catch {
       return undefined;
     }
     if (r.status >= 300 && r.status < 400) {
-      const destino = r.headers.get('location');
-      if (!destino) return undefined;
-      url = new URL(destino, url);
+      if (!r.location) return undefined;
+      url = new URL(r.location, url);
       continue;
     }
-    if (!r.ok || !(r.headers.get('content-type') ?? '').includes('html')) return undefined;
-    const buf = await r.arrayBuffer();
-    return new TextDecoder().decode(buf.slice(0, TAMANIO_MAXIMO));
+    if (!r.cuerpo) return undefined;
+    return new TextDecoder().decode(r.cuerpo);
   }
   return undefined;
 };

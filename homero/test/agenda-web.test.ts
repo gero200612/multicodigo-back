@@ -1,3 +1,4 @@
+import { lookupPublico } from '../src/web.js';
 import { describe, expect, it } from 'vitest';
 import { horarioEnCastellano, horariosParaOfrecer, invitacionIcs, sigueLibre } from '../src/agenda.js';
 import { RUBROS } from '../src/rubros.js';
@@ -46,6 +47,22 @@ describe('agenda', () => {
     expect(ics).toContain('METHOD:REQUEST');
     expect(ics).toContain('SUMMARY:Sincro + La Distri\\, SRL');
     expect(ics).toContain('ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE:mailto:ana@x.com');
+  });
+});
+
+describe('lookupPublico', () => {
+  const resolver = (host: string) =>
+    new Promise<string>((resolve, reject) =>
+      lookupPublico(host, {}, (err, dir) => (err ? reject(err) : resolve(String(dir)))),
+    );
+
+  it('rechaza una direccion privada en el mismo paso en que se conecta', async () => {
+    await expect(resolver('127.0.0.1')).rejects.toThrow(/no publico/);
+    await expect(resolver('192.168.1.12')).rejects.toThrow(/no publico/);
+  });
+
+  it('deja pasar una publica', async () => {
+    expect(await resolver('1.1.1.1')).toBe('1.1.1.1');
   });
 });
 

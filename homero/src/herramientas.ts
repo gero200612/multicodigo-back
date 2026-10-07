@@ -48,7 +48,14 @@ const texto = (description: string) => ({ type: 'string', description });
 
 // ------------------------------------------------------------ comunes
 
-function leerPagina(deps: DepsDeHerramientas): Herramienta<{ url: string }> {
+/**
+ * `alLeer` avisa que mails aparecieron en cada pagina: el vendedor solo le puede
+ * escribir a un mail que vio en la web del propio negocio (ver `dejar_mail_listo`).
+ */
+function leerPagina(
+  deps: DepsDeHerramientas,
+  alLeer?: (url: string, mails: string[]) => void,
+): Herramienta<{ url: string }> {
   let leidas = 0;
   return {
     nombre: 'leer_pagina',
@@ -64,6 +71,7 @@ function leerPagina(deps: DepsDeHerramientas): Herramienta<{ url: string }> {
       const html = await deps.bajarPagina(url);
       if (!html) return `No se pudo leer ${url} (no responde, no es HTML o no es una direccion publica).`;
       const mails = mailsDeHtml(html, url);
+      alLeer?.(url, mails);
       const chatbots = chatbotsDeHtml(html);
       return [
         `Pagina: ${url}`,
@@ -293,6 +301,25 @@ export function herramientasDelVendedor(
     if (ctx.registro.cerro) throw new ErrorParaElAgente('Ya cerraste este negocio. Terminá la corrida.');
     ctx.registro.cerro = true;
   };
+  /**
+   * Los mails que aparecieron en paginas del dominio del negocio, en ESTA
+   * corrida. Es la defensa contra una web que le "sugiere" al agente escribirle
+   * a otro: en modo auto el mail sale solo, asi que el destino lo valida el
+   * codigo y no el criterio del modelo.
+   */
+  const vistos: { url: string; mail: string }[] = [];
+  const alLeer = (url: string, mails: string[]) => {
+    for (const m of mails) vistos.push({ url, mail: m.toLowerCase() });
+  };
+  const destinoPermitido = (lead: Lead, email: string): boolean => {
+    const e = email.toLowerCase();
+    const propio = dominio(lead.web);
+    if (propio && (e.endsWith(`@${propio}`) || vistos.some((v) => v.mail === e && dominio(v.url) === propio))) {
+      return true;
+    }
+    // Sin web propia (lo anoto el buscador con su mail): solo ese.
+    return !propio && !!lead.email && lead.email.toLowerCase() === e;
+  };
   const leadActual = async () => {
     const l = await deps.store.lead(ctx.leadId);
     if (!l) throw new ErrorParaElAgente('El negocio ya no existe.');
@@ -392,6 +419,11 @@ export function herramientasDelVendedor(
       if (/https?:\/\/|www\./i.test(m.mensaje + m.seguimiento)) {
         throw new ErrorParaElAgente('Sin links en el mail ni en el seguimiento: los mails en frio con links van a spam.');
       }
+      if (!destinoPermitido(lead, m.email)) {
+        throw new ErrorParaElAgente(
+          'Ese mail no es del negocio: tiene que ser de su dominio o aparecer en su propia web (leela con leer_pagina).',
+        );
+      }
       if (await deps.store.esBaja(m.email)) throw new ErrorParaElAgente('Ese mail pidio la baja.');
       const otro = await deps.store.leadPorEmail(m.email);
       if (otro && otro.id !== lead.id) throw new ErrorParaElAgente(`Ese mail ya es de ${otro.nombre}.`);
@@ -438,7 +470,15 @@ export function herramientasDelVendedor(
     },
   };
 
-  return [verFicha, leerPagina(deps), funcionaron, verificar, dejarListo, descartar, escribirLibreta('vendedor', deps)];
+  return [
+    verFicha,
+    leerPagina(deps, alLeer),
+    funcionaron,
+    verificar,
+    dejarListo,
+    descartar,
+    escribirLibreta('vendedor', deps),
+  ];
 }
 
 // ------------------------------------------------------------ atencion
