@@ -15,7 +15,9 @@ quiere hacer el contenido él, pero tampoco quiere ver videos mediocres.
 - Dijo:
   - Homero arma los reels y **nada se publica sin su OK** (Telegram o panel).
     Después los promociona.
-  - **Con música**, generada con IA: un tema original por reel.
+  - **Con música**, y **sin pagar nada más** (la plata va solo a anuncios):
+    banco de temas gratis de **Pixabay Music** (licencia comercial, también para
+    anuncios, sin créditos).
   - **Que venda**: lo que hace Sincro y el problema que resuelve. **No** mostrar
     pantallas de las aplicaciones.
   - **Original, nada básico.**
@@ -64,13 +66,20 @@ Paleta y tipografía de Sincro (`#0166FE`, blanco, negro); transiciones con
 resortes y desenfoque de movimiento; cortes **en el beat**. El agente compone; no
 escribe código de animación.
 
-### 1.3 Música (ElevenLabs Music API)
-Homero pide un tema con el género, el clima, el BPM y la duración del guion. Con
-el BPM se calcula la grilla de beats y las escenas se cortan sobre ella. Después
-de generar, Homero detecta los golpes reales del audio (ffmpeg) y corrige la
-grilla si el tema se corrió. Volumen normalizado a −14 LUFS, que es lo que usa
-Instagram. Clave en `mc.env`: `ELEVENLABS_API_KEY`. Sin clave, no se arman reels
-(no hay versión sin música).
+### 1.3 Música (banco de Pixabay)
+Gero baja **una sola vez** 40–50 temas que se eligen por estilo (enérgico, tech,
+tranquilo, épico, ritmo marcado) y quedan en la Toshiba en `/srv/homero/musica/`,
+montado en Homero como solo lectura, con un `banco.json` (título, autor, URL de
+Pixabay, estilo). No van al repo.
+
+- Al ver un tema nuevo, Homero lo analiza una vez (ffmpeg): duración, BPM,
+  golpes, tramos de más energía. Queda en `homero.musica`.
+- El guion pide estilo y duración; Homero elige un tema de ese estilo que **no
+  se haya usado en los últimos 8 reels**, y el tramo que mejor calza (el pico de
+  energía cerca del momento fuerte del guion).
+- Las escenas se cortan sobre los golpes reales del tema. Fundido de entrada y de
+  salida; volumen normalizado a −14 LUFS, que es lo que usa Instagram.
+- Si Instagram marca un tema por derechos, se saca del banco (`homero.musica.vetado`).
 
 ### 1.4 Render
 `@remotion/renderer` en Homero (trae su propio Chromium y ffmpeg): mp4 H.264 +
@@ -89,7 +98,9 @@ Puntúa de 1 a 10 con una rúbrica:
 - **claridad**: ¿se entiende sin sonido?
 - **legibilidad**: ¿se lee cada texto en el tiempo que está?
 - **ritmo**: ¿los cortes caen en el beat? ¿hay tiempos muertos?
-- **música**: ¿acompaña y tiene pico donde debe?
+- **música**: ¿el estilo del tema corresponde al clima del guion? ¿el pico de
+  energía cae en el momento fuerte? ¿los cortes caen en los golpes? (el director
+  no escucha: juzga con el análisis del audio y el estilo del banco)
 - **marca**: ¿se nota que es Sincro?
 - **venta**: ¿queda claro qué ofrecemos y qué hacer?
 - **originalidad**: ¿se parece a alguno anterior?
@@ -139,7 +150,10 @@ director lo usa para calibrar (qué ganchos retienen). Un reel que rinde se pued
 
 ## 6. Tablas (`homero/migrations/009_reels.sql`)
 
-`homero.reels`: id, guion jsonb, musica jsonb (pedido, BPM, golpes), video (ruta
+`homero.musica`: archivo, título, autor, estilo, duración, BPM, golpes jsonb,
+energía jsonb, usado_en, vetado.
+
+`homero.reels`: id, guion jsonb, musica jsonb (tema, tramo, BPM, golpes), video (ruta
 local hasta publicar), vueltas jsonb (puntajes y correcciones del director en
 cada una), estado `armando|dirigiendo|propuesto|aprobado|publicado|fallido|descartado`,
 ig_media_id, fb_video_id, anuncio_id, metricas jsonb, motivo, fechas.
@@ -147,7 +161,8 @@ ig_media_id, fb_video_id, anuncio_id, metricas jsonb, motivo, fechas.
 ## 7. Tests
 
 - Cada tipo de escena renderiza sus variantes (snapshot de cuadros clave).
-- Cortes en el beat con un audio de prueba de BPM conocido.
+- Cortes en el beat con un audio de prueba de BPM conocido; elección de tema
+  (estilo, sin repetir en 8, tramo de energía).
 - Controles técnicos: zonas seguras, volumen, tamaño.
 - Flujo del director: pasa, corrige y pasa, descarta a la tercera (sin mandar
   el video).
@@ -156,5 +171,5 @@ ig_media_id, fb_video_id, anuncio_id, metricas jsonb, motivo, fechas.
 
 ## Fuera de alcance
 
-Voz en off. Video generado con IA (clips tipo Veo o Sora). Responder comentarios
+Voz en off. Música generada con IA o paga. Video generado con IA (clips tipo Veo o Sora). Responder comentarios
 y mensajes directos. Historias. TikTok.
