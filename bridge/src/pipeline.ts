@@ -1145,9 +1145,17 @@ export async function handleIncoming(
         // `catch` a undefined: no saber el nombre degrada el mensaje a "otra
         // persona", que sigue siendo util. Voltear el aviso por no poder leer
         // un email seria cambiar un mensaje incompleto por ninguno.
-        quien: duenio?.usuarioId
-          ? await deps.store.nombreDeUsuario(duenio.usuarioId).catch(() => undefined)
-          : undefined,
+        //
+        // 'homero' no es un usuario: es como se anota el gateway cuando una
+        // corrida de Homero tiene tomado el slot (las cuentas son un fondo
+        // comun de todos los bots). Ir a la base con eso no sirve:
+        // `nombreDeUsuario` espera un uuid.
+        quien:
+          duenio?.usuarioId === 'homero'
+            ? 'Homero'
+            : duenio?.usuarioId
+              ? await deps.store.nombreDeUsuario(duenio.usuarioId).catch(() => undefined)
+              : undefined,
         desde: duenio?.desde,
         botones: await botonesDeRelevo(agent, project, deps),
       };
@@ -1588,13 +1596,6 @@ export async function ejecutarTurno(
   deps: PipelineDeps,
   t: Turno,
 ): Promise<{ jobId: string; texto: string }> {
-  // Elegido a mano (Telegram, panel) también: la cuenta de Homero la usa
-  // Homero, y dos procesos con la misma credencial se pisan el refresh token.
-  const ajenos = await deps.store.slotsDeOtrosBots().catch(() => new Set<string>());
-  if (ajenos.has(t.agente)) {
-    // Sin job: se corta antes de crearlo. El código viaja como `message`.
-    throw new ErrorDeTurno('', 'agente_de_otro_bot');
-  }
   // Cada Claude es de su dueño y de los grupos con los que lo comparte (parte
   // B de empresas). Va ACA y no en cada entrada: panel, Telegram y corridas
   // pasan todos por este lugar. Sin usuario (procesos internos viejos) no hay

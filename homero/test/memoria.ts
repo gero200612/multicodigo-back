@@ -1,5 +1,9 @@
 import { dominio } from '../src/cadenas.js';
 import type {
+  Agente,
+  CierreDeCorrida,
+  Corrida,
+  MailQueFunciono,
   CambiosDePresupuesto,
   Presupuesto,
   CambiosDeDemo,
@@ -44,6 +48,10 @@ export class MemoriaStore implements Store {
   rebotes: { cuenta: string; email?: string; en: Date }[] = [];
   demos: Demo[] = [];
   presupuestos: Presupuesto[] = [];
+  corridasGuardadas: Corrida[] = [];
+  libretas = new Map<Agente, string>();
+  /** Lo que devuelve `mailsQueFuncionaron`: se carga a mano en cada test. */
+  funcionaron: MailQueFunciono[] = [];
 
   constructor(private ahora: () => Date = () => new Date()) {}
 
@@ -68,6 +76,18 @@ export class MemoriaStore implements Store {
       disponibleDesde: t.disponibleDesde ?? this.ahora(),
     });
     return true;
+  }
+  async colaPorTipo() {
+    const porTipo = new Map<Fila['tipo'], Fila[]>();
+    for (const t of this.tareas.filter((x) => x.estado === 'pendiente')) {
+      porTipo.set(t.tipo, [...(porTipo.get(t.tipo) ?? []), t]);
+    }
+    return [...porTipo.entries()].map(([tipo, fs]) => ({
+      tipo,
+      pendientes: fs.length,
+      proxima: fs.map((f) => f.disponibleDesde).sort((a, b) => a.getTime() - b.getTime())[0],
+      ultimoError: fs.find((f) => f.ultimoError)?.ultimoError,
+    }));
   }
   async tomarSiguiente(ahora: Date, iaDisponible: boolean) {
     const f = this.tareas
@@ -256,11 +276,6 @@ export class MemoriaStore implements Store {
   async registrarBusqueda(b: { rubro: string; ciudad: string; fuente: string; hallados: number }) {
     this.busquedas.push(b);
   }
-  async busquedasDeRubro(rubro: string) {
-    const veces = new Map<string, number>();
-    for (const b of this.busquedas) if (b.rubro === rubro) veces.set(b.ciudad, (veces.get(b.ciudad) ?? 0) + 1);
-    return [...veces].map(([ciudad, v]) => ({ ciudad, veces: v }));
-  }
   async rendimientoPorRubro() {
     const rubros = [...new Set(this.leads.map((l) => l.rubro))];
     return rubros.map((rubro) => {
@@ -294,13 +309,6 @@ export class MemoriaStore implements Store {
       reuniones: this.reuniones.filter((r) => r.creada.getTime() >= d).length,
       leads: this.leads.filter((l) => l.creado.getTime() >= d).length,
     };
-  }
-  async estadosConPrefijo(prefijo: string) {
-    return [...this.estado].filter(([k]) => k.startsWith(prefijo)).map(([clave, valor]) => ({ clave, valor: copia(valor) }));
-  }
-  async recibidosDesde(_desde: Date) {
-    // El mock no guarda los datos completos, solo la clave. Para tests se devuelve vacío.
-    return [] as { de: string; asunto: string; recibidoEn: Date }[];
   }
   async salientesEnBorrador(tipos: TipoDeSaliente[]) {
     return this.salientes.filter((s) => s.estado === 'borrador' && tipos.includes(s.tipo)).map((s) => ({ ...s }));
@@ -371,5 +379,42 @@ export class MemoriaStore implements Store {
     if (error === '') p.error = undefined;
     else if (error !== undefined) p.error = error;
     p.actualizado = new Date();
+  }
+
+  async crearCorrida(c: { agente: Agente; objetivo: string; leadId?: number }) {
+    const id = this.corridasGuardadas.length + 1;
+    this.corridasGuardadas.push({ id, ...c, estado: 'corriendo', inicio: this.ahora() });
+    return id;
+  }
+  async cerrarCorrida(id: number, c: CierreDeCorrida) {
+    const f = this.corridasGuardadas.find((x) => x.id === id);
+    if (f) Object.assign(f, copia(c), { fin: this.ahora() });
+  }
+  async borrarCorrida(id: number) {
+    this.corridasGuardadas = this.corridasGuardadas.filter((c) => c.id !== id);
+  }
+  async corrida(id: number) {
+    return this.corridasGuardadas.find((x) => x.id === id);
+  }
+  async corridas(f: { agente?: Agente; limite: number }) {
+    return this.corridasGuardadas
+      .filter((c) => !f.agente || c.agente === f.agente)
+      .sort((a, b) => b.id - a.id)
+      .slice(0, f.limite);
+  }
+  async libreta(agente: Agente) {
+    return this.libretas.get(agente) ?? '';
+  }
+  async guardarLibreta(agente: Agente, contenido: string) {
+    this.libretas.set(agente, contenido);
+  }
+  async busquedasRecientes(limite: number) {
+    return this.busquedas
+      .slice(-limite)
+      .reverse()
+      .map((b) => ({ ...b, hecha: this.ahora() }));
+  }
+  async mailsQueFuncionaron(limite: number) {
+    return this.funcionaron.slice(0, limite);
   }
 }

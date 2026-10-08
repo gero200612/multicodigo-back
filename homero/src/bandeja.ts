@@ -88,7 +88,7 @@ export async function revisarBandejas(deps: {
           if (REBOTE.test(de)) await deps.alRebote?.(r);
           if (propias.has(de) || DE_SISTEMA.test(de)) continue;
           const encolado = await deps.store.encolar({
-            tipo: 'resumir_respuesta',
+            tipo: 'agente_atender',
             payload: r,
             requiereIa: true,
             clave: `resumir:${r.cuenta}:${r.messageId}`,

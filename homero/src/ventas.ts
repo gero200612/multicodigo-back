@@ -1,29 +1,11 @@
 import { z } from 'zod';
-import {
-  diaArgentino,
-  finDe,
-  horarioCorto,
-  horarioEnCastellano,
-  horariosLibres,
-  invitacionIcs,
-  linkDeReunion,
-  sigueLibre,
-} from './agenda.js';
+import { diaArgentino, finDe, horarioEnCastellano, invitacionIcs, linkDeReunion } from './agenda.js';
 import type { Casilla } from './config.js';
 import { cupoDelDia, enviarMail, type DepsDeEnvio } from './envio.js';
-import { linkDeFicha, type Fuente } from './fuentes.js';
+import type { Fuente } from './fuentes.js';
 import { horaArgentina, inicioDelDia, proximaVentanaDeEnvio, relojArgentino, sumarDiasHabiles } from './horas.js';
-import {
-  leerAnalisis,
-  leerBorrador,
-  promptDeAnalisis,
-  promptDeBorrador,
-  promptDeRespuesta,
-  type Analisis,
-} from './prompts.js';
-import { sinCadenas } from './cadenas.js';
-import { elegirCiudad, elegirRubro, rubroPorId, RUBROS } from './rubros.js';
-import type { Lead, Recibido, Saliente, Store } from './store.js';
+import { rubroPorId, RUBROS } from './rubros.js';
+import type { Investigacion, Lead, Recibido, Saliente, Store } from './store.js';
 
 /** Un boton de Telegram: el texto que se ve y lo que vuelve al tocarlo. */
 export interface Boton {
@@ -44,17 +26,12 @@ export interface DepsDeVentas extends DepsDeEnvio {
   pedirIaPatan?: (prompt: string) => Promise<string>;
   fuente: Fuente;
   nombreDeFuente: string;
-  leerSitio: (
-    web: string,
-  ) => Promise<{ texto: string; mails: string[]; paginas?: string[]; chatbots?: string[] } | undefined>;
   recibeMail: (email: string) => Promise<boolean>;
   azar?: () => number;
 }
 
 export const MODO = 'modo';
 
-/** Por debajo de esto la propuesta no se le pasa a Gero. */
-export const FACTIBILIDAD_MINIMA = 6;
 export type Modo = 'aprobar' | 'auto';
 
 export async function modoActual(store: Store): Promise<Modo> {
@@ -69,148 +46,30 @@ export function direccion(de: string): string {
 
 const conRe = (asunto: string) => (/^re:/i.test(asunto) ? asunto : `Re: ${asunto}`);
 
-// ------------------------------------------------------------ prospectar
-
-const PayloadDeProspeccion = z.object({
-  cantidad: z.number().int().positive(),
-  rubro: z.string().optional(),
-  ciudad: z.string().optional(),
-  vuelta: z.number().int().default(0),
-});
+// ------------------------------------------------------------ borradores
 
 /**
- * Busca negocios y encola la investigacion de cada uno. Si la busqueda trae
- * pocos, prueba otra combinacion de rubro y ciudad (hasta tres vueltas).
+ * El mail inicial y su seguimiento quedan escritos, y despues lo de siempre:
+ * en ensayo la muestra a Gero, en modo auto se aprueban solos, si no la
+ * tarjeta para aprobar. Lo usa el agente vendedor al dejar el mail listo.
  */
-export async function prospectar(payload: unknown, deps: DepsDeVentas): Promise<void> {
-  const p = PayloadDeProspeccion.parse(payload);
-  const rubro =
-    (p.rubro && rubroPorId(p.rubro)) || elegirRubro(await deps.store.rendimientoPorRubro(), deps.azar);
-  const ciudad = p.ciudad ?? elegirCiudad(await deps.store.busquedasDeRubro(rubro.id));
-
-  const encontrados = await deps.fuente(rubro, ciudad);
-  // Las cadenas afuera antes de gastar una investigacion en ellas.
-  const { quedan: hallazgos } = await sinCadenas(encontrados, (d) => deps.store.hayLeadConDominio(d));
-  await deps.store.registrarBusqueda({
-    rubro: rubro.id,
-    ciudad,
-    fuente: deps.nombreDeFuente,
-    hallados: encontrados.length,
-  });
-
-  // Se investiga el doble de lo pedido: los de baja factibilidad se descartan
-  // y asi a Gero le llegan los mejores.
-  const aInvestigar = p.cantidad * 2;
-  let nuevos = 0;
-  for (const h of hallazgos) {
-    if (nuevos >= aInvestigar) break;
-    if (!h.web && !h.email) continue;
-    const id = await deps.store.crearLead({
-      nombre: h.nombre,
-      rubro: rubro.id,
-      ciudad,
-      web: h.web,
-      email: h.email,
-      telefono: h.telefono,
-      fuente: h.fuente,
-      externo: h.externo,
-    });
-    if (!id) continue;
-    await deps.store.encolar({
-      tipo: 'investigar',
-      payload: { leadId: id },
-      requiereIa: true,
-      clave: `investigar:${id}`,
-    });
-    nuevos++;
-  }
-
-  const faltan = Math.ceil((aInvestigar - nuevos) / 2);
-  if (faltan > 0 && p.vuelta < 2) {
-    // Otra combinacion: sin rubro ni ciudad fijos, que elija de nuevo.
-    await deps.store.encolar({
-      tipo: 'prospectar',
-      payload: { cantidad: faltan, vuelta: p.vuelta + 1 },
-      requiereIa: false,
-    });
-  }
-}
-
-// ------------------------------------------------------------ investigar
-
-/**
- * Lee la web, consigue el mail, y le pide a la IA el mail inicial con sus dos
- * seguimientos. Queda como borrador para que Gero lo apruebe (o sale solo en
- * modo automatico).
- */
-export async function investigar(payload: unknown, deps: DepsDeVentas): Promise<void> {
-  const { leadId } = z.object({ leadId: z.number() }).parse(payload);
-  const lead = await deps.store.lead(leadId);
-  if (!lead || lead.estado !== 'nuevo') return;
-
-  let texto = '';
-  let mails: string[] = [];
-  let paginas: string[] = [];
-  let chatbots: string[] = [];
-  if (lead.web) {
-    const sitio = await deps.leerSitio(lead.web);
-    if (sitio) ({ texto, mails, paginas = [], chatbots = [] } = sitio);
-  }
-  const email = lead.email ?? mails[0];
-  const descartar = () => deps.store.actualizarLead(lead.id, { estado: 'descartado' });
-
-  if (!email) return descartar();
-  // Un mail que rebota quema la casilla: si el dominio no recibe mail, ni se
-  // intenta. Y a quien pidio la baja no se le escribe nunca.
-  if ((await deps.store.esBaja(email)) || !(await deps.recibeMail(email))) return descartar();
-  if (!lead.email) {
-    if (await deps.store.leadPorEmail(email)) return descartar();
-    await deps.store.actualizarLead(lead.id, { email });
-  }
-
-  const b = leerBorrador(await deps.pedirIa(promptDeBorrador(lead, rubroPorId(lead.rubro), texto, deps.firma, chatbots)));
-  if (!b) throw new Error('la IA no devolvio un borrador legible');
-  if (!b.encaja) return descartar();
-  // Solo pasan las propuestas con chances reales: prioriza lo mas factible.
-  if (b.factibilidad < FACTIBILIDAD_MINIMA) return descartar();
-
-  const fuentes = [linkDeFicha(lead.externo), ...paginas].filter((f): f is string => !!f);
-  await deps.store.actualizarLead(lead.id, {
-    estado: 'borrador',
-    investigacion: {
-      resumen_empresa: b.resumen_empresa,
-      dolor: b.dolor,
-      idea: b.idea,
-      factibilidad: b.factibilidad,
-      factibilidad_motivo: b.factibilidad_motivo,
-      fuentes,
-      chatbots,
-      ...(b.personas ? { personas: b.personas } : {}),
-      ...(b.usuarios?.trim() ? { usuarios: b.usuarios.trim() } : {}),
-    },
-  });
-  const inicial = await deps.store.crearSaliente({
-    leadId: lead.id,
-    tipo: 'inicial',
-    paso: 0,
-    asunto: b.asunto,
-    cuerpo: b.mensaje,
-  });
-  await deps.store.crearSaliente({
-    leadId: lead.id,
-    tipo: 'seguimiento',
-    paso: 1,
-    asunto: conRe(b.asunto),
-    cuerpo: b.seguimiento,
-  });
+export async function crearSecuencia(
+  leadId: number,
+  m: { email: string; asunto: string; mensaje: string; seguimiento: string; investigacion: Investigacion },
+  deps: DepsDeVentas,
+  o: { forzarAprobacion?: boolean } = {},
+): Promise<void> {
+  await deps.store.actualizarLead(leadId, { estado: 'borrador', email: m.email, investigacion: m.investigacion });
+  await deps.store.crearSaliente({ leadId, tipo: 'inicial', paso: 0, asunto: m.asunto, cuerpo: m.mensaje });
+  await deps.store.crearSaliente({ leadId, tipo: 'seguimiento', paso: 1, asunto: conRe(m.asunto), cuerpo: m.seguimiento });
 
   const ensayo = await ensayoActivo(deps);
-  const muestraEnviada = ensayo ? await mandarMuestra(lead.id, ensayo, deps) : false;
-  if (!ensayo && (await modoActual(deps.store)) === 'auto') {
-    await aprobarLead(lead.id, deps);
+  const muestraEnviada = ensayo ? await mandarMuestra(leadId, ensayo, deps) : false;
+  if (!ensayo && !o.forzarAprobacion && (await modoActual(deps.store)) === 'auto') {
+    await aprobarLead(leadId, deps);
     return;
   }
-  await proponerBorrador(lead.id, deps, { ensayo, muestraEnviada });
+  await proponerBorrador(leadId, deps, { ensayo, muestraEnviada });
 }
 
 /**
@@ -344,6 +203,9 @@ export async function ensayoActivo(
  * salio, factibilidad, seguimiento) va por Telegram. No cuenta para el cupo ni
  * toca al lead.
  */
+/** Clave en homero.estado: cuando se le mando a Gero la muestra de este borrador. */
+export const muestraDe = (leadId: number) => `muestra_de:${leadId}`;
+
 export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVentas): Promise<boolean> {
   const lead = await deps.store.lead(leadId);
   if (!lead || deps.casillas.length === 0) return false;
@@ -366,6 +228,8 @@ export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVenta
   await deps.store.registrarEnvio({ cuenta: casilla.email, para: a, asunto: inicial.asunto, messageId });
   // Para reconocer la respuesta de Gero a esta muestra como si fuera del cliente.
   if (messageId) await deps.store.guardarEstado(`muestra:${messageId}`, leadId);
+  // Y para que la web muestre "Enviado" en vez de Aprobar.
+  await deps.store.guardarEstado(muestraDe(leadId), new Date().toISOString());
   return true;
 }
 
@@ -568,44 +432,14 @@ export async function enviarSaliente(
 
 // ------------------------------------------------------------ respuestas
 
-const ICONOS: Record<Analisis['tipo'], string> = {
-  interesado: '🟢',
-  pregunta: '🟡',
-  eligio_horario: '📅',
-  no_interesado: '⚪',
-  baja: '🚫',
-  automatico: '🤖',
-  otro: '📩',
-};
-
-export function mensajeDeRespuesta(r: Recibido, a: Analisis, lead?: Lead): string {
-  const rubro = lead ? rubroPorId(lead.rubro)?.nombre ?? lead.rubro : undefined;
-  return [
-    `${ICONOS[a.tipo]} RESPONDIÓ (${a.tipo.replace('_', ' ')}): ${lead?.nombre ?? a.empresa}`,
-    lead ? `Rubro: ${rubro}, ${lead.ciudad}` : undefined,
-    `De: ${r.de}`,
-    lead?.investigacion ? `Qué hacen: ${lead.investigacion.resumen_empresa}` : `Empresa: ${a.empresa}`,
-    lead?.investigacion ? `Le propusimos: ${lead.investigacion.idea}` : undefined,
-    lead?.web ? `Web: ${lead.web}` : undefined,
-    lead?.telefono ? `Tel: ${lead.telefono}` : undefined,
-    `Qué dijo: ${a.resumen}`,
-    `Sugerencia: ${a.sugerencia}`,
-    `Casilla: ${r.cuenta}`,
-  ]
-    .filter((l) => l !== undefined)
-    .join('\n');
-}
-
 /**
- * Entiende una respuesta y actua: corta el seguimiento, anota bajas, y si
- * esta interesado le pasa a Gero los horarios libres para que elija cuales
- * ofrecer. Si eligio uno de los ofrecidos, reserva.
- *
- * En ensayo, una respuesta de Gero a una muestra se trata como si fuera del
- * cliente: asi se prueba el circuito entero sin escribirle a nadie. Lo que
- * "le mandaria" al cliente le llega a Gero, y el negocio no cambia de estado.
+ * De quien es un mail que llego: el lead (aunque conteste otra persona de la
+ * empresa, por el hilo) y si es Gero probando el ensayo.
  */
-export async function atenderRespuesta(r: Recibido, deps: DepsDeVentas): Promise<void> {
+export async function identificarRemitente(
+  r: Recibido,
+  deps: DepsDeVentas,
+): Promise<{ lead?: Lead; esEnsayo: boolean; de: string }> {
   const de = direccion(r.de);
   const ensayo = await ensayoActivo(deps);
   const esEnsayo = ensayo !== undefined && de === ensayo;
@@ -623,162 +457,22 @@ export async function atenderRespuesta(r: Recibido, deps: DepsDeVentas): Promise
       lead = { ...lead, email: de };
     }
   }
-  // En ensayo, Gero escribiendo por fuera de un hilo no es un cliente.
-  if (esEnsayo && !lead) {
-    await deps.avisar(`🧪 Me escribiste desde ${de} pero no respondiendo a una muestra. Respondé el mail [ENSAYO] para probar.`);
-    return;
-  }
-  const marcar = async (estado: Lead['estado']) => {
-    if (lead && !esEnsayo) await deps.store.actualizarLead(lead.id, { estado });
-  };
-
-  const ahora = deps.ahora();
-  const enviados = lead ? (await deps.store.salientesDeLead(lead.id)).filter((s) => s.estado === 'enviado') : [];
-  const ofrecidos = lead ? await deps.store.oferta(lead.id) : undefined;
-  const tomados = (await deps.store.reunionesDesde(new Date(ahora.getTime() - 3_600_000))).map((x) => x.inicio);
-  const ocupados = await deps.store.diasOcupados();
-
-  const a = leerAnalisis(
-    await deps.pedirIa(promptDeAnalisis(r, { lead, loQueLeMandamos: enviados.at(-1)?.cuerpo, ofrecidos })),
-  );
-  if (a.tipo === 'automatico') return;
-  if (lead && !esEnsayo) await deps.store.cancelarSeguimientos(lead.id);
-  const prefijo = esEnsayo ? '🧪 ENSAYO · ' : '';
-
-  if (a.tipo === 'baja') {
-    if (!esEnsayo) await deps.store.agregarBaja(de, 'la pidió por mail');
-    await marcar('baja');
-    await deps.avisar(prefijo + mensajeDeRespuesta(r, a, lead) + '\n\nNo le escribo nunca más.');
-    return;
-  }
-  if (a.tipo === 'no_interesado') {
-    await marcar('cerrado');
-    await deps.avisar(prefijo + mensajeDeRespuesta(r, a, lead));
-    return;
-  }
-
-  if (a.tipo === 'eligio_horario' && lead && ofrecidos && a.horario_elegido) {
-    const elegido = ofrecidos[a.horario_elegido - 1];
-    if (elegido && sigueLibre(elegido, tomados, ocupados) && (await reservar(lead, elegido, r, deps, esEnsayo))) return;
-    await deps.avisar(
-      `${prefijo}${mensajeDeRespuesta(r, a, lead)}\n\n⚠️ Eligió ${elegido ? horarioEnCastellano(elegido) : 'un horario'} pero ya no está libre. Te paso otros para que elijas.`,
-    );
-    await ofrecerEleccion(lead, r, a, deps, prefijo);
-    return;
-  }
-
-  // Un interesado que escribio solo (no estaba en la base) se vuelve lead:
-  // asi puede seguir el mismo camino hasta la reunion.
-  if (!lead && (a.tipo === 'interesado' || a.tipo === 'pregunta')) {
-    const id = await deps.store.crearLead({
-      nombre: a.empresa !== 'desconocida' ? a.empresa : r.de,
-      rubro: 'entrante',
-      ciudad: '-',
-      email: de,
-      fuente: 'entrante',
-    });
-    lead = id ? await deps.store.lead(id) : undefined;
-  }
-  await marcar('respondio');
-
-  if (!lead || (a.tipo !== 'interesado' && a.tipo !== 'pregunta')) {
-    await deps.avisar(prefijo + mensajeDeRespuesta(r, a, lead));
-    return;
-  }
-  await ofrecerEleccion(lead, r, a, deps, prefijo);
-}
-
-// ------------------------------------------------------------ eleccion de horarios
-
-/** Una respuesta esperando que Gero marque horarios. Vive en homero.estado. */
-export interface Eleccion {
-  recibido: Recibido;
-  libres: string[];
-  elegidos: number[];
-  /** Lo que se le mostro a Gero: el analisis de la respuesta. */
-  resumen?: string;
-  /** La tarjeta de Telegram, para redibujar sus botones si se marca desde la web. */
-  telegramMsg?: number;
-}
-
-export const PREFIJO_DE_ELECCION = 'eleccion:';
-
-export const claveDeEleccion = (leadId: number) => `${PREFIJO_DE_ELECCION}${leadId}`;
-
-/** Los botones: un horario por renglon (marcado o no) y las dos acciones. */
-export function botonesDeEleccion(leadId: number, libres: Date[], elegidos: number[]): Boton[] {
-  return [
-    ...libres.map((h, i) => ({
-      texto: `${elegidos.includes(i) ? '☑️' : '⬜'} ${horarioCorto(h)}`,
-      datos: `ho:${leadId}:${i}`,
-    })),
-    { texto: '✍️ Armar respuesta', datos: `ar:${leadId}` },
-    { texto: '🗑 No responder', datos: `nr:${leadId}` },
-  ];
+  return { lead, esEnsayo, de };
 }
 
 /**
- * Le pasa a Gero el resumen y los horarios libres de la agenda para que marque
- * cuales ofrecer. La respuesta se escribe recien cuando toca "Armar respuesta".
+ * Una respuesta ya escrita le llega a Gero con Enviar / No enviar. Los
+ * horarios que ofrece quedan anotados para reconocer cual elige el cliente.
  */
-async function ofrecerEleccion(lead: Lead, r: Recibido, a: Analisis, deps: DepsDeVentas, prefijo: string) {
-  const ahora = deps.ahora();
-  const tomados = (await deps.store.reunionesDesde(new Date(ahora.getTime() - 3_600_000))).map((x) => x.inicio);
-  const libres = horariosLibres(ahora, tomados, await deps.store.diasOcupados());
-  const eleccion: Eleccion = {
-    recibido: r,
-    libres: libres.map((h) => h.toISOString()),
-    elegidos: [],
-    resumen: `${prefijo}${mensajeDeRespuesta(r, a, lead)}`,
-  };
-  await deps.store.guardarEstado(claveDeEleccion(lead.id), eleccion);
-  const msg = await deps.proponer(
-    `${eleccion.resumen}\n\n🗓 Estos horarios están libres en tu agenda. Marcá los que quieras ofrecerle y tocá ✍️ Armar respuesta.`,
-    botonesDeEleccion(lead.id, libres, []),
-  );
-  if (msg) await deps.store.guardarEstado(claveDeEleccion(lead.id), { ...eleccion, telegramMsg: msg });
-}
-
-/** Marca o desmarca un horario. Devuelve los botones nuevos. */
-export async function alternarHorario(leadId: number, i: number, deps: Pick<DepsDeVentas, 'store'>) {
-  const e = await deps.store.leerEstado<Eleccion>(claveDeEleccion(leadId));
-  if (!e || i < 0 || i >= e.libres.length) return undefined;
-  e.elegidos = e.elegidos.includes(i) ? e.elegidos.filter((x) => x !== i) : [...e.elegidos, i].sort();
-  await deps.store.guardarEstado(claveDeEleccion(leadId), e);
-  return botonesDeEleccion(leadId, e.libres.map((h) => new Date(h)), e.elegidos);
-}
-
-export async function armarRespuesta(
-  leadId: number,
-  deps: Pick<DepsDeVentas, 'store'>,
-): Promise<'encolada' | 'sin_horarios' | 'vencida'> {
-  const e = await deps.store.leerEstado<Eleccion>(claveDeEleccion(leadId));
-  if (!e) return 'vencida';
-  if (e.elegidos.length === 0) return 'sin_horarios';
-  await deps.store.encolar({ tipo: 'redactar_respuesta', payload: { leadId }, requiereIa: true });
-  return 'encolada';
-}
-
-export async function noResponder(leadId: number, deps: Pick<DepsDeVentas, 'store'>): Promise<void> {
-  await deps.store.guardarEstado(claveDeEleccion(leadId), null);
-}
-
-/** Escribe la respuesta con los horarios que marco Gero y se la pasa para enviar. */
-export async function redactarRespuesta(payload: unknown, deps: DepsDeVentas): Promise<void> {
-  const { leadId } = z.object({ leadId: z.number() }).parse(payload);
-  const e = await deps.store.leerEstado<Eleccion>(claveDeEleccion(leadId));
-  const lead = await deps.store.lead(leadId);
-  if (!e || !lead) return;
-  const horarios = e.elegidos.map((i) => new Date(e.libres[i]!));
-  const r = { ...e.recibido, recibidoEn: new Date(e.recibido.recibidoEn) };
-  const enviados = (await deps.store.salientesDeLead(lead.id)).filter((s) => s.estado === 'enviado');
-
-  const texto = (
-    await deps.pedirIa(
-      promptDeRespuesta(r, { lead, loQueLeMandamos: enviados.at(-1)?.cuerpo, horarios, firma: deps.firma }),
-    )
-  ).trim();
-  await deps.store.guardarOferta(lead.id, horarios);
+export async function proponerRespuestaArmada(
+  lead: Lead,
+  r: Recibido,
+  texto: string,
+  horarios: Date[],
+  deps: DepsDeVentas,
+  prefijo = '',
+): Promise<void> {
+  if (horarios.length > 0) await deps.store.guardarOferta(lead.id, horarios);
   const id = await deps.store.crearSaliente({
     leadId: lead.id,
     tipo: 'respuesta',
@@ -788,10 +482,9 @@ export async function redactarRespuesta(payload: unknown, deps: DepsDeVentas): P
     cuerpo: texto,
     enRespuestaA: r.messageId,
   });
-  await deps.store.guardarEstado(claveDeEleccion(leadId), null);
   const ensayo = await ensayoActivo(deps);
   const msg = await deps.proponer(
-    `↩️ Respuesta para ${lead.nombre}${ensayo ? ' (🧪 ensayo: te llega a vos)' : ''}:\n\n${texto}\n\nPara cambiarla, respondé a este mensaje con el texto nuevo.`,
+    `${prefijo}↩️ Respuesta para ${lead.nombre}${ensayo ? ' (🧪 ensayo: te llega a vos)' : ''}:\n\n${texto}\n\nPara cambiarla, respondé a este mensaje con el texto nuevo.`,
     [
       { texto: '📤 Enviar', datos: `en:${id}` },
       { texto: '🗑 No enviar', datos: `no:${id}` },
@@ -1008,16 +701,17 @@ export async function planificar(deps: DepsDeVentas): Promise<void> {
       await deps.store.guardarEstado(marca, true);
       // Si la anterior sigue buscando o investigando, todavia no se sabe
       // cuantos borradores va a dar: se espera a la proxima vuelta.
-      if ((await deps.store.tareasEnCurso(['prospectar', 'investigar'])) === 0) {
+      if ((await deps.store.tareasEnCurso(['agente_buscar', 'agente_vender', 'prospectar', 'investigar'])) === 0) {
         const { quedan } = await lugaresHoy(deps);
         const { borradores } = await deps.store.pipeline();
         const faltan = Math.min(TOPE_DE_BORRADORES - borradores, quedan - borradores);
         if (faltan > 0) {
           await deps.store.encolar({
-            tipo: 'prospectar',
-            payload: { cantidad: faltan },
-            requiereIa: false,
-            clave: `prospectar:${dia}:${vuelta}`,
+            tipo: 'agente_buscar',
+            // El doble: el vendedor descarta los que no encajan.
+            payload: { cantidad: Math.min(50, faltan * 2) },
+            requiereIa: true,
+            clave: `buscar:${dia}:${vuelta}`,
           });
         }
       }

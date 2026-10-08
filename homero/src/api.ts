@@ -7,7 +7,11 @@ import { Contenido, editarPresupuesto, guardarRegla, pedirPresupuesto, Regla, re
 import { RUBROS } from './rubros.js';
 import type { Store } from './store.js';
 import type { Acciones } from './telegram.js';
-import { claveDeEleccion, PREFIJO_DE_ELECCION, type Boton, type Eleccion } from './ventas.js';
+import { armarTablero } from './tablero.js';
+import { escribirLibreta, ITEMS_POR_LISTA, LARGO_DE_ITEM, leerLibreta, Libreta } from './libreta.js';
+import { CONFIG_DEL_BUSCADOR, type ConfigDelBuscador } from './agentes.js';
+import type { Actividad } from './mcp.js';
+import { muestraDe, type Boton } from './ventas.js';
 
 /**
  * La API interna de Homero: lo que usa punchi.dev para manejarlo entero desde
@@ -27,12 +31,23 @@ export interface DepsDeApi {
   acciones: Acciones;
   cambiarBotones: (msg: number, botones: Boton[] | undefined) => Promise<void>;
   ahora: () => Date;
+  /** Lo que hacen los agentes ahora mismo (las sesiones MCP abiertas). */
+  enCurso?: () => Actividad[];
 }
 
 const DIAS_DE_REUNIONES_PASADAS = 7;
 const LEADS_POR_PAGINA = 50;
 
+const CORRIDAS_EN_LISTA = 50;
+const LARGO_DE_INFORME_EN_LISTA = 300;
+
 const Id = z.coerce.number().int().positive();
+const AgenteValido = z.enum(['buscador', 'vendedor', 'atencion']);
+
+function recortar(texto: string | undefined, largo: number): string | null {
+  if (!texto) return null;
+  return texto.length > largo ? `${texto.slice(0, largo - 1).trimEnd()}…` : texto;
+}
 const Dia = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export function crearApi(d: DepsDeApi): FastifyInstance {
@@ -75,35 +90,27 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       const inicial = salientes.find((s) => s.tipo === 'inicial' && s.estado === 'borrador');
       if (!inicial) continue;
       const seguimiento = salientes.find((s) => s.tipo === 'seguimiento' && s.estado === 'borrador');
-      salida.push({ lead, inicial, seguimiento: seguimiento ?? null });
+      salida.push({
+        lead,
+        inicial,
+        seguimiento: seguimiento ?? null,
+        // En ensayo: cuando le llego a Gero la muestra (la web muestra "Enviado").
+        muestraEnviada: (await store.leerEstado<string>(muestraDe(id))) ?? null,
+      });
     }
     salida.sort((a, b) => (b.lead.investigacion?.factibilidad ?? 0) - (a.lead.investigacion?.factibilidad ?? 0));
     return { borradores: salida };
   });
 
+  // Las respuestas llegan ya armadas por el agente de atencion: Enviar / No
+  // enviar, nada que elegir antes.
   app.get('/respuestas', async () => {
-    const elecciones = [];
-    for (const { clave, valor } of await store.estadosConPrefijo(PREFIJO_DE_ELECCION)) {
-      const leadId = Number(clave.slice(PREFIJO_DE_ELECCION.length));
-      const e = valor as Eleccion;
-      const lead = await store.lead(leadId);
-      elecciones.push({
-        leadId,
-        lead: lead ?? null,
-        resumen: e.resumen ?? null,
-        recibido: { de: e.recibido.de, asunto: e.recibido.asunto, cuerpo: e.recibido.cuerpo, recibidoEn: e.recibido.recibidoEn },
-        libres: e.libres,
-        elegidos: e.elegidos,
-      });
-    }
     const salientes = [];
     for (const s of await store.salientesEnBorrador(['respuesta', 'confirmacion', 'recordatorio'])) {
       const reunion = s.reunionId ? await store.reunion(s.reunionId) : undefined;
       salientes.push({ saliente: s, lead: (await store.lead(s.leadId)) ?? null, reunion: reunion ?? null });
     }
-    // Los recibidos de hoy: para que se vea lo que cuenta el número del panel general.
-    const recibidos = await store.recibidosDesde(inicioDelDia(d.ahora()));
-    return { elecciones, salientes, recibidos };
+    return { salientes };
   });
 
   app.get('/reuniones', async () => {
@@ -197,39 +204,6 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
     });
   }
 
-  // ------------------------------------------------------------ respuestas
-
-  app.post<{ Params: { leadId: string; i: string } }>('/respuestas/:leadId/horarios/:i', async (request, reply) => {
-    const leadId = Id.safeParse(request.params.leadId);
-    const i = z.coerce.number().int().min(0).safeParse(request.params.i);
-    if (!leadId.success || !i.success) return invalido(reply);
-    const botones = await acciones.alternarHorario(leadId.data, i.data);
-    if (!botones) return noSe(reply, 'esa elección ya no está vigente');
-    const e = await store.leerEstado<Eleccion>(claveDeEleccion(leadId.data));
-    if (e?.telegramMsg) await d.cambiarBotones(e.telegramMsg, botones);
-    return { elegidos: e?.elegidos ?? [] };
-  });
-
-  app.post<{ Params: { leadId: string } }>('/respuestas/:leadId/armar', async (request, reply) => {
-    const leadId = Id.safeParse(request.params.leadId);
-    if (!leadId.success) return invalido(reply);
-    const e = await store.leerEstado<Eleccion>(claveDeEleccion(leadId.data));
-    const r = await acciones.armarRespuesta(leadId.data);
-    if (r === 'sin_horarios') return noSe(reply, 'marcá al menos un horario');
-    if (r === 'vencida') return noSe(reply, 'esa elección ya no está vigente');
-    await quitar(e?.telegramMsg);
-    return { ok: true };
-  });
-
-  app.post<{ Params: { leadId: string } }>('/respuestas/:leadId/no-responder', async (request, reply) => {
-    const leadId = Id.safeParse(request.params.leadId);
-    if (!leadId.success) return invalido(reply);
-    const e = await store.leerEstado<Eleccion>(claveDeEleccion(leadId.data));
-    await acciones.noResponder(leadId.data);
-    await quitar(e?.telegramMsg);
-    return { ok: true };
-  });
-
   // ------------------------------------------------------------ comandos
 
   app.post('/buscar', async (request, reply) => {
@@ -237,7 +211,7 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       .object({
         rubro: z.string().optional(),
         ciudad: z.string().max(80).optional(),
-        // Cuantos negocios con borrador se buscan: el doble se investiga.
+        // Cuantos negocios nuevos tiene que conseguir el buscador.
         cantidad: z.number().int().min(1).max(10).optional(),
       })
       .safeParse(request.body ?? {});
@@ -314,6 +288,90 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       return { demo: r.demo };
     });
   }
+
+  // ------------------------------------------------------------ agentes
+  //
+  // La pestaña Agentes de la web: que penso cada agente en cada corrida y que
+  // anoto en su libreta. La lista va liviana (sin pasos ni objetivo, que
+  // pueden ser largos); el detalle se pide al tocar una corrida.
+
+  // El tablero: el estado de cada agente en este momento. La web lo pide
+  // seguido (cada pocos segundos mientras alguno trabaja).
+  app.get('/agentes/estado', async () =>
+    armarTablero({ store, ahora: d.ahora, enCurso: d.enCurso ?? (() => []) }),
+  );
+
+  app.get('/agentes/config/buscador', async () => ({
+    config: (await store.leerEstado<ConfigDelBuscador>(CONFIG_DEL_BUSCADOR)) ?? {},
+  }));
+
+  // Lo que Gero le indica al buscador: zonas, rubros, notas. Texto corto; va
+  // tal cual al objetivo de cada corrida.
+  const Config = z.object({
+    zonas: z.string().max(600).optional(),
+    rubrosPreferidos: z.string().max(600).optional(),
+    rubrosAEvitar: z.string().max(600).optional(),
+    notas: z.string().max(2000).optional(),
+  });
+  app.put('/agentes/config/buscador', async (request, reply) => {
+    const c = Config.safeParse(request.body);
+    if (!c.success) return invalido(reply);
+    await store.guardarEstado(CONFIG_DEL_BUSCADOR, c.data);
+    return { config: c.data };
+  });
+
+  app.get('/agentes', async () => {
+    const [buscador, vendedor, atencion, corridas] = await Promise.all([
+      store.libreta('buscador'),
+      store.libreta('vendedor'),
+      store.libreta('atencion'),
+      store.corridas({ limite: CORRIDAS_EN_LISTA }),
+    ]);
+    // Varias corridas suelen ser del mismo lead: se busca cada nombre una vez.
+    const nombres = new Map<number, string | null>();
+    for (const c of corridas) {
+      if (c.leadId != null && !nombres.has(c.leadId)) nombres.set(c.leadId, (await store.lead(c.leadId))?.nombre ?? null);
+    }
+    return {
+      libretas: { buscador: leerLibreta(buscador), vendedor: leerLibreta(vendedor), atencion: leerLibreta(atencion) },
+      corridas: corridas.map((c) => ({
+        id: c.id,
+        agente: c.agente,
+        estado: c.estado,
+        slot: c.slot ?? null,
+        turnos: c.turnos ?? null,
+        informe: recortar(c.informe, LARGO_DE_INFORME_EN_LISTA),
+        resumen: c.resumen ?? null,
+        error: c.error ?? null,
+        inicio: c.inicio,
+        fin: c.fin ?? null,
+        leadId: c.leadId ?? null,
+        lead: c.leadId != null ? (nombres.get(c.leadId) ?? null) : null,
+      })),
+    };
+  });
+
+  app.get<{ Params: { id: string } }>('/agentes/corridas/:id', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
+    if (!id.success) return invalido(reply);
+    const c = await store.corrida(id.data);
+    if (!c) return reply.code(404).send({ code: 'no_existe', message: 'esa corrida no existe' });
+    const lead = c.leadId != null ? ((await store.lead(c.leadId))?.nombre ?? null) : null;
+    return { corrida: { ...c, pasos: c.pasos ?? [], lead } };
+  });
+
+  // Gero corrige lo que el agente aprendio: el agente la lee al arrancar la
+  // proxima corrida, asi que lo que se escribe aca manda.
+  app.put<{ Params: { agente: string } }>('/agentes/libretas/:agente', async (request, reply) => {
+    const agente = AgenteValido.safeParse(request.params.agente);
+    if (!agente.success) return invalido(reply, 'agente desconocido');
+    const b = Libreta.safeParse(request.body);
+    if (!b.success) {
+      return invalido(reply, `la libreta va como { tenerEnCuenta, evitar }: hasta ${ITEMS_POR_LISTA} items de ${LARGO_DE_ITEM} caracteres`);
+    }
+    await store.guardarLibreta(agente.data, escribirLibreta(b.data));
+    return { agente: agente.data, libreta: leerLibreta(await store.libreta(agente.data)) };
+  });
 
   // ------------------------------------------------------------ patán
   //

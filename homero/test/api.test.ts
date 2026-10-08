@@ -4,18 +4,14 @@ import { cambiarEnsayo, estadoDeHomero } from '../src/comandos.js';
 import { armarDemo, cancelarDemo, editarPliego, enviarDemo, type DepsDeDemos } from '../src/demos.js';
 import type { Acciones } from '../src/telegram.js';
 import {
-  alternarHorario,
   apagarEnsayo,
   aprobarLead,
   aprobarSaliente,
-  armarRespuesta,
-  claveDeEleccion,
   descartarLead,
   descartarSaliente,
   ensayoActivo,
   lugaresHoy,
   mandarMuestras,
-  noResponder,
   proponerPrioridad,
   reproponerBorradores,
 } from '../src/ventas.js';
@@ -36,15 +32,13 @@ function accionesDe(deps: DepsDeDemos): Acciones {
     reproponerBorradores: () => reproponerBorradores(deps),
     prioridad: (n) => proponerPrioridad(deps, n),
     lugaresHoy: () => lugaresHoy(deps),
-    alternarHorario: (id, i) => alternarHorario(id, i, deps),
-    armarRespuesta: (id) => armarRespuesta(id, deps),
-    noResponder: (id) => noResponder(id, deps),
     estado: () => estadoDeHomero(deps),
     cambiarEnsayo: (p) => cambiarEnsayo(deps, p),
     armarDemo: (id) => armarDemo(id, deps),
     enviarDemo: (id) => enviarDemo(id, deps),
     cancelarDemo: (id) => cancelarDemo(id, deps),
     editarPliego: (id, p) => editarPliego(id, p, deps),
+    probarIa: async () => 'hola',
   };
 }
 
@@ -56,7 +50,7 @@ function conApi() {
   };
   const cambiarBotones = vi.fn(async () => {});
   const app = crearApi({ token: TOKEN, store: h.store, acciones: accionesDe(deps), cambiarBotones, ahora: h.ahora });
-  const pedir = (method: 'GET' | 'POST' | 'PATCH' | 'DELETE', url: string, payload?: object) =>
+  const pedir = (method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, payload?: object) =>
     app.inject({ method, url, headers: { authorization: `Bearer ${TOKEN}` }, ...(payload ? { payload } : {}) });
   return { ...h, deps, app, pedir, cambiarBotones };
 }
@@ -116,33 +110,44 @@ describe('API de Homero', () => {
     expect((await h.pedir('PATCH', `/salientes/${inicial}`, { cuerpo: 'otro' })).statusCode).toBe(409);
   });
 
-  it('marcar un horario redibuja los botones de la tarjeta', async () => {
+  it('una respuesta ya armada se ve en /respuestas y enviarla le saca los botones a la tarjeta', async () => {
     const h = conApi();
     const { leadId } = await borrador(h);
-    await h.store.guardarEstado(claveDeEleccion(leadId), {
-      recibido: { cuenta: 'x', messageId: 'm', de: 'a@gomez.com', asunto: 'Re: hola', cuerpo: 'me interesa', recibidoEn: new Date() },
-      libres: ['2026-10-01T15:00:00.000Z', '2026-10-02T18:00:00.000Z'],
-      elegidos: [],
-      resumen: 'Respondió',
-      telegramMsg: 777,
-    });
+    const id = await h.store.crearSaliente({ leadId, tipo: 'respuesta', paso: 0, asunto: 'Re: hola', cuerpo: '¿El jueves a las 15?' });
+    await h.store.actualizarSaliente(id, { telegramMsg: 777 });
+
     const respuestas = (await h.pedir('GET', '/respuestas')).json();
-    expect(respuestas.elecciones[0].leadId).toBe(leadId);
+    // Ya no hay horarios para marcar: la respuesta llega escrita por el agente.
+    expect(respuestas.elecciones).toBeUndefined();
+    expect(respuestas.salientes[0].saliente.id).toBe(id);
+    expect(respuestas.salientes[0].lead.id).toBe(leadId);
 
-    const r = await h.pedir('POST', `/respuestas/${leadId}/horarios/1`);
-    expect(r.json()).toEqual({ elegidos: [1] });
-    expect(h.cambiarBotones).toHaveBeenCalledWith(777, expect.arrayContaining([expect.objectContaining({ datos: `ho:${leadId}:1` })]));
-
-    expect((await h.pedir('POST', `/respuestas/${leadId}/armar`)).statusCode).toBe(200);
+    expect((await h.pedir('POST', `/salientes/${id}/enviar`)).statusCode).toBe(200);
     expect(h.cambiarBotones).toHaveBeenLastCalledWith(777, undefined);
+    expect((await h.store.saliente(id))!.estado).toBe('aprobado');
+    expect((await h.pedir('POST', `/salientes/${id}/descartar`)).statusCode).toBe(409);
   });
 
-  it('buscar valida el rubro', async () => {
+  it('las rutas de elegir horarios ya no existen', async () => {
     const h = conApi();
-    expect((await h.pedir('POST', '/buscar', { rubro: 'astronautas' })).statusCode).toBe(409);
-    const r = await h.pedir('POST', '/buscar', { rubro: 'taller', ciudad: 'Rosario' });
+    expect((await h.pedir('POST', '/respuestas/1/horarios/0')).statusCode).toBe(404);
+    expect((await h.pedir('POST', '/respuestas/1/armar')).statusCode).toBe(404);
+    expect((await h.pedir('POST', '/respuestas/1/no-responder')).statusCode).toBe(404);
+  });
+
+  it('buscar acepta cualquier rubro y le pasa el pedido al agente buscador', async () => {
+    const h = conApi();
+    // El buscador ya no depende de la lista de rubros: uno inventado tambien vale.
+    const r = await h.pedir('POST', '/buscar', { rubro: 'astronautas', ciudad: 'Rosario', cantidad: 4 });
     expect(r.statusCode).toBe(200);
-    expect(h.store.tareas.at(-1)!.tipo).toBe('prospectar');
+    expect(r.json()).toMatchObject({ ok: true, rubro: 'astronautas', ciudad: 'Rosario', fueraDeZona: true });
+    const t = h.store.tareas.at(-1)!;
+    expect(t.tipo).toBe('agente_buscar');
+    expect(t.payload).toEqual({ cantidad: 4, rubro: 'astronautas', zona: 'Rosario' });
+
+    // Uno de la lista se pasa con su nombre, que es lo que entiende el agente.
+    await h.pedir('POST', '/buscar', { rubro: 'taller' });
+    expect((h.store.tareas.at(-1)!.payload as { rubro: string }).rubro).toBe('taller mecánico');
   });
 
   it('buscar respeta la cantidad pedida, entre 1 y 10', async () => {
@@ -180,5 +185,64 @@ describe('API de Homero', () => {
     const reuniones = (await h.pedir('GET', '/reuniones')).json().reuniones;
     expect(reuniones[0].demo.proyecto).toBe('taller-gomez-demo');
     expect((await h.pedir('POST', `/reuniones/${reunionId}/demo`)).statusCode).toBe(409);
+  });
+  it('/agentes trae las tres libretas y las corridas livianas, las mas nuevas primero', async () => {
+    const h = conApi();
+    const { leadId } = await borrador(h);
+    await h.store.guardarLibreta('buscador', 'En Rosario OSM no tiene talleres: buscar en Google Maps.');
+    const vieja = await h.store.crearCorrida({ agente: 'buscador', objetivo: 'Conseguí 3 talleres en Rosario' });
+    await h.store.cerrarCorrida(vieja, {
+      estado: 'lista',
+      slot: 'cuenta-2',
+      turnos: 12,
+      pasos: [{ tipo: 'pensamiento', texto: 'Arranco por el mapa' }],
+      informe: 'x'.repeat(1000),
+    });
+    const nueva = await h.store.crearCorrida({ agente: 'vendedor', objetivo: 'Escribile al taller', leadId });
+    await h.store.cerrarCorrida(nueva, { estado: 'fallida', error: 'no cerro con dejar_listo' });
+
+    const r = await h.pedir('GET', '/agentes');
+    expect(r.statusCode).toBe(200);
+    const a = r.json();
+    // Una libreta vieja de texto libre se lee como checklist.
+    expect(a.libretas).toEqual({
+      buscador: { tenerEnCuenta: ['En Rosario OSM no tiene talleres: buscar en Google Maps.'], evitar: [] },
+      vendedor: { tenerEnCuenta: [], evitar: [] },
+      atencion: { tenerEnCuenta: [], evitar: [] },
+    });
+    expect(a.corridas.map((c: { id: number }) => c.id)).toEqual([nueva, vieja]);
+    expect(a.corridas[0]).toMatchObject({ agente: 'vendedor', estado: 'fallida', error: 'no cerro con dejar_listo', leadId, lead: 'Taller Gómez' });
+    // La lista no lleva lo pesado: eso viene en el detalle.
+    expect(a.corridas[1]).not.toHaveProperty('pasos');
+    expect(a.corridas[1]).not.toHaveProperty('objetivo');
+    expect(a.corridas[1]).toMatchObject({ slot: 'cuenta-2', turnos: 12, lead: null });
+    expect(a.corridas[1].informe.length).toBeLessThanOrEqual(300);
+  });
+
+  it('el detalle de una corrida trae el objetivo, los pasos en orden y el informe', async () => {
+    const h = conApi();
+    const id = await h.store.crearCorrida({ agente: 'buscador', objetivo: 'Conseguí 3 talleres' });
+    const pasos = [
+      { tipo: 'pensamiento' as const, texto: 'Miro el mapa primero' },
+      { tipo: 'herramienta' as const, herramienta: 'mapa', texto: '{"zona":"Rosario"}' },
+    ];
+    await h.store.cerrarCorrida(id, { estado: 'lista', pasos, informe: 'Anoté 3' });
+    const c = (await h.pedir('GET', `/agentes/corridas/${id}`)).json().corrida;
+    expect(c).toMatchObject({ id, objetivo: 'Conseguí 3 talleres', informe: 'Anoté 3', pasos });
+    expect((await h.pedir('GET', '/agentes/corridas/999')).statusCode).toBe(404);
+    expect((await h.pedir('GET', '/agentes/corridas/abc')).statusCode).toBe(400);
+  });
+
+  it('Gero corrige una libreta como checklist; agente desconocido o items de mas no', async () => {
+    const h = conApi();
+    const r = await h.pedir('PUT', '/agentes/libretas/vendedor', {
+      tenerEnCuenta: ['  Los talleres contestan a la mañana.  '],
+      evitar: ['Franquicias'],
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().libreta).toEqual({ tenerEnCuenta: ['Los talleres contestan a la mañana.'], evitar: ['Franquicias'] });
+    expect((await h.pedir('PUT', '/agentes/libretas/patan', { tenerEnCuenta: [], evitar: [] })).statusCode).toBe(400);
+    expect((await h.pedir('PUT', '/agentes/libretas/vendedor', { tenerEnCuenta: Array(26).fill('x'), evitar: [] })).statusCode).toBe(400);
+    expect((await h.pedir('PUT', '/agentes/libretas/vendedor', { contenido: 'texto' })).statusCode).toBe(400);
   });
 });

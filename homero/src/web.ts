@@ -1,5 +1,7 @@
-import { promises as dns } from 'node:dns';
-import { isIP } from 'node:net';
+import dnsCallback, { promises as dns, type LookupAddress } from 'node:dns';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { BlockList, isIP, type LookupFunction } from 'node:net';
 
 /**
  * Leer la web de un negocio.
@@ -12,36 +14,120 @@ import { isIP } from 'node:net';
 const TIEMPO_MS = 10_000;
 const TAMANIO_MAXIMO = 600_000;
 
+/**
+ * Todo lo que no es internet publica: privadas, loopback, link-local, CGNAT,
+ * multicast, reservadas, y las formas de IPv6 que esconden una IPv4 (NAT64,
+ * 6to4). La IPv4 mapeada (`::ffff:10.0.0.1`) no lleva regla propia: BlockList
+ * ya cruza cada regla IPv4 con su forma mapeada (y una regla `::ffff:0:0/96`
+ * bloquearia TODA IPv4, medido). Una lista de rangos y no comparaciones a mano: la version
+ * anterior dejaba pasar varios.
+ */
+const NO_PUBLICAS = (() => {
+  const b = new BlockList();
+  for (const [red, bits] of [
+    ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+    ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15],
+    ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 3],
+  ] as const) b.addSubnet(red, bits, 'ipv4');
+  for (const [red, bits] of [
+    ['::', 127], ['64:ff9b::', 96], ['64:ff9b:1::', 48], ['100::', 64], ['2001:db8::', 32],
+    ['2002::', 16], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8],
+  ] as const) b.addSubnet(red, bits, 'ipv6');
+  return b;
+})();
+
 export function esIpPrivada(ip: string): boolean {
-  if (isIP(ip) === 6) {
-    const t = ip.toLowerCase();
-    return t === '::1' || t.startsWith('fc') || t.startsWith('fd') || t.startsWith('fe80') || t === '::' ||
-      (t.startsWith('::ffff:') && esIpPrivada(t.slice(7)));
-  }
-  const p = ip.split('.').map(Number);
-  if (p.length !== 4) return true;
-  const [a, b] = p as [number, number];
-  return (
-    a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
-  );
+  const limpia = ip.replace(/^\[|\]$/g, '');
+  const familia = isIP(limpia);
+  if (familia === 0) return true;
+  return NO_PUBLICAS.check(limpia, familia === 4 ? 'ipv4' : 'ipv6');
 }
 
-async function hostPublico(host: string): Promise<boolean> {
-  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return false;
-  if (isIP(host)) return !esIpPrivada(host);
-  try {
-    const ips = await dns.lookup(host, { all: true });
-    return ips.length > 0 && ips.every((i) => !esIpPrivada(i.address));
-  } catch {
-    return false;
-  }
+/**
+ * El `lookup` que usa cada conexion: resuelve y RECHAZA si alguna direccion es
+ * privada, en el mismo paso en que se conecta.
+ *
+ * Antes se resolvia el host para validarlo y despues `fetch` lo resolvia de
+ * nuevo para conectarse: entre las dos consultas un DNS malicioso podia cambiar
+ * la respuesta (DNS rebinding) y llevar la conexion a la red de la casa. Con el
+ * agente eligiendo las URLs —que salen de webs de terceros— eso dejo de ser
+ * teorico. Validando adentro del `lookup` no hay una segunda resolucion.
+ */
+export const lookupPublico: LookupFunction = (host, opciones, listo) => {
+  dnsCallback.lookup(host, { ...opciones, all: true }, (err, direcciones) => {
+    if (err) return listo(err, '', 0);
+    const lista = direcciones as LookupAddress[];
+    if (lista.length === 0 || lista.some((d) => esIpPrivada(d.address))) {
+      return listo(new Error(`host no publico: ${host}`), '', 0);
+    }
+    if ((opciones as { all?: boolean }).all) return (listo as unknown as (e: null, l: LookupAddress[]) => void)(null, lista);
+    listo(null, lista[0]!.address, lista[0]!.family);
+  });
+};
+
+/**
+ * Lo que se descarta antes de conectar. Una IP literal NO pasa por el `lookup`
+ * (no hay nada que resolver), asi que se valida aca; y `URL` deja las IPv6
+ * entre corchetes (`[::1]`), que `isIP` no reconoce si no se los saca.
+ */
+function hostProhibido(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal') ||
+    (isIP(h) !== 0 && esIpPrivada(h));
+}
+
+/** Un GET con el `lookup` de arriba. Sin `fetch`: el de Node no deja pasar uno. */
+function pedirPagina(url: URL): Promise<{ status: number; location?: string; tipo: string; cuerpo?: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const pedir = url.protocol === 'https:' ? httpsRequest : httpRequest;
+    const req = pedir(
+      url,
+      {
+        method: 'GET',
+        lookup: lookupPublico,
+        timeout: TIEMPO_MS,
+        headers: { 'user-agent': 'Mozilla/5.0 (compatible; HomeroBot/1.0)', accept: 'text/html' },
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const tipo = String(res.headers['content-type'] ?? '');
+        if (status >= 300 && status < 400) {
+          res.resume();
+          return resolve({ status, tipo, location: res.headers.location });
+        }
+        if (status < 200 || status >= 300 || !tipo.includes('html')) {
+          res.resume();
+          return resolve({ status, tipo });
+        }
+        const partes: Buffer[] = [];
+        let largo = 0;
+        res.on('data', (c: Buffer) => {
+          largo += c.length;
+          if (largo > TAMANIO_MAXIMO) {
+            partes.push(c);
+            res.destroy();
+            return resolve({ status, tipo, cuerpo: Buffer.concat(partes).subarray(0, TAMANIO_MAXIMO) });
+          }
+          partes.push(c);
+        });
+        res.on('end', () => resolve({ status, tipo, cuerpo: Buffer.concat(partes) }));
+        res.on('error', reject);
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 export type Buscador = (url: string) => Promise<string | undefined>;
 
-/** Baja el HTML de una pagina, o `undefined` si no se puede o no se debe. */
-export const bajarPagina: Buscador = async (crudo) => {
+/**
+ * Baja el HTML de una pagina y dice DONDE termino despues de las redirecciones.
+ * El destino final importa: una pagina del negocio que redirige a otro sitio
+ * no puede hacer pasar los mails de ese otro sitio como del negocio.
+ */
+export async function bajarPaginaConDestino(crudo: string): Promise<{ html: string; url: string } | undefined> {
   let url: URL;
   try {
     url = new URL(crudo.startsWith('http') ? crudo : `https://${crudo}`);
@@ -51,29 +137,26 @@ export const bajarPagina: Buscador = async (crudo) => {
   // Redirecciones a mano: cada salto se vuelve a validar.
   for (let saltos = 0; saltos < 4; saltos++) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
-    if (!(await hostPublico(url.hostname))) return undefined;
-    let r: Response;
+    if (hostProhibido(url.hostname)) return undefined;
+    let r;
     try {
-      r = await fetch(url, {
-        redirect: 'manual',
-        signal: AbortSignal.timeout(TIEMPO_MS),
-        headers: { 'user-agent': 'Mozilla/5.0 (compatible; HomeroBot/1.0)', accept: 'text/html' },
-      });
+      r = await pedirPagina(url);
     } catch {
       return undefined;
     }
     if (r.status >= 300 && r.status < 400) {
-      const destino = r.headers.get('location');
-      if (!destino) return undefined;
-      url = new URL(destino, url);
+      if (!r.location) return undefined;
+      url = new URL(r.location, url);
       continue;
     }
-    if (!r.ok || !(r.headers.get('content-type') ?? '').includes('html')) return undefined;
-    const buf = await r.arrayBuffer();
-    return new TextDecoder().decode(buf.slice(0, TAMANIO_MAXIMO));
+    if (!r.cuerpo) return undefined;
+    return { html: new TextDecoder().decode(r.cuerpo), url: url.toString() };
   }
   return undefined;
-};
+}
+
+/** Baja el HTML de una pagina, o `undefined` si no se puede o no se debe. */
+export const bajarPagina: Buscador = async (crudo) => (await bajarPaginaConDestino(crudo))?.html;
 
 /**
  * Los chats y bots que ya tiene la web. Se miran en el HTML CRUDO porque

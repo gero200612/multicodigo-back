@@ -32,6 +32,12 @@ const Env = z.object({
   // levanta: Homero sigue andando solo por Telegram.
   HOMERO_API_TOKEN: opcional(z.string().min(16)),
   HOMERO_API_PUERTO: z.coerce.number().int().default(8095),
+  // El gateway del fondo comun de cuentas: ahi corren los agentes y los
+  // pedidos a Claude. Sin esto Homero manda lo ya escrito pero no piensa.
+  HOMERO_GATEWAY_URL: opcional(z.string().url()),
+  HOMERO_GATEWAY_TOKEN: opcional(z.string().min(16)),
+  // Donde escucha el MCP con las herramientas de los agentes (lo llama el gateway).
+  HOMERO_MCP_PUERTO: z.coerce.number().int().default(8096),
   // Para pedirle demos a Punchi. Van juntas; sin ellas no hay boton de demo.
   BRIDGE_URL: opcional(z.string().url()),
   BRIDGE_API_TOKEN: opcional(z.string().min(16)),
@@ -57,6 +63,8 @@ export interface Config {
   apiToken?: string;
   apiPuerto: number;
   bridge?: { url: string; token: string };
+  gateway?: { url: string; token: string };
+  mcpPuerto: number;
 }
 
 export function leerConfig(env: NodeJS.ProcessEnv): Config {
@@ -88,5 +96,10 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
     apiToken: e.HOMERO_API_TOKEN,
     apiPuerto: e.HOMERO_API_PUERTO,
     bridge: e.BRIDGE_URL && e.BRIDGE_API_TOKEN ? { url: e.BRIDGE_URL, token: e.BRIDGE_API_TOKEN } : undefined,
+    gateway:
+      e.HOMERO_GATEWAY_URL && e.HOMERO_GATEWAY_TOKEN
+        ? { url: e.HOMERO_GATEWAY_URL, token: e.HOMERO_GATEWAY_TOKEN }
+        : undefined,
+    mcpPuerto: e.HOMERO_MCP_PUERTO,
   };
 }

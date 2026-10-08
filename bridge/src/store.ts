@@ -688,8 +688,6 @@ export interface Store {
   slotsAgotados(): Promise<Map<string, Agotamiento>>;
   /** El nombre del proyecto, para nombrar la carpeta del análisis funcional. */
   nombreDeProyecto(proyectoId: string): Promise<string | undefined>;
-  /** Los slots cuya cuenta es de otro bot (Homero, Patán): Punchi no los usa. */
-  slotsDeOtrosBots(): Promise<Set<string>>;
   /** El usuario del panel dueño de este chat, o undefined si no esta vinculado. */
   usuarioDeChat(chatId: number): Promise<string | undefined>;
   /** Los chats de Telegram vinculados a una persona, el más viejo primero. */
@@ -1520,13 +1518,6 @@ export class InMemoryStore implements Store {
 
   async limpiarAgotado(slot: AgentId): Promise<void> {
     this.agotados.delete(slot);
-  }
-
-  /** Para los tests: slot -> bot. Lo que no está acá es de Punchi. */
-  readonly botDeSlot = new Map<string, string>();
-
-  async slotsDeOtrosBots(): Promise<Set<string>> {
-    return new Set([...this.botDeSlot.entries()].filter(([, b]) => b !== 'punchi').map(([s]) => s));
   }
 
   async slotsAgotados(): Promise<Map<string, Agotamiento>> {
@@ -2951,11 +2942,6 @@ export class PgStore implements Store {
 
   async limpiarAgotado(slot: AgentId): Promise<void> {
     await this.pool.query('DELETE FROM slots_agotados WHERE slot = $1', [slot]);
-  }
-
-  async slotsDeOtrosBots(): Promise<Set<string>> {
-    const r = await this.pool.query<{ slot: string }>(`SELECT slot FROM agentes WHERE bot <> 'punchi'`);
-    return new Set(r.rows.map((f) => f.slot));
   }
 
   async slotsAgotados(): Promise<Map<string, Agotamiento>> {

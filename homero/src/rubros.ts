@@ -265,38 +265,6 @@ export function zonaPorNombre(nombre: string): Zona | undefined {
   return ZONAS.find((z) => z.nombre.toLowerCase() === n || z.osm.toLowerCase() === n);
 }
 
-export interface Rendimiento {
-  rubro: string;
-  contactados: number;
-  respuestas: number;
-}
-
-/**
- * Que rubro atacar ahora.
- *
- * Mayormente el que mejor responde (tasa de respuesta con un previo de 1/10
- * para que un rubro con 1 de 1 no gane por suerte), y cada tanto uno cualquiera
- * para seguir aprendiendo. Los que nunca se probaron van primero, al azar:
- * que se prueben los veinte y los numeros digan cual rinde.
- */
-export function elegirRubro(stats: Rendimiento[], azar: () => number = Math.random): Rubro {
-  const sinProbar = RUBROS.filter((r) => !stats.some((s) => s.rubro === r.id && s.contactados > 0));
-  if (sinProbar.length > 0) return sinProbar[Math.floor(azar() * sinProbar.length)]!;
-  if (azar() < 0.2) return RUBROS[Math.floor(azar() * RUBROS.length)]!;
-
-  const tasa = (r: Rubro) => {
-    const s = stats.find((x) => x.rubro === r.id);
-    return ((s?.respuestas ?? 0) + 1) / ((s?.contactados ?? 0) + 10);
-  };
-  return [...RUBROS].sort((a, b) => tasa(b) - tasa(a))[0]!;
-}
-
-/** La zona menos buscada para ese rubro; si empatan, la primera de la lista. */
-export function elegirCiudad(buscadas: { ciudad: string; veces: number }[]): string {
-  const veces = (c: string) => buscadas.find((b) => b.ciudad === c)?.veces ?? 0;
-  return [...CIUDADES].sort((a, b) => veces(a) - veces(b))[0]!;
-}
-
 export function rubroPorId(id: string): Rubro | undefined {
   return RUBROS.find((r) => r.id === id);
 }

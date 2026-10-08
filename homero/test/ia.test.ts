@@ -1,57 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import {
-  cuandoReintentar,
-  ErrorDeCuenta,
-  ErrorDeLimite,
-  pedirTexto,
-  REINTENTO_SIN_HORA_MS,
-  type QueryFn,
-} from '../src/ia.js';
-
-const stream =
-  (...mensajes: object[]): QueryFn =>
-  async function* () {
-    for (const m of mensajes) yield m;
-  };
-
-const falla =
-  (mensaje: string): QueryFn =>
-  async function* () {
-    throw new Error(mensaje);
-  };
+import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite, pedirTexto, REINTENTO_SIN_HORA_MS } from '../src/ia.js';
+import type { PedidoDeCorrida } from '../src/gateway.js';
 
 describe('pedirTexto', () => {
-  it('devuelve el texto de un resultado normal', async () => {
-    const q = stream({ type: 'result', subtype: 'success', result: 'hola' });
-    expect(await pedirTexto('x', { sistema: 's', query: q })).toBe('hola');
-  });
-
-  it('no le da herramientas al modelo', async () => {
-    let opciones: Record<string, unknown> = {};
-    const q: QueryFn = async function* ({ options }) {
-      opciones = options;
-      yield { type: 'result', subtype: 'success', result: 'ok' };
+  it('pide un solo turno sin herramientas ni web, y devuelve el texto', async () => {
+    const pedidos: PedidoDeCorrida[] = [];
+    const gateway = {
+      correr: async (p: PedidoDeCorrida) => {
+        pedidos.push(p);
+        return { texto: 'hola', turnos: 1, pasos: [] };
+      },
     };
-    await pedirTexto('x', { sistema: 's', query: q });
-    expect(opciones.tools).toEqual([]);
-    expect(opciones.maxTurns).toBe(1);
+    expect(await pedirTexto('x', { sistema: 's', modelo: 'sonnet', gateway })).toBe('hola');
+    expect(pedidos[0]).toMatchObject({ herramientas: [], web: false, maxTurnos: 1, objetivo: 'x', sistema: 's', modelo: 'sonnet' });
   });
 
-  it('el cartel del limite dentro de un resultado exitoso es un ErrorDeLimite con su hora', async () => {
-    const q = stream({ type: 'result', subtype: 'success', result: "You've hit your limit · resets 10:50pm (UTC)" });
-    const err = await pedirTexto('x', { sistema: 's', query: q }).catch((e) => e);
-    expect(err).toBeInstanceOf(ErrorDeLimite);
-    expect(err.resets).toBe('10:50pm (UTC)');
-  });
-
-  it('un 429 tirado por el SDK tambien es limite', async () => {
-    const err = await pedirTexto('x', { sistema: 's', query: falla('API Error: 429 rate_limit') }).catch((e) => e);
-    expect(err).toBeInstanceOf(ErrorDeLimite);
-  });
-
-  it('una sesion vencida es ErrorDeCuenta', async () => {
-    const q = stream({ type: 'assistant', error: 'authentication_failed' });
-    await expect(pedirTexto('x', { sistema: 's', query: q })).rejects.toBeInstanceOf(ErrorDeCuenta);
+  it('los errores del gateway pasan tal cual (la cola sabe que hacer con cada uno)', async () => {
+    const gateway = {
+      correr: async () => {
+        throw new ErrorDeLimite('10:50pm (UTC)');
+      },
+    };
+    await expect(pedirTexto('x', { sistema: 's', gateway })).rejects.toBeInstanceOf(ErrorDeLimite);
   });
 });
 

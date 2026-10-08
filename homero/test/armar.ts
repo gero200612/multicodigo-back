@@ -1,6 +1,8 @@
 import type { DepsDeCola } from '../src/cola.js';
 import type { Correo, MailSaliente } from '../src/envio.js';
 import type { Hallazgo } from '../src/fuentes.js';
+import type { PedidoDeCorrida, RespuestaDeCorrida } from '../src/gateway.js';
+import { SesionesMcp } from '../src/mcp.js';
 import { MemoriaStore } from './memoria.js';
 
 export const casilla = { email: 'sincro.ventas@gmail.com', clave: 'x' };
@@ -9,9 +11,14 @@ export interface Opciones {
   pedirIa?: (p: string) => Promise<string>;
   ahora?: Date;
   hallazgos?: Hallazgo[];
-  sitio?: { texto: string; mails: string[]; paginas?: string[] };
   /** Por defecto apagado en los tests; en produccion arranca prendido. */
   ensayo?: boolean;
+  /**
+   * Lo que hace el "agente" en el gateway falso: recibe el pedido y las
+   * sesiones (para llamar a las herramientas como lo haria el modelo).
+   */
+  agente?: (p: PedidoDeCorrida, sesiones: SesionesMcp) => Promise<Partial<RespuestaDeCorrida>>;
+  paginas?: Record<string, string>;
 }
 
 /** Un Homero entero con todo lo de afuera falso. */
@@ -29,6 +36,8 @@ export function armar(o: Opciones = {}) {
       return { messageId: `<m${enviados.length}@x>` };
     },
   };
+  const sesiones = new SesionesMcp();
+  const corridas: PedidoDeCorrida[] = [];
   const deps: DepsDeCola = {
     store,
     correo,
@@ -51,9 +60,43 @@ export function armar(o: Opciones = {}) {
     },
     fuente: async () => o.hallazgos ?? [],
     nombreDeFuente: 'osm',
-    leerSitio: async () => o.sitio,
     recibeMail: async () => true,
     azar: () => 0,
+    sesiones,
+    bajarPagina: async (url) => (o.paginas?.[url] ? { html: o.paginas[url]!, url } : undefined),
+    gateway: {
+      async correr(p) {
+        corridas.push(p);
+        if (!o.agente) throw new Error('sin agente en este test');
+        return { texto: '', turnos: 1, pasos: [], ...(await o.agente(p, sesiones)) };
+      },
+    },
   };
-  return { store, deps, avisos, tarjetas, enviados, prompts, mover: (d: Date) => (ahora = d), ahora: () => ahora };
+  return { store, deps, corridas, sesiones, avisos, tarjetas, enviados, prompts, mover: (d: Date) => (ahora = d), ahora: () => ahora };
+}
+
+/**
+ * Los agentes de verdad corren en el gateway. Aca un "agente" es un guion que
+ * usa las herramientas por la MISMA puerta que el modelo (token de la corrida y
+ * validacion incluidos): lo que se prueba es lo que Homero hace con eso.
+ */
+export type Usar = (nombre: string, args?: unknown) => Promise<{ texto: string; error: boolean }>;
+export interface Guion {
+  buscador?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
+  vendedor?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
+  atencion?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
+}
+
+export function agenteDe(g: Guion) {
+  return async (p: PedidoDeCorrida, sesiones: SesionesMcp): Promise<Partial<RespuestaDeCorrida>> => {
+    const usar: Usar = (nombre, args) => sesiones.usar(p.corrida, p.tokenCorrida, nombre, args);
+    const quien = p.herramientas.includes('anotar_negocio')
+      ? g.buscador
+      : p.herramientas.includes('dejar_mail_listo')
+        ? g.vendedor
+        : g.atencion;
+    if (!quien) throw new Error(`este test no esperaba una corrida con ${p.herramientas.join(',')}`);
+    await quien(usar, p);
+    return { texto: 'informe', slot: 'c3' };
+  };
 }
