@@ -6,6 +6,7 @@ import { ErrorDeLimite } from './ia.js';
 import {
   herramientasDeAtencion,
   herramientasDelBuscador,
+  herramientasDelPublicista,
   herramientasDelVendedor,
   type DepsDeHerramientas,
   type Registro,
@@ -86,7 +87,11 @@ export const TOPES: Record<Agente, Topes> = {
   buscador: { maxTurnos: 40, maxMinutos: 15 },
   vendedor: { maxTurnos: 20, maxMinutos: 8 },
   atencion: { maxTurnos: 12, maxMinutos: 5 },
+  publicista: { maxTurnos: 25, maxMinutos: 10 },
 };
+
+/** Rehacer un anuncio que Gero pidio cambiar: una sola cosa que hacer. */
+const TOPES_DE_CAMBIO: Topes = { maxTurnos: 10, maxMinutos: 5 };
 
 /**
  * El buscador necesita mas vueltas cuanto mas negocios le piden: con 40 fijos,
@@ -146,6 +151,14 @@ const ROL_ATENCION = `Tu rol: sos ATENCION de Homero. Llegó un mail de alguien 
 - La respuesta: maximo 80 palabras, de vos, calida y directa, en primera persona como Geronimo, arrancando con "Hola" (y su nombre si firmo). Sin links. La firma te la pasan en el objetivo.
 - Terminá SIEMPRE con una de esas herramientas: proponer_respuesta, confirmar_horario, anotar_baja, cerrar_sin_responder o avisar_a_gero.`;
 
+const ROL_PUBLICISTA = `Tu rol: sos el PUBLICISTA de Homero. Manejás los anuncios de Sincro en Instagram y Facebook (Meta), con formulario adentro: la persona deja sus datos sin salir de la app y Homero le escribe en minutos.
+- Empezá con ver_resultados: gasto, consultas y costo por consulta de cada anuncio, y qué salió después (reuniones).
+- Proponé un anuncio nuevo solo si suma: no hay ninguno andando, los que hay rinden mal, o vale la pena probar otro rubro. Cada anuncio nuevo lo aprueba Gero antes de gastar un peso.
+- Un anuncio = un rubro, un dolor concreto de ese rubro y el resultado (horas, plata, errores que se evitan), no la tecnologia. Titulo de hasta 40 letras, texto de 2 o 3 renglones cortos y una frase para la imagen de hasta 8 palabras que frene el scroll. Nada de "¿Sabías que...?", nada de numeros inventados, nada de precios, sin links.
+- Formulario: nombre, mail, telefono y empresa van siempre. Sumá como mucho dos preguntas propias, cortas, que sirvan para la llamada ("¿Qué tarea les lleva más tiempo hoy?").
+- La plata: repartir_presupuesto mueve el diario entre anuncios YA aprobados y pausar_anuncio frena el que no rinde. El codigo no te deja pasarte del presupuesto del mes: si rechaza un cambio, te dice cuanto entra.
+- Un anuncio necesita unos dias y algo de gasto antes de juzgarlo: no lo pauses con menos de 3 dias andando salvo que gaste sin traer ninguna consulta.`;
+
 /** Lo que el agente ve primero: el objetivo con su libreta y lo del dia. */
 async function conLibreta(agente: Agente, objetivo: string, deps: DepsDeAgentes): Promise<string> {
   const libreta = await deps.store.libreta(agente);
@@ -161,6 +174,13 @@ ${neutralizar(libretaComoTexto(leerLibreta(libreta)))}
 
 Hoy es ${diaArgentino(deps.ahora())}.`;
 }
+
+const ROLES: Record<Agente, string> = {
+  buscador: ROL_BUSCADOR,
+  vendedor: ROL_VENDEDOR,
+  atencion: ROL_ATENCION,
+  publicista: ROL_PUBLICISTA,
+};
 
 /** Un agente terminó sin hacer lo que tenia que hacer: la cola reintenta. */
 export class CorridaSinCerrar extends Error {}
@@ -198,7 +218,7 @@ async function correr(
     r = await deps.gateway.correr({
       corrida,
       tokenCorrida: token,
-      sistema: sistemaDe(agente === 'buscador' ? ROL_BUSCADOR : agente === 'vendedor' ? ROL_VENDEDOR : ROL_ATENCION),
+      sistema: sistemaDe(ROLES[agente]),
       objetivo: texto,
       herramientas: lista,
       web: o.web,
@@ -254,6 +274,7 @@ function resumenDe(agente: Agente, r: Registro, error?: string): string {
     const lista = nombres.slice(0, 4).join(', ') + (nombres.length > 4 ? ` y ${nombres.length - 4} más` : '');
     return `Anotó ${nombres.length}: ${lista}`;
   }
+  if (agente === 'publicista') return 'Miró los resultados y no cambió nada';
   return 'Terminó sin cerrar';
 }
 
@@ -389,6 +410,41 @@ Firma de Gero:
 ${deps.firma}`,
     (reg) => herramientasDeAtencion(deps, { recibido, lead, de, esEnsayo, seguimientosFrenados, registro: reg }),
     { leadId: lead?.id, web: false, debeCerrar: true },
+    deps,
+  );
+}
+
+const PayloadDePublicidad = z.object({
+  // Gero toco ✏️ Cambiar en un anuncio propuesto: hay que rehacerlo con lo que pidio.
+  cambio: z.object({ anuncioId: z.number().int(), pedido: z.string().min(1).max(2000) }).optional(),
+});
+
+export async function agentePublicitar(payload: unknown, deps: DepsDeAgentes): Promise<void> {
+  // Sin Meta no hay nada que publicitar: la tarea se da por hecha.
+  if (!deps.meta) return;
+  const { cambio } = PayloadDePublicidad.parse(payload ?? {});
+  const viejo = cambio ? await deps.store.anuncio(cambio.anuncioId) : undefined;
+  const objetivo =
+    cambio && viejo
+      ? `Objetivo: Gero pidió cambiar el anuncio #${viejo.id} antes de aprobarlo. Rehacelo con proponer_anuncio teniendo en cuenta lo que pidió; lo demás, mantenelo si estaba bien.
+
+Lo que pidió Gero (respetalo):
+${cambio.pedido}
+
+El anuncio que tenía:
+Rubro: ${viejo.rubro}
+Título: ${viejo.titulo}
+Texto: ${viejo.texto}
+Frase de la imagen: ${viejo.frase}
+Preguntas propias: ${viejo.preguntas.length ? viejo.preguntas.join(' | ') : 'ninguna'}
+Diario: ${viejo.diario}
+Por qué: ${viejo.porQue}`
+      : 'Objetivo: conseguí consultas de pymes al menor costo posible con el presupuesto que queda del mes.';
+  await correr(
+    'publicista',
+    objetivo,
+    (reg) => herramientasDelPublicista(deps, { registro: reg, cambio }),
+    { web: !cambio, debeCerrar: Boolean(cambio), ...(cambio ? { topes: TOPES_DE_CAMBIO } : {}) },
     deps,
   );
 }

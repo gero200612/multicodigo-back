@@ -3,6 +3,7 @@ import type { Correo, MailSaliente } from '../src/envio.js';
 import type { Hallazgo } from '../src/fuentes.js';
 import type { PedidoDeCorrida, RespuestaDeCorrida } from '../src/gateway.js';
 import { SesionesMcp } from '../src/mcp.js';
+import type { Meta } from '../src/meta.js';
 import { MemoriaStore } from './memoria.js';
 
 export const casilla = { email: 'sincro.ventas@gmail.com', clave: 'x' };
@@ -19,6 +20,8 @@ export interface Opciones {
    */
   agente?: (p: PedidoDeCorrida, sesiones: SesionesMcp) => Promise<Partial<RespuestaDeCorrida>>;
   paginas?: Record<string, string>;
+  /** Sin esto, Homero anda como sin META_TOKEN. */
+  meta?: Meta;
 }
 
 /** Un Homero entero con todo lo de afuera falso. */
@@ -38,6 +41,7 @@ export function armar(o: Opciones = {}) {
   };
   const sesiones = new SesionesMcp();
   const corridas: PedidoDeCorrida[] = [];
+  const fotos: { png: Buffer; pie: string }[] = [];
   const deps: DepsDeCola = {
     store,
     correo,
@@ -63,6 +67,10 @@ export function armar(o: Opciones = {}) {
     recibeMail: async () => true,
     azar: () => 0,
     sesiones,
+    meta: o.meta,
+    mandarFoto: async (png, pie) => {
+      fotos.push({ png, pie });
+    },
     bajarPagina: async (url) => (o.paginas?.[url] ? { html: o.paginas[url]!, url } : undefined),
     gateway: {
       async correr(p) {
@@ -72,7 +80,7 @@ export function armar(o: Opciones = {}) {
       },
     },
   };
-  return { store, deps, corridas, sesiones, avisos, tarjetas, enviados, prompts, mover: (d: Date) => (ahora = d), ahora: () => ahora };
+  return { store, deps, corridas, sesiones, avisos, tarjetas, enviados, prompts, fotos, mover: (d: Date) => (ahora = d), ahora: () => ahora };
 }
 
 /**
@@ -85,6 +93,7 @@ export interface Guion {
   buscador?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
   vendedor?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
   atencion?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
+  publicista?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
 }
 
 export function agenteDe(g: Guion) {
@@ -94,7 +103,9 @@ export function agenteDe(g: Guion) {
       ? g.buscador
       : p.herramientas.includes('dejar_mail_listo')
         ? g.vendedor
-        : g.atencion;
+        : p.herramientas.includes('proponer_anuncio')
+          ? g.publicista
+          : g.atencion;
     if (!quien) throw new Error(`este test no esperaba una corrida con ${p.herramientas.join(',')}`);
     await quien(usar, p);
     return { texto: 'informe', slot: 'c3' };

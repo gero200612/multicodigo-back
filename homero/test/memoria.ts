@@ -1,6 +1,12 @@
 import { dominio } from '../src/cadenas.js';
 import type {
   Agente,
+  Anuncio,
+  CambiosDeAnuncio,
+  EstadoDeAnuncio,
+  Gasto,
+  Investigacion,
+  NuevoAnuncio,
   CierreDeCorrida,
   Corrida,
   MailQueFunciono,
@@ -39,7 +45,7 @@ export class MemoriaStore implements Store {
   envios: { cuenta: string; para: string; asunto: string; en: Date }[] = [];
   recibidos = new Set<string>();
   bajas = new Set<string>();
-  leads: (Lead & { externo?: string; creado: Date })[] = [];
+  leads: (Lead & { externo?: string; creado: Date; leadgenId?: string })[] = [];
   salientes: Saliente[] = [];
   ofertas = new Map<number, Date[]>();
   reuniones: (Reunion & { creada: Date; cancelada?: boolean })[] = [];
@@ -50,6 +56,8 @@ export class MemoriaStore implements Store {
   presupuestos: Presupuesto[] = [];
   corridasGuardadas: Corrida[] = [];
   libretas = new Map<Agente, string>();
+  anunciosGuardados: (Anuncio & { imagen: Buffer })[] = [];
+  gastosGuardados: Gasto[] = [];
   /** Lo que devuelve `mailsQueFuncionaron`: se carga a mano en cada test. */
   funcionaron: MailQueFunciono[] = [];
 
@@ -416,5 +424,83 @@ export class MemoriaStore implements Store {
   }
   async mailsQueFuncionaron(limite: number) {
     return this.funcionaron.slice(0, limite);
+  }
+
+  // ---- anuncios
+
+  async crearAnuncio(a: NuevoAnuncio) {
+    const id = this.anunciosGuardados.length + 1;
+    this.anunciosGuardados.push({ ...copia({ ...a, imagen: undefined }), imagen: a.imagen, id, estado: 'propuesto', metaIds: {}, creadoEn: this.ahora() });
+    return id;
+  }
+  private sinImagen(a: Anuncio & { imagen: Buffer }): Anuncio {
+    const { imagen: _, ...resto } = a;
+    return { ...resto, metaIds: { ...resto.metaIds }, preguntas: [...resto.preguntas] };
+  }
+  async anuncio(id: number) {
+    const a = this.anunciosGuardados.find((x) => x.id === id);
+    return a ? this.sinImagen(a) : undefined;
+  }
+  async anuncios(estados?: EstadoDeAnuncio[]) {
+    return this.anunciosGuardados
+      .filter((a) => !estados || estados.includes(a.estado))
+      .sort((a, b) => b.id - a.id)
+      .map((a) => this.sinImagen(a));
+  }
+  async anuncioPorTelegram(msg: number) {
+    const a = this.anunciosGuardados.find((x) => x.telegramMsg === msg);
+    return a ? this.sinImagen(a) : undefined;
+  }
+  async imagenDelAnuncio(id: number) {
+    return this.anunciosGuardados.find((x) => x.id === id)?.imagen;
+  }
+  async actualizarAnuncio(id: number, c: CambiosDeAnuncio) {
+    const a = this.anunciosGuardados.find((x) => x.id === id)!;
+    Object.assign(a, Object.fromEntries(Object.entries(c).filter(([, v]) => v !== undefined)));
+    if (c.metaIds) a.metaIds = { ...c.metaIds };
+  }
+  async guardarGastos(g: Gasto[]) {
+    for (const f of g) {
+      this.gastosGuardados = this.gastosGuardados.filter((x) => !(x.dia === f.dia && x.anuncioId === f.anuncioId));
+      this.gastosGuardados.push({ ...f });
+    }
+  }
+  async gastos(desde: string) {
+    return this.gastosGuardados.filter((g) => g.dia >= desde).map((g) => ({ ...g }));
+  }
+  async guardarLeadDeMeta(l: NuevoLead & { leadgenId: string; anuncioId?: number; investigacion: Investigacion }) {
+    if (this.leads.some((x) => x.leadgenId === l.leadgenId)) return undefined;
+    const email = l.email?.toLowerCase();
+    const tel = (l.telefono ?? '').replace(/\D/g, '');
+    const previo = this.leads.find(
+      (x) =>
+        (email && x.email === email) ||
+        (tel.length >= 8 && (x.telefono ?? '').replace(/\D/g, '').slice(-8) === tel.slice(-8)),
+    );
+    if (previo) {
+      Object.assign(previo, {
+        estado: 'caliente',
+        leadgenId: l.leadgenId,
+        anuncioId: l.anuncioId ?? previo.anuncioId,
+        telefono: previo.telefono ?? l.telefono,
+        email: previo.email ?? email,
+        investigacion: { ...(previo.investigacion ?? {}), formulario: l.investigacion.formulario, contacto: l.investigacion.contacto },
+      });
+      return { id: previo.id, nuevo: false };
+    }
+    const id = this.leads.length + 1;
+    this.leads.push({ ...copia(l), email, id, estado: 'caliente', creado: this.ahora() });
+    return { id, nuevo: true };
+  }
+  async resultadosDeAnuncios(desde?: Date) {
+    const porAnuncio = new Map<number, { leads: number; reuniones: number }>();
+    for (const l of this.leads) {
+      if (l.anuncioId === undefined || (desde && l.creado.getTime() < desde.getTime())) continue;
+      const r = porAnuncio.get(l.anuncioId) ?? { leads: 0, reuniones: 0 };
+      r.leads++;
+      if (this.reuniones.some((x) => x.leadId === l.id && !x.cancelada)) r.reuniones++;
+      porAnuncio.set(l.anuncioId, r);
+    }
+    return [...porAnuncio.entries()].map(([anuncioId, r]) => ({ anuncioId, ...r }));
   }
 }

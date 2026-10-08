@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { isTokenValid } from '@multicodigo/shared';
 import { z } from 'zod';
+import { estadoDelMes, numerosDelMes, presupuestoDelMes, textoDelResumen } from './anuncios.js';
 import { cortarBusquedas, pausar, pedirBusqueda, ponerModo, seguir } from './comandos.js';
 import { inicioDelDia } from './horas.js';
 import { Contenido, editarPresupuesto, guardarRegla, pedirPresupuesto, Regla, reglaActual } from './patan.js';
@@ -42,7 +43,7 @@ const CORRIDAS_EN_LISTA = 50;
 const LARGO_DE_INFORME_EN_LISTA = 300;
 
 const Id = z.coerce.number().int().positive();
-const AgenteValido = z.enum(['buscador', 'vendedor', 'atencion']);
+const AgenteValido = z.enum(['buscador', 'vendedor', 'atencion', 'publicista']);
 
 function recortar(texto: string | undefined, largo: number): string | null {
   if (!texto) return null;
@@ -321,10 +322,11 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
   });
 
   app.get('/agentes', async () => {
-    const [buscador, vendedor, atencion, corridas] = await Promise.all([
+    const [buscador, vendedor, atencion, publicista, corridas] = await Promise.all([
       store.libreta('buscador'),
       store.libreta('vendedor'),
       store.libreta('atencion'),
+      store.libreta('publicista'),
       store.corridas({ limite: CORRIDAS_EN_LISTA }),
     ]);
     // Varias corridas suelen ser del mismo lead: se busca cada nombre una vez.
@@ -333,7 +335,12 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       if (c.leadId != null && !nombres.has(c.leadId)) nombres.set(c.leadId, (await store.lead(c.leadId))?.nombre ?? null);
     }
     return {
-      libretas: { buscador: leerLibreta(buscador), vendedor: leerLibreta(vendedor), atencion: leerLibreta(atencion) },
+      libretas: {
+        buscador: leerLibreta(buscador),
+        vendedor: leerLibreta(vendedor),
+        atencion: leerLibreta(atencion),
+        publicista: leerLibreta(publicista),
+      },
       corridas: corridas.map((c) => ({
         id: c.id,
         agente: c.agente,
@@ -371,6 +378,85 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
     }
     await store.guardarLibreta(agente.data, escribirLibreta(b.data));
     return { agente: agente.data, libreta: leerLibreta(await store.libreta(agente.data)) };
+  });
+
+  // ------------------------------------------------------------ anuncios
+  //
+  // La pagina /homero/anuncios: la misma tarjeta que llega por Telegram, con los
+  // mismos botones, y los numeros del mes.
+
+  app.get('/anuncios', async () => {
+    const [n, todos] = await Promise.all([numerosDelMes({ store, ahora: d.ahora }), store.anuncios()]);
+    return {
+      mes: n.mes,
+      consultasHoy: n.consultasHoy,
+      consultasMes: n.consultasMes,
+      reunionesMes: n.reunionesMes,
+      costoPorConsulta: n.costoPorConsulta ?? null,
+      mejor: n.mejor?.anuncio.id ?? null,
+      anuncios: todos.map((a) => {
+        const f = n.anuncios.find((x) => x.anuncio.id === a.id);
+        return {
+          ...a,
+          imagen: `/anuncios/${a.id}/imagen`,
+          gasto: f?.gasto ?? 0,
+          impresiones: f?.impresiones ?? 0,
+          consultas: f?.consultas ?? 0,
+          leads: f?.leads ?? 0,
+          reuniones: f?.reuniones ?? 0,
+          costoPorConsulta: f?.costoPorConsulta ?? null,
+        };
+      }),
+    };
+  });
+
+  app.get<{ Params: { id: string } }>('/anuncios/:id/imagen', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
+    if (!id.success) return invalido(reply);
+    const png = await store.imagenDelAnuncio(id.data);
+    if (!png) return reply.code(404).send({ code: 'no_existe', message: 'ese anuncio no existe' });
+    return reply.type('image/png').send(png);
+  });
+
+  for (const [ruta, accion] of [
+    ['aprobar', (id: number) => acciones.aprobarAnuncio(id)],
+    ['descartar', (id: number) => acciones.descartarAnuncio(id)],
+  ] as const) {
+    app.post<{ Params: { id: string } }>(`/anuncios/:id/${ruta}`, async (request, reply) => {
+      const id = Id.safeParse(request.params.id);
+      if (!id.success) return invalido(reply);
+      const r = await accion(id.data);
+      if (!r.ok) return noSe(reply, r.motivo);
+      await quitar(r.anuncio.telegramMsg);
+      return { anuncio: r.anuncio, nota: r.nota ?? null };
+    });
+  }
+
+  app.post<{ Params: { id: string } }>('/anuncios/:id/cambiar', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
+    const b = z.object({ pedido: z.string().trim().min(3).max(2000) }).safeParse(request.body);
+    if (!id.success || !b.success) return invalido(reply, 'mandá { pedido } con lo que hay que cambiar');
+    const r = await acciones.cambiarAnuncio(id.data, b.data.pedido);
+    if (!r.ok) return noSe(reply, r.motivo);
+    await quitar(r.anuncio.telegramMsg);
+    return { anuncio: r.anuncio };
+  });
+
+  app.get('/anuncios/presupuesto', async () => ({
+    presupuesto: await presupuestoDelMes(store),
+    mes: await estadoDelMes({ store, ahora: d.ahora }),
+  }));
+
+  app.put('/anuncios/presupuesto', async (request, reply) => {
+    const b = z.object({ monto: z.number().positive().max(100_000_000) }).safeParse(request.body);
+    if (!b.success) return invalido(reply, 'mandá { monto } en pesos por mes');
+    const r = await acciones.cambiarPresupuesto(b.data.monto);
+    return { ...r, aviso: r.aviso ?? null, mes: await estadoDelMes({ store, ahora: d.ahora }) };
+  });
+
+  app.get('/anuncios/resumen', async () => {
+    const n = await numerosDelMes({ store, ahora: d.ahora });
+    return { ...n, texto: textoDelResumen(n) };
   });
 
   // ------------------------------------------------------------ patán

@@ -34,7 +34,7 @@ export class ErrorParaElAgente extends Error {}
 
 /** Lo que un agente esta haciendo ahora, para el tablero de la web. */
 export interface Actividad {
-  agente: 'buscador' | 'vendedor' | 'atencion';
+  agente: 'buscador' | 'vendedor' | 'atencion' | 'publicista';
   corridaId: number;
   desde: Date;
   /** El negocio de la corrida, si es de uno (vendedor, atencion). */
@@ -52,7 +52,7 @@ const PASOS_EN_VIVO = 60;
 function datoDe(args: unknown): string | undefined {
   if (!args || typeof args !== 'object') return undefined;
   const a = args as Record<string, unknown>;
-  for (const k of ['url', 'nombre', 'email', 'rubro', 'motivo', 'zona']) {
+  for (const k of ['url', 'nombre', 'email', 'rubro', 'motivo', 'zona', 'titulo']) {
     if (typeof a[k] === 'string' && a[k]) return String(a[k]).slice(0, 120);
   }
   return undefined;

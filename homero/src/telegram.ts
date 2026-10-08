@@ -1,4 +1,5 @@
-import { Bot, InlineKeyboard } from 'grammy';
+import { Bot, InlineKeyboard, InputFile } from 'grammy';
+import { CAMBIO_PENDIENTE, numerosDelMes, textoDelResumen, type ResultadoDeAnuncio } from './anuncios.js';
 import { diaArgentino, horarioEnCastellano } from './agenda.js';
 import type { Config } from './config.js';
 import { horaArgentina, inicioDelDia } from './horas.js';
@@ -26,6 +27,7 @@ export const COMANDOS = [
   { command: 'ocupado', description: 'Bloquear un día: /ocupado 30/9' },
   { command: 'libre', description: 'Liberar un día: /libre 30/9' },
   { command: 'rubros', description: 'Cómo responde cada rubro' },
+  { command: 'presupuesto', description: 'Anuncios: /presupuesto [monto del mes]' },
   { command: 'ensayo', description: 'Modo ensayo: /ensayo [mail] | off' },
   { command: 'modo', description: 'Pedir OK o automático: /modo aprobar | auto' },
   { command: 'probar_ia', description: 'Probar que Claude responde' },
@@ -63,6 +65,20 @@ export interface Acciones {
   editarPliego(demoId: number, pliego: string): Promise<ResultadoDeDemo>;
   /** Un pedido de prueba a Claude por el fondo comun de cuentas. */
   probarIa(): Promise<string>;
+  aprobarAnuncio(id: number): Promise<ResultadoDeAnuncio>;
+  descartarAnuncio(id: number): Promise<ResultadoDeAnuncio>;
+  /** ✏️ Cambiar: lo que pidio Gero, para que el publicista lo rehaga. */
+  cambiarAnuncio(id: number, pedido: string): Promise<ResultadoDeAnuncio>;
+  /** El presupuesto de anuncios del mes, en pesos. */
+  cambiarPresupuesto(monto: number): Promise<{ presupuesto: number; aviso?: string; pausados: number }>;
+}
+
+/** `80000`, `80.000`, `$80.000` -> 80000. */
+export function leerMonto(texto: string): number | undefined {
+  const limpio = texto.trim().replace(/^\$/, '').replace(/\./g, '').replace(',', '.');
+  if (!/^\d+(\.\d+)?$/.test(limpio)) return undefined;
+  const n = Number(limpio);
+  return n > 0 && n <= 100_000_000 ? n : undefined;
 }
 
 /** El boton para pedir la demo de una reunion. */
@@ -176,6 +192,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         '/modo aprobar | auto · si te pido OK para cada mail',
         '/buscar [rubro] [ciudad] · salgo a buscar ya',
         '/rubros · cómo responde cada rubro',
+        '/presupuesto [monto] · anuncios: cómo va el mes, o cambiar el presupuesto',
         '/ocupado 30/9 · /libre 30/9 · días sin reuniones',
         '/prioridad [n] · los borradores con más factibilidad',
         '/cortar · cancela las búsquedas pendientes',
@@ -296,6 +313,29 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     await ctx.reply(`🔎 Salgo a buscar ${b.rubro ?? 'el rubro que mejor viene respondiendo'}${b.ciudad ? ` en ${b.ciudad}` : ''}. Te paso los borradores.`);
   });
 
+  bot.command('presupuesto', async (ctx) => {
+    const pedido = (ctx.match ?? '').trim();
+    if (!pedido) {
+      await ctx.reply(`${textoDelResumen(await numerosDelMes({ store, ahora }))}\n\nPara cambiarlo: /presupuesto 80000`);
+      return;
+    }
+    const monto = leerMonto(pedido);
+    if (!monto || !acciones) {
+      await ctx.reply('Uso: /presupuesto 80000 (pesos por mes)');
+      return;
+    }
+    const r = await acciones.cambiarPresupuesto(monto);
+    await ctx.reply(
+      [
+        `💰 Presupuesto de anuncios: $${r.presupuesto.toLocaleString('es-AR')} por mes.`,
+        r.pausados > 0 ? `Pausé ${r.pausados} anuncio(s): con este presupuesto ya se gastó más del 90%.` : undefined,
+        r.aviso,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    );
+  });
+
   bot.command('rubros', async (ctx) => {
     await ctx.reply(`Respuestas / contactados por rubro:\n${await tablaDeRubros(store)}`);
   });
@@ -394,6 +434,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       return;
     }
     let resultado: string;
+    let sacarBotones = true;
     switch (accion) {
       case 'ap': {
         if (!(await acciones.aprobarLead(id))) {
@@ -448,18 +489,56 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         resultado = r.ok ? '🗑 Demo cancelada.' : `No pude: ${r.motivo}`;
         break;
       }
+      case 'aa': {
+        const r = await acciones.aprobarAnuncio(id);
+        if (r.ok) {
+          resultado = `✅ Aprobado. Lo subo a Meta con $${r.anuncio.diario.toLocaleString('es-AR')} por día y te aviso.${r.nota ? ` ${r.nota}` : ''}`;
+        } else {
+          resultado = `No pude: ${r.motivo}`;
+          // Sigue propuesto (por ejemplo, no entraba en el presupuesto): los botones quedan.
+          sacarBotones = (await store.anuncio(id))?.estado !== 'propuesto';
+        }
+        break;
+      }
+      case 'ac': {
+        const a = await store.anuncio(id);
+        if (a?.estado !== 'propuesto') {
+          resultado = 'Ese anuncio ya estaba decidido.';
+          break;
+        }
+        await store.guardarEstado(CAMBIO_PENDIENTE, { anuncioId: id });
+        resultado = `✏️ Escribime qué cambiar del anuncio #${id} y lo rehago.`;
+        break;
+      }
+      case 'ad': {
+        const r = await acciones.descartarAnuncio(id);
+        resultado = r.ok ? '🗑 Anuncio descartado.' : `No pude: ${r.motivo}`;
+        break;
+      }
       default:
         resultado = 'No entendí ese botón.';
     }
     await ctx.answerCallbackQuery({ text: resultado });
     // Se sacan los botones para que no se toquen dos veces.
-    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
+    if (sacarBotones) await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
     await ctx.reply(resultado, { reply_parameters: { message_id: ctx.callbackQuery.message!.message_id } }).catch(() => undefined);
   });
 
   // Corregir un borrador: responderle a la tarjeta con el texto nuevo.
   bot.on('message:text', async (ctx) => {
     const citado = ctx.message.reply_to_message?.message_id;
+    // Lo que cambiar de un anuncio: el mensaje que sigue a ✏️ Cambiar, o una
+    // respuesta a su tarjeta.
+    const anuncio = citado ? await store.anuncioPorTelegram(citado) : undefined;
+    const pendiente = citado ? undefined : await store.leerEstado<{ anuncioId: number }>(CAMBIO_PENDIENTE);
+    if (acciones && (anuncio || pendiente)) {
+      const id = anuncio?.id ?? pendiente!.anuncioId;
+      // Se usa una sola vez, salga bien o no: el mensaje siguiente ya es otra cosa.
+      if (pendiente) await store.guardarEstado(CAMBIO_PENDIENTE, null);
+      const r = await acciones.cambiarAnuncio(id, ctx.message.text);
+      await ctx.reply(r.ok ? `✏️ Anotado. Rehago el anuncio #${id} con eso y te paso la tarjeta nueva.` : `No pude: ${r.motivo}`);
+      return;
+    }
     if (!citado) return;
     // El pliego de una demo tambien se corrige respondiendole.
     const demo = await store.demoPorTelegram(citado);
@@ -490,10 +569,17 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       .catch(() => undefined);
   };
 
+  /** La imagen de un anuncio, antes de su tarjeta. */
+  const mandarFoto = async (png: Buffer, pie: string) => {
+    if (config.chatId === undefined) return;
+    await bot.api.sendPhoto(config.chatId, new InputFile(png, 'anuncio.png'), { caption: pie.slice(0, 1000) });
+  };
+
   return {
     bot,
     avisar,
     proponer,
+    mandarFoto,
     cambiarBotones,
     conectar: (a: Acciones) => {
       acciones = a;

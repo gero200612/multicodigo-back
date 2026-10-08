@@ -1,4 +1,14 @@
 import { z } from 'zod';
+import {
+  DIARIO_MINIMO,
+  numerosDelMes,
+  pausarAnuncio,
+  Propuesta,
+  proponerAnuncio,
+  repartirPresupuesto,
+  TOPE_DE_PROPUESTOS,
+  type DepsDeAnuncios,
+} from './anuncios.js';
 import { horarioEnCastellano, horariosLibres, sigueLibre } from './agenda.js';
 import { dominio } from './cadenas.js';
 import { ErrorParaElAgente, type Herramienta } from './mcp.js';
@@ -24,7 +34,7 @@ import {
  * que escriben cuentan cuantas veces se usaron en la corrida.
  */
 
-export interface DepsDeHerramientas extends DepsDeVentas {
+export interface DepsDeHerramientas extends DepsDeAnuncios {
   /** Baja una pagina con validacion de host y dice donde termino (ver web.ts). */
   bajarPagina: (url: string) => Promise<{ html: string; url: string } | undefined>;
 }
@@ -317,6 +327,8 @@ function ficha(lead: Lead): string {
     lead.telefono ? `Tel: ${lead.telefono}` : undefined,
     inv?.por_que ? `Por que lo eligio el buscador: ${inv.por_que}` : undefined,
     inv?.resumen_empresa ? `Lo que ya sabemos: ${inv.resumen_empresa}` : undefined,
+    inv?.contacto ? `Lleno el formulario de un anuncio: ${inv.contacto}` : undefined,
+    ...(inv?.formulario ?? []).map((f) => `En el formulario, "${f.pregunta}": ${neutralizar(f.respuesta)}`),
   ]
     .filter((l) => l !== undefined)
     .join('\n');
@@ -551,7 +563,7 @@ export function herramientasDeAtencion(deps: DepsDeHerramientas, ctx: ContextoDe
     // El estado de la base y no el de `ctx.lead`: `reservar` ya pudo haberlo
     // pasado a `reunion`, y eso no se pisa.
     const ahora = await deps.store.lead(ctx.lead.id);
-    if (ahora && ['contactado', 'aprobado'].includes(ahora.estado)) {
+    if (ahora && ['contactado', 'aprobado', 'caliente'].includes(ahora.estado)) {
       await deps.store.actualizarLead(ctx.lead.id, { estado: 'respondio' });
     }
   };
@@ -735,4 +747,179 @@ export function herramientasDeAtencion(deps: DepsDeHerramientas, ctx: ContextoDe
   };
 
   return [verHilo, verLibres, proponer, confirmar, baja, sinResponder, avisar, escribirLibreta('atencion', deps)];
+}
+
+// ------------------------------------------------------------ publicista
+
+const pesos = (n: number) => `$${Math.round(n).toLocaleString('es-AR')}`;
+/** Anuncios nuevos por corrida: Gero los tiene que mirar uno por uno. */
+const PROPUESTAS_POR_CORRIDA = 2;
+
+export function herramientasDelPublicista(
+  deps: DepsDeHerramientas,
+  ctx: { registro: Registro; cambio?: { anuncioId: number; pedido: string } },
+): Herramienta<any>[] {
+  let propuestas = 0;
+  const anotar = (hecho: string) => {
+    ctx.registro.resumen = [ctx.registro.resumen, hecho].filter(Boolean).join(' · ');
+  };
+
+  const resultados: Herramienta<Record<string, never>> = {
+    nombre: 'ver_resultados',
+    descripcion:
+      'Como viene el mes: presupuesto, gastado, lo que queda por dia, y por anuncio y por rubro el gasto, las ' +
+      'impresiones, las consultas, el costo por consulta y lo que salio despues (reuniones). Usala al empezar.',
+    esquema: objeto({}),
+    validar: z.object({}).strict() as z.ZodType<Record<string, never>>,
+    async correr() {
+      const n = await numerosDelMes(deps);
+      const { mes } = n;
+      const propuestos = await deps.store.anuncios(['propuesto']);
+      const lineas = [
+        `Presupuesto del mes: ${pesos(mes.presupuesto)} · gastado: ${pesos(mes.gastado)} · hoy: ${pesos(mes.gastadoHoy)}`,
+        `Diarios andando: ${pesos(mes.diarios)} × ${mes.diasQueFaltan} días que faltan = el mes cierra en ${pesos(mes.comprometido)}`,
+        `Diario total que entra en lo que queda del mes: ${pesos(mes.diarioQueEntra)} (mínimo por anuncio ${pesos(DIARIO_MINIMO)})`,
+        `Consultas del mes: ${n.consultasMes}${n.costoPorConsulta !== undefined ? ` (${pesos(n.costoPorConsulta)} cada una)` : ''} · reuniones: ${n.reunionesMes}`,
+        '',
+        'Anuncios (id · estado · rubro · título · diario · gasto del mes · impresiones · consultas Meta / en la base · reuniones):',
+        ...(n.anuncios.length
+          ? n.anuncios.map(
+              (f) =>
+                `- #${f.anuncio.id} · ${f.anuncio.estado} · ${f.anuncio.rubro} · "${f.anuncio.titulo}" · ${pesos(f.anuncio.diario)}/día · ` +
+                `${pesos(f.gasto)} · ${f.impresiones} · ${f.consultas}/${f.leads}` +
+                `${f.costoPorConsulta !== undefined ? ` (${pesos(f.costoPorConsulta)} c/u)` : ''} · ${f.reuniones}` +
+                `${f.anuncio.motivo ? ` · ${f.anuncio.motivo}` : ''}`,
+            )
+          : ['- todavía no hay anuncios aprobados']),
+      ];
+      const rubros = new Map<string, { gasto: number; leads: number; reuniones: number }>();
+      for (const f of n.anuncios) {
+        const r = rubros.get(f.anuncio.rubro) ?? { gasto: 0, leads: 0, reuniones: 0 };
+        rubros.set(f.anuncio.rubro, { gasto: r.gasto + f.gasto, leads: r.leads + f.leads, reuniones: r.reuniones + f.reuniones });
+      }
+      if (rubros.size) {
+        lineas.push('', 'Por rubro (gasto · consultas · reuniones):');
+        for (const [rubro, r] of rubros) lineas.push(`- ${rubro}: ${pesos(r.gasto)} · ${r.leads} · ${r.reuniones}`);
+      }
+      lineas.push(
+        '',
+        propuestos.length
+          ? `Esperando a Gero: ${propuestos.map((a) => `#${a.id} ${a.rubro} "${a.titulo}"`).join(', ')}`
+          : 'Ninguno esperando a Gero.',
+      );
+      return lineas.join('\n');
+    },
+  };
+
+  const proponer: Herramienta<{
+    rubro: string;
+    titulo: string;
+    texto: string;
+    frase_imagen: string;
+    preguntas: string[];
+    diario: number;
+    por_que: string;
+  }> = {
+    nombre: 'proponer_anuncio',
+    descripcion:
+      'Arma la imagen con la plantilla de Sincro y le pasa el anuncio a Gero para aprobar. No gasta nada: recien ' +
+      `cuando Gero lo aprueba se crea en Meta. Hasta ${PROPUESTAS_POR_CORRIDA} por corrida.`,
+    esquema: objeto(
+      {
+        rubro: texto('El rubro al que apunta (contable, taller, gastronomia...)'),
+        titulo: texto('Hasta 40 letras'),
+        texto: texto('El texto de la publicacion: 2 o 3 renglones cortos, sin links'),
+        frase_imagen: texto('La frase grande de la imagen: hasta 8 palabras, que frene el scroll'),
+        preguntas: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 2,
+          description: 'Preguntas propias del formulario (nombre, mail, telefono y empresa ya van). Hasta 2, o ninguna.',
+        },
+        diario: { type: 'number', description: `Presupuesto diario en pesos, desde ${DIARIO_MINIMO}` },
+        por_que: texto('Por que este anuncio ahora: lo lee Gero en la tarjeta'),
+      },
+      ['rubro', 'titulo', 'texto', 'frase_imagen', 'preguntas', 'diario', 'por_que'],
+    ),
+    validar: z.object({
+      rubro: z.string(),
+      titulo: z.string(),
+      texto: z.string(),
+      frase_imagen: z.string(),
+      preguntas: z.array(z.string()),
+      diario: z.number(),
+      por_que: z.string(),
+    }),
+    async correr(a) {
+      if (propuestas >= PROPUESTAS_POR_CORRIDA) {
+        throw new ErrorParaElAgente(`Ya propusiste ${PROPUESTAS_POR_CORRIDA} en esta corrida. Cerrá con lo que tenés.`);
+      }
+      if ((await deps.store.anuncios(['propuesto'])).length >= TOPE_DE_PROPUESTOS) {
+        throw new ErrorParaElAgente(`Gero tiene ${TOPE_DE_PROPUESTOS} anuncios sin decidir: no propongas más hasta que los mire.`);
+      }
+      const p = Propuesta.safeParse({
+        rubro: a.rubro,
+        titulo: a.titulo,
+        texto: a.texto,
+        frase: a.frase_imagen,
+        preguntas: a.preguntas,
+        diario: a.diario,
+        porQue: a.por_que,
+      });
+      if (!p.success) {
+        throw new ErrorParaElAgente(`No va así: ${p.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
+      }
+      if (/https?:\/\/|www\./i.test(`${p.data.titulo} ${p.data.texto} ${p.data.frase}`)) {
+        throw new ErrorParaElAgente('Sin links: el formulario ya lleva a la web.');
+      }
+      const id = await proponerAnuncio(p.data, deps);
+      propuestas++;
+      ctx.registro.cerro = true;
+      anotar(`Propuso el anuncio #${id} (${p.data.rubro}): ${p.data.titulo}`);
+      return `Listo: el anuncio #${id} le llegó a Gero para aprobar.`;
+    },
+  };
+
+  const repartir: Herramienta<{ anuncios: { id: number; diario: number }[] }> = {
+    nombre: 'repartir_presupuesto',
+    descripcion:
+      'Cambia el presupuesto diario de anuncios YA APROBADOS por Gero. Diario 0 lo pausa; un diario a uno pausado lo ' +
+      'vuelve a prender. Si el reparto entero no entra en el presupuesto del mes, no se cambia nada y te dice cuanto entra.',
+    esquema: objeto(
+      {
+        anuncios: {
+          type: 'array',
+          items: objeto({ id: { type: 'integer' }, diario: { type: 'number' } }, ['id', 'diario']),
+          description: 'Los que cambian, con su diario nuevo en pesos',
+        },
+      },
+      ['anuncios'],
+    ),
+    validar: z.object({
+      anuncios: z.array(z.object({ id: z.number().int(), diario: z.number().min(0).max(1_000_000) })).min(1).max(20),
+    }),
+    async correr({ anuncios }) {
+      const r = await repartirPresupuesto(anuncios.map((a) => ({ anuncioId: a.id, diario: a.diario })), deps);
+      if (!r.ok) throw new ErrorParaElAgente(`No lo cambié: ${r.motivo}.`);
+      anotar(`Repartió: ${anuncios.map((a) => `#${a.id} ${a.diario ? pesos(a.diario) : 'pausa'}`).join(', ')}`);
+      return 'Repartido.';
+    },
+  };
+
+  const pausar: Herramienta<{ id: number; motivo: string }> = {
+    nombre: 'pausar_anuncio',
+    descripcion: 'Pausa un anuncio aprobado que no rinde. Decí por qué: lo lee Gero.',
+    esquema: objeto({ id: { type: 'integer' }, motivo: texto('Por que lo pausás') }, ['id', 'motivo']),
+    validar: z.object({ id: z.number().int(), motivo: z.string().min(5).max(300) }),
+    async correr({ id, motivo }) {
+      const r = await pausarAnuncio(id, motivo, deps);
+      if (!r.ok) throw new ErrorParaElAgente(r.motivo);
+      anotar(`Pausó el #${id}: ${motivo}`);
+      return 'Pausado.';
+    },
+  };
+
+  // Rehaciendo uno que Gero pidio cambiar: solo mirar y proponer.
+  if (ctx.cambio) return [resultados, proponer, escribirLibreta('publicista', deps)];
+  return [resultados, proponer, repartir, pausar, escribirLibreta('publicista', deps)];
 }

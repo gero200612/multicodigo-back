@@ -14,7 +14,12 @@ export type TipoDeTarea =
   | 'presupuestar'
   | 'agente_buscar'
   | 'agente_vender'
-  | 'agente_atender';
+  | 'agente_atender'
+  | 'agente_publicitar'
+  | 'publicar_anuncio'
+  | 'leer_insights'
+  | 'escribir_a_lead_meta'
+  | 'resumen_anuncios';
 
 export type EstadoDeLead =
   | 'nuevo'
@@ -26,7 +31,9 @@ export type EstadoDeLead =
   | 'reunion'
   | 'cerrado'
   | 'baja'
-  | 'rebotado';
+  | 'rebotado'
+  /** Lleno el formulario de un anuncio: pidio que lo contacten. */
+  | 'caliente';
 
 /** Lo que la IA saco de la web del negocio. */
 export interface Investigacion {
@@ -47,6 +54,10 @@ export interface Investigacion {
   por_que?: string;
   /** Por que lo descarto el vendedor. */
   descarte?: string;
+  /** Lo que contesto en el formulario de un anuncio de Meta. */
+  formulario?: { pregunta: string; respuesta: string }[];
+  /** Quien lleno el formulario (la persona, no la empresa). */
+  contacto?: string;
 }
 
 export interface Lead {
@@ -63,6 +74,8 @@ export interface Lead {
   casilla?: string;
   /** Id en la fuente: `osm:node/123` o `google:<place_id>`. */
   externo?: string;
+  /** El anuncio del que vino, si lleno un formulario. */
+  anuncioId?: number;
 }
 
 export type NuevoLead = Omit<Lead, 'id' | 'estado' | 'investigacion' | 'casilla'>;
@@ -142,7 +155,64 @@ export interface FiltroDeLeads {
   desde: number;
 }
 
-export type Agente = 'buscador' | 'vendedor' | 'atencion';
+export type Agente = 'buscador' | 'vendedor' | 'atencion' | 'publicista';
+
+// ---- Anuncios (spec 2026-10-08-homero-anuncios-meta)
+
+export type EstadoDeAnuncio = 'propuesto' | 'aprobado' | 'activo' | 'pausado' | 'descartado';
+
+/** Lo que se creo en Meta para un anuncio. Se va llenando al publicar: un corte a mitad retoma. */
+export interface IdsEnMeta {
+  imagen?: string;
+  formulario?: string;
+  conjunto?: string;
+  creativo?: string;
+  anuncio?: string;
+}
+
+export interface Anuncio {
+  id: number;
+  rubro: string;
+  titulo: string;
+  texto: string;
+  /** La frase grande de la imagen. */
+  frase: string;
+  /** Las preguntas propias del formulario (nombre, mail, telefono y empresa van siempre). */
+  preguntas: string[];
+  /** Por que lo propone el publicista: lo lee Gero en la tarjeta. */
+  porQue: string;
+  estado: EstadoDeAnuncio;
+  /** Presupuesto diario en pesos. */
+  diario: number;
+  /** Por que se pauso, se descarto o que cambio pidio Gero. */
+  motivo?: string;
+  metaIds: IdsEnMeta;
+  telegramMsg?: number;
+  creadoEn: Date;
+  aprobadoEn?: Date;
+}
+
+export type NuevoAnuncio = Pick<Anuncio, 'rubro' | 'titulo' | 'texto' | 'frase' | 'preguntas' | 'porQue' | 'diario'> & {
+  imagen: Buffer;
+};
+
+export type CambiosDeAnuncio = Partial<Pick<Anuncio, 'estado' | 'diario' | 'motivo' | 'metaIds' | 'telegramMsg' | 'aprobadoEn'>>;
+
+/** Lo que gasto un anuncio en un dia (de los insights de Meta), en pesos. */
+export interface Gasto {
+  dia: string;
+  anuncioId: number;
+  gasto: number;
+  impresiones: number;
+  consultas: number;
+}
+
+/** Lo que salio de las consultas de un anuncio, cruzado con homero.leads. */
+export interface ResultadoDeAnuncio {
+  anuncioId: number;
+  leads: number;
+  reuniones: number;
+}
 
 /** Un paso de una corrida: lo que penso o la herramienta que uso. */
 export interface Paso {
@@ -334,6 +404,29 @@ export interface Store {
   /** Crea el presupuesto o, si ya habia, lo vuelve a `armando` con las notas nuevas. */
   guardarPedidoDePresupuesto(p: { demoId: number; leadId: number; notas: string }): Promise<number>;
   actualizarPresupuesto(id: number, c: CambiosDePresupuesto): Promise<void>;
+
+  // ---- Anuncios
+  crearAnuncio(a: NuevoAnuncio): Promise<number>;
+  anuncio(id: number): Promise<Anuncio | undefined>;
+  /** Los mas nuevos primero. Sin `estados`, todos. */
+  anuncios(estados?: EstadoDeAnuncio[]): Promise<Anuncio[]>;
+  anuncioPorTelegram(msg: number): Promise<Anuncio | undefined>;
+  imagenDelAnuncio(id: number): Promise<Buffer | undefined>;
+  actualizarAnuncio(id: number, c: CambiosDeAnuncio): Promise<void>;
+  /** Pisa lo que habia de ese dia y anuncio: Meta corrige los dias pasados. */
+  guardarGastos(g: Gasto[]): Promise<void>;
+  /** Los gastos desde ese dia (AAAA-MM-DD) inclusive. */
+  gastos(desde: string): Promise<Gasto[]>;
+  /**
+   * Un lead que lleno un formulario. `undefined` si ese `leadgenId` ya entro.
+   * Si ya habia un lead con ese mail o ese telefono, no se duplica: se marca
+   * caliente y se le anota el anuncio (`nuevo: false`).
+   */
+  guardarLeadDeMeta(l: NuevoLead & { leadgenId: string; anuncioId?: number; investigacion: Investigacion }): Promise<
+    { id: number; nuevo: boolean } | undefined
+  >;
+  /** Por anuncio: cuantos leads trajo y cuantos llegaron a reunion, de los creados desde `desde`. */
+  resultadosDeAnuncios(desde?: Date): Promise<ResultadoDeAnuncio[]>;
 }
 
 export class PgStore implements Store {
@@ -1019,7 +1112,154 @@ export class PgStore implements Store {
       ],
     );
   }
+
+  // ---- Anuncios ----
+
+  async crearAnuncio(a: NuevoAnuncio) {
+    const r = await this.pool.query(
+      `INSERT INTO homero.anuncios (rubro, titulo, texto, frase, preguntas, por_que, diario, imagen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [a.rubro, a.titulo, a.texto, a.frase, JSON.stringify(a.preguntas), a.porQue, a.diario, a.imagen],
+    );
+    return Number(r.rows[0].id);
+  }
+
+  async anuncio(id: number) {
+    const r = await this.pool.query(`SELECT ${COLUMNAS_DE_ANUNCIO} FROM homero.anuncios WHERE id = $1`, [id]);
+    return r.rows[0] ? aAnuncio(r.rows[0]) : undefined;
+  }
+
+  async anuncios(estados?: EstadoDeAnuncio[]) {
+    const r = await this.pool.query(
+      `SELECT ${COLUMNAS_DE_ANUNCIO} FROM homero.anuncios WHERE ($1::text[] IS NULL OR estado = ANY($1)) ORDER BY id DESC`,
+      [estados ?? null],
+    );
+    return r.rows.map(aAnuncio);
+  }
+
+  async anuncioPorTelegram(msg: number) {
+    const r = await this.pool.query(`SELECT ${COLUMNAS_DE_ANUNCIO} FROM homero.anuncios WHERE telegram_msg = $1 LIMIT 1`, [msg]);
+    return r.rows[0] ? aAnuncio(r.rows[0]) : undefined;
+  }
+
+  async imagenDelAnuncio(id: number) {
+    const r = await this.pool.query('SELECT imagen FROM homero.anuncios WHERE id = $1', [id]);
+    return (r.rows[0]?.imagen as Buffer | null | undefined) ?? undefined;
+  }
+
+  async actualizarAnuncio(id: number, c: CambiosDeAnuncio) {
+    await this.pool.query(
+      `UPDATE homero.anuncios SET
+         estado = COALESCE($2, estado), diario = COALESCE($3, diario), motivo = COALESCE($4, motivo),
+         meta_ids = COALESCE($5::jsonb, meta_ids), telegram_msg = COALESCE($6, telegram_msg),
+         aprobado_en = COALESCE($7, aprobado_en)
+       WHERE id = $1`,
+      [
+        id,
+        c.estado ?? null,
+        c.diario ?? null,
+        c.motivo ?? null,
+        c.metaIds ? JSON.stringify(c.metaIds) : null,
+        c.telegramMsg ?? null,
+        c.aprobadoEn ?? null,
+      ],
+    );
+  }
+
+  async guardarGastos(g: Gasto[]) {
+    for (const f of g) {
+      await this.pool.query(
+        `INSERT INTO homero.gastos (dia, anuncio_id, gasto, impresiones, consultas) VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (dia, anuncio_id) DO UPDATE
+           SET gasto = EXCLUDED.gasto, impresiones = EXCLUDED.impresiones, consultas = EXCLUDED.consultas, leido = now()`,
+        [f.dia, f.anuncioId, f.gasto, f.impresiones, f.consultas],
+      );
+    }
+  }
+
+  async gastos(desde: string) {
+    const r = await this.pool.query(
+      `SELECT to_char(dia, 'YYYY-MM-DD') AS dia, anuncio_id, gasto, impresiones, consultas
+       FROM homero.gastos WHERE dia >= $1 ORDER BY dia, anuncio_id`,
+      [desde],
+    );
+    return r.rows.map((f) => ({
+      dia: f.dia as string,
+      anuncioId: Number(f.anuncio_id),
+      gasto: Number(f.gasto),
+      impresiones: Number(f.impresiones),
+      consultas: Number(f.consultas),
+    }));
+  }
+
+  async guardarLeadDeMeta(l: NuevoLead & { leadgenId: string; anuncioId?: number; investigacion: Investigacion }) {
+    const visto = await this.pool.query('SELECT 1 FROM homero.leads WHERE leadgen_id = $1', [l.leadgenId]);
+    if ((visto.rowCount ?? 0) > 0) return undefined;
+    // El mismo negocio por mail, o por los ultimos 8 numeros del telefono (los
+    // formularios lo devuelven con +54 9 y la base, como lo puso la web).
+    const tel = (l.telefono ?? '').replace(/\D/g, '');
+    const previo = await this.pool.query(
+      `SELECT id FROM homero.leads
+       WHERE ($1::text IS NOT NULL AND email = $1)
+          OR (length($2) >= 8 AND right(regexp_replace(coalesce(telefono, ''), '\\D', '', 'g'), 8) = right($2, 8))
+       ORDER BY id LIMIT 1`,
+      [l.email?.toLowerCase() ?? null, tel],
+    );
+    if (previo.rows[0]) {
+      const id = Number(previo.rows[0].id);
+      await this.pool.query(
+        `UPDATE homero.leads SET estado = 'caliente', leadgen_id = $2, anuncio_id = COALESCE($3, anuncio_id),
+           telefono = COALESCE(telefono, $4), email = COALESCE(email, $5),
+           investigacion = COALESCE(investigacion, '{}'::jsonb) || $6::jsonb, actualizado = now()
+         WHERE id = $1`,
+        [
+          id,
+          l.leadgenId,
+          l.anuncioId ?? null,
+          l.telefono ?? null,
+          l.email?.toLowerCase() ?? null,
+          JSON.stringify({ formulario: l.investigacion.formulario, contacto: l.investigacion.contacto }),
+        ],
+      );
+      return { id, nuevo: false };
+    }
+    const r = await this.pool.query(
+      `INSERT INTO homero.leads (nombre, rubro, ciudad, web, email, telefono, fuente, estado, leadgen_id, anuncio_id, investigacion)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'caliente', $8, $9, $10)
+       ON CONFLICT DO NOTHING RETURNING id`,
+      [
+        l.nombre,
+        l.rubro,
+        l.ciudad,
+        l.web ?? null,
+        l.email?.toLowerCase() ?? null,
+        l.telefono ?? null,
+        l.fuente,
+        l.leadgenId,
+        l.anuncioId ?? null,
+        JSON.stringify(l.investigacion),
+      ],
+    );
+    return r.rows[0] ? { id: Number(r.rows[0].id), nuevo: true } : undefined;
+  }
+
+  async resultadosDeAnuncios(desde?: Date) {
+    const r = await this.pool.query(
+      `SELECT l.anuncio_id, count(*) AS leads,
+              count(*) FILTER (WHERE EXISTS (
+                SELECT 1 FROM homero.reuniones r WHERE r.lead_id = l.id AND r.estado = 'confirmada')) AS reuniones
+       FROM homero.leads l
+       WHERE l.anuncio_id IS NOT NULL AND ($1::timestamptz IS NULL OR l.creado >= $1)
+       GROUP BY l.anuncio_id`,
+      [desde ?? null],
+    );
+    return r.rows.map((f) => ({ anuncioId: Number(f.anuncio_id), leads: Number(f.leads), reuniones: Number(f.reuniones) }));
+  }
 }
+
+/** Todo menos la imagen, que pesa: se pide aparte. */
+const COLUMNAS_DE_ANUNCIO =
+  'id, rubro, titulo, texto, frase, preguntas, por_que, estado, diario, motivo, meta_ids, telegram_msg, creado_en, aprobado_en';
 
 type Fila = Record<string, unknown>;
 const opc = <T>(v: unknown) => (v === null || v === undefined ? undefined : (v as T));
@@ -1039,6 +1279,26 @@ function aLead(f: Fila): Lead {
     estado: f.estado as EstadoDeLead,
     casilla: opc(f.casilla),
     externo: opc(f.externo),
+    anuncioId: num(f.anuncio_id),
+  };
+}
+
+function aAnuncio(f: Fila): Anuncio {
+  return {
+    id: Number(f.id),
+    rubro: f.rubro as string,
+    titulo: f.titulo as string,
+    texto: f.texto as string,
+    frase: f.frase as string,
+    preguntas: (f.preguntas as string[] | null) ?? [],
+    porQue: (f.por_que as string | null) ?? '',
+    estado: f.estado as EstadoDeAnuncio,
+    diario: Number(f.diario),
+    motivo: opc(f.motivo),
+    metaIds: (f.meta_ids as IdsEnMeta | null) ?? {},
+    telegramMsg: num(f.telegram_msg),
+    creadoEn: f.creado_en as Date,
+    aprobadoEn: opc(f.aprobado_en),
   };
 }
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ConfigDeMeta } from './meta.js';
 
 /** Una casilla de Gmail con su contraseña de aplicacion. */
 export interface Casilla {
@@ -41,6 +42,14 @@ const Env = z.object({
   // Para pedirle demos a Punchi. Van juntas; sin ellas no hay boton de demo.
   BRIDGE_URL: opcional(z.string().url()),
   BRIDGE_API_TOKEN: opcional(z.string().min(16)),
+  // Los anuncios en Meta. Sin token no hay nada de Meta (ni publicista, ni
+  // leads de formularios); el resto de Homero anda igual.
+  META_TOKEN: opcional(z.string().min(1)),
+  META_AD_ACCOUNT_ID: opcional(z.string().regex(/^(act_)?\d+$/)),
+  META_PAGE_ID: opcional(z.string().regex(/^\d+$/)),
+  META_APP_ID: opcional(z.string().regex(/^\d+$/)),
+  // Fija a proposito: un cambio de version se prueba antes con scripts/meta-humo.ts.
+  META_API_VERSION: opcional(z.string().regex(/^v\d+\.\d+$/)).transform((v) => v ?? 'v23.0'),
   HOMERO_GMAIL_1_USER: opcional(z.string().email()),
   HOMERO_GMAIL_1_PASS: opcional(z.string().min(1)),
   HOMERO_GMAIL_2_USER: opcional(z.string().email()),
@@ -65,6 +74,9 @@ export interface Config {
   bridge?: { url: string; token: string };
   gateway?: { url: string; token: string };
   mcpPuerto: number;
+  meta?: ConfigDeMeta;
+  /** Por que no hay Meta, para decirlo una vez al arrancar. */
+  sinMeta?: string;
 }
 
 export function leerConfig(env: NodeJS.ProcessEnv): Config {
@@ -101,5 +113,20 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
         ? { url: e.HOMERO_GATEWAY_URL, token: e.HOMERO_GATEWAY_TOKEN }
         : undefined,
     mcpPuerto: e.HOMERO_MCP_PUERTO,
+    ...configDeMeta(e),
+  };
+}
+
+function configDeMeta(e: z.infer<typeof Env>): { meta?: ConfigDeMeta; sinMeta?: string } {
+  if (!e.META_TOKEN) return { sinMeta: 'falta META_TOKEN' };
+  if (!e.META_AD_ACCOUNT_ID || !e.META_PAGE_ID) return { sinMeta: 'META_TOKEN va con META_AD_ACCOUNT_ID y META_PAGE_ID' };
+  return {
+    meta: {
+      token: e.META_TOKEN,
+      cuenta: e.META_AD_ACCOUNT_ID,
+      pagina: e.META_PAGE_ID,
+      app: e.META_APP_ID,
+      version: e.META_API_VERSION,
+    },
   };
 }

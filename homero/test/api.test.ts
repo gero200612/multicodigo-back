@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { aprobarAnuncio, cambiarPresupuesto, descartarAnuncio, pedirCambio, proponerAnuncio, type DepsDeAnuncios } from '../src/anuncios.js';
 import { crearApi } from '../src/api.js';
 import { cambiarEnsayo, estadoDeHomero } from '../src/comandos.js';
 import { armarDemo, cancelarDemo, editarPliego, enviarDemo, type DepsDeDemos } from '../src/demos.js';
@@ -15,12 +16,13 @@ import {
   proponerPrioridad,
   reproponerBorradores,
 } from '../src/ventas.js';
-import { armar } from './armar.js';
+import { armar, type Opciones } from './armar.js';
+import { metaFalsa } from './meta-falsa.js';
 
 const TOKEN = 'token-de-la-api-de-homero';
 
 /** Las mismas acciones que arma `main.ts`. */
-function accionesDe(deps: DepsDeDemos): Acciones {
+function accionesDe(deps: DepsDeDemos & DepsDeAnuncios): Acciones {
   return {
     aprobarLead: (id) => aprobarLead(id, deps),
     descartarLead: (id) => descartarLead(id, deps),
@@ -39,11 +41,15 @@ function accionesDe(deps: DepsDeDemos): Acciones {
     cancelarDemo: (id) => cancelarDemo(id, deps),
     editarPliego: (id, p) => editarPliego(id, p, deps),
     probarIa: async () => 'hola',
+    aprobarAnuncio: (id) => aprobarAnuncio(id, deps),
+    descartarAnuncio: (id) => descartarAnuncio(id, deps),
+    cambiarAnuncio: (id, pedido) => pedirCambio(id, pedido, deps),
+    cambiarPresupuesto: (monto) => cambiarPresupuesto(monto, deps),
   };
 }
 
-function conApi() {
-  const h = armar();
+function conApi(o: Opciones = {}) {
+  const h = armar(o);
   const deps: DepsDeDemos = {
     ...h.deps,
     punchi: { abrir: vi.fn(async () => ({ ok: true as const, corridaId: 'c-1' })), estado: vi.fn(async () => undefined) },
@@ -209,6 +215,7 @@ describe('API de Homero', () => {
       buscador: { tenerEnCuenta: ['En Rosario OSM no tiene talleres: buscar en Google Maps.'], evitar: [] },
       vendedor: { tenerEnCuenta: [], evitar: [] },
       atencion: { tenerEnCuenta: [], evitar: [] },
+      publicista: { tenerEnCuenta: [], evitar: [] },
     });
     expect(a.corridas.map((c: { id: number }) => c.id)).toEqual([nueva, vieja]);
     expect(a.corridas[0]).toMatchObject({ agente: 'vendedor', estado: 'fallida', error: 'no cerro con dejar_listo', leadId, lead: 'Taller Gómez' });
@@ -244,5 +251,55 @@ describe('API de Homero', () => {
     expect((await h.pedir('PUT', '/agentes/libretas/patan', { tenerEnCuenta: [], evitar: [] })).statusCode).toBe(400);
     expect((await h.pedir('PUT', '/agentes/libretas/vendedor', { tenerEnCuenta: Array(26).fill('x'), evitar: [] })).statusCode).toBe(400);
     expect((await h.pedir('PUT', '/agentes/libretas/vendedor', { contenido: 'texto' })).statusCode).toBe(400);
+  });
+
+  describe('anuncios', () => {
+    const propuesta = {
+      rubro: 'taller',
+      titulo: 'Turnos sin perder ninguno',
+      texto: 'Los turnos que hoy entran por WhatsApp quedan agendados solos.',
+      frase: 'Cero turnos perdidos',
+      preguntas: [],
+      diario: 2000,
+      porQue: 'Los talleres responden.',
+    };
+
+    it('lista con los números del mes, sirve la imagen y aprueba como el botón de Telegram', async () => {
+      const f = metaFalsa();
+      const h = conApi({ meta: f.meta });
+      const id = await proponerAnuncio(propuesta, h.deps);
+      const lista = (await h.pedir('GET', '/anuncios')).json();
+      expect(lista.mes).toMatchObject({ presupuesto: 50_000, gastado: 0 });
+      expect(lista.anuncios).toEqual([expect.objectContaining({ id, estado: 'propuesto', imagen: `/anuncios/${id}/imagen`, gasto: 0 })]);
+
+      const img = await h.pedir('GET', `/anuncios/${id}/imagen`);
+      expect(img.headers['content-type']).toBe('image/png');
+      expect(img.rawPayload.subarray(1, 4).toString()).toBe('PNG');
+
+      const r = await h.pedir('POST', `/anuncios/${id}/aprobar`);
+      expect(r.statusCode).toBe(200);
+      expect(r.json().anuncio).toMatchObject({ estado: 'aprobado' });
+      expect(h.cambiarBotones).toHaveBeenCalledWith(1001, undefined);
+      expect((await h.pedir('POST', `/anuncios/${id}/aprobar`)).statusCode).toBe(409);
+      expect(f.llamadas).toEqual([]);
+    });
+
+    it('pedir un cambio y descartar', async () => {
+      const h = conApi({ meta: metaFalsa().meta });
+      const a = await proponerAnuncio(propuesta, h.deps);
+      const b = await proponerAnuncio(propuesta, h.deps);
+      expect((await h.pedir('POST', `/anuncios/${a}/cambiar`, {})).statusCode).toBe(400);
+      expect((await h.pedir('POST', `/anuncios/${a}/cambiar`, { pedido: 'más corto' })).json().anuncio).toMatchObject({ estado: 'descartado' });
+      expect(h.store.tareas.at(-1)).toMatchObject({ tipo: 'agente_publicitar', payload: { cambio: { anuncioId: a, pedido: 'más corto' } } });
+      expect((await h.pedir('POST', `/anuncios/${b}/descartar`)).json().anuncio).toMatchObject({ estado: 'descartado' });
+    });
+
+    it('el presupuesto del mes se lee y se cambia', async () => {
+      const h = conApi({ meta: metaFalsa().meta });
+      expect((await h.pedir('GET', '/anuncios/presupuesto')).json()).toMatchObject({ presupuesto: 50_000 });
+      expect((await h.pedir('PUT', '/anuncios/presupuesto', { monto: -3 })).statusCode).toBe(400);
+      expect((await h.pedir('PUT', '/anuncios/presupuesto', { monto: 80_000 })).json()).toMatchObject({ presupuesto: 80_000, pausados: 0 });
+      expect((await h.pedir('GET', '/anuncios/resumen')).json().texto).toContain('de $80.000');
+    });
   });
 });

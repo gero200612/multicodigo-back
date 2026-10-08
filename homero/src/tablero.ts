@@ -41,6 +41,7 @@ const TIPOS: Record<Agente, TipoDeTarea[]> = {
   buscador: ['agente_buscar', 'prospectar'],
   vendedor: ['agente_vender', 'investigar'],
   atencion: ['agente_atender', 'resumir_respuesta'],
+  publicista: ['agente_publicitar'],
 };
 
 /** Que hace una herramienta, dicho para Gero. */
@@ -64,6 +65,10 @@ const VERBOS: Record<string, string> = {
   cerrar_sin_responder: 'Cerró sin responder',
   avisar_a_gero: 'Te avisó por Telegram',
   escribir_libreta: 'Anotando lo que aprendió',
+  ver_resultados: 'Mirando cómo rinden los anuncios',
+  proponer_anuncio: 'Te pasó un anuncio para aprobar:',
+  repartir_presupuesto: 'Repartiendo el presupuesto',
+  pausar_anuncio: 'Pausó un anuncio:',
 };
 
 export function describirPaso(herramienta: string, dato?: string): string {
@@ -80,6 +85,7 @@ const QUE_ESPERA_LIBRE: Record<Agente, (ahora: Date) => string> = {
   },
   vendedor: () => 'Sin negocios para investigar: espera a que el buscador anote',
   atencion: () => 'Esperando respuestas: revisa las bandejas cada 10 minutos',
+  publicista: () => 'Mira los anuncios todos los días a las 10, y cada vez que aprobás uno',
 };
 
 export async function armarTablero(
@@ -113,7 +119,9 @@ export async function armarTablero(
         ? { corridas: hoyC.length, negocios: metricas.leads }
         : agente === 'vendedor'
           ? { corridas: hoyC.length, enviados: metricas.enviados }
-          : { respuestas: metricas.respuestas, reuniones: metricas.reuniones };
+          : agente === 'atencion'
+            ? { respuestas: metricas.respuestas, reuniones: metricas.reuniones }
+            : { corridas: hoyC.length };
     const base = { enCola, ultima, hoy };
 
     if (actividad) {
@@ -148,7 +156,7 @@ export async function armarTablero(
   };
 
   return {
-    agentes: { buscador: uno('buscador'), vendedor: uno('vendedor'), atencion: uno('atencion') },
+    agentes: { buscador: uno('buscador'), vendedor: uno('vendedor'), atencion: uno('atencion'), publicista: uno('publicista') },
     iaPausadaHasta,
     pausaManual: !!pausaManual,
   };

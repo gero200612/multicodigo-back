@@ -4,7 +4,8 @@ import { enviarMail } from './envio.js';
 import { horaArgentina } from './horas.js';
 import { presupuestar } from './patan.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
-import { agenteAtender, agenteBuscar, agenteVender, type DepsDeAgentes } from './agentes.js';
+import { agenteAtender, agenteBuscar, agentePublicitar, agenteVender, type DepsDeAgentes } from './agentes.js';
+import { escribirALeadMeta, leerInsights, publicarAnuncio, resumenDeAnuncios } from './anuncios.js';
 import { SinLugar } from './gateway.js';
 import type { Recibido, Tarea } from './store.js';
 import { enviarSaliente, recordatorio, resumenDiario } from './ventas.js';
@@ -156,5 +157,15 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       return redactarPliego(tarea.payload, deps);
     case 'presupuestar':
       return presupuestar(tarea.payload, deps);
+    case 'agente_publicitar':
+      return agentePublicitar(tarea.payload, deps);
+    case 'publicar_anuncio':
+      return publicarAnuncio(tarea.payload, deps);
+    case 'leer_insights':
+      return leerInsights(deps);
+    case 'escribir_a_lead_meta':
+      return escribirALeadMeta(tarea.payload, deps);
+    case 'resumen_anuncios':
+      return resumenDeAnuncios(deps);
   }
 }

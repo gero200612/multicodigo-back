@@ -1,6 +1,14 @@
 import { fileURLToPath } from 'node:url';
 import { reportarCrashes, reportarError, type ReporteDeError } from '@multicodigo/shared';
 import { setTimeout as dormir } from 'node:timers/promises';
+import {
+  aprobarAnuncio,
+  cambiarPresupuesto,
+  descartarAnuncio,
+  leerLeadsDeMeta,
+  pedirCambio,
+  planificarAnuncios,
+} from './anuncios.js';
 import { crearApi } from './api.js';
 import { crearBuzonGmail, revisarBandejas } from './bandeja.js';
 import { cambiarEnsayo, estadoDeHomero } from './comandos.js';
@@ -12,6 +20,7 @@ import { fuenteGoogle, fuenteOsm } from './fuentes.js';
 import { pedirTexto } from './ia.js';
 import { clienteDeGateway, type ClienteDeGateway } from './gateway.js';
 import { crearServidorMcp, SesionesMcp } from './mcp.js';
+import { clienteDeMeta } from './meta.js';
 import { SISTEMA } from './prompts.js';
 import { PgStore } from './store.js';
 import { COMANDOS, crearBot, NOMBRE, type Acciones } from './telegram.js';
@@ -31,7 +40,7 @@ import {
 } from './ventas.js';
 import { bajarPaginaConDestino, recibeMail } from './web.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
@@ -40,6 +49,8 @@ const COLA_VACIA_MS = 15_000;
 const PLANIFICADOR_MS = 5 * 60_000;
 /** Cada cuanto le pregunta a Punchi como van las demos. */
 const DEMOS_MS = 5 * 60_000;
+/** Cada cuanto lee los formularios de los anuncios. */
+const LEADS_DE_META_MS = 5 * 60_000;
 
 async function main() {
   const config = leerConfig(process.env);
@@ -55,7 +66,7 @@ async function main() {
   for (const c of config.casillas) await store.registrarCuenta(c.email);
 
   const rescatadas = await store.rescatarColgadas();
-  const { bot, avisar, proponer, conectar, cambiarBotones } = crearBot(config, store);
+  const { bot, avisar, proponer, mandarFoto, conectar, cambiarBotones } = crearBot(config, store);
 
   const aviso = (t: string) => avisar(t).catch((e) => console.error('[homero] no pude avisar:', e));
   // Las cuentas de Claude son un fondo comun que maneja el gateway: Homero no
@@ -69,6 +80,8 @@ async function main() {
         },
       };
   if (!config.gateway) console.error('[homero] SIN GATEWAY: los agentes no van a correr hasta configurarlo');
+  // Una sola vez y sin el token: sin Meta, Homero sigue como antes.
+  if (!config.meta) console.log(`[homero] sin anuncios en Meta: ${config.sinMeta}`);
   const sesiones = new SesionesMcp();
   const deps: DepsDeCola = {
     store,
@@ -97,6 +110,8 @@ async function main() {
       config.bridge && config.chatId !== undefined
         ? clienteDePunchi({ ...config.bridge, chatId: config.chatId })
         : undefined,
+    meta: config.meta ? clienteDeMeta(config.meta) : undefined,
+    mandarFoto: (png, pie) => mandarFoto(png, pie).catch((e) => console.error('[homero] no pude mandar la imagen:', e)),
   };
   const acciones: Acciones = {
     aprobarLead: (id) => aprobarLead(id, deps),
@@ -116,6 +131,10 @@ async function main() {
     cancelarDemo: (id: number) => cancelarDemo(id, deps),
     editarPliego: (id: number, pliego: string) => editarPliego(id, pliego, deps),
     probarIa: () => pedirTexto('Presentate en una sola oración.', { sistema: SISTEMA, modelo: config.modelo, gateway }),
+    aprobarAnuncio: (id: number) => aprobarAnuncio(id, deps),
+    descartarAnuncio: (id: number) => descartarAnuncio(id, deps),
+    cambiarAnuncio: (id: number, pedido: string) => pedirCambio(id, pedido, deps),
+    cambiarPresupuesto: (monto: number) => cambiarPresupuesto(monto, deps),
   };
   conectar(acciones);
 
@@ -171,7 +190,8 @@ async function main() {
   void barrer();
   const bandeja = setInterval(barrer, config.bandejaCadaMs);
 
-  const plan = () => planificar(deps).catch((err) => console.error('[homero] planificador:', err));
+  const plan = () =>
+    Promise.all([planificar(deps), planificarAnuncios(deps)]).catch((err) => console.error('[homero] planificador:', err));
   void plan();
   const planificador = setInterval(plan, PLANIFICADOR_MS);
 
@@ -179,6 +199,16 @@ async function main() {
     () => void seguirDemos(deps).catch((err) => console.error('[homero] demos:', err)),
     DEMOS_MS,
   );
+
+  const leadsDeMeta = config.meta
+    ? setInterval(
+        () =>
+          void leerLeadsDeMeta(deps)
+            .then((n) => n > 0 && console.log(`[homero] ${n} consulta(s) nueva(s) de Meta`))
+            .catch((err) => console.error('[homero] leads de Meta:', err instanceof Error ? err.message : err)),
+        LEADS_DE_META_MS,
+      )
+    : undefined;
 
   // Polling y no webhook: Homero no necesita entrada publica, y asi no hay
   // host de cloudflared ni secreto que mantener.
@@ -199,6 +229,7 @@ async function main() {
     clearInterval(bandeja);
     clearInterval(planificador);
     clearInterval(demos);
+    clearInterval(leadsDeMeta);
     await api?.close();
     await mcp.close();
     await bot.stop();
