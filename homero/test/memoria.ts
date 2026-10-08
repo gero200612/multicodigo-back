@@ -471,19 +471,13 @@ export class MemoriaStore implements Store {
   async guardarLeadDeMeta(l: NuevoLead & { leadgenId: string; anuncioId?: number; investigacion: Investigacion }) {
     if (this.leads.some((x) => x.leadgenId === l.leadgenId)) return undefined;
     const email = l.email?.toLowerCase();
-    const tel = (l.telefono ?? '').replace(/\D/g, '');
-    const previo = this.leads.find(
-      (x) =>
-        (email && x.email === email) ||
-        (tel.length >= 8 && (x.telefono ?? '').replace(/\D/g, '').slice(-8) === tel.slice(-8)),
-    );
+    const previo = email ? this.leads.find((x) => x.email === email) : undefined;
     if (previo) {
       Object.assign(previo, {
-        estado: 'caliente',
+        estado: ['respondio', 'reunion', 'cerrado', 'baja'].includes(previo.estado) ? previo.estado : 'caliente',
         leadgenId: l.leadgenId,
         anuncioId: l.anuncioId ?? previo.anuncioId,
         telefono: previo.telefono ?? l.telefono,
-        email: previo.email ?? email,
         investigacion: { ...(previo.investigacion ?? {}), formulario: l.investigacion.formulario, contacto: l.investigacion.contacto },
       });
       return { id: previo.id, nuevo: false };

@@ -96,6 +96,18 @@ describe('el tope de plata', () => {
     expect(chequearReparto(m, new Map([[1, 7000]]), new Map([[1, 6000]]))).toMatchObject({ ok: false });
   });
 
+  it('bajar uno y subir otro (o prender uno pausado) con el mes pasado no se puede', () => {
+    const m = { presupuesto: 50_000, gastado: 46_000, gastadoHoy: 0, diarios: 6000, diasQueFaltan: 5, comprometido: 76_000, diarioQueEntra: 800 };
+    const antes = new Map([
+      [1, 4000],
+      [2, 2000],
+    ]);
+    // Mismo total, pero el 2 sube.
+    expect(chequearReparto(m, new Map([[1, 2000], [2, 4000]]), antes)).toMatchObject({ ok: false });
+    // Mismo total, pero el 3 (pausado, no estaba en `antes`) se prende.
+    expect(chequearReparto(m, new Map([[1, 2000], [3, 2000], [2, 2000]]), antes)).toMatchObject({ ok: false });
+  });
+
   it('al 90% del mes pausa todo, avisa una sola vez y no deja volver a subir', async () => {
     const h = conMeta();
     const a = await activo(h, 2000, 1);
@@ -337,22 +349,33 @@ describe('las consultas que entran', () => {
     expect(h.store.tareas).toHaveLength(1);
   });
 
-  it('si ya estaba en la base (por mail o por teléfono) no se duplica: se marca caliente', async () => {
+  it('si ya estaba en la base por mail no se duplica; por teléfono no se junta con otro', async () => {
     const h = conMeta();
     await activo(h, 2000);
     const porMail = (await h.store.crearLead({ nombre: 'Estudio Pérez', rubro: 'contable', ciudad: 'Rosario', email: 'juan@perez.com', fuente: 'osm' }))!;
-    const porTel = (await h.store.crearLead({ nombre: 'Ferretería Sol', rubro: 'ferreteria', ciudad: 'Tigre', telefono: '011 4455-6677', fuente: 'google' }))!;
+    const porTel = (await h.store.crearLead({ nombre: 'Ferretería Sol', rubro: 'ferreteria', ciudad: 'Tigre', email: 'sol@ferreteria.com', telefono: '011 4455-6677', fuente: 'google' }))!;
     h.f.datos.leads.set('form1', [
       lead('L2', { full_name: 'Juan Pérez', email: 'JUAN@perez.com' }),
-      lead('L3', { full_name: 'Sol', phone_number: '+54 9 11 4455-6677' }),
+      // Mismo teléfono que la ferretería y otro mail: es otro contacto, y el
+      // mail automático le va a él, nunca a sol@ferreteria.com.
+      lead('L3', { full_name: 'Otro', email: 'otro@gmail.com', phone_number: '+54 9 11 4455-6677' }),
     ]);
     expect(await leerLeadsDeMeta(h.deps)).toBe(2);
-    expect(h.store.leads).toHaveLength(2);
+    expect(h.store.leads).toHaveLength(3);
     expect(await h.store.lead(porMail)).toMatchObject({ estado: 'caliente', anuncioId: 1 });
-    expect(await h.store.lead(porTel)).toMatchObject({ estado: 'caliente', anuncioId: 1 });
-    expect(h.avisos.filter((t) => t.includes('ya estaba en la base'))).toHaveLength(2);
-    // Sin mail no hay mail que mandar: lo escribe Gero.
-    expect(h.store.tareas.map((t) => t.payload)).toEqual([{ leadId: porMail }]);
+    expect(await h.store.lead(porTel)).toMatchObject({ estado: 'nuevo', email: 'sol@ferreteria.com' });
+    expect(h.avisos.filter((t) => t.includes('ya estaba en la base'))).toHaveLength(1);
+    expect(h.store.tareas.map((t) => t.payload)).toEqual([{ leadId: porMail }, { leadId: 3 }]);
+  });
+
+  it('un formulario no hace volver atrás a un lead que ya respondió o pidió la baja', async () => {
+    const h = conMeta();
+    await activo(h, 2000);
+    const id = (await h.store.crearLead({ nombre: 'Estudio Pérez', rubro: 'contable', ciudad: 'Rosario', email: 'juan@perez.com', fuente: 'osm' }))!;
+    await h.store.actualizarLead(id, { estado: 'reunion' });
+    h.f.datos.leads.set('form1', [lead('L9', { full_name: 'Juan Pérez', email: 'juan@perez.com' })]);
+    expect(await leerLeadsDeMeta(h.deps)).toBe(1);
+    expect(await h.store.lead(id)).toMatchObject({ estado: 'reunion', anuncioId: 1 });
   });
 
   it('el link de WhatsApp sale de como venga el teléfono', () => {

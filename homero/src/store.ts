@@ -1195,29 +1195,29 @@ export class PgStore implements Store {
   async guardarLeadDeMeta(l: NuevoLead & { leadgenId: string; anuncioId?: number; investigacion: Investigacion }) {
     const visto = await this.pool.query('SELECT 1 FROM homero.leads WHERE leadgen_id = $1', [l.leadgenId]);
     if ((visto.rowCount ?? 0) > 0) return undefined;
-    // El mismo negocio por mail, o por los ultimos 8 numeros del telefono (los
-    // formularios lo devuelven con +54 9 y la base, como lo puso la web).
-    const tel = (l.telefono ?? '').replace(/\D/g, '');
+    // El mismo contacto solo por mail exacto. Por telefono no: los ultimos
+    // numeros chocan entre negocios distintos, y un formulario ajeno terminaria
+    // pegado (y escribiendole) a otro lead.
     const previo = await this.pool.query(
-      `SELECT id FROM homero.leads
-       WHERE ($1::text IS NOT NULL AND email = $1)
-          OR (length($2) >= 8 AND right(regexp_replace(coalesce(telefono, ''), '\\D', '', 'g'), 8) = right($2, 8))
-       ORDER BY id LIMIT 1`,
-      [l.email?.toLowerCase() ?? null, tel],
+      `SELECT id FROM homero.leads WHERE $1::text IS NOT NULL AND email = $1 ORDER BY id LIMIT 1`,
+      [l.email?.toLowerCase() ?? null],
     );
     if (previo.rows[0]) {
       const id = Number(previo.rows[0].id);
+      // Un lead que ya respondio, tiene reunion, cerro o pidio la baja no
+      // vuelve atras por un formulario: se anota la consulta y nada mas.
       await this.pool.query(
-        `UPDATE homero.leads SET estado = 'caliente', leadgen_id = $2, anuncio_id = COALESCE($3, anuncio_id),
-           telefono = COALESCE(telefono, $4), email = COALESCE(email, $5),
-           investigacion = COALESCE(investigacion, '{}'::jsonb) || $6::jsonb, actualizado = now()
+        `UPDATE homero.leads SET
+           estado = CASE WHEN estado IN ('respondio', 'reunion', 'cerrado', 'baja') THEN estado ELSE 'caliente' END,
+           leadgen_id = $2, anuncio_id = COALESCE($3, anuncio_id),
+           telefono = COALESCE(telefono, $4),
+           investigacion = COALESCE(investigacion, '{}'::jsonb) || $5::jsonb, actualizado = now()
          WHERE id = $1`,
         [
           id,
           l.leadgenId,
           l.anuncioId ?? null,
           l.telefono ?? null,
-          l.email?.toLowerCase() ?? null,
           JSON.stringify({ formulario: l.investigacion.formulario, contacto: l.investigacion.contacto }),
         ],
       );
