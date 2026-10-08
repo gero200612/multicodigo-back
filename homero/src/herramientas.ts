@@ -37,6 +37,8 @@ export interface Registro {
   cerro: boolean;
   /** Lo que hizo, en una linea para Gero; lo deja la herramienta que cierra. */
   resumen?: string;
+  /** La corrida termino por un tope y no porque el agente dio por cerrado. */
+  cortada?: 'turnos' | 'tiempo';
 }
 
 /** Paginas por corrida: el freno contra un agente que se pone a leer internet entero. */

@@ -64,7 +64,8 @@ describe('de la busqueda al primer mail', () => {
     ]);
     expect(tarjetas[0]!.datos).toEqual([`ap:${lead.id}`, `de:${lead.id}`]);
     // Dos corridas, cada una con sus herramientas y sus topes.
-    expect(corridas.map((c) => c.maxTurnos)).toEqual([40, 20]);
+    // El buscador suma vueltas por negocio pedido (1 -> 42).
+    expect(corridas.map((c) => c.maxTurnos)).toEqual([42, 20]);
     expect(corridas[0]!.web).toBe(true);
     expect(store.corridasGuardadas.map((c) => c.resumen)).toEqual([
       'Anotó 1: La Distri',
@@ -84,6 +85,16 @@ describe('de la busqueda al primer mail', () => {
     expect(h.corridas[0]!.objetivo).toContain('- OSM no sirve en el conurbano');
     // Sin negocios nuevos, Gero se entera.
     expect(h.avisos.some((a) => a.includes('no encontró negocios'))).toBe(true);
+  });
+
+  it('si el buscador se corta por tope sin anotar, el aviso lo dice y el tope crece con lo pedido', async () => {
+    const h = armar({ agente: async () => ({ texto: '', slot: 'c3', cortada: 'turnos' as const }) });
+    await h.store.encolar({ tipo: 'agente_buscar', payload: { cantidad: 30 }, requiereIa: true });
+    await vaciar(h.deps);
+    expect(h.corridas[0]!.maxTurnos).toBe(80);
+    expect(h.corridas[0]!.maxMinutos).toBe(30);
+    expect(h.avisos.some((a) => a.includes('se cortó por tope de turnos'))).toBe(true);
+    expect(h.store.corridasGuardadas[0]!.resumen).toBe('Se cortó por tope de turnos sin anotar ninguno');
   });
 
   it('al aprobar sale el inicial y el unico seguimiento queda a la semana, en el mismo hilo', async () => {

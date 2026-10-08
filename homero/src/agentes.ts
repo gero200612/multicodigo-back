@@ -47,6 +47,18 @@ export const TOPES: Record<Agente, Topes> = {
   atencion: { maxTurnos: 12, maxMinutos: 5 },
 };
 
+/**
+ * El buscador necesita mas vueltas cuanto mas negocios le piden: con 40 fijos,
+ * un pedido de 30 se cortaba leyendo paginas antes de anotar ninguno. El techo
+ * es el que acepta el gateway (80 turnos, 30 minutos).
+ */
+export function topesDelBuscador(cantidad: number): Topes {
+  return {
+    maxTurnos: Math.min(80, TOPES.buscador.maxTurnos + 2 * cantidad),
+    maxMinutos: Math.min(30, TOPES.buscador.maxMinutos + cantidad / 2),
+  };
+}
+
 /** Fallidas seguidas del mismo agente antes de avisarle a Gero. */
 const FALLIDAS_PARA_AVISAR = 3;
 
@@ -68,7 +80,8 @@ const ROL_BUSCADOR = `Tu rol: sos el BUSCADOR de clientes de Homero. Encontrás 
 - Señales de atrasado que suman: web vieja, simple o desprolija (o solo Facebook/Instagram con un mail), "pedidos/turnos por WhatsApp o por teléfono", formularios para imprimir, listas de precios en PDF, sin chat ni bot, sin reservas online. Con volumen igual (varios profesionales, sucursales, muchos clientes): atrasado y chico no paga.
 - Nada de cadenas, franquicias, organismos publicos ni negocios unipersonales.
 - Hace falta la web PROPIA o un mail: un perfil de Instagram sin mail no sirve.
-- Antes de anotar fijate con ya_conocido que no este en la base. Registrá con anotar_busqueda las busquedas que hiciste y cuanto rindieron.`;
+- Antes de anotar fijate con ya_conocido que no este en la base. Registrá con anotar_busqueda las busquedas que hiciste y cuanto rindieron.
+- Anotá cada negocio con anotar_negocio APENAS lo confirmás (leíste su web y no es conocido), no los juntes para el final: la corrida tiene un tope de turnos y lo que no anotaste cuando se corta se pierde.`;
 
 const ROL_VENDEDOR = `Tu rol: sos el VENDEDOR de Homero. Te toca UN negocio: investigalo, decidí si le sirve lo que vende Gero y, si sí, escribile el mejor mail en frío posible. Si no, descartalo con el motivo.
 - Leé su web (home, servicios, contacto) y buscá lo que haga falta. La propuesta tiene que salir de lo que ves de ESTE negocio, no de una lista generica.
@@ -121,7 +134,13 @@ async function correr(
   agente: Agente,
   objetivo: string,
   herramientas: (registro: Registro) => Herramienta<any>[],
-  o: { leadId?: number; web: boolean; debeCerrar: boolean; pedido?: { cantidad?: number; rubro?: string; zona?: string } },
+  o: {
+    leadId?: number;
+    web: boolean;
+    debeCerrar: boolean;
+    pedido?: { cantidad?: number; rubro?: string; zona?: string };
+    topes?: Topes;
+  },
   deps: DepsDeAgentes,
 ): Promise<Registro> {
   const texto = await conLibreta(agente, objetivo, deps);
@@ -142,7 +161,7 @@ async function correr(
       objetivo: texto,
       herramientas: lista,
       web: o.web,
-      ...TOPES[agente],
+      ...(o.topes ?? TOPES[agente]),
       modelo: deps.modelo,
     });
   } catch (err) {
@@ -155,6 +174,7 @@ async function correr(
     deps.sesiones.cerrar(corrida);
   }
 
+  registro.cortada = r.cortada;
   const sinCerrar = o.debeCerrar && !registro.cerro;
   const error = sinCerrar
     ? `terminó sin cerrar${r.cortada ? ` (tope de ${r.cortada})` : ''}`
@@ -181,7 +201,9 @@ function resumenDe(agente: Agente, r: Registro, error?: string): string {
   if (r.resumen) return r.resumen;
   if (agente === 'buscador') {
     const nombres = r.nombres ?? [];
-    if (nombres.length === 0) return 'No encontró negocios nuevos';
+    if (nombres.length === 0) {
+      return r.cortada ? `Se cortó por tope de ${r.cortada} sin anotar ninguno` : 'No encontró negocios nuevos';
+    }
     const lista = nombres.slice(0, 4).join(', ') + (nombres.length > 4 ? ` y ${nombres.length - 4} más` : '');
     return `Anotó ${nombres.length}: ${lista}`;
   }
@@ -243,11 +265,15 @@ export async function agenteBuscar(payload: unknown, deps: DepsDeAgentes): Promi
 Zona habitual: ${CIUDADES.join(', ')} (Gran Buenos Aires norte y CABA). Podés salir de ahí si la zona no rinde; siempre Argentina.
 De cada uno el vendedor va a leer la web y decidir; algunos se descartan, por eso conviene anotar los que tengan proceso manual y volumen.${config}${pedido}`,
     (reg) => herramientasDelBuscador(deps, { cupo: cantidad, registro: reg }),
-    { web: true, debeCerrar: false, pedido: { cantidad, rubro, zona } },
+    { web: true, debeCerrar: false, pedido: { cantidad, rubro, zona }, topes: topesDelBuscador(cantidad) },
     deps,
   );
   if (registro.anotados.length === 0) {
-    await deps.avisar('🔎 El buscador no encontró negocios nuevos en esta vuelta. Su informe está en la web (Homero → Agentes).');
+    await deps.avisar(
+      registro.cortada
+        ? `🔎 El buscador se cortó por tope de ${registro.cortada} antes de anotar ningún negocio. Su razonamiento está en la web (Homero → Agentes).`
+        : '🔎 El buscador no encontró negocios nuevos en esta vuelta. Su informe está en la web (Homero → Agentes).',
+    );
   }
 }
 
