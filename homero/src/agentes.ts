@@ -121,7 +121,7 @@ async function correr(
   agente: Agente,
   objetivo: string,
   herramientas: (registro: Registro) => Herramienta<any>[],
-  o: { leadId?: number; web: boolean; debeCerrar: boolean },
+  o: { leadId?: number; web: boolean; debeCerrar: boolean; pedido?: { cantidad?: number; rubro?: string; zona?: string } },
   deps: DepsDeAgentes,
 ): Promise<Registro> {
   const texto = await conLibreta(agente, objetivo, deps);
@@ -130,7 +130,7 @@ async function correr(
   const registro: Registro = { anotados: [], cerro: false };
   const propias = herramientas(registro);
   const lead = o.leadId != null ? (await deps.store.lead(o.leadId))?.nombre : undefined;
-  const token = deps.sesiones.abrir(corrida, propias, { agente, corridaId: id, desde: deps.ahora(), lead });
+  const token = deps.sesiones.abrir(corrida, propias, { agente, corridaId: id, desde: deps.ahora(), lead, pedido: o.pedido });
   const lista = propias.map((h) => h.nombre);
 
   let r;
@@ -243,7 +243,7 @@ export async function agenteBuscar(payload: unknown, deps: DepsDeAgentes): Promi
 Zona habitual: ${CIUDADES.join(', ')} (Gran Buenos Aires norte y CABA). Podés salir de ahí si la zona no rinde; siempre Argentina.
 De cada uno el vendedor va a leer la web y decidir; algunos se descartan, por eso conviene anotar los que tengan proceso manual y volumen.${config}${pedido}`,
     (reg) => herramientasDelBuscador(deps, { cupo: cantidad, registro: reg }),
-    { web: true, debeCerrar: false },
+    { web: true, debeCerrar: false, pedido: { cantidad, rubro, zona } },
     deps,
   );
   if (registro.anotados.length === 0) {

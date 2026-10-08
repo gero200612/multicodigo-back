@@ -39,6 +39,8 @@ export interface Actividad {
   desde: Date;
   /** El negocio de la corrida, si es de uno (vendedor, atencion). */
   lead?: string;
+  /** Lo que se le pidio, para el encabezado de la web: cantidad, rubro, zona. */
+  pedido?: { cantidad?: number; rubro?: string; zona?: string };
   /** Cada herramienta que uso, en orden, con el dato que la identifica (la URL, el negocio...). */
   pasos: { herramienta: string; dato?: string; en: Date; error?: boolean }[];
 }
