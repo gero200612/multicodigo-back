@@ -32,4 +32,19 @@ describe('enviarMail', () => {
     expect(r).toMatchObject({ tipo: 'esperar', motivo: 'sin_cupo' });
     if (r.tipo === 'esperar') expect(r.hasta.toISOString()).toBe('2026-09-30T12:00:00.000Z');
   });
+
+  it('solicitado (un formulario de Meta): sale un domingo a la madrugada aunque no quede cupo', async () => {
+    const domingo = new Date('2026-10-04T06:00:00Z');
+    const store = new MemoriaStore(() => domingo);
+    const correo: Correo = { enviar: async () => ({ messageId: '<x>' }) };
+    const deps = { store, correo, remitente: 'G', ahora: () => domingo };
+    for (let i = 0; i < 5; i++) await store.registrarEnvio({ cuenta: casilla.email, para: `c${i}@x.com`, asunto: 'a' });
+    expect(await enviarMail(deps, casilla, { para: 'lead@x.com', asunto: 'a', texto: 't' })).toMatchObject({ tipo: 'esperar' });
+    expect(await enviarMail(deps, casilla, { para: 'lead@x.com', asunto: 'a', texto: 't' }, { solicitado: true })).toEqual({
+      tipo: 'enviado',
+      messageId: '<x>',
+    });
+    await store.agregarBaja('lead@x.com');
+    expect(await enviarMail(deps, casilla, { para: 'lead@x.com', asunto: 'a', texto: 't' }, { solicitado: true })).toEqual({ tipo: 'baja' });
+  });
 });

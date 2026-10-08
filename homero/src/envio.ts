@@ -87,12 +87,15 @@ export interface DepsDeEnvio {
  * confirmaciones, recordatorios): saltea horario y cupo, porque contestar
  * rapido a un interesado es lo que mas reuniones cierra, y un mail en un hilo
  * vivo no es frio. `prueba` saltea solo el horario (para /probar_mail un domingo).
+ * `solicitado` es para quien PIDIO que lo contacten (el formulario de un anuncio
+ * de Meta): tampoco espera horario ni cupo, aunque no haya hilo todavia. Bajas
+ * y casillas frenadas se respetan siempre.
  */
 export async function enviarMail(
   deps: DepsDeEnvio,
   casilla: Casilla,
   m: MailSaliente,
-  opciones: { prueba?: boolean; enHilo?: boolean } = {},
+  opciones: { prueba?: boolean; enHilo?: boolean; solicitado?: boolean } = {},
 ): Promise<ResultadoDeEnvio> {
   const ahora = deps.ahora();
   if (await deps.store.esBaja(m.para)) return { tipo: 'baja' };
@@ -102,7 +105,8 @@ export async function enviarMail(
     return { tipo: 'esperar', hasta: new Date(pausa.hasta), motivo: 'casilla_pausada' };
   }
 
-  if (!opciones.prueba && !opciones.enHilo) {
+  const sinEspera = opciones.enHilo || opciones.solicitado;
+  if (!opciones.prueba && !sinEspera) {
     const ventana = proximaVentanaDeEnvio(ahora);
     if (ventana.getTime() > ahora.getTime()) {
       return { tipo: 'esperar', hasta: ventana, motivo: 'fuera_de_horario' };
@@ -111,7 +115,7 @@ export async function enviarMail(
 
   const cupo = cupoDelDia(await deps.store.primerEnvio(casilla.email), ahora);
   const hechos = await deps.store.enviosDesde(casilla.email, inicioDelDia(ahora));
-  if (!opciones.enHilo && hechos >= cupo) {
+  if (!sinEspera && hechos >= cupo) {
     const manana = new Date(inicioDelDia(ahora).getTime() + DIA);
     return { tipo: 'esperar', hasta: proximaVentanaDeEnvio(manana), motivo: 'sin_cupo' };
   }
