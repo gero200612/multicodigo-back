@@ -327,8 +327,8 @@ function ficha(lead: Lead): string {
     lead.telefono ? `Tel: ${lead.telefono}` : undefined,
     inv?.por_que ? `Por que lo eligio el buscador: ${inv.por_que}` : undefined,
     inv?.resumen_empresa ? `Lo que ya sabemos: ${inv.resumen_empresa}` : undefined,
-    inv?.contacto ? `Lleno el formulario de un anuncio: ${inv.contacto}` : undefined,
-    ...(inv?.formulario ?? []).map((f) => `En el formulario, "${f.pregunta}": ${neutralizar(f.respuesta)}`),
+    inv?.contacto ? `Lleno el formulario de un anuncio: ${neutralizar(inv.contacto)}` : undefined,
+    ...(inv?.formulario ?? []).map((f) => `En el formulario, "${neutralizar(f.pregunta)}": ${neutralizar(f.respuesta)}`),
   ]
     .filter((l) => l !== undefined)
     .join('\n');

@@ -521,12 +521,15 @@ export async function leerLeadsDeMeta(deps: DepsDeAnuncios): Promise<number> {
 }
 
 async function entrarLead(a: Anuncio, leadgenId: string, campos: Record<string, string>, deps: DepsDeAnuncios): Promise<boolean> {
-  const persona = campos.full_name?.trim() || undefined;
-  const empresa = campos.company_name?.trim() || undefined;
+  // Lo que escribe un desconocido en el formulario: una sola linea y corto,
+  // asi no arma parrafos de "instrucciones" en las fichas que lee la IA.
+  const linea = (t: string | undefined, max: number) => t?.replace(/\s+/g, ' ').trim().slice(0, max) || undefined;
+  const persona = linea(campos.full_name, 80);
+  const empresa = linea(campos.company_name, 120);
   const email = /^\S+@\S+\.\S+$/.test(campos.email ?? '') ? campos.email!.trim().toLowerCase() : undefined;
   const telefono = campos.phone_number?.trim() || undefined;
   const formulario = a.preguntas.flatMap((pregunta, i) => {
-    const respuesta = campos[`p${i + 1}`]?.trim();
+    const respuesta = campos[`p${i + 1}`]?.trim().slice(0, 600);
     return respuesta ? [{ pregunta, respuesta }] : [];
   });
   const r = await deps.store.guardarLeadDeMeta({
