@@ -1,7 +1,7 @@
 # Homero: anuncios en Meta con formulario y tope de gasto
 
 Fecha: 2026-10-08. Estado: diseño aprobado en charla, falta revisión del spec.
-Segundo de tres specs (formularios → anuncios → reels).
+Primero de dos specs (anuncios → reels).
 
 ## Por qué
 
@@ -109,7 +109,28 @@ impresiones, consultas) que llena una lectura de insights por hora.
 que nada se cree sin aprobación, leads sin duplicar, mail `solicitado`, armado del
 resumen. Plantilla de imagen: snapshot del PNG.
 
+## 9. Detector de bucles (gateway, `multicodigo-vm`)
+
+Tomado de automaton (`src/agent/loop-detector.ts`). Va con este spec porque el
+publicista es una corrida más larga que las de hoy, y el buscador ya se cortó
+por tope de turnos el 8/10. Archivo propio `src/agent/src/bucles.ts`, sin
+dependencias, para reusarlo después en Punchi.
+
+- **Dónde se engancha:** un hook `PreToolUse` en `correrComercial`. No sirve
+  `canUseTool`: con la herramienta en `allowedTools` el SDK la aprueba sin
+  llamarlo (ver el comentario en `claude.ts`).
+- **Reglas:** la misma herramienta con los mismos argumentos 3 veces seguidas se
+  **bloquea** con el mensaje "Llamaste N veces a X con lo mismo: cambiá de camino
+  o cerrá"; el mismo conjunto de herramientas en 3 turnos seguidos da un
+  **aviso**, y si sigue igual, se bloquea.
+- El resultado de la corrida informa los bloqueos (`bucles: n`); Homero los
+  guarda en `corridas.pasos` y los suma a `reportarCorridaFallida`.
+- Tests (`bucles.test.ts`): repetición exacta, patrón de turnos, y que una
+  llamada distinta corta la racha.
+
 ## Fuera de alcance
+
+Formularios de contacto en frío (descartado por Gero el 2026-10-08).
 
 Google Ads. Públicos personalizados y píxel. Que Homero cambie el límite de la
 cuenta en Meta.
