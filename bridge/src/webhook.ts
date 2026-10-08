@@ -1,9 +1,26 @@
-import Fastify, { type FastifyInstance } from 'fastify';
 import type { Bot } from 'grammy';
-import { AgentId, ApprovalDecision, RepoDelPedido, isTokenValid } from '@multicodigo/shared';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
+import {
+  AgentId,
+  ApprovalDecision,
+  DocumentosDelTurno,
+  RepoDelPedido,
+  ReporteDeError,
+  distintivoDeError,
+  huellaDe,
+  isTokenValid,
+} from '@multicodigo/shared';
 import { decidir, type DecidirDeps } from './decisiones.js';
-import { ejecutarTurnoConRelevo, type PipelineDeps } from './pipeline.js';
-import { z } from 'zod';
+import { ErrorDeTurno, ejecutarTurnoConRelevo, type PipelineDeps } from './pipeline.js';
+import { ErrorDelAgente } from './agents-client.js';
+import { z, type ZodError } from 'zod';
+import {
+  ESTADOS_DE_ERROR,
+  YA_ABIERTO,
+  registrarSinRomper,
+  reporteDeCuerpoInvalido,
+  type RegistroDeErrores,
+} from './errores.js';
 import type { Store } from './store.js';
 import { FORMATOS_GENERABLES } from './documentos.js';
 import { EJES, sinRepetidas } from './corrida.js';
@@ -136,6 +153,12 @@ export interface ApiDeps {
    */
   apiToken: string;
   /**
+   * El registro de errores (ver `errores.ts`). Opcional como todo lo demas:
+   * sin el, los endpoints de `/interno/errores` dan 503 y los rechazos solo
+   * quedan en el log, como antes.
+   */
+  errores?: RegistroDeErrores;
+  /**
    * Las demos que pide Homero. Se inyectan porque abrir una necesita el bot
    * (para avisar en el chat) y el pipeline entero. Sin esto las rutas dan 503.
    */
@@ -251,6 +274,58 @@ export function buildWebhookServer(
   api?: ApiDeps,
 ): FastifyInstance {
   const app = Fastify({ logger: false });
+
+  /**
+   * Anota un rechazo de schema y devuelve el mismo `reply`, para que cada
+   * endpoint siga armando su 400 como antes: `return rechazo(request,
+   * cuerpo.error, reply).code(400).send(...)`.
+   *
+   * Sin await a proposito: el registro no puede demorar la respuesta, y a
+   * quien llama (el gateway, Homero, un agente) el numero no le sirve. El unico
+   * que lo espera es `/turnos`, cuyo `errorId` termina en la pantalla.
+   */
+  function rechazo(request: FastifyRequest, error: ZodError, reply: FastifyReply): FastifyReply {
+    const ruta = request.routeOptions.url ?? request.url.split('?')[0]!;
+    void registrarSinRomper(api?.errores, reporteDeCuerpoInvalido(ruta, error, request.body));
+    return reply;
+  }
+
+  /**
+   * El numero de error de un turno que termino en 502, si lo hay.
+   *
+   * Si la falla vino en una respuesta del gateway (`ErrorDelAgente`), el
+   * gateway ya la reporto: aca solo se pasa su `errorId`. Volver a anotarla
+   * seria el mismo bug dos veces, con dos huellas que nadie junta.
+   *
+   * Si es del bridge (la red al gateway, una excepcion propia), se anota.
+   * Salvo los codigos que son una respuesta y no una falla: `slot_ajeno` es un
+   * "ese Claude no es tuyo", y `usage_limit` es la cuenta sin tokens, que ya
+   * tiene su propio aviso y su relevo.
+   */
+  const FALLOS_ESPERABLES = new Set(['slot_ajeno', 'usage_limit']);
+  async function errorIdDelFallo(
+    e: unknown,
+    turno: { proyectoId: string; usuarioId: string; agente: string },
+  ): Promise<number | undefined> {
+    const causa = e instanceof ErrorDeTurno && e.causa !== undefined ? e.causa : e;
+    if (causa instanceof ErrorDelAgente) return causa.errorId;
+    const codigo = (e instanceof ErrorDeTurno ? e.codigo : e instanceof Error ? e.message : '') || 'internal';
+    if (FALLOS_ESPERABLES.has(codigo)) return undefined;
+    const mensaje = causa instanceof Error ? causa.message : String(causa);
+    return registrarSinRomper(api?.errores, {
+      servicio: 'bridge',
+      codigo: codigo.slice(0, 100),
+      mensaje: `El turno falló en el bridge: ${mensaje}`.slice(0, 500),
+      huella: huellaDe('bridge', codigo, distintivoDeError(causa)),
+      detalle: {
+        ruta: '/turnos',
+        agente: turno.agente,
+        stack: causa instanceof Error ? (causa.stack ?? '').slice(0, 8_000) : String(causa),
+      },
+      proyectoId: turno.proyectoId,
+      usuarioId: turno.usuarioId,
+    });
+  }
 
   app.get('/health', async () => ({ status: 'ok' }));
 
@@ -486,31 +561,16 @@ export function buildWebhookServer(
         // bridge es un caño para esto.
         // `opcional` y no `.optional()`: sin la App el panel manda `null`.
         githubToken: opcional(z.string().regex(/^[A-Za-z0-9._~+/=-]+$/).max(512)),
-        // Los documentos del proyecto, con URLs firmadas. El bridge no los mira:
-        // los reenvia al gateway, que los baja al worktree.
+        // Los documentos del proyecto: RUTAS en el disco del servidor, no
+        // URLs. El panel deja el archivo en un directorio que el gateway
+        // tambien monta; el bridge solo las reenvia.
         //
-        // La `url` se valida como URL a secas y no contra un host: es una URL
-        // La RUTA en el disco del servidor, no una URL: el panel deja el
-        // archivo en un directorio que el gateway tambien monta. El bridge solo
-        // la reenvia; quien la lee es el gateway, que sabe cual es la raiz.
-        documentos: z
-          .array(
-            z.object({
-              nombre: z.string().regex(/^[A-Za-z0-9._-]+$/).max(200),
-              ruta: z.string().min(1).max(500),
-              ruta_texto: z.string().min(1).max(500).nullable().optional(),
-              // La marca de instructivo. Opcional: un panel sin actualizar no
-              // la manda, y ahi el proyecto simplemente no tiene instructivo.
-              // El bridge la usa para separarlo (ver `separarInstructivo`); el
-              // gateway recibe el instructivo en su propio campo.
-              es_instruccion: opcional(z.boolean()),
-            }),
-          )
-          // Eran 50 y un proyecto con mas documentos no podia mandar ni un
-          // ticket (cuerpo_invalido). Son rutas: el gateway solo las copia.
-          .max(500)
-          .nullish()
-          .transform((v) => v ?? undefined),
+        // El schema (y su tope, `MAX_DOCUMENTOS_POR_TURNO`) vive en shared: el
+        // bridge y el gateway tenian cada uno el suyo, en 50, y un proyecto con
+        // mas no podia mandar ni un ticket. Que sea el mismo es lo que impide
+        // que vuelvan a separarse. `es_instruccion` puede venir `null` (el
+        // panel no omite los vacios): `separarInstructivo` solo mira `=== true`.
+        documentos: DocumentosDelTurno.nullish().transform((v) => v ?? undefined),
         // Cuánto pregunta el agente en ESTE turno, de la configuración de
         // Punchi. `desatendido` entra: es lo que deja terminar un ticket solo,
         // vale para este turno y nada más, y lo seguro no cambia —el gateway
@@ -540,9 +600,19 @@ export function buildWebhookServer(
           // log). Sin esto el panel solo ve `cuerpo_invalido` y no hay pista.
           const motivos = cuerpo.error.issues.map((i) => `${i.path.join('.') || '(raiz)'}: ${i.code} ${i.message}`);
           console.error(`[bridge] turno rechazado: ${motivos.join(' | ')}`);
-          return reply
-            .code(400)
-            .send({ code: 'cuerpo_invalido', message: 'faltan datos del turno' });
+          // Con await, a diferencia de los otros rechazos: el `errorId` es lo
+          // que el front le muestra a la persona ("error #123"), y sin esperar
+          // no hay numero. `registrarSinRomper` igual no tira ni tarda mas de
+          // 1,5 s.
+          const errorId = await registrarSinRomper(
+            api.errores,
+            reporteDeCuerpoInvalido('/turnos', cuerpo.error, request.body),
+          );
+          return reply.code(400).send({
+            code: 'cuerpo_invalido',
+            message: 'faltan datos del turno',
+            ...(errorId !== undefined ? { errorId } : {}),
+          });
         }
 
         try {
@@ -559,12 +629,19 @@ export function buildWebhookServer(
               .publicar(resto.usuarioId, resto.proyectoId, r.agente, false)
               .catch((err: unknown) => console.error('[bridge] no se pudo publicar solo:', err));
           }
-          return reply.send({ jobId: r.jobId, texto: r.texto });
+          // `agente`: el que contesto, que con relevo no es el pedido. El panel lo
+          // necesita para publicar la rama correcta (ver CorrectorDeErrores).
+          return reply.send({ jobId: r.jobId, texto: r.texto, agente: r.agente });
         } catch (e) {
           // 502 y no 500: lo que fallo es el agente del otro lado, y el `code`
           // es el suyo. El panel lo traduce a algo que se pueda leer.
           const code = e instanceof Error ? e.message : 'internal';
-          return reply.code(502).send({ code, message: 'el turno fallo' });
+          const errorId = await errorIdDelFallo(e, cuerpo.data);
+          return reply.code(502).send({
+            code,
+            message: 'el turno fallo',
+            ...(errorId !== undefined ? { errorId } : {}),
+          });
         }
       });
     }
@@ -634,7 +711,7 @@ export function buildWebhookServer(
       }
       if (!api.guardarCapturas) return reply.code(503).send({ code: 'sin_documentos', message: 'este bridge no guarda capturas' });
       const cuerpo = CuerpoCapturas.safeParse(request.body);
-      if (!cuerpo.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'faltan las capturas' });
+      if (!cuerpo.success) return rechazo(request, cuerpo.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'faltan las capturas' });
       const ctx = await contextoDelAnalisis(cuerpo.data.jobId);
       if (!ctx) return reply.code(400).send({ code: 'sin_contexto', message: 'ese turno no tiene proyecto y usuario' });
       const nombres = await api.guardarCapturas({ ...ctx, capturas: cuerpo.data.capturas });
@@ -647,7 +724,7 @@ export function buildWebhookServer(
       }
       if (!api.guardarAnalisis) return reply.code(503).send({ code: 'sin_documentos', message: 'este bridge no arma análisis' });
       const cuerpo = CuerpoAnalisis.safeParse(request.body);
-      if (!cuerpo.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el título, el resumen o las secciones' });
+      if (!cuerpo.success) return rechazo(request, cuerpo.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el título, el resumen o las secciones' });
       const ctx = await contextoDelAnalisis(cuerpo.data.jobId);
       if (!ctx) return reply.code(400).send({ code: 'sin_contexto', message: 'ese turno no tiene proyecto y usuario' });
       try {
@@ -671,7 +748,7 @@ export function buildWebhookServer(
 
       const cuerpo = CuerpoDocumentoGenerado.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply
+        return rechazo(request, cuerpo.error, reply)
           .code(400)
           .send({ code: 'cuerpo_invalido', message: 'faltan datos del documento' });
       }
@@ -743,6 +820,64 @@ export function buildWebhookServer(
     const conBearer = (request: { headers: { authorization?: string } }) =>
       isTokenValid(request.headers.authorization, api.apiToken);
 
+    // --- registro de errores (ver errores.ts) ------------------------------
+    //
+    // Mismo bearer que el resto de `/interno`: lo usan el panel (para la
+    // pantalla de Errores), el gateway, Homero y el script de deploy.
+    const FiltroZ = z.enum([...ESTADOS_DE_ERROR, 'abiertos', 'todos']).default('abiertos');
+    const IdDeError = z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+    const CuerpoEstado = z.object({
+      estado: z.enum(ESTADOS_DE_ERROR),
+      arreglo: z.record(z.unknown()).nullish(),
+    });
+    const sinRegistro = (reply: FastifyReply) =>
+      reply.code(503).send({ code: 'sin_registro', message: 'este bridge no tiene registro de errores' });
+    const noExiste = (reply: FastifyReply) =>
+      reply.code(404).send({ code: 'no_existe', message: 'no hay un error con ese numero' });
+
+    app.post('/interno/errores', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.errores) return sinRegistro(reply);
+      // Un reporte mal armado NO se reporta: seria el registro anotandose a si
+      // mismo, y un servicio con un bug en su reporte lo repetiria en loop.
+      const r = ReporteDeError.safeParse(request.body);
+      if (!r.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'reporte invalido' });
+      return reply.send(await api.errores.registrar(r.data));
+    });
+
+    app.get<{ Querystring: { estado?: string } }>('/interno/errores', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.errores) return sinRegistro(reply);
+      const filtro = FiltroZ.safeParse(request.query.estado || undefined);
+      if (!filtro.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'estado desconocido' });
+      return reply.send({ errores: await api.errores.listar(filtro.data) });
+    });
+
+    app.get<{ Params: { id: string } }>('/interno/errores/:id', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.errores) return sinRegistro(reply);
+      const id = IdDeError.safeParse(request.params.id);
+      // Un id que no es numero tampoco es un error que exista: 404, no 400.
+      const fila = id.success ? await api.errores.porId(id.data) : undefined;
+      return fila ? reply.send(fila) : noExiste(reply);
+    });
+
+    app.post<{ Params: { id: string } }>('/interno/errores/:id/estado', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.errores) return sinRegistro(reply);
+      const id = IdDeError.safeParse(request.params.id);
+      if (!id.success) return noExiste(reply);
+      const c = CuerpoEstado.safeParse(request.body);
+      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'estado desconocido' });
+      const r = await api.errores.cambiarEstado(id.data, c.data.estado, c.data.arreglo);
+      // Reabrir uno cerrado cuando el mismo bug ya abrio otra fila: el indice
+      // unico parcial no deja dos abiertas. Se dice, en vez de un 500.
+      if (r === YA_ABIERTO) {
+        return reply.code(409).send({ code: 'ya_abierto', message: 'ese error ya tiene otra fila abierta' });
+      }
+      return r ? reply.send(r) : noExiste(reply);
+    });
+
     app.get<{ Querystring: { usuarioId?: string } }>('/interno/despliegue/conexiones', async (request, reply) => {
       if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
       if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
@@ -755,7 +890,7 @@ export function buildWebhookServer(
       if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
       if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
       const c = CuerpoConectar.safeParse(request.body);
-      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proveedor o el token' });
+      if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el proveedor o el token' });
       const r = await api.despliegue.conectar(c.data.usuarioId, c.data.proveedor, c.data.token.trim(), c.data.extra ?? {});
       return r.ok ? reply.send({ cuenta: r.cuenta }) : reply.code(422).send({ code: 'token_invalido', message: r.motivo });
     });
@@ -780,7 +915,7 @@ export function buildWebhookServer(
       if (!api.despliegue?.guardarCuentaDemo) return reply.code(503).send({ code: 'sin_despliegue', message: 'no configurado' });
       const c = CuerpoCuentaDemo.safeParse(request.body);
       if (!c.success) {
-        return reply.code(400).send({
+        return rechazo(request, c.error, reply).code(400).send({
           code: 'cuerpo_invalido',
           message: 'falta el usuario o la contraseña, o la ruta del login no empieza con /',
         });
@@ -795,7 +930,7 @@ export function buildWebhookServer(
       if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
       if (!api.despliegue?.borrarCuentaDemo) return reply.code(503).send({ code: 'sin_despliegue', message: 'no configurado' });
       const c = z.object({ usuarioId: z.string().uuid(), proyectoId: z.string().uuid() }).safeParse(request.body);
-      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta usuarioId o proyectoId' });
+      if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta usuarioId o proyectoId' });
       return (await api.despliegue.borrarCuentaDemo(c.data.usuarioId, c.data.proyectoId))
         ? reply.send({ ok: true })
         : reply.code(403).send({ code: 'sin_permiso', message: 'no podés escribir en ese proyecto' });
@@ -815,7 +950,7 @@ export function buildWebhookServer(
       if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
       if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
       const c = CuerpoDesconectar.safeParse(request.body);
-      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proveedor' });
+      if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el proveedor' });
       await api.despliegue.desconectar(c.data.usuarioId, c.data.proveedor);
       return reply.send({ ok: true });
     });
@@ -824,7 +959,7 @@ export function buildWebhookServer(
       if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
       if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
       const c = CuerpoDestino.safeParse(request.body);
-      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el repo o la app' });
+      if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el repo o la app' });
       const r = await api.despliegue.elegirDestino(c.data.usuarioId, c.data.proyectoId, c.data.repo, c.data.destino);
       return r.ok ? reply.send({ ok: true }) : reply.code(404).send({ code: 'no_existe', message: r.motivo });
     });
@@ -833,7 +968,7 @@ export function buildWebhookServer(
       if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
       if (!api.despliegue) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
       const c = CuerpoPublicar.safeParse(request.body);
-      if (!c.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto o el agente' });
+      if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto o el agente' });
       const r = await api.despliegue.publicar(c.data.usuarioId, c.data.proyectoId, c.data.agente, true);
       return r.ok
         ? reply.send({ ...r.resultado, texto: r.texto })
@@ -851,7 +986,7 @@ export function buildWebhookServer(
       if (!api.demos) return reply.code(503).send({ code: 'sin_demos', message: 'demos no configuradas' });
       const cuerpo = CuerpoDemo.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta chatId, proyecto o pliego' });
+        return rechazo(request, cuerpo.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta chatId, proyecto o pliego' });
       }
       const r = await api.demos.abrir(cuerpo.data);
       return r.ok
@@ -870,7 +1005,7 @@ export function buildWebhookServer(
       if (!api.demos?.desarrollo) return reply.code(503).send({ code: 'sin_corridas', message: 'corridas no configuradas' });
       const cuerpo = CuerpoDesarrollo.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto o el pliego' });
+        return rechazo(request, cuerpo.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto o el pliego' });
       }
       const r = await api.demos.desarrollo(cuerpo.data);
       return r.ok
@@ -900,7 +1035,7 @@ export function buildWebhookServer(
       }
       const cuerpo = CuerpoHuecos.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply
+        return rechazo(request, cuerpo.error, reply)
           .code(400)
           .send({ code: 'cuerpo_invalido', message: 'faltan datos del reporte' });
       }
@@ -978,7 +1113,7 @@ export function buildWebhookServer(
       }
       const cuerpo = CuerpoPreguntas.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply
+        return rechazo(request, cuerpo.error, reply)
           .code(400)
           .send({ code: 'cuerpo_invalido', message: 'entre 1 y 3 preguntas, cortas' });
       }
@@ -1034,7 +1169,7 @@ export function buildWebhookServer(
       }
       const cuerpo = CuerpoPendiente.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el texto' });
+        return rechazo(request, cuerpo.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el texto' });
       }
 
       const corrida = await api.store.corridaDeJob(cuerpo.data.jobId);
@@ -1082,7 +1217,7 @@ export function buildWebhookServer(
       }
       const cuerpo = CuerpoResultado.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply.code(400).send({ code: 'cuerpo_invalido', message: 'resultado invalido' });
+        return rechazo(request, cuerpo.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'resultado invalido' });
       }
       await api.store.declararResultado(cuerpo.data.jobId, cuerpo.data.resultado, cuerpo.data.motivo);
       return reply.code(200).send({
@@ -1125,7 +1260,7 @@ export function buildWebhookServer(
       }
       const cuerpo = CuerpoVeredicto.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply.code(400).send({
+        return rechazo(request, cuerpo.error, reply).code(400).send({
           code: 'cuerpo_invalido',
           message:
             'el veredicto necesita el eje (usuario, visual, funcionamiento o testeos), si cumple, ' +
@@ -1176,7 +1311,7 @@ export function buildWebhookServer(
       }
       const cuerpo = CuerpoContrato.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply.code(400).send({
+        return rechazo(request, cuerpo.error, reply).code(400).send({
           code: 'cuerpo_invalido',
           message: 'el contrato tiene que ser texto, de hasta 20.000 caracteres',
         });
@@ -1209,7 +1344,7 @@ export function buildWebhookServer(
       }
       const cuerpo = CuerpoFichas.safeParse(request.body);
       if (!cuerpo.success) {
-        return reply.code(400).send({
+        return rechazo(request, cuerpo.error, reply).code(400).send({
           code: 'cuerpo_invalido',
           message: 'las fichas tienen que ser texto, de hasta 40.000 caracteres',
         });

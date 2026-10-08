@@ -1454,6 +1454,14 @@ export class ErrorDeTurno extends Error {
      * porque no le habla a Supabase. Lo traduce quien arma el mensaje.
      */
     readonly duenio?: { usuarioId?: string; desde?: number },
+    /**
+     * El error original, tal como llego al `catch`.
+     *
+     * El registro de errores lo necesita para separar lo que fallo en el
+     * gateway (un `ErrorDelAgente`, que el gateway ya reporto) de lo que fallo
+     * aca (la red, una excepcion propia), que si hay que anotar.
+     */
+    readonly causa?: unknown,
   ) {
     super(codigo);
     this.name = 'ErrorDeTurno';
@@ -1735,7 +1743,7 @@ export async function ejecutarTurno(
       // justo en el caso en que mas hace falta.
       await deps.store.marcarAgotado(t.agente, resets).catch(() => {});
     }
-    throw new ErrorDeTurno(jobId, codigo, resets, duenio);
+    throw new ErrorDeTurno(jobId, codigo, resets, duenio, err);
   } finally {
     // En `finally`: si el turno explota, el poller tiene que morir igual o
     // queda un setInterval vivo por cada mensaje que fallo.

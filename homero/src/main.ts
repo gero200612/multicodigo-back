@@ -1,7 +1,8 @@
 import { fileURLToPath } from 'node:url';
+import { reportarCrashes, reportarError, type ReporteDeError } from '@multicodigo/shared';
 import { setTimeout as dormir } from 'node:timers/promises';
 import { crearApi } from './api.js';
-import { buzonGmail, revisarBandejas } from './bandeja.js';
+import { crearBuzonGmail, revisarBandejas } from './bandeja.js';
 import { cambiarEnsayo, estadoDeHomero } from './comandos.js';
 import { armarDemo, cancelarDemo, clienteDePunchi, editarPliego, enviarDemo, seguirDemos } from './demos.js';
 import { correrSiguiente, type DepsDeCola } from './cola.js';
@@ -42,6 +43,14 @@ const DEMOS_MS = 5 * 60_000;
 
 async function main() {
   const config = leerConfig(process.env);
+  // Al registro de errores del bridge. Sin bridge no hay a quien contarle: se
+  // sigue solo con los logs, como antes.
+  const bridge = config.bridge;
+  const reportar = bridge ? (r: ReporteDeError) => reportarError(bridge, r) : undefined;
+  // Antes de conectar nada: el crash del 2026-10-08 fue un timeout del IMAP y
+  // solo se supo leyendo `docker logs`. El handler reporta y despues sale con
+  // 1, igual que sin el.
+  if (reportar) reportarCrashes('homero', reportar);
   const store = await PgStore.conectar(config.databaseUrl, MIGRACIONES);
   for (const c of config.casillas) await store.registrarCuenta(c.email);
 
@@ -79,6 +88,7 @@ async function main() {
     gateway,
     sesiones,
     modelo: config.modelo,
+    reportar,
     bajarPagina: bajarPaginaConDestino,
     fuente: config.placesKey ? fuenteGoogle(config.placesKey) : fuenteOsm,
     nombreDeFuente: config.placesKey ? 'google' : 'osm',
@@ -147,10 +157,11 @@ async function main() {
     }
   })();
 
+  const buzon = crearBuzonGmail({ log: console.warn, reportar });
   const barrer = () =>
     revisarBandejas({
       store,
-      buzon: buzonGmail,
+      buzon,
       casillas: config.casillas,
       log: console.warn,
       alRebote: (r) => procesarRebote(r, deps),

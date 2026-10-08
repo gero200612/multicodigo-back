@@ -81,9 +81,14 @@ public sealed class ReposFalso : IReposClient
     /// <summary>Fuerza el caso "ese repo ya estaba", que es el UNIQUE de la tabla.</summary>
     public bool Duplicado { get; set; }
 
+    /// <summary>Una falla que el endpoint NO maneja: para probar el registro de errores.</summary>
+    public Exception? FallaAlLeer { get; set; }
+
     public Task<IReadOnlyList<Repo>> DeProyectoAsync(
         string jwt, string proyectoId, CancellationToken ct = default)
-        => Task.FromResult<IReadOnlyList<Repo>>(Filas);
+        => FallaAlLeer is not null
+            ? throw FallaAlLeer
+            : Task.FromResult<IReadOnlyList<Repo>>(Filas);
 
     public Task VincularAsync(string jwt, string proyectoId, Repo repo, CancellationToken ct = default)
     {
@@ -253,6 +258,16 @@ public sealed class ProyectosFalso : IProyectosClient
         Aceptados.Add(token);
         return Task.FromResult(IdQueDevuelve);
     }
+
+    /// <summary>
+    /// Si quien llama está en `superadmins`. False por default: la pantalla de
+    /// Errores es la excepción, y que un test se olvide de prenderlo tiene que
+    /// dar 403 y no dejar pasar.
+    /// </summary>
+    public bool AdminDePlataforma { get; set; }
+
+    public Task<bool> EsAdminDePlataformaAsync(string jwt, CancellationToken ct = default)
+        => Task.FromResult(AdminDePlataforma);
 }
 
 public sealed class AgentesFalso : IAgentesClient
@@ -399,6 +414,10 @@ public sealed class BridgeFalso : IBridgeClient
     public string TextoQueDevuelve { get; set; } = "la respuesta";
     /// <summary>El agente no contesta: el bridge devuelve 502 con su codigo.</summary>
     public string? TurnoFalla { get; set; }
+    /// <summary>La excepción exacta que tira el turno (con status y errorId), para el registro de errores.</summary>
+    public Exception? TurnoExcepcion { get; set; }
+    /// <summary>El slot que contestó, si el bridge lo manda (relevo).</summary>
+    public string? AgenteQueContesta { get; set; }
 
     /// <summary>
     /// Los repos que viajaron con cada turno.
@@ -441,11 +460,13 @@ public sealed class BridgeFalso : IBridgeClient
         PublicarDeCadaTurno.Add(publicar);
         ModosDeCadaTurno.Add(modo);
         DocsDeCadaTurno.Add(documentos);
+        if (TurnoExcepcion is not null) throw TurnoExcepcion;
         if (TurnoFalla is not null) throw new UpstreamException(TurnoFalla);
         Turnos.Add((proyectoId, proyecto, slot, usuarioId, prompt));
         ReposDeCadaTurno.Add(repos);
         TokensDeCadaTurno.Add(githubToken);
-        return Task.FromResult(new RespuestaTurno("11111111-1111-4111-8111-111111111111", TextoQueDevuelve));
+        return Task.FromResult(new RespuestaTurno(
+            "11111111-1111-4111-8111-111111111111", TextoQueDevuelve, AgenteQueContesta));
     }
 
     /// <summary>Los pedidos de Desarrollo que llegaron, y qué contestar.</summary>
@@ -678,5 +699,65 @@ public sealed class VersionFalso : IVersionClient
         if (Falla is not null) throw new UpstreamException(Falla);
         Pedidos.Add(fullName);
         return Task.FromResult(Resultado);
+    }
+}
+
+/// <summary>
+/// El registro de errores del bridge, en memoria. Thread-safe: el arreglo de
+/// "Corregí este" escribe desde segundo plano mientras el test mira.
+/// </summary>
+public sealed class ErroresFalso : IErroresClient
+{
+    private readonly object candado = new();
+    private readonly Dictionary<long, ErrorRegistrado> filas = [];
+    private readonly List<ReporteDeError> reportes = [];
+    private readonly List<(long Id, string Estado, string? Arreglo)> cambios = [];
+
+    /// <summary>El número que contesta el bridge al reportar.</summary>
+    public long IdQueDevuelve { get; set; } = 99;
+
+    public void Agregar(ErrorRegistrado e) { lock (candado) filas[e.Id] = e; }
+    public ErrorRegistrado? Fila(long id) { lock (candado) return filas.GetValueOrDefault(id); }
+    public List<ReporteDeError> Reportes { get { lock (candado) return [.. reportes]; } }
+    public List<(long Id, string Estado, string? Arreglo)> Cambios { get { lock (candado) return [.. cambios]; } }
+
+    public Task<long?> ReportarAsync(ReporteDeError reporte)
+    {
+        lock (candado) reportes.Add(reporte);
+        return Task.FromResult<long?>(IdQueDevuelve);
+    }
+
+    public Task<IReadOnlyList<ErrorRegistrado>> ListarAsync(string estado, CancellationToken ct = default)
+    {
+        lock (candado)
+        {
+            IReadOnlyList<ErrorRegistrado> todas = [.. filas.Values.Where(f => estado switch
+            {
+                "todos" => true,
+                "abiertos" => f.Estado is "nuevo" or "arreglando" or "en_rama",
+                _ => f.Estado == estado,
+            })];
+            return Task.FromResult(todas);
+        }
+    }
+
+    public Task<ErrorRegistrado?> VerAsync(long id, CancellationToken ct = default)
+        => Task.FromResult(Fila(id));
+
+    public Task<ErrorRegistrado> CambiarEstadoAsync(
+        long id, string estado, object? arreglo, CancellationToken ct = default)
+    {
+        lock (candado)
+        {
+            var json = arreglo is null ? null : System.Text.Json.JsonSerializer.Serialize(arreglo);
+            cambios.Add((id, estado, json));
+            var fila = filas[id] with
+            {
+                Estado = estado,
+                Arreglo = json is null ? filas[id].Arreglo : System.Text.Json.JsonDocument.Parse(json).RootElement,
+            };
+            filas[id] = fila;
+            return Task.FromResult(fila);
+        }
     }
 }

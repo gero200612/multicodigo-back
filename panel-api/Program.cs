@@ -55,6 +55,21 @@ if (homeroActivo && homeroToken!.Length < 16)
     throw new InvalidOperationException("HOMERO_API_TOKEN debe tener al menos 16 caracteres");
 }
 
+// El proyecto Punchi: sobre el que corre "Corregí este" de la pantalla de
+// Errores (los repos de la plataforma misma). OPCIONAL: sin ella el panel
+// arranca igual y ese botón contesta `sin_proyecto_punchi`; el registro y la
+// lista de errores andan sin ella. Si viene, tiene que ser un uuid: un valor
+// mal tipeado no puede descubrirse recién al apretar el botón.
+var punchiProyectoId = cfg["PUNCHI_PROYECTO_ID"];
+if (string.IsNullOrWhiteSpace(punchiProyectoId))
+{
+    punchiProyectoId = null;
+}
+else if (!Guid.TryParse(punchiProyectoId, out _))
+{
+    throw new InvalidOperationException("PUNCHI_PROYECTO_ID tiene que ser el uuid del proyecto Punchi");
+}
+
 var supabaseUrl = Requerido("SUPABASE_URL").TrimEnd('/');
 var supabaseAnonKey = Requerido("SUPABASE_ANON_KEY");
 // Aca vivia `var proyecto = cfg["PANEL_PROJECT"] ?? "demo";`.
@@ -135,6 +150,11 @@ builder.Services.AddHttpClient<ILoginClient, LoginClient>(c => ConBearer(c, logi
 // Once minutos, que es lo mismo que espera el bridge del gateway: por aca pasan
 // los turnos del chat del panel.
 builder.Services.AddHttpClient<IBridgeClient, BridgeClient>(c => ConBearer(c, bridgeUrl, bridgeToken));
+// El registro de errores vive en el bridge. Cliente aparte del de turnos: sus
+// llamadas son cortas (reportar corta a los 3 s por su cuenta) y no tienen por
+// qué compartir el tope de once minutos.
+builder.Services.AddHttpClient<IErroresClient, ErroresClient>(c => ConBearer(c, bridgeUrl, bridgeToken, 1));
+builder.Services.AddSingleton<CorrectorDeErrores>();
 builder.Services.AddHttpClient<IHistorialClient, HistorialClient>(c =>
     {
         // Sin Authorization por defecto: acá el bearer es el JWT del USUARIO y
@@ -305,6 +325,10 @@ var app = builder.Build();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Después de la autenticación a propósito: así el reporte sabe QUIÉN (el `sub`)
+// y por qué ruta entró. Ver `Reportes.CapturarAsync`.
+app.Use((ctx, siguiente) => Reportes.CapturarAsync(ctx, () => siguiente(ctx)));
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
@@ -517,13 +541,11 @@ api.AddEndpointFilter(async (ctx, next) =>
 /// El JWT crudo del usuario, ya verificado por el middleware. Se lo reenvia a
 /// Supabase para que RLS decida: el panel no tiene credencial de escritura.
 /// <summary>
-/// El token de instalacion del proyecto, o null.
-///
-/// Null en los tres casos normales, y ninguno es un error: no hay App
-/// configurada en este despliegue, el proyecto no la instalo, o GitHub no
-/// contesto. En los tres el turno sigue y el gateway usa SSH.
+/// El token de instalacion del proyecto, o null. Ver <see cref="TokensDeGitHub"/>:
+/// la implementacion es compartida con el arreglo de errores, que corre turnos
+/// fuera de un endpoint.
 /// </summary>
-static async Task<string?> TokenDeGitHub(
+static Task<string?> TokenDeGitHub(
     AppDeGitHub gh,
     IInstalacionesClient instalaciones,
     IHttpClientFactory clientes,
@@ -531,25 +553,7 @@ static async Task<string?> TokenDeGitHub(
     string jwt,
     string proyectoId,
     CancellationToken ct)
-{
-    if (gh.App is null) return null;
-
-    var inst = await instalaciones.DeProyectoAsync(jwt, proyectoId, ct);
-    if (inst is null) return null;
-
-    try
-    {
-        return await gh.App.TokenDeInstalacionAsync(inst.InstallationId, clientes.CreateClient("github"), ct);
-    }
-    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
-    {
-        // Se loguea y se sigue. El caso tipico es que el usuario desinstalo la
-        // App desde GitHub: la fila queda y el 404 llega aca.
-        logs.CreateLogger("github").LogWarning(
-            ex, "no se pudo firmar el token de {Proyecto}; el turno va por SSH", proyectoId);
-        return null;
-    }
-}
+    => TokensDeGitHub.DelProyectoAsync(gh, instalaciones, clientes, logs, jwt, proyectoId, ct);
 
 static async Task<string> JwtDe(HttpContext ctx)
     => await ctx.GetTokenAsync("access_token") ?? "";
@@ -2043,11 +2047,27 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
         // El `code` que vuelve es el del agente (agent_unavailable,
         // sin_credencial…): se propaga, porque es lo que le dice al usuario que
         // hacer. 502 y no 500: lo que fallo esta del otro lado.
-        var code = ex is UpstreamException ? ex.Message : "turno_fallo";
+        //
+        // SALVO un 4xx del bridge, que sale como 4xx: es un rechazo del pedido
+        // (`cuerpo_invalido` porque el proyecto tiene más documentos de los que
+        // entran), no una caída. Aplastarlo en 502 fue lo que hizo que el
+        // 2026-10-08 el front dijera "el servidor no está respondiendo" durante
+        // horas con el servidor andando.
+        //
+        // Y en los dos casos con el `errorId` si el bridge lo registró: es el
+        // número que el front muestra cuando no conoce el código.
+        var up = ex as UpstreamException;
+        var code = up?.Message ?? "turno_fallo";
+        var status = up?.Status is >= 400 and < 500
+            ? up.Status.Value
+            : StatusCodes.Status502BadGateway;
+        var message = status < 500 && !string.IsNullOrWhiteSpace(up?.Detalle)
+            ? up.Detalle
+            : "el agente no pudo contestar";
         app.Logger.LogError(ex, "fallo el turno de {Slot} en {Proyecto}", slot, proyectoId);
-        return Results.Json(
-            new { code, message = "el agente no pudo contestar" },
-            statusCode: StatusCodes.Status502BadGateway);
+        return up?.ErrorId is { } errorId
+            ? Results.Json(new { code, message, errorId }, statusCode: status)
+            : Results.Json(new { code, message }, statusCode: status);
     }
 });
 
@@ -2150,6 +2170,240 @@ api.MapPost("/proyectos/{proyectoId}/publicar", async (
     if (await proyectos.RolDeAsync(await JwtDe(ctx), proyectoId, ct) != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
     return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, "/interno/despliegue/publicar",
         new { usuarioId, proyectoId, agente = cuerpo.Agente }, ct));
+});
+
+// --- registro de errores: la pantalla de Errores ---------------------------
+//
+// Ver docs/superpowers/specs/2026-10-08-registro-de-errores-design.md. Las
+// filas viven en el bridge; el panel pone lo que el bridge no sabe, que es
+// QUIÉN pide, y sólo deja pasar a quien administra la plataforma.
+
+// Sólo superadmin y no "admin de empresa": la tabla junta errores de TODAS las
+// empresas (stacks, rutas, ids de proyectos ajenos), y "Corregí este" corre
+// un turno sobre los repos de la plataforma. Un admin de una empresa cliente no
+// tiene por qué ver ni tocar nada de eso. El código es `solo_admin`, el que
+// la pantalla ya traduce.
+var errores = api.MapGroup("/errores");
+errores.AddEndpointFilter(async (ctx, next) =>
+{
+    var http = ctx.HttpContext;
+    var proyectos = http.RequestServices.GetRequiredService<IProyectosClient>();
+    if (!await proyectos.EsAdminDePlataformaAsync(await JwtDe(http), http.RequestAborted))
+    {
+        return Results.Json(
+            new { code = "solo_admin", message = "los errores los ve solo quien administra la plataforma" },
+            statusCode: StatusCodes.Status403Forbidden);
+    }
+    return await next(ctx);
+});
+
+string[] EstadosDeLista = ["abiertos", "nuevo", "arreglando", "en_rama", "publicado", "descartado", "todos"];
+
+// Un fallo del bridge en la pantalla de Errores: su código tal cual y su
+// status si era un rechazo; 502 si no contestó.
+IResult FalloDelRegistro(Exception ex)
+{
+    app.Logger.LogError(ex, "falló el registro de errores");
+    var up = ex as UpstreamException;
+    var status = up?.Status is >= 400 and < 500 ? up.Status.Value : StatusCodes.Status502BadGateway;
+    return Results.Json(
+        new { code = up?.Message ?? "errores_fallo", message = "no se pudo leer o cambiar el registro de errores" },
+        statusCode: status);
+}
+
+errores.MapGet("", async (string? estado, IErroresClient registro, CancellationToken ct) =>
+{
+    // Por defecto los abiertos (nuevo, arreglando, en_rama): es lo que hay que
+    // mirar. Un estado desconocido es un 400 y no "todos": que un typo en el
+    // front muestre los descartados sería peor que un error.
+    var filtro = string.IsNullOrWhiteSpace(estado) ? "abiertos" : estado;
+    if (!EstadosDeLista.Contains(filtro))
+    {
+        return Results.BadRequest(new { code = "estado_invalido", message = "estado desconocido" });
+    }
+    try
+    {
+        return Results.Ok(new { errores = await registro.ListarAsync(filtro, ct) });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        return FalloDelRegistro(ex);
+    }
+});
+
+errores.MapGet("/{id:long}", async (long id, IErroresClient registro, CancellationToken ct) =>
+{
+    try
+    {
+        return await registro.VerAsync(id, ct) is { } e
+            ? Results.Ok(e)
+            : Results.NotFound(new { code = "error_no_existe", message = $"no hay error #{id}" });
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        return FalloDelRegistro(ex);
+    }
+});
+
+errores.MapPost("/{id:long}/descartar", async (long id, IErroresClient registro, CancellationToken ct) =>
+{
+    try
+    {
+        if (await registro.VerAsync(id, ct) is null)
+        {
+            return Results.NotFound(new { code = "error_no_existe", message = $"no hay error #{id}" });
+        }
+        return Results.Ok(await registro.CambiarEstadoAsync(id, "descartado", null, ct));
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        return FalloDelRegistro(ex);
+    }
+});
+
+/// <remarks>
+/// "Corregí este". Contesta 202 enseguida y el turno corre en segundo plano
+/// (<see cref="CorrectorDeErrores"/>): un turno desatendido tarda minutos, y la
+/// pantalla sigue el avance por el estado de la fila.
+///
+/// Todo lo que el turno necesita del request —el admin, su JWT, el nombre del
+/// proyecto— se captura ACÁ, antes del 202: después ya no hay request.
+/// </remarks>
+errores.MapPost("/{id:long}/corregir", async (
+    long id, CuerpoCorregir cuerpo, HttpContext ctx,
+    IProyectosClient proyectos, IErroresClient registro, CorrectorDeErrores corrector,
+    CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (SlotInvalido(cuerpo.Slot ?? "") is { } malo) return malo;
+    if (punchiProyectoId is null)
+    {
+        return Results.Json(
+            new { code = "sin_proyecto_punchi", message = "falta PUNCHI_PROYECTO_ID en la configuración del panel" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    // Reservar ANTES de mirar el estado: dos clicks seguidos verían los dos
+    // `nuevo` y abrirían dos turnos sobre el mismo error.
+    if (!corrector.Reservar(id))
+    {
+        return Results.Conflict(new { code = "estado_invalido", message = "ese error ya se está arreglando" });
+    }
+    var lanzado = false;
+    try
+    {
+        var error = await registro.VerAsync(id, ct);
+        if (error is null)
+        {
+            return Results.NotFound(new { code = "error_no_existe", message = $"no hay error #{id}" });
+        }
+        if (error.Estado != "nuevo")
+        {
+            return Results.Conflict(new
+            {
+                code = "estado_invalido",
+                message = $"solo se manda a arreglar un error nuevo (este está {error.Estado})",
+            });
+        }
+
+        // La membresía en Punchi, con el JWT del admin: el bridge no la mira
+        // (confía en el panel), igual que en el endpoint de turnos.
+        var jwt = await JwtDe(ctx);
+        var nombre = await proyectos.NombreSiEsMiembroAsync(jwt, punchiProyectoId, ct);
+        if (nombre is null)
+        {
+            return Results.Json(
+                new { code = "sin_acceso_a_punchi", message = "no sos miembro del proyecto Punchi" },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var enArreglo = await registro.CambiarEstadoAsync(id, "arreglando", null, ct);
+        _ = corrector.Lanzar(new PedidoDeArreglo(
+            error, cuerpo.Slot!, usuarioId, jwt, punchiProyectoId, nombre));
+        lanzado = true;
+        return Results.Json(enArreglo, statusCode: StatusCodes.Status202Accepted);
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        return FalloDelRegistro(ex);
+    }
+    finally
+    {
+        // Si el turno salió, la reserva la suelta él al terminar.
+        if (!lanzado) corrector.Liberar(id);
+    }
+});
+
+/// <remarks>
+/// Publicar el arreglo: la rama del agente que lo hizo pasa a main por el mismo
+/// camino que el botón Publicar de un Ticket (`/interno/despliegue/publicar`).
+/// Desde ahí el timer despliega como siempre.
+/// </remarks>
+errores.MapPost("/{id:long}/publicar", async (
+    long id, HttpContext ctx, IErroresClient registro, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (punchiProyectoId is null)
+    {
+        return Results.Json(
+            new { code = "sin_proyecto_punchi", message = "falta PUNCHI_PROYECTO_ID en la configuración del panel" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    try
+    {
+        var error = await registro.VerAsync(id, ct);
+        if (error is null)
+        {
+            return Results.NotFound(new { code = "error_no_existe", message = $"no hay error #{id}" });
+        }
+        if (error.Estado != "en_rama")
+        {
+            return Results.Conflict(new
+            {
+                code = "estado_invalido",
+                message = $"solo se publica un arreglo que ya está en su rama (este está {error.Estado})",
+            });
+        }
+        // El agente sale del ARREGLO y no del pedido: es el que pusheó la rama.
+        var agente = error.Arreglo is { ValueKind: System.Text.Json.JsonValueKind.Object } arreglo
+                     && arreglo.TryGetProperty("agente", out var a) && a.ValueKind == System.Text.Json.JsonValueKind.String
+            ? a.GetString()
+            : null;
+        if (agente is null || !Slot.EsValido(agente))
+        {
+            return Results.Conflict(new { code = "sin_agente", message = "el arreglo no dice qué agente lo hizo" });
+        }
+
+        var r = await bridge.DespliegueAsync(HttpMethod.Post, "/interno/despliegue/publicar",
+            new { usuarioId, proyectoId = punchiProyectoId, agente }, ct);
+        if (r.Status is >= 200 and < 300)
+        {
+            try
+            {
+                // El arreglo se re-manda entero más la fecha: así no depende de
+                // si el bridge pisa o conserva `arreglo` cuando no viene.
+                var conFecha = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(error.Arreglo!.Value.GetRawText())!;
+                conFecha["publicado"] = System.Text.Json.JsonSerializer.SerializeToElement(DateTimeOffset.UtcNow.ToString("O"));
+                await registro.CambiarEstadoAsync(id, "publicado", conFecha, ct);
+            }
+            catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+            {
+                // Lo publicado ya está en main: la respuesta tiene que decir
+                // eso aunque la fila haya quedado atrás.
+                app.Logger.LogError(ex, "se publicó el arreglo del error #{Id} pero no se pudo anotar", id);
+            }
+        }
+        // Lo que contestó el bridge, tal cual: el resultado del merge si salió,
+        // o `{ code, message }` (no_publicado, sin_despliegue…) si no.
+        return Pasamano(r);
+    }
+    catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+    {
+        return FalloDelRegistro(ex);
+    }
 });
 
 // --- desarrollo: un pliego que se abre como corrida -------------------------

@@ -427,6 +427,8 @@ describe('POST /turnos', () => {
     expect(r.statusCode).toBe(200);
     expect(r.json().texto).toBe('la respuesta');
     expect(r.json().jobId).toMatch(/^[0-9a-f-]{36}$/);
+    // El que contesto: el panel lo usa para publicar la rama del arreglo.
+    expect(r.json().agente).toBe(cuerpoOk.agente);
   });
 
   // El turno del panel deja la sesion donde la va a buscar el de Telegram: eso

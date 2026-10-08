@@ -39,6 +39,8 @@ export interface Registro {
   resumen?: string;
   /** La corrida termino por un tope y no porque el agente dio por cerrado. */
   cortada?: 'turnos' | 'tiempo';
+  /** La corrida de este registro: para el detalle de los reportes de error. */
+  corridaId?: number;
 }
 
 /** Paginas por corrida: el freno contra un agente que se pone a leer internet entero. */

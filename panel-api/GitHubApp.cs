@@ -353,3 +353,48 @@ public sealed record AppDeGitHub(GitHubApp? App, string? Slug)
     public bool EstaConfigurada => App is not null && !string.IsNullOrWhiteSpace(Slug);
 }
 
+
+/// <summary>
+/// El token de instalación con el que un turno clona y pushea, o null.
+/// </summary>
+/// <remarks>
+/// Vivía como función local de Program.cs; salió acá cuando el arreglo de un
+/// error (<see cref="CorrectorDeErrores"/>) empezó a correr turnos en segundo
+/// plano, fuera de cualquier endpoint. Una sola implementación para los dos
+/// caminos: un turno de arreglo que clonara distinto que uno de Ticket no
+/// probaría lo mismo.
+///
+/// Null en los tres casos normales, y ninguno es un error: no hay App
+/// configurada en este despliegue, el proyecto no la instaló, o GitHub no
+/// contestó. En los tres el turno sigue y el gateway usa SSH.
+/// </remarks>
+public static class TokensDeGitHub
+{
+    public static async Task<string?> DelProyectoAsync(
+        AppDeGitHub gh,
+        IInstalacionesClient instalaciones,
+        IHttpClientFactory clientes,
+        ILoggerFactory logs,
+        string jwt,
+        string proyectoId,
+        CancellationToken ct)
+    {
+        if (gh.App is null) return null;
+
+        var inst = await instalaciones.DeProyectoAsync(jwt, proyectoId, ct);
+        if (inst is null) return null;
+
+        try
+        {
+            return await gh.App.TokenDeInstalacionAsync(inst.InstallationId, clientes.CreateClient("github"), ct);
+        }
+        catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
+        {
+            // Se loguea y se sigue. El caso tipico es que el usuario desinstalo la
+            // App desde GitHub: la fila queda y el 404 llega aca.
+            logs.CreateLogger("github").LogWarning(
+                ex, "no se pudo firmar el token de {Proyecto}; el turno va por SSH", proyectoId);
+            return null;
+        }
+    }
+}

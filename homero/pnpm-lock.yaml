@@ -12,8 +12,8 @@ importers:
         specifier: 0.1.77
         version: 0.1.77(zod@3.25.76)
       '@multicodigo/shared':
-        specifier: github:gero200612/multicodigo-shared#v0.1.5
-        version: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/0764ea868b7584f7ac7d47e1cbfae233b699c471
+        specifier: github:gero200612/multicodigo-shared#v0.1.6
+        version: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05
       fastify:
         specifier: ^5.12.5
         version: 5.12.5
@@ -318,9 +318,9 @@ packages:
   '@jridgewell/sourcemap-codec@1.6.0':
     resolution: {integrity: sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==}
 
-  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/0764ea868b7584f7ac7d47e1cbfae233b699c471':
-    resolution: {gitHosted: true, integrity: sha512-4sokl8W1PHG6d4z/T59obBII+YFLTDfQmzsVxOhjHXVwpNQnD+dMrPCgv6JeERKonlcey3KvU7uwiOLl0jPviQ==, tarball: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/0764ea868b7584f7ac7d47e1cbfae233b699c471}
-    version: 0.1.5
+  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05':
+    resolution: {gitHosted: true, integrity: sha512-WTBrNGFfyZRipPyKy9KpjcHSbBslUM8BPLZr4+YUb/S2H3PX7vSmi1BDtK68bUrJPT53Luxrzm4w++1MCiL83A==, tarball: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05}
+    version: 0.1.6
     engines: {node: '>=22'}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
@@ -1239,7 +1239,7 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.6.0': {}
 
-  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/0764ea868b7584f7ac7d47e1cbfae233b699c471':
+  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05':
     dependencies:
       zod: 3.25.76
 

@@ -324,9 +324,16 @@ public sealed record CuerpoDesarrollo(
 /// <summary>Si se abrió la corrida, o por qué no (el motivo ya viene en castellano).</summary>
 public sealed record ResultadoDesarrollo(bool Ok, string? CorridaId, string? Motivo);
 
+/// <remarks>
+/// <see cref="Agente"/> es el slot que efectivamente contestó, que con el relevo
+/// puede no ser el pedido. Opcional: un bridge que todavía no lo manda deja null,
+/// y quien lo necesite (el arreglo de un error, para publicar su rama) cae al
+/// slot que pidió.
+/// </remarks>
 public sealed record RespuestaTurno(
     [property: JsonPropertyName("jobId")] string JobId,
-    [property: JsonPropertyName("texto")] string Texto);
+    [property: JsonPropertyName("texto")] string Texto,
+    [property: JsonPropertyName("agente")] string? Agente = null);
 
 /// <summary>El cuerpo de "carpeta nueva" en un repo.</summary>
 public sealed record CarpetaNueva(string? Ruta);

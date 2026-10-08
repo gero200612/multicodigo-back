@@ -12,7 +12,7 @@ import './dispatcher.js';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { AgentId } from '@multicodigo/shared';
+import { AgentId, reportarCrashes } from '@multicodigo/shared';
 import { PgStore, type FilaDeDocumento } from './store.js';
 import { askAgent, listarAgentes, esperarAlGateway } from './agents-client.js';
 import { firmarToken, crearRepo } from './panel-client.js';
@@ -44,6 +44,22 @@ import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
 import { crearUsuarioPorApi, crearUsuarioPorSql } from './altas.js';
 import { trabajoDeMiEmpresa } from './trabajo.js';
+import { PgRegistroDeErrores, registrarSinRomper, type RegistroDeErrores } from './errores.js';
+
+/**
+ * Los crashes del bridge quedan en el registro de errores.
+ *
+ * Es lo PRIMERO que corre (despues de los imports, que en ESM van antes de
+ * todo): un `Env.parse` que tira o una migracion que falla tambien son
+ * crashes. Hasta que la base conecte, `registroDeErrores` es `undefined` y el
+ * reporte solo queda en el log, como antes. El comportamiento no cambia: el
+ * handler sale con 1 y el compose lo reinicia.
+ *
+ * 3 s de espera, como `reportarError` de shared: el proceso se esta muriendo, y
+ * una base colgada no puede dejarlo vivo a medias.
+ */
+let registroDeErrores: RegistroDeErrores | undefined;
+reportarCrashes('bridge', (r) => registrarSinRomper(registroDeErrores, r, 3_000));
 
 /**
  * Una variable opcional que el compose entrega como cadena vacia.
@@ -217,8 +233,11 @@ const MIGRACIONES = [
   '044_corrida_en_revision.sql',
   '045_agentes_borrar.sql',
   '046_agentes_sin_bot.sql',
+  '047_errores.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
+// La misma conexion que el store: la tabla `errores` es de la 047.
+registroDeErrores = new PgRegistroDeErrores(store.consulta);
 
 // Un solo lugar con la URL y el token del gateway: prompt, aprobaciones y git
 // salen todos por ahi.
@@ -742,6 +761,7 @@ function despliegueDelPanel() {
 export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   store,
   apiToken: env.BRIDGE_API_TOKEN,
+  errores: registroDeErrores,
   // Las demos de Homero avisan en el chat de Punchi como cualquier corrida.
   despliegue: despliegueDelPanel(),
   demos: {

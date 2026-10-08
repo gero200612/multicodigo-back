@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@multicodigo/shared':
-        specifier: github:gero200612/multicodigo-shared#v0.1.5
-        version: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/0764ea868b7584f7ac7d47e1cbfae233b699c471
+        specifier: github:gero200612/multicodigo-shared#v0.1.6
+        version: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05
       fastify:
         specifier: ^5.0.0
         version: 5.12.1
@@ -216,9 +216,9 @@ packages:
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
 
-  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/0764ea868b7584f7ac7d47e1cbfae233b699c471':
-    resolution: {gitHosted: true, integrity: sha512-4sokl8W1PHG6d4z/T59obBII+YFLTDfQmzsVxOhjHXVwpNQnD+dMrPCgv6JeERKonlcey3KvU7uwiOLl0jPviQ==, tarball: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/0764ea868b7584f7ac7d47e1cbfae233b699c471}
-    version: 0.1.5
+  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05':
+    resolution: {gitHosted: true, tarball: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05}
+    version: 0.1.6
     engines: {node: '>=22'}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
@@ -1232,7 +1232,7 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/0764ea868b7584f7ac7d47e1cbfae233b699c471':
+  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05':
     dependencies:
       zod: 3.25.76
 

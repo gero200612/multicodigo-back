@@ -2081,6 +2081,15 @@ export class PgStore implements Store {
     return new PgStore(pool);
   }
 
+  /**
+   * La conexion, para los modulos que tienen su propio acceso a la base (el
+   * registro de errores, ver `errores.ts`). Un getter y no un segundo `Pool`:
+   * dos pools contra el mismo pooler de Supabase duplican conexiones por nada.
+   */
+  get consulta(): Pool {
+    return this.pool;
+  }
+
   async getActiveAgent(chatId: number) {
     const r = await this.pool.query<{ active_agent: AgentId }>(
       'SELECT active_agent FROM chat_state WHERE chat_id = $1',

@@ -468,13 +468,15 @@ export async function documentosDelTurno(
  *
  * Es la misma forma que viaja al gateway. `es_instruccion` es opcional porque
  * toda fila vieja la trae en `false` por el default de la columna, y porque un
- * panel sin actualizar no la manda.
+ * panel sin actualizar no la manda. Y puede ser `null`: el panel (C#) no omite
+ * los vacios, y el schema compartido (`DocumentoDelTurno`) lo acepta. Para
+ * `separarInstructivo` `null` vale lo mismo que `false`.
  */
 export interface DocumentoConMarca {
   nombre: string;
   ruta: string;
   ruta_texto?: string | null;
-  es_instruccion?: boolean;
+  es_instruccion?: boolean | null;
 }
 
 export interface DocumentosSeparados<T extends DocumentoConMarca> {

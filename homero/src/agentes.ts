@@ -1,3 +1,4 @@
+import { huellaDe, type ReporteDeError } from '@multicodigo/shared';
 import { z } from 'zod';
 import { diaArgentino } from './agenda.js';
 import { SinLugar, type ClienteDeGateway } from './gateway.js';
@@ -33,6 +34,46 @@ export interface DepsDeAgentes extends DepsDeHerramientas {
   gateway: ClienteDeGateway;
   sesiones: SesionesMcp;
   modelo?: string;
+  /**
+   * Al registro de errores del bridge (`reportarError` en produccion). Es
+   * opcional: sin bridge configurado, o en los tests que no lo miran, no se
+   * reporta nada.
+   */
+  reportar?: (r: ReporteDeError) => Promise<unknown>;
+}
+
+/**
+ * Reporta sin poder romper nada: un reporte que falla no puede cambiar como
+ * termina la corrida (ni tapar el error que se estaba reportando).
+ */
+async function reportarSinRomper(deps: DepsDeAgentes, r: ReporteDeError): Promise<void> {
+  try {
+    await deps.reportar?.(r);
+  } catch {
+    // Se pierde el reporte, la corrida sigue su curso.
+  }
+}
+
+/**
+ * El motivo sin numeros: "tope de 40 turnos" y "tope de 80 turnos" son el mismo
+ * bug y tienen que caer en la misma fila del registro.
+ */
+const sinNumeros = (t: string) => t.replace(/\d+/g, '#');
+
+async function reportarCorridaFallida(
+  deps: DepsDeAgentes,
+  agente: Agente,
+  corridaId: number,
+  error: string,
+  extra: { cortada?: string; turnos?: number } = {},
+): Promise<void> {
+  await reportarSinRomper(deps, {
+    servicio: 'homero',
+    codigo: 'corrida_fallida',
+    mensaje: `El ${agente} falló: ${error}`.slice(0, 500),
+    huella: huellaDe('homero', 'corrida_fallida', `${agente}:${sinNumeros(error)}`),
+    detalle: { agente, corridaId, error, cortada: extra.cortada ?? null, turnos: extra.turnos ?? null },
+  });
 }
 
 interface Topes {
@@ -146,7 +187,7 @@ async function correr(
   const texto = await conLibreta(agente, objetivo, deps);
   const id = await deps.store.crearCorrida({ agente, objetivo: texto, leadId: o.leadId });
   const corrida = `r${id}`;
-  const registro: Registro = { anotados: [], cerro: false };
+  const registro: Registro = { anotados: [], cerro: false, corridaId: id };
   const propias = herramientas(registro);
   const lead = o.leadId != null ? (await deps.store.lead(o.leadId))?.nombre : undefined;
   const token = deps.sesiones.abrir(corrida, propias, { agente, corridaId: id, desde: deps.ahora(), lead, pedido: o.pedido });
@@ -168,7 +209,12 @@ async function correr(
     // Sin cuenta libre o sin uso no es una corrida: no llego a pensar nada, y
     // se reintenta cada pocos minutos. Dejarla llenaria la pestaña de fallidas.
     if (err instanceof SinLugar || err instanceof ErrorDeLimite) await deps.store.borrarCorrida(id);
-    else await deps.store.cerrarCorrida(id, { estado: 'fallida', error: err instanceof Error ? err.message : String(err) });
+    else {
+      const mensaje = err instanceof Error ? err.message : String(err);
+      await deps.store.cerrarCorrida(id, { estado: 'fallida', error: mensaje });
+      // SinLugar y ErrorDeLimite son esperables (se reintentan solos); esto no.
+      await reportarCorridaFallida(deps, agente, id, mensaje);
+    }
     throw err;
   } finally {
     deps.sesiones.cerrar(corrida);
@@ -189,6 +235,7 @@ async function correr(
     error,
   });
   if (sinCerrar) {
+    await reportarCorridaFallida(deps, agente, id, error!, { cortada: r.cortada, turnos: r.turnos });
     await avisarSiFallanSeguidas(agente, deps);
     throw new CorridaSinCerrar(`el ${agente} ${error}`);
   }
@@ -268,6 +315,17 @@ De cada uno el vendedor va a leer la web y decidir; algunos se descartan, por es
     { web: true, debeCerrar: false, pedido: { cantidad, rubro, zona }, topes: topesDelBuscador(cantidad) },
     deps,
   );
+  if (registro.anotados.length === 0 && registro.cortada) {
+    // Cortarse por tope sin anotar ninguno es plata gastada en nada: si se
+    // repite, los topes o el prompt del buscador estan mal.
+    await reportarSinRomper(deps, {
+      servicio: 'homero',
+      codigo: 'buscador_cortado',
+      mensaje: `El buscador se cortó por tope de ${registro.cortada} sin anotar ningún negocio`,
+      huella: huellaDe('homero', 'buscador_cortado', registro.cortada),
+      detalle: { corridaId: registro.corridaId ?? null, cantidad, cortada: registro.cortada },
+    });
+  }
   if (registro.anotados.length === 0) {
     await deps.avisar(
       registro.cortada

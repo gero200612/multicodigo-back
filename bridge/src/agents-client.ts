@@ -75,12 +75,18 @@ export async function askAgent(
           code?: string;
           resets?: string;
           duenio?: { usuarioId?: string; desde?: number };
+          errorId?: unknown;
         };
       } catch {
         return {};
       }
     })();
-    throw new ErrorDelAgente(cuerpo.code ?? 'internal', cuerpo.resets, cuerpo.duenio);
+    throw new ErrorDelAgente(
+      cuerpo.code ?? 'internal',
+      cuerpo.resets,
+      cuerpo.duenio,
+      typeof cuerpo.errorId === 'number' ? cuerpo.errorId : undefined,
+    );
   }
   const crudo = JSON.parse(text) as { tokens?: unknown; costoUsd?: unknown };
   // `parse` valida el contrato y DESCARTA lo que no declara, asi que el consumo
@@ -112,6 +118,14 @@ export class ErrorDelAgente extends Error {
      * puede traducirlo. El nombre lo pone el bridge, que si tiene la base.
      */
     readonly duenio?: { usuarioId?: string; desde?: number },
+    /**
+     * El numero con que el gateway ya registro este error, si lo registro.
+     *
+     * Que venga de una respuesta del gateway quiere decir que el gateway ya lo
+     * reporto: el bridge no lo vuelve a anotar —seria la misma falla dos veces
+     * con dos huellas— y solo le pasa el numero al panel para mostrarlo.
+     */
+    readonly errorId?: number,
   ) {
     super(codigo);
     this.name = 'ErrorDelAgente';

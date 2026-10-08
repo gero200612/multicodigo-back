@@ -79,6 +79,7 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
     public ConversorFalso Conversor { get; } = new();
     public ArbolFalso Arbol { get; } = new();
     public VersionFalso Version { get; } = new();
+    public ErroresFalso Errores { get; } = new();
 
     /// <summary>Deja el panel sin FRONT_URL, para el caso del wwwroot al lado.</summary>
     public bool SinFrontUrl { get; set; }
@@ -115,6 +116,9 @@ public sealed class PanelFactory : WebApplicationFactory<Program>
             s.AddSingleton<IConversorClient>(Conversor);
             s.AddSingleton<IRepoArbolClient>(Arbol);
             s.AddSingleton<IVersionClient>(Version);
+            // Sin esto, el middleware del registro de errores saldría a buscar
+            // a http://bridge.test ante cualquier excepción de un test.
+            s.AddSingleton<IErroresClient>(Errores);
 
             s.AddAuthentication(AuthDePrueba.Esquema)
                 .AddScheme<AuthenticationSchemeOptions, AuthDePrueba>(AuthDePrueba.Esquema, _ => { });

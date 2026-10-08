@@ -51,6 +51,11 @@ public interface IProyectosClient
         string jwt, string proyectoId, string email, string rol, CancellationToken ct = default);
     /// <summary>Acepta una invitacion y devuelve el proyecto al que entro.</summary>
     Task<string> AceptarAsync(string jwt, string token, CancellationToken ct = default);
+    /// <summary>
+    /// Si quien llama administra la PLATAFORMA (está en `superadmins`). Ante
+    /// cualquier falla, no: es un permiso.
+    /// </summary>
+    Task<bool> EsAdminDePlataformaAsync(string jwt, CancellationToken ct = default);
 }
 
 public interface IAgentesClient
@@ -270,7 +275,35 @@ public interface INombresClient
 }
 
 /// <summary>Lo que el llamador puede leer: nunca la excepción cruda.</summary>
-public sealed class UpstreamException(string mensaje) : Exception(mensaje);
+/// <remarks>
+/// El <c>Message</c> es el <c>code</c> (sin_credencial, github_404…): es lo que
+/// todos los endpoints ya leen con <c>ex.Message == "…"</c>, y no se toca.
+///
+/// Lo demás es opcional y existe por el registro de errores:
+/// <list type="bullet">
+/// <item><see cref="Status"/>: el status HTTP que contestó el servicio de abajo.
+/// Sin él, el panel aplastaba todo en 502 y un rechazo del bridge (un 400 que la
+/// persona puede entender) se veía igual que una caída.</item>
+/// <item><see cref="ErrorId"/>: el número de la fila en `errores`, si el de abajo
+/// ya lo registró. Viaja hasta el front para que pueda decir "error #123".</item>
+/// <item><see cref="DelBridge"/>: si la tiró el cliente del bridge. Esas NO se
+/// vuelven a reportar: el bridge (o el gateway detrás) ya las registró, y
+/// reportarlas de nuevo duplicaría cada falla con otra huella.</item>
+/// </list>
+/// </remarks>
+public sealed class UpstreamException(
+    string mensaje,
+    int? status = null,
+    long? errorId = null,
+    bool delBridge = false,
+    string? detalle = null) : Exception(mensaje)
+{
+    public int? Status { get; } = status;
+    public long? ErrorId { get; } = errorId;
+    public bool DelBridge { get; } = delBridge;
+    /// <summary>El `message` legible del de abajo, si mandó uno.</summary>
+    public string? Detalle { get; } = detalle;
+}
 
 /// <summary>
 /// Un tope de tiempo para UN request, sin tocar el del cliente.
@@ -541,9 +574,9 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
 
         // 409 no es una falla: alguien la decidio desde Telegram mientras la
         // pantalla estaba abierta. El panel lo muestra distinto.
-        if (res.StatusCode == HttpStatusCode.Conflict) throw new UpstreamException("ya_decidida");
-        if (res.StatusCode == HttpStatusCode.NotFound) throw new UpstreamException("desconocida");
-        if (!res.IsSuccessStatusCode) throw new UpstreamException("decision_fallo");
+        if (res.StatusCode == HttpStatusCode.Conflict) throw DelBridge("ya_decidida");
+        if (res.StatusCode == HttpStatusCode.NotFound) throw DelBridge("desconocida");
+        if (!res.IsSuccessStatusCode) throw DelBridge("decision_fallo");
     }
 
     /// <summary>
@@ -602,15 +635,27 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
             // El `code` del bridge es el del agente (agent_unavailable,
             // sin_credencial…). Se propaga tal cual: es lo que le dice al
             // usuario que hacer.
-            var cuerpoError = await res.Content.ReadFromJsonAsync<ErrorUpstream>(Json.Opciones, ct);
-            throw new UpstreamException(cuerpoError?.Code ?? "turno_fallo");
+            //
+            // Y con él el status y el `errorId`: un 400 del bridge (el turno no
+            // pasó su schema) es un rechazo, no una caída, y el endpoint tiene
+            // que poder contestarlo como tal. El `errorId` es la fila que el
+            // bridge ya registró; sin él, el front no tiene número que mostrar.
+            ErrorUpstream? cuerpoError = null;
+            try { cuerpoError = await res.Content.ReadFromJsonAsync<ErrorUpstream>(Json.Opciones, ct); }
+            catch (JsonException) { /* sin cuerpo util; queda el status */ }
+            throw new UpstreamException(
+                cuerpoError?.Code ?? "turno_fallo",
+                status: (int)res.StatusCode,
+                errorId: cuerpoError?.ErrorId,
+                delBridge: true,
+                detalle: cuerpoError?.Message);
         }
 
         return await res.Content.ReadFromJsonAsync<RespuestaTurno>(Json.Opciones, ct)
-               ?? throw new UpstreamException("turno_fallo");
+               ?? throw new UpstreamException("turno_fallo", status: (int)res.StatusCode, delBridge: true);
     }
 
-    private sealed record ErrorUpstream(string? Code);
+    private sealed record ErrorUpstream(string? Code, string? Message = null, long? ErrorId = null);
     private sealed record CorridaAbierta(string? CorridaId);
 
     public async Task<(int Status, string Cuerpo)> DespliegueAsync(
@@ -649,7 +694,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         if (!res.IsSuccessStatusCode)
         {
             var e = await res.Content.ReadFromJsonAsync<ErrorUpstream>(Json.Opciones, ct);
-            throw new UpstreamException(e?.Code ?? "corrida_fallo");
+            throw DelBridge(e?.Code ?? "corrida_fallo");
         }
         var ok = await res.Content.ReadFromJsonAsync<CorridaAbierta>(Json.Opciones, ct);
         return new ResultadoDesarrollo(true, ok?.CorridaId, null);
@@ -669,7 +714,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         try { e = await res.Content.ReadFromJsonAsync<ErrorVinculo>(Json.Opciones, ct); }
         catch (JsonException) { /* sin cuerpo util; se usa el status */ }
 
-        throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
+        throw DelBridge(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
     }
 
     public async Task RegistrarClaudeAsync(
@@ -678,7 +723,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         var res = await http.PostAsJsonAsync(
             "/interno/claudes/registrar", new { usuarioId, proyectoId, slot }, Json.Opciones, ct);
         if (res.IsSuccessStatusCode) return;
-        throw new UpstreamException(res.StatusCode == HttpStatusCode.Forbidden
+        throw DelBridge(res.StatusCode == HttpStatusCode.Forbidden
             ? "solo_lectura"
             : $"el bridge respondió {(int)res.StatusCode}");
     }
@@ -688,7 +733,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     public async Task<IReadOnlyList<TrabajoEnCurso>> TrabajoAsync(string usuarioId, CancellationToken ct = default)
     {
         var res = await http.PostAsJsonAsync("/interno/trabajo", new { usuarioId }, Json.Opciones, ct);
-        if (!res.IsSuccessStatusCode) throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
+        if (!res.IsSuccessStatusCode) throw DelBridge($"el bridge respondió {(int)res.StatusCode}");
         var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaTrabajo>(Json.Opciones, ct);
         return cuerpo?.Trabajo ?? [];
     }
@@ -709,7 +754,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         {
             return new ResultadoAlta(false, null, cuerpo.Code, cuerpo.Message);
         }
-        throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
+        throw DelBridge($"el bridge respondió {(int)res.StatusCode}");
     }
 
     private sealed record RespuestaDesvinculo(bool Desvinculado);
@@ -727,7 +772,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
 
         if (!res.IsSuccessStatusCode)
         {
-            throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
+            throw DelBridge($"el bridge respondió {(int)res.StatusCode}");
         }
 
         var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaDesvinculo>(Json.Opciones, ct);
@@ -758,7 +803,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
             ErrorConMensaje? e = null;
             try { e = await res.Content.ReadFromJsonAsync<ErrorConMensaje>(Json.Opciones, ct); }
             catch (JsonException) { /* sin cuerpo util; se usa el status */ }
-            throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
+            throw DelBridge(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
         }
 
         var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaConectar>(Json.Opciones, ct);
@@ -770,7 +815,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
         var res = await http.GetAsync($"/interno/google/estado?usuarioId={Uri.EscapeDataString(usuarioId)}", ct);
         if (!res.IsSuccessStatusCode)
         {
-            throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
+            throw DelBridge($"el bridge respondió {(int)res.StatusCode}");
         }
         var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaEstado>(Json.Opciones, ct);
         return new EstadoGoogle(cuerpo?.Conectada ?? false, cuerpo?.Email);
@@ -782,7 +827,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
             $"/interno/google/conectar?usuarioId={Uri.EscapeDataString(usuarioId)}", ct);
         if (!res.IsSuccessStatusCode)
         {
-            throw new UpstreamException($"el bridge respondió {(int)res.StatusCode}");
+            throw DelBridge($"el bridge respondió {(int)res.StatusCode}");
         }
         var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaDesconectar>(Json.Opciones, ct);
         return cuerpo?.Desconectada ?? false;
@@ -804,7 +849,7 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
             ErrorConMensaje? e = null;
             try { e = await res.Content.ReadFromJsonAsync<ErrorConMensaje>(Json.Opciones, ct); }
             catch (JsonException) { /* sin cuerpo util; se usa el status */ }
-            throw new UpstreamException(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
+            throw DelBridge(e?.Message ?? $"el bridge respondió {(int)res.StatusCode}");
         }
 
         var cuerpo = await res.Content.ReadFromJsonAsync<RespuestaCanje>(Json.Opciones, ct);
@@ -812,6 +857,13 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     }
 
     private sealed record ErrorConMensaje(string? Code, string? Message);
+
+    /// <summary>
+    /// Toda falla que sale de este cliente va marcada como del bridge: el
+    /// middleware del registro de errores no la vuelve a reportar, porque del
+    /// otro lado ya quedó anotada.
+    /// </summary>
+    private static UpstreamException DelBridge(string code) => new(code, delBridge: true);
 }
 
 /// <summary>Con qué cuenta de Google está conectado alguien.</summary>
@@ -1356,6 +1408,30 @@ public sealed class ProyectosClient(HttpClient http, string anonKey, ILogger<Pro
         if (!res.IsSuccessStatusCode) throw new UpstreamException("invitacion_no_sirve");
         return (await res.Content.ReadFromJsonAsync<string>(Json.Opciones, ct))
                ?? throw new UpstreamException("invitacion_no_sirve");
+    }
+
+    private sealed record Perfil(bool Superadmin);
+
+    /// <summary>
+    /// Lo mismo que lee el front para mostrar el menú de plataforma: el campo
+    /// `superadmin` de <c>mi_perfil()</c>. Se pregunta a la base y no a un claim
+    /// del JWT porque el JWT de Supabase no lo trae, y una lista en una
+    /// variable de entorno se desincronizaría de la tabla.
+    /// </summary>
+    public async Task<bool> EsAdminDePlataformaAsync(string jwt, CancellationToken ct = default)
+    {
+        try
+        {
+            var res = await RpcAsync(jwt, "mi_perfil", new { }, ct);
+            if (!res.IsSuccessStatusCode) return false;
+            var perfil = await res.Content.ReadFromJsonAsync<Perfil>(Json.Supabase, ct);
+            return perfil?.Superadmin == true;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            log.LogError(ex, "no se pudo leer el perfil");
+            return false;
+        }
     }
 }
 

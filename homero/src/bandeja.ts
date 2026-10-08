@@ -1,5 +1,6 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
+import { huellaDe, type ReporteDeError } from '@multicodigo/shared';
 import { direccion } from './cola.js';
 import type { Casilla } from './config.js';
 import type { Recibido, Store } from './store.js';
@@ -16,48 +17,99 @@ export interface Buzon {
 /** Tope por barrido: una casilla con mil mails viejos no puede trabar todo. */
 const POR_BARRIDO = 50;
 
-export const buzonGmail: Buzon = {
-  async conNoLeidos(casilla, procesar) {
-    const cliente = new ImapFlow({
-      host: 'imap.gmail.com',
-      port: 993,
-      secure: true,
-      auth: { user: casilla.email, pass: casilla.clave },
-      logger: false,
-    });
-    await cliente.connect();
-    try {
-      const lock = await cliente.getMailboxLock('INBOX');
-      try {
-        const uids = await cliente.search({ seen: false }, { uid: true });
-        if (!uids || uids.length === 0) return;
-        const tanda = uids.slice(0, POR_BARRIDO);
-        const mails: Recibido[] = [];
-        for await (const m of cliente.fetch(tanda, { source: true, uid: true }, { uid: true })) {
-          if (!m.source) continue;
-          const p = await simpleParser(m.source);
-          mails.push({
-            cuenta: casilla.email,
-            // Sin Message-ID (raro, pero pasa) se usa el uid: igual deduplica
-            // dentro de la casilla.
-            messageId: p.messageId ?? `uid-${m.uid}`,
-            de: p.from?.text ?? 'desconocido',
-            asunto: p.subject ?? '(sin asunto)',
-            cuerpo: p.text ?? '',
-            recibidoEn: p.date ?? new Date(),
-            enRespuestaA: p.inReplyTo,
-          });
+/** Lo que el buzon usa de ImapFlow: con esto un test le pasa un cliente falso. */
+export type ClienteImap = Pick<
+  ImapFlow,
+  'connect' | 'getMailboxLock' | 'search' | 'fetch' | 'messageFlagsAdd' | 'logout' | 'close' | 'on'
+>;
+
+const clienteGmail = (casilla: Casilla): ClienteImap =>
+  new ImapFlow({
+    host: 'imap.gmail.com',
+    port: 993,
+    secure: true,
+    auth: { user: casilla.email, pass: casilla.clave },
+    logger: false,
+  });
+
+export interface OpcionesDelBuzon {
+  log?: (m: string) => void;
+  /** Al registro de errores del bridge. Nunca deberia tirar, pero igual se ataja. */
+  reportar?: (r: ReporteDeError) => Promise<unknown>;
+  crearCliente?: (casilla: Casilla) => ClienteImap;
+}
+
+export function crearBuzonGmail(o: OpcionesDelBuzon = {}): Buzon {
+  const crearCliente = o.crearCliente ?? clienteGmail;
+  return {
+    async conNoLeidos(casilla, procesar) {
+      const cliente = crearCliente(casilla);
+      // ImapFlow emite 'error' cuando el socket se cae o vence un timeout. Un
+      // EventEmitter sin listener de 'error' TIRA la excepcion fuera de toda
+      // promesa: el 2026-10-08 eso tiro abajo a Homero entero por un timeout
+      // de Gmail. Con el listener, el error queda en esta casilla: se cierra
+      // este cliente (lo que estaba esperando rechaza y `revisarBandejas` lo
+      // loguea) y el proximo barrido arma uno nuevo, o sea, reconecta solo.
+      cliente.on('error', (err: unknown) => {
+        const mensaje = err instanceof Error ? err.message : String(err);
+        o.log?.(`[bandeja] ${casilla.email}: el IMAP se cayo (${mensaje}); reconecto en el proximo barrido`);
+        try {
+          cliente.close();
+        } catch {
+          // Ya estaba cerrado: no hay nada mas que hacer.
         }
-        await procesar(mails);
-        await cliente.messageFlagsAdd(tanda, ['\\Seen'], { uid: true });
+        // Sin await: estamos en un handler de evento, no hay a quien esperar.
+        void Promise.resolve()
+          .then(() =>
+            o.reportar?.({
+              servicio: 'homero',
+              codigo: 'imap',
+              mensaje: `IMAP de ${casilla.email}: ${mensaje}`.slice(0, 500),
+              // Por casilla y no por mensaje: el texto del timeout cambia y lo
+              // que importa es que casilla esta fallando.
+              huella: huellaDe('homero', 'imap', casilla.email),
+              detalle: { casilla: casilla.email, error: mensaje },
+            }),
+          )
+          .catch(() => undefined);
+      });
+      await cliente.connect();
+      try {
+        const lock = await cliente.getMailboxLock('INBOX');
+        try {
+          const uids = await cliente.search({ seen: false }, { uid: true });
+          if (!uids || uids.length === 0) return;
+          const tanda = uids.slice(0, POR_BARRIDO);
+          const mails: Recibido[] = [];
+          for await (const m of cliente.fetch(tanda, { source: true, uid: true }, { uid: true })) {
+            if (!m.source) continue;
+            const p = await simpleParser(m.source);
+            mails.push({
+              cuenta: casilla.email,
+              // Sin Message-ID (raro, pero pasa) se usa el uid: igual deduplica
+              // dentro de la casilla.
+              messageId: p.messageId ?? `uid-${m.uid}`,
+              de: p.from?.text ?? 'desconocido',
+              asunto: p.subject ?? '(sin asunto)',
+              cuerpo: p.text ?? '',
+              recibidoEn: p.date ?? new Date(),
+              enRespuestaA: p.inReplyTo,
+            });
+          }
+          await procesar(mails);
+          await cliente.messageFlagsAdd(tanda, ['\\Seen'], { uid: true });
+        } finally {
+          lock.release();
+        }
       } finally {
-        lock.release();
+        await cliente.logout().catch(() => undefined);
       }
-    } finally {
-      await cliente.logout().catch(() => undefined);
-    }
-  },
-};
+    },
+  };
+}
+
+/** El de produccion sin reportes; `main` usa `crearBuzonGmail` con el bridge. */
+export const buzonGmail: Buzon = crearBuzonGmail();
 
 // Avisos del servidor: no gastan IA. Los rebotes van a `alRebote`, que marca
 // al lead y frena la casilla si rebotan muchos.
