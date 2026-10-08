@@ -506,7 +506,9 @@ export function buildWebhookServer(
               es_instruccion: opcional(z.boolean()),
             }),
           )
-          .max(50)
+          // Eran 50 y un proyecto con mas documentos no podia mandar ni un
+          // ticket (cuerpo_invalido). Son rutas: el gateway solo las copia.
+          .max(500)
           .nullish()
           .transform((v) => v ?? undefined),
         // Cuánto pregunta el agente en ESTE turno, de la configuración de

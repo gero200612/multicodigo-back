@@ -402,6 +402,18 @@ describe('POST /turnos', () => {
     expect(r.statusCode).toBe(200);
   });
 
+  it('acepta un proyecto con mas de 50 documentos', async () => {
+    const { app } = conPipeline();
+    const documentos = Array.from({ length: 120 }, (_, i) => ({ nombre: `doc-${i}.pdf`, ruta: `/srv/docs/p/doc-${i}.pdf` }));
+    const r = await app.inject({
+      method: 'POST',
+      url: '/turnos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { ...cuerpoOk, documentos },
+    });
+    expect(r.statusCode).toBe(200);
+  });
+
   it('un turno del panel devuelve la respuesta del agente', async () => {
     const { app } = conPipeline();
 
