@@ -13,12 +13,18 @@ public sealed class HomeroFalso : IHomeroClient
     public bool Configurado => true;
     public List<(string Metodo, string Ruta, string? Cuerpo)> Pedidos { get; } = [];
     public Exception? Falla { get; set; }
+    /// <summary>La firma de un PNG y bytes que no son UTF-8 válido: leídos como texto se rompen.</summary>
+    public static readonly byte[] Png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xFF, 0xFE, 0x00, 0x80];
 
     public Task<RespuestaDeHomero> ReenviarAsync(
         HttpMethod metodo, string rutaYQuery, string? cuerpoJson, CancellationToken ct)
     {
         if (Falla is not null) throw Falla;
         Pedidos.Add((metodo.Method, rutaYQuery, cuerpoJson));
+        if (rutaYQuery.EndsWith("/imagen", StringComparison.Ordinal))
+        {
+            return Task.FromResult(new RespuestaDeHomero(200, "", Png, "image/png"));
+        }
         return Task.FromResult(new RespuestaDeHomero(
             rutaYQuery.Contains("aprobar", StringComparison.Ordinal) ? 409 : 200, "{\"ok\":true}"));
     }
@@ -53,6 +59,26 @@ public class HomeroTests(PanelFactory f) : IClassFixture<PanelFactory>
 
         Assert.Equal(("GET", "/leads?estado=borrador&pagina=1", (string?)null), homero.Pedidos[0]);
         Assert.Equal(("PATCH", "/salientes/4", "{\"cuerpo\":\"hola\"}"), homero.Pedidos[1]);
+    }
+
+    [Fact]
+    public async Task ElPutPasaConSuCuerpo()
+    {
+        var (c, homero) = Armar();
+        var r = await c.PutAsync("/api/homero/anuncios/presupuesto",
+            new StringContent("{\"monto\":80000}", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Equal(("PUT", "/anuncios/presupuesto", "{\"monto\":80000}"), homero.Pedidos[0]);
+    }
+
+    [Fact]
+    public async Task LaImagenLlegaEnteraYConSuTipo()
+    {
+        var (c, _) = Armar();
+        var r = await c.GetAsync("/api/homero/anuncios/7/imagen");
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Equal("image/png", r.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(HomeroFalso.Png, await r.Content.ReadAsByteArrayAsync());
     }
 
     [Fact]

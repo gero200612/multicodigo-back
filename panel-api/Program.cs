@@ -2795,6 +2795,10 @@ async Task<IResult> ReenviarAHomero(
     {
         var r = await homero.ReenviarAsync(
             new HttpMethod(ctx.Request.Method), $"/{resto}{ctx.Request.QueryString}", cuerpo, ct);
+        if (r.Binario is not null)
+        {
+            return Results.File(r.Binario, r.Tipo ?? "application/octet-stream");
+        }
         return Results.Content(r.Cuerpo, "application/json", Encoding.UTF8, r.Status);
     }
     catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
@@ -2806,7 +2810,8 @@ async Task<IResult> ReenviarAHomero(
     }
 }
 
-api.MapMethods("/homero/{**resto}", ["GET", "POST", "PATCH", "DELETE"], ReenviarAHomero);
+// PUT tambien: las libretas, la config del buscador y el presupuesto de anuncios.
+api.MapMethods("/homero/{**resto}", ["GET", "POST", "PUT", "PATCH", "DELETE"], ReenviarAHomero);
 
 // En el despliegue de hoy esto NO sirve nada: el front vive en su propio repo y
 // en su propia imagen, y es el nginx de esa imagen el que sirve el bundle y
