@@ -81,6 +81,8 @@ describe('modo ensayo', () => {
     // Cuenta para el cupo de la casilla (cuida que no caiga en spam) y no
     // cambia al lead.
     expect(store.envios).toHaveLength(1);
+    // La web muestra "Enviado" en vez de Aprobar.
+    expect(await store.leerEstado('muestra_de:1')).toBeDefined();
     expect(store.leads[0]!.estado).toBe('borrador');
   });
 

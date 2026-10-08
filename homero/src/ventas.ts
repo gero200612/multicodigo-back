@@ -203,6 +203,9 @@ export async function ensayoActivo(
  * salio, factibilidad, seguimiento) va por Telegram. No cuenta para el cupo ni
  * toca al lead.
  */
+/** Clave en homero.estado: cuando se le mando a Gero la muestra de este borrador. */
+export const muestraDe = (leadId: number) => `muestra_de:${leadId}`;
+
 export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVentas): Promise<boolean> {
   const lead = await deps.store.lead(leadId);
   if (!lead || deps.casillas.length === 0) return false;
@@ -225,6 +228,8 @@ export async function mandarMuestra(leadId: number, a: string, deps: DepsDeVenta
   await deps.store.registrarEnvio({ cuenta: casilla.email, para: a, asunto: inicial.asunto, messageId });
   // Para reconocer la respuesta de Gero a esta muestra como si fuera del cliente.
   if (messageId) await deps.store.guardarEstado(`muestra:${messageId}`, leadId);
+  // Y para que la web muestre "Enviado" en vez de Aprobar.
+  await deps.store.guardarEstado(muestraDe(leadId), new Date().toISOString());
   return true;
 }
 

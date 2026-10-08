@@ -11,7 +11,7 @@ import { armarTablero } from './tablero.js';
 import { escribirLibreta, ITEMS_POR_LISTA, LARGO_DE_ITEM, leerLibreta, Libreta } from './libreta.js';
 import { CONFIG_DEL_BUSCADOR, type ConfigDelBuscador } from './agentes.js';
 import type { Actividad } from './mcp.js';
-import type { Boton } from './ventas.js';
+import { muestraDe, type Boton } from './ventas.js';
 
 /**
  * La API interna de Homero: lo que usa punchi.dev para manejarlo entero desde
@@ -90,7 +90,13 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
       const inicial = salientes.find((s) => s.tipo === 'inicial' && s.estado === 'borrador');
       if (!inicial) continue;
       const seguimiento = salientes.find((s) => s.tipo === 'seguimiento' && s.estado === 'borrador');
-      salida.push({ lead, inicial, seguimiento: seguimiento ?? null });
+      salida.push({
+        lead,
+        inicial,
+        seguimiento: seguimiento ?? null,
+        // En ensayo: cuando le llego a Gero la muestra (la web muestra "Enviado").
+        muestraEnviada: (await store.leerEstado<string>(muestraDe(id))) ?? null,
+      });
     }
     salida.sort((a, b) => (b.lead.investigacion?.factibilidad ?? 0) - (a.lead.investigacion?.factibilidad ?? 0));
     return { borradores: salida };
