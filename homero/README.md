@@ -110,6 +110,7 @@ volumen. Poné un tope de presupuesto en la consola.
 | `/buscar [rubro] [ciudad]` | Sale a buscar ya (`/buscar taller Córdoba`) |
 | `/rubros` | Respuestas / contactados de cada rubro |
 | `/ocupado 30/9` / `/libre 30/9` | Días sin reuniones |
+| `/presupuesto [monto]` | Anuncios: cómo va el mes; con monto, cambia el presupuesto mensual (`/presupuesto 80000`) |
 | `/pausa` / `/seguir` | Frena o retoma (las bandejas se siguen leyendo) |
 | `/probar_ia` / `/probar_mail <destino> [1-3]` | Pruebas |
 
@@ -160,6 +161,51 @@ pliego y el motivo, y se reintenta con el mismo botón.
 | `HOMERO_API_TOKEN` | — | La API interna para punchi.dev. Sin esto no se levanta |
 | `HOMERO_API_PUERTO` | `8095` | |
 | `BRIDGE_URL` / `BRIDGE_API_TOKEN` | — | Para las demos. Sin las dos no hay botón de demo |
+| `META_TOKEN` | — | Token del usuario del sistema `homero`. Sin esto no hay nada de Meta (se avisa una vez en el log) |
+| `META_AD_ACCOUNT_ID` | — | La cuenta publicitaria, con o sin `act_` (`act_980029277705534`) |
+| `META_PAGE_ID` | — | La página de Sincro (`61595291607526`) |
+| `META_APP_ID` | — | La app (`1410095257330902`); hoy solo informativo |
+| `META_API_VERSION` | `v23.0` | Fija: antes de cambiarla, correr `scripts/meta-humo.ts` |
+
+## Anuncios en Meta
+
+Spec: `docs/superpowers/specs/2026-10-08-homero-anuncios-meta-design.md`. Anuncios
+de Instagram y Facebook con formulario adentro, una sola campaña `OUTCOME_LEADS`
+y un conjunto por anuncio (Argentina, 25 a 65).
+
+| Cuándo | Qué hace |
+|---|---|
+| 10:00 | El **publicista** (agente con libreta, como los otros) mira los resultados, propone anuncios nuevos y reparte el diario entre los aprobados. Corre otra vez cada vez que aprobás uno |
+| Al proponer | Te llega la imagen (1080×1080, plantilla de Sincro) y la tarjeta: **✅ Aprobar / ✏️ Cambiar / 🗑 Descartar**. Con Cambiar, tu próximo mensaje (o una respuesta a la tarjeta) es lo que hay que cambiar, y lo rehace |
+| Al aprobar | Recién ahí se crea en Meta (imagen, formulario, conjunto, creativo, anuncio), por la cola: si Meta falla, reintenta desde donde quedó |
+| Cada 5 min | Lee los formularios. Cada consulta entra a `homero.leads` como `caliente` (sin duplicar por `leadgen_id`, mail o teléfono), te avisa con link de WhatsApp y le sale un mail en minutos con tres horarios, sin esperar ventana ni cupo |
+| Cada hora | Lee los insights del mes a `homero.gastos`. Al 90% del presupuesto pausa todo y avisa |
+| 20:00 | Resumen: gasto de hoy y del mes contra el presupuesto, consultas, costo por consulta, reuniones y el mejor anuncio |
+
+El tope lo pone el código, no el agente: antes de cada cambio de diario,
+`gastado del mes + suma de diarios × días que faltan ≤ presupuesto del mes`
+(default $50.000, `/presupuesto` para cambiarlo). Si no entra, se rechaza con el
+diario que entra. El límite de gasto de la cuenta en Meta queda como segundo tope.
+
+Prueba de humo, solo lectura (cuenta, moneda, token de página, formularios,
+Instagram, intereses, insights), con el token real y sin imprimirlo:
+
+```bash
+docker exec homero node --experimental-strip-types scripts/meta-humo.ts
+```
+
+| Ruta (API interna) | Qué hace |
+|---|---|
+| `GET /anuncios` | Todos los anuncios con su gasto, impresiones, consultas, leads y reuniones del mes, más los números del mes |
+| `GET /anuncios/:id/imagen` | El PNG del anuncio |
+| `POST /anuncios/:id/aprobar` | Igual que ✅ en Telegram: lo deja aprobado y encola la publicación |
+| `POST /anuncios/:id/descartar` | Igual que 🗑 |
+| `POST /anuncios/:id/cambiar` | `{ pedido }`: igual que ✏️, el publicista lo rehace |
+| `GET /anuncios/presupuesto` | `{ presupuesto, mes }` |
+| `PUT /anuncios/presupuesto` | `{ monto }` en pesos por mes; devuelve `aviso` si pasa el límite de la cuenta en Meta |
+| `GET /anuncios/resumen` | Los números del resumen de las 20 y su texto |
+
+La fuente de la imagen es Inter (`assets/fuentes`, licencia OFL en `OFL.txt`).
 
 ## Desarrollo
 
