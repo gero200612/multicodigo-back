@@ -480,11 +480,12 @@ export function buildWebhookServer(
         // un directorio en el disco de la VM y el `github_repo`, parte de una
         // URL de git. El gateway lo valida igual —es el que toca el disco— pero
         // el bridge no tiene por que reenviarle algo que ya sabe que esta mal.
-        repos: z.array(RepoDelPedido).max(20).optional(),
+        repos: opcional(z.array(RepoDelPedido).max(20)),
         // El token de instalacion que firmo el panel. Se valida la forma —entra
         // en un header del lado del gateway— pero no se mira el contenido: el
         // bridge es un caño para esto.
-        githubToken: z.string().regex(/^[A-Za-z0-9._~+/=-]+$/).max(512).optional(),
+        // `opcional` y no `.optional()`: sin la App el panel manda `null`.
+        githubToken: opcional(z.string().regex(/^[A-Za-z0-9._~+/=-]+$/).max(512)),
         // Los documentos del proyecto, con URLs firmadas. El bridge no los mira:
         // los reenvia al gateway, que los baja al worktree.
         //
@@ -502,11 +503,12 @@ export function buildWebhookServer(
               // la manda, y ahi el proyecto simplemente no tiene instructivo.
               // El bridge la usa para separarlo (ver `separarInstructivo`); el
               // gateway recibe el instructivo en su propio campo.
-              es_instruccion: z.boolean().optional(),
+              es_instruccion: opcional(z.boolean()),
             }),
           )
           .max(50)
-          .optional(),
+          .nullish()
+          .transform((v) => v ?? undefined),
         // Cuánto pregunta el agente en ESTE turno, de la configuración de
         // Punchi. `desatendido` entra: es lo que deja terminar un ticket solo,
         // vale para este turno y nada más, y lo seguro no cambia —el gateway
@@ -532,6 +534,10 @@ export function buildWebhookServer(
 
         const cuerpo = CuerpoTurno.safeParse(request.body);
         if (!cuerpo.success) {
+          // Que campo y por que, sin los valores (el prompt y el token no van al
+          // log). Sin esto el panel solo ve `cuerpo_invalido` y no hay pista.
+          const motivos = cuerpo.error.issues.map((i) => `${i.path.join('.') || '(raiz)'}: ${i.code} ${i.message}`);
+          console.error(`[bridge] turno rechazado: ${motivos.join(' | ')}`);
           return reply
             .code(400)
             .send({ code: 'cuerpo_invalido', message: 'faltan datos del turno' });

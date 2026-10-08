@@ -388,6 +388,20 @@ describe('POST /turnos', () => {
     expect(r.statusCode).toBe(400);
   });
 
+  // El panel serializa sin ignorar nulls: un proyecto sin la GitHub App manda
+  // `"githubToken": null`, y con `.optional()` el ticket rebotaba como
+  // cuerpo_invalido (el usuario lo veia como "el servidor no esta respondiendo").
+  it('acepta los campos que el panel manda en null', async () => {
+    const { app } = conPipeline();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/turnos',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { ...cuerpoOk, githubToken: null, repos: null, documentos: null, modo: null, publicar: null },
+    });
+    expect(r.statusCode).toBe(200);
+  });
+
   it('un turno del panel devuelve la respuesta del agente', async () => {
     const { app } = conPipeline();
 
