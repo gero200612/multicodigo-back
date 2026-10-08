@@ -184,7 +184,7 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
         signal: AbortSignal.timeout(60_000),
       });
     } catch (err) {
-      throw new ErrorDeMeta(ocultar(`no pude hablar con Meta: ${err instanceof Error ? err.message : String(err)}`, cfg.token));
+      throw new ErrorDeMeta(ocultar(ocultar(`no pude hablar con Meta: ${err instanceof Error ? err.message : String(err)}`, cfg.token), token));
     }
     let json: Record<string, unknown> = {};
     try {
@@ -195,7 +195,8 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
     if (!r.ok || json.error) {
       const e = (json.error ?? {}) as { message?: string; code?: number; error_user_msg?: string };
       const detalle = [e.message, e.error_user_msg].filter(Boolean).join(' · ') || `HTTP ${r.status}`;
-      throw new ErrorDeMeta(ocultar(`Meta: ${detalle}`, cfg.token), e.code);
+      // Con el token de la pagina, ese tambien se tapa.
+      throw new ErrorDeMeta(ocultar(ocultar(`Meta: ${detalle}`, cfg.token), token), e.code);
     }
     return json;
   }
