@@ -344,6 +344,8 @@ export interface CuentaClaude {
   slot: string;
   plan: string;
   precio: number;
+  /** Si suma como gasto. Una que no paga Gero se ve igual, pero en cero. */
+  esGasto: boolean;
 }
 
 export interface Cliente {
@@ -1431,15 +1433,15 @@ export class PgStore implements Store {
   }
 
   async cuentasClaude() {
-    const r = await this.pool.query(`SELECT slot, plan, precio FROM homero.cuentas_claude ORDER BY slot`);
-    return r.rows.map((f) => ({ slot: f.slot as string, plan: f.plan as string, precio: Number(f.precio) }));
+    const r = await this.pool.query(`SELECT slot, plan, precio, es_gasto FROM homero.cuentas_claude ORDER BY slot`);
+    return r.rows.map((f) => ({ slot: f.slot as string, plan: f.plan as string, precio: Number(f.precio), esGasto: f.es_gasto !== false }));
   }
 
   async guardarCuentaClaude(c: CuentaClaude) {
     await this.pool.query(
-      `INSERT INTO homero.cuentas_claude (slot, plan, precio) VALUES ($1, $2, $3)
-       ON CONFLICT (slot) DO UPDATE SET plan = EXCLUDED.plan, precio = EXCLUDED.precio`,
-      [c.slot, c.plan, c.precio],
+      `INSERT INTO homero.cuentas_claude (slot, plan, precio, es_gasto) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (slot) DO UPDATE SET plan = EXCLUDED.plan, precio = EXCLUDED.precio, es_gasto = EXCLUDED.es_gasto`,
+      [c.slot, c.plan, c.precio, c.esGasto],
     );
   }
 

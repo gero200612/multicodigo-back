@@ -15,7 +15,7 @@ import type { Cliente, CuentaClaude, Fijo, Moneda, Pago, Store } from './store.j
  * - Lo que entra: los pagos de los clientes, cargados a mano.
  */
 
-export const PLAN_POR_DEFECTO = { plan: 'Pro', precio: 20 } as const;
+export const PLAN_POR_DEFECTO = { plan: 'Pro', precio: 20, esGasto: true } as const;
 /** Gratis y sin clave. El dólar tarjeta es el que se paga de verdad por Meta. */
 export const URL_DEL_DOLAR = 'https://dolarapi.com/v1/dolares/tarjeta';
 
@@ -226,7 +226,9 @@ export async function numerosDeFinanzas(
     .map(([slot, d]) => {
       const plan = planDe(slot);
       const agentes = agentesPorCuenta?.[slot];
-      return { ...plan, ...(agentes ? { agentes } : {}), dias: d, usd: redondo((plan.precio * d) / dias.length) };
+      // La que no es gasto se lista igual, en cero: Gero tiene que verla para poder prenderla.
+      const usd = plan.esGasto ? redondo((plan.precio * d) / dias.length) : 0;
+      return { ...plan, ...(agentes ? { agentes } : {}), dias: d, usd };
     });
   const claudeUsd = redondo(cuentas.reduce((n, c) => n + c.usd, 0));
 
@@ -295,6 +297,7 @@ export const FijoNuevo = z.object({
 export const PlanDeCuenta = z.object({
   plan: z.string().trim().min(1).max(40),
   precio: z.number().finite().min(0).max(10_000),
+  esGasto: z.boolean().default(true),
 });
 
 export const ClienteNuevo = z.object({

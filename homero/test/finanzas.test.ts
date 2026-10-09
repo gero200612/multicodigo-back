@@ -25,7 +25,7 @@ describe('Claude: cuentas vinculadas × plan, por día', () => {
     // La foto de septiembre rige desde el 1 de octubre.
     await store.guardarCuentasDelDia('2026-09-20', ['c1', 'c2']);
     await store.guardarCuentasDelDia('2026-10-17', ['c1', 'c2', 'c10']);
-    await store.guardarCuentaClaude({ slot: 'c2', plan: 'Max', precio: 100 });
+    await store.guardarCuentaClaude({ slot: 'c2', plan: 'Max', precio: 100, esGasto: true });
     const n = await numerosDeFinanzas({ store }, OCTUBRE, 50);
     const c10 = n.claude.cuentas.find((c) => c.slot === 'c10')!;
     expect(c10.dias).toBe(15);
@@ -33,6 +33,18 @@ describe('Claude: cuentas vinculadas × plan, por día', () => {
     expect(n.claude.cuentas.find((c) => c.slot === 'c2')!.usd).toBe(100);
     // Orden numérico: c10 después de c2.
     expect(n.claude.cuentas.map((c) => c.slot)).toEqual(['c1', 'c2', 'c10']);
+  });
+
+  it('una cuenta que no es gasto se lista, pero en cero', async () => {
+    const store = new MemoriaStore();
+    await store.guardarCuentasDelDia('2026-10-01', ['c1', 'c2']);
+    await store.guardarCuentaClaude({ slot: 'c2', plan: 'Pro', precio: 20, esGasto: false });
+    const n = await numerosDeFinanzas({ store }, OCTUBRE, 50);
+    expect(n.claude.cuentas.map((c) => [c.slot, c.esGasto, c.usd])).toEqual([
+      ['c1', true, 20],
+      ['c2', false, 0],
+    ]);
+    expect(n.claude.usd).toBe(20);
   });
 
   it('sin ninguna foto (Punchi nunca contestó) lo dice y no inventa', async () => {
@@ -197,7 +209,7 @@ describe('la API de finanzas', () => {
     expect(r.numeros.gastado).toBe(118);
     expect(r.numeros.ingresos.usd).toBe(400);
     expect(r.clientes).toHaveLength(1);
-    expect(r.planPorDefecto).toEqual({ plan: 'Pro', precio: 20 });
+    expect(r.planPorDefecto).toEqual({ plan: 'Pro', precio: 20, esGasto: true });
 
     expect((await h.pedir('DELETE', `/finanzas/fijos/${fijo}`)).statusCode).toBe(200);
     expect((await h.pedir('GET', '/finanzas')).json().numeros.gastado).toBe(100);
