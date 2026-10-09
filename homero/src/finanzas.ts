@@ -176,7 +176,8 @@ export async function numerosDeFinanzas(
   const { primerDia, ultimoDia, dias } = diasDe(mes);
   const [cotizaciones, fotosTodas, planes, fijos, gastos, pagos, clientes] = await Promise.all([
     deps.store.cotizaciones(ultimoDia),
-    deps.store.cuentasPorDia('0000-01-01'),
+    // "Desde siempre": Postgres no acepta el año 0000.
+    deps.store.cuentasPorDia('1970-01-01'),
     deps.store.cuentasClaude(),
     deps.store.fijos(),
     deps.store.gastos(primerDia),
