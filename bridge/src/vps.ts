@@ -215,7 +215,14 @@ export async function publicarEnVps(
           url: null,
           secreto: cifrar(JSON.stringify({ conexion, url: urlDeBase }), deps.config.clave),
         });
-        await deps.store.estadoRecursoVps(b.uuid, 'andando', null);
+        // `instant_deploy` no alcanza: con armados en cola, Coolify crea la
+        // base y no levanta el contenedor (visto con AH, 2026-10-09). Se la
+        // prende explicito; el back la necesita al arrancar.
+        // Si Coolify ya la tiene en cola contesta "already in progress": esta bien.
+        // Queda "construyendo" hasta que el estado real diga que corre.
+        const p = await coolify.prender('databases', b.uuid, c);
+        const enCola = !p.ok && /already in progress/i.test(p.motivo);
+        await deps.store.estadoRecursoVps(b.uuid, p.ok || enCola ? 'construyendo' : 'fallo', p.ok || enCola ? null : p.motivo);
       }
     } else {
       try {
