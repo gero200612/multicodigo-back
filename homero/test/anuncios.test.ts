@@ -7,8 +7,10 @@ import {
   descartarPlantillasViejas,
   escribirALeadMeta,
   estadoDelMes,
+  controlarEntrega,
   leerInsights,
   leerLeadsDeMeta,
+  PUBLICADO_EN,
   linkDeWhatsapp,
   mesDe,
   interesesObsoletosDelError,
@@ -165,6 +167,36 @@ describe('el tope de plata', () => {
     // Prender uno con 2.000 no entra: 46.500 + 2.000 = 48.500 sí entraría, pero 4.000 no.
     const r = await repartirPresupuesto([{ anuncioId: a, diario: 4000 }], h.deps);
     expect(r).toMatchObject({ ok: false });
+  });
+
+  // 2026-10-09: aprobados y ACTIVE en la API, pero Meta no los mostraba (pedía
+  // verificar un teléfono) y nada lo decía. Homero avisa por el síntoma.
+  it('un activo sin impresiones pasadas las 6 h se avisa, una vez por día', async () => {
+    const h = conMeta({ ahora: new Date('2026-09-29T13:00:00Z') });
+    const a = await activo(h, 2000, 1);
+    const b = await activo(h, 2000, 2);
+    await h.store.guardarEstado(PUBLICADO_EN(a), '2026-09-29T03:00:00Z');
+    await h.store.guardarEstado(PUBLICADO_EN(b), '2026-09-29T03:00:00Z');
+    h.f.datos.insights = [{ anuncio: 'ad2', dia: '2026-09-29', gasto: 300, impresiones: 120, consultas: 0 }];
+
+    await leerInsights(h.deps);
+    const avisos = h.avisos.filter((t) => t.startsWith('⚠️ Meta no está mostrando'));
+    expect(avisos).toHaveLength(1);
+    expect(avisos[0]).toContain(`#${a}`);
+    expect(avisos[0]).not.toContain(`#${b}`);
+
+    // Mismo día: no se repite. Al otro día, si sigue igual, sí.
+    await leerInsights(h.deps);
+    expect(h.avisos.filter((t) => t.startsWith('⚠️ Meta no está mostrando'))).toHaveLength(1);
+    h.mover(new Date('2026-09-30T13:00:00Z'));
+    expect(await controlarEntrega(h.deps)).toEqual([a]);
+  });
+
+  it('recién publicado no se avisa aunque no tenga impresiones', async () => {
+    const h = conMeta({ ahora: new Date('2026-09-29T13:00:00Z') });
+    const a = await activo(h, 2000, 1);
+    await h.store.guardarEstado(PUBLICADO_EN(a), '2026-09-29T10:00:00Z');
+    expect(await controlarEntrega(h.deps)).toEqual([]);
   });
 
   it('el mínimo diario lo pone Meta: se lee de la cuenta o se aprende del rechazo', async () => {

@@ -608,6 +608,7 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
     ids.anuncio = await meta.crearAnuncio({ nombre: `#${a.id} · ${a.titulo}`, conjunto: ids.conjunto, creativo: ids.creativo });
   }
   await deps.store.actualizarAnuncio(a.id, { metaIds: ids, estado: 'activo' });
+  await deps.store.guardarEstado(PUBLICADO_EN(a.id), deps.ahora().toISOString());
   const final = (await deps.store.anuncio(a.id))!;
   await deps.avisar(`🚀 Publiqué el anuncio #${a.id} (${a.titulo}) con ${pesos(final.diario)} por día. Meta lo revisa antes de mostrarlo.`);
 }
@@ -689,6 +690,60 @@ export async function leerInsights(deps: DepsDeAnuncios): Promise<void> {
     }),
   );
   await controlarTope(deps);
+  await controlarEntrega(deps);
+}
+
+/** Clave en homero.estado: cuándo se publicó cada anuncio en Meta (ISO). */
+export const PUBLICADO_EN = (id: number) => `anuncio:publicado_en:${id}`;
+/** Clave en homero.estado: el último día que se avisó que un anuncio no se muestra. */
+const SIN_ENTREGA_AVISADO = (id: number) => `anuncio:sin_entrega:${id}`;
+/** Desde que se publicó, cuántas horas sin una sola impresión hasta avisar. */
+export const HORAS_SIN_ENTREGA = 6;
+const ADS_MANAGER = 'https://adsmanager.facebook.com/adsmanager/manage/ads';
+
+/**
+ * Los anuncios activos que Meta no está mostrando: publicados hace más de
+ * {@link HORAS_SIN_ENTREGA} horas y sin una impresión ni ayer ni hoy.
+ *
+ * Se mira el síntoma y no la causa a propósito. El 2026-10-09 los dos primeros
+ * quedaron en "Preparing" porque la cuenta pedía verificar un teléfono
+ * (#3858013), y la API los daba ACTIVE, sin `issues_info` ni rechazo: no había
+ * de dónde leer el motivo. Un anuncio aprobado que no gasta es lo que se ve
+ * igual sea el teléfono, el medio de pago o la revisión.
+ *
+ * Avisa una vez por día y por anuncio. Devuelve los ids avisados.
+ */
+export async function controlarEntrega(deps: DepsDeAnuncios): Promise<number[]> {
+  const ahora = deps.ahora();
+  const activos = (await deps.store.anuncios()).filter((a) => a.estado === 'activo' && a.metaIds.anuncio);
+  if (activos.length === 0) return [];
+
+  const ayer = diaArgentino(new Date(ahora.getTime() - 24 * 3_600_000));
+  const hoy = diaArgentino(ahora);
+  const conImpresiones = new Set(
+    (await deps.store.gastos(ayer)).filter((g) => g.impresiones > 0).map((g) => g.anuncioId),
+  );
+
+  const frenados: Anuncio[] = [];
+  for (const a of activos) {
+    if (conImpresiones.has(a.id)) continue;
+    const publicado = await deps.store.leerEstado<string>(PUBLICADO_EN(a.id));
+    const desde = publicado ? new Date(publicado) : (a.aprobadoEn ?? a.creadoEn);
+    if (ahora.getTime() - desde.getTime() < HORAS_SIN_ENTREGA * 3_600_000) continue;
+    if ((await deps.store.leerEstado<string>(SIN_ENTREGA_AVISADO(a.id))) === hoy) continue;
+    frenados.push(a);
+  }
+  if (frenados.length === 0) return [];
+
+  const lista = frenados.map((a) => `#${a.id} (${a.titulo})`).join(', ');
+  await deps.avisar(
+    `⚠️ Meta no está mostrando ${frenados.length === 1 ? 'el anuncio' : 'los anuncios'} ${lista}: ` +
+      `${frenados.length === 1 ? 'está activo' : 'están activos'} hace más de ${HORAS_SIN_ENTREGA} h y nadie ${frenados.length === 1 ? 'lo vio' : 'los vio'}. ` +
+      'Algo lo frena del lado de Meta (verificar el teléfono de la cuenta, el medio de pago o la revisión): ' +
+      `fijate en Ads Manager → ${ADS_MANAGER}`,
+  );
+  for (const a of frenados) await deps.store.guardarEstado(SIN_ENTREGA_AVISADO(a.id), hoy);
+  return frenados.map((a) => a.id);
 }
 
 // ------------------------------------------------------------ consultas que entran
