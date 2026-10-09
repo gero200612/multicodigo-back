@@ -141,7 +141,7 @@ export class ErrorDelAgente extends Error {
  */
 export async function listarAgentes(
   deps: AgentsClientDeps,
-): Promise<{ id: string; arriba: boolean; cuenta: boolean; ocupado: boolean; account?: string }[]> {
+): Promise<{ id: string; arriba: boolean; cuenta: boolean; ocupado: boolean; cuentaId?: string }[]> {
   const doFetch = deps.fetchImpl ?? fetch;
   const res = await doFetch(`${deps.gatewayUrl.replace(/\/$/, '')}/agents`, {
     headers: { authorization: `Bearer ${deps.token}` },
@@ -156,8 +156,8 @@ export async function listarAgentes(
       id: string;
       arriba: boolean;
       cuenta?: boolean;
-      /** El mail de la cuenta de Claude (gateway nuevo). Varios slots pueden compartirla. */
-      account?: string;
+      /** Huella de la cuenta de Claude (no el mail): varios slots pueden compartirla. */
+      cuentaId?: string;
       ocupado?: { usuarioId?: string; desde?: number };
     }[];
   };

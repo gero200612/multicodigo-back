@@ -209,8 +209,9 @@ export interface ApiDeps {
    */
   finanzas?: {
     /**
-     * Los slots con una cuenta de Claude cargada, con el mail de esa cuenta si el
-     * gateway lo sabe: varios slots pueden compartir una suscripción.
+     * Los slots con una cuenta de Claude cargada, con una huella de esa cuenta
+     * (no el mail) si el gateway la sabe: varios slots pueden compartir una
+     * suscripción.
      */
     cuentas: () => Promise<{ slot: string; arriba: boolean; cuenta?: string }[]>;
   };

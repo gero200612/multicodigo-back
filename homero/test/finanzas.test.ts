@@ -102,15 +102,35 @@ describe('publicidad, fijos e ingresos', () => {
 
 describe('suscripciones, no agentes', () => {
   // 2026-10-09: 6 slots sobre 3 cuentas Pro contaban USD 120.
-  it('varios slots con la misma cuenta son una sola; sin mail, el slot cuenta solo', () => {
+  it('varios slots con la misma cuenta son una sola, nombrada por su primer slot; sin huella, cuenta sola', () => {
     expect(
       suscripciones([
-        { slot: 'c1', cuenta: 'a@x.com' },
-        { slot: 'c2', cuenta: 'A@x.com ' },
-        { slot: 'c3', cuenta: 'b@x.com' },
+        { slot: 'c10', cuenta: 'aaaa' },
+        { slot: 'c2', cuenta: 'aaaa' },
+        { slot: 'c3', cuenta: 'bbbb' },
         { slot: 'c4' },
       ]),
-    ).toEqual(['a@x.com', 'b@x.com', 'c4']);
+    ).toEqual([
+      { id: 'c2', slots: ['c2', 'c10'] },
+      { id: 'c3', slots: ['c3'] },
+      { id: 'c4', slots: ['c4'] },
+    ]);
+  });
+
+  it('la tarea del día guarda una cuenta por suscripción y qué agentes la usan', async () => {
+    const store = new MemoriaStore();
+    await finanzasDelDia({
+      store,
+      ahora: () => new Date('2026-10-09T15:00:00Z'),
+      pedirDolar: async () => 2000,
+      punchi: { cuentas: async () => [{ slot: 'c1', cuenta: 'h1' }, { slot: 'c4', cuenta: 'h1' }, { slot: 'c2', cuenta: 'h2' }] },
+    });
+    const n = await numerosDeFinanzas({ store }, '2026-10', 50);
+    expect(n.claude.cuentas.map((c) => [c.slot, c.agentes])).toEqual([
+      ['c1', ['c1', 'c4']],
+      ['c2', ['c2']],
+    ]);
+    expect(n.claude.usd).toBe(40);
   });
 });
 

@@ -20,19 +20,30 @@ export const PLAN_POR_DEFECTO = { plan: 'Pro', precio: 20 } as const;
 export const URL_DEL_DOLAR = 'https://dolarapi.com/v1/dolares/tarjeta';
 
 export interface ClienteDeCuentas {
-  /** Los slots con una cuenta de Claude cargada, con el mail de la cuenta si se sabe. */
+  /** Los slots con una cuenta de Claude cargada, con una huella de la cuenta (no el mail) si se sabe. */
   cuentas(): Promise<{ slot: string; cuenta?: string }[]>;
 }
 
+/** Clave en homero.estado: qué slots usan cada cuenta, para mostrarlo ("c1, c4"). */
+export const AGENTES_POR_CUENTA = 'finanzas:agentes_por_cuenta';
+
 /**
  * Las suscripciones, no los agentes: varios slots pueden usar la misma cuenta
- * de Claude (el 2026-10-09 había 6 slots sobre 3 cuentas Pro). Un slot sin mail
- * conocido cuenta como una cuenta propia, con su nombre.
+ * de Claude (el 2026-10-09 había 6 slots sobre 3 cuentas Pro). Se agrupan por
+ * la huella de la cuenta; un slot sin huella cuenta solo, con su nombre. Cada
+ * cuenta se nombra por su primer slot, que es lo que Gero reconoce.
  */
-export function suscripciones(slots: readonly { slot: string; cuenta?: string }[]): string[] {
-  return [...new Set(slots.map((s) => s.cuenta?.trim().toLowerCase() || s.slot))].sort((a, b) =>
-    a.localeCompare(b, 'en', { numeric: true }),
-  );
+export function suscripciones(slots: readonly { slot: string; cuenta?: string }[]): { id: string; slots: string[] }[] {
+  const porCuenta = new Map<string, string[]>();
+  for (const s of slots) {
+    const clave = s.cuenta?.trim() || s.slot;
+    porCuenta.set(clave, [...(porCuenta.get(clave) ?? []), s.slot]);
+  }
+  const orden = (a: string, b: string) => a.localeCompare(b, 'en', { numeric: true });
+  return [...porCuenta.values()]
+    .map((ss) => ss.sort(orden))
+    .map((ss) => ({ id: ss[0]!, slots: ss }))
+    .sort((a, b) => orden(a.id, b.id));
 }
 
 export interface DepsDeFinanzas {
@@ -67,8 +78,10 @@ export async function finanzasDelDia(deps: DepsDeFinanzas): Promise<{ dolar?: nu
   }
   if (deps.punchi) {
     try {
-      r.cuentas = suscripciones(await deps.punchi.cuentas());
+      const s = suscripciones(await deps.punchi.cuentas());
+      r.cuentas = s.map((c) => c.id);
       await deps.store.guardarCuentasDelDia(hoy, r.cuentas);
+      await deps.store.guardarEstado(AGENTES_POR_CUENTA, Object.fromEntries(s.map((c) => [c.id, c.slots])));
     } catch (err) {
       console.error('[homero] no pude leer las cuentas de Punchi:', err);
     }
@@ -128,6 +141,8 @@ const redondo = (n: number) => Math.round(n * 100) / 100;
 // ------------------------------------------------------------ el mes
 
 export interface CuentaDelMes extends CuentaClaude {
+  /** Los agentes que la usan (la última foto), si se sabe: "c1, c4". */
+  agentes?: string[];
   /** Días del mes que estuvo vinculada. */
   dias: number;
   /** Lo que paga este mes: su plan por la parte del mes que estuvo. */
@@ -185,7 +200,7 @@ export async function numerosDeFinanzas(
   pisoAbono: number,
 ): Promise<NumerosDeFinanzas> {
   const { primerDia, ultimoDia, dias } = diasDe(mes);
-  const [cotizaciones, fotosTodas, planes, fijos, gastos, pagos, clientes] = await Promise.all([
+  const [cotizaciones, fotosTodas, planes, fijos, gastos, pagos, clientes, agentesPorCuenta] = await Promise.all([
     deps.store.cotizaciones(ultimoDia),
     // "Desde siempre": Postgres no acepta el año 0000.
     deps.store.cuentasPorDia('1970-01-01'),
@@ -194,6 +209,7 @@ export async function numerosDeFinanzas(
     deps.store.gastos(primerDia),
     deps.store.pagos(primerDia, ultimoDia),
     deps.store.clientes(),
+    deps.store.leerEstado<Record<string, string[]>>(AGENTES_POR_CUENTA),
   ]);
 
   // La última foto ANTES del mes también cuenta: es la que rige desde el día 1.
@@ -209,7 +225,8 @@ export async function numerosDeFinanzas(
     .sort(([a], [b]) => a.localeCompare(b, 'en', { numeric: true }))
     .map(([slot, d]) => {
       const plan = planDe(slot);
-      return { ...plan, dias: d, usd: redondo((plan.precio * d) / dias.length) };
+      const agentes = agentesPorCuenta?.[slot];
+      return { ...plan, ...(agentes ? { agentes } : {}), dias: d, usd: redondo((plan.precio * d) / dias.length) };
     });
   const claudeUsd = redondo(cuentas.reduce((n, c) => n + c.usd, 0));
 
