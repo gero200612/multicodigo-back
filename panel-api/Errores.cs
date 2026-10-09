@@ -50,7 +50,7 @@ public sealed record ReporteDeError(
     string? ProyectoId,
     string? UsuarioId);
 
-/// <summary>El cuerpo de "Corregí este": con qué slot del admin.</summary>
+/// <summary>El cuerpo de "Corregí este": con qué slot del admin, o "cualquiera".</summary>
 public sealed record CuerpoCorregir([property: JsonPropertyName("slot")] string? Slot);
 
 public interface IErroresClient
@@ -403,10 +403,27 @@ public sealed class CorrectorDeErrores(
 
             // `desatendido` y sin publicar: Punchi arregla y pushea a SU rama
             // (`claude/<agente>/…`); a main va solo con el botón Publicar.
-            var r = await sp.GetRequiredService<IBridgeClient>().TurnoAsync(
-                p.ProyectoId, p.NombreDelProyecto, p.Slot, p.UsuarioId,
+            var bridge = sp.GetRequiredService<IBridgeClient>();
+            Task<RespuestaTurno> Turno(string slot) => bridge.TurnoAsync(
+                p.ProyectoId, p.NombreDelProyecto, slot, p.UsuarioId,
                 PromptDeArreglo(p.Error), repos, githubToken, docs, "desatendido", ct,
                 publicar: false);
+
+            // "Cualquiera": el primero libre, o el primero que se libere. Mientras
+            // espera, la fila sigue en `arreglando` con `esperando` para que la
+            // pantalla lo diga; al tomar uno, se anota cuál.
+            var r = Cualquiera.Es(p.Slot)
+                ? await Cualquiera.ConElPrimeroLibre(
+                    async c => (IEnumerable<SlotVista>)(await sp.GetRequiredService<PanoramaService>()
+                        .VerAsync(p.Jwt, p.UsuarioId, c)).Slots,
+                    async slot =>
+                    {
+                        await errores.CambiarEstadoAsync(id, "arreglando", new { agente = slot }, CancellationToken.None);
+                        return await Turno(slot);
+                    },
+                    () => errores.CambiarEstadoAsync(id, "arreglando", new { esperando = true }, CancellationToken.None),
+                    ct)
+                : await Turno(p.Slot);
 
             await errores.CambiarEstadoAsync(id, "en_rama", new
             {

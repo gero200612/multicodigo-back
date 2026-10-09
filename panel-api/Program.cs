@@ -2276,7 +2276,8 @@ errores.MapPost("/{id:long}/corregir", async (
 {
     var usuarioId = ctx.User.FindFirst("sub")?.Value;
     if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
-    if (SlotInvalido(cuerpo.Slot ?? "") is { } malo) return malo;
+    // "cualquiera": el corrector espera al primero que se libere (Cualquiera.cs).
+    if (!Cualquiera.Es(cuerpo.Slot) && SlotInvalido(cuerpo.Slot ?? "") is { } malo) return malo;
     if (punchiProyectoId is null)
     {
         return Results.Json(
