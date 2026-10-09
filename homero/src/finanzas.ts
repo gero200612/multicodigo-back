@@ -20,8 +20,19 @@ export const PLAN_POR_DEFECTO = { plan: 'Pro', precio: 20 } as const;
 export const URL_DEL_DOLAR = 'https://dolarapi.com/v1/dolares/tarjeta';
 
 export interface ClienteDeCuentas {
-  /** Los slots con una cuenta de Claude cargada. */
-  cuentas(): Promise<{ slot: string }[]>;
+  /** Los slots con una cuenta de Claude cargada, con el mail de la cuenta si se sabe. */
+  cuentas(): Promise<{ slot: string; cuenta?: string }[]>;
+}
+
+/**
+ * Las suscripciones, no los agentes: varios slots pueden usar la misma cuenta
+ * de Claude (el 2026-10-09 había 6 slots sobre 3 cuentas Pro). Un slot sin mail
+ * conocido cuenta como una cuenta propia, con su nombre.
+ */
+export function suscripciones(slots: readonly { slot: string; cuenta?: string }[]): string[] {
+  return [...new Set(slots.map((s) => s.cuenta?.trim().toLowerCase() || s.slot))].sort((a, b) =>
+    a.localeCompare(b, 'en', { numeric: true }),
+  );
 }
 
 export interface DepsDeFinanzas {
@@ -56,7 +67,7 @@ export async function finanzasDelDia(deps: DepsDeFinanzas): Promise<{ dolar?: nu
   }
   if (deps.punchi) {
     try {
-      r.cuentas = (await deps.punchi.cuentas()).map((c) => c.slot);
+      r.cuentas = suscripciones(await deps.punchi.cuentas());
       await deps.store.guardarCuentasDelDia(hoy, r.cuentas);
     } catch (err) {
       console.error('[homero] no pude leer las cuentas de Punchi:', err);

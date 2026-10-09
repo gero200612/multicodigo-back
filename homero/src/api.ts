@@ -542,8 +542,9 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
     return { ok: true };
   });
 
+  // `:slot` es la cuenta: el mail de la suscripción (o el slot si no se sabe).
   app.put<{ Params: { slot: string } }>('/finanzas/cuentas/:slot', async (request, reply) => {
-    const slot = z.string().regex(/^c[1-9][0-9]?$/).safeParse(request.params.slot);
+    const slot = z.string().trim().min(1).max(200).safeParse(request.params.slot);
     const b = PlanDeCuenta.safeParse(request.body);
     if (!slot.success || !b.success) return invalido(reply);
     await store.guardarCuentaClaude({ slot: slot.data, ...b.data });

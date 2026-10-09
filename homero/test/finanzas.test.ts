@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { crearApi } from '../src/api.js';
-import { dolarDel, finanzasDelDia, numerosDeFinanzas } from '../src/finanzas.js';
+import { dolarDel, finanzasDelDia, numerosDeFinanzas, suscripciones } from '../src/finanzas.js';
 import { REGLA_INICIAL, reglaActual } from '../src/precios.js';
 import type { Acciones } from '../src/telegram.js';
 import { MemoriaStore } from './memoria.js';
@@ -100,6 +100,20 @@ describe('publicidad, fijos e ingresos', () => {
   });
 });
 
+describe('suscripciones, no agentes', () => {
+  // 2026-10-09: 6 slots sobre 3 cuentas Pro contaban USD 120.
+  it('varios slots con la misma cuenta son una sola; sin mail, el slot cuenta solo', () => {
+    expect(
+      suscripciones([
+        { slot: 'c1', cuenta: 'a@x.com' },
+        { slot: 'c2', cuenta: 'A@x.com ' },
+        { slot: 'c3', cuenta: 'b@x.com' },
+        { slot: 'c4' },
+      ]),
+    ).toEqual(['a@x.com', 'b@x.com', 'c4']);
+  });
+});
+
 describe('la tarea del día', () => {
   it('guarda el dólar y la foto de las cuentas; si una falla, la otra igual', async () => {
     const store = new MemoriaStore();
@@ -173,7 +187,7 @@ describe('la API de finanzas', () => {
     const h = conApi();
     expect((await h.pedir('GET', '/finanzas?mes=2026-13')).statusCode).toBe(400);
     expect((await h.pedir('POST', '/finanzas/fijos', { nombre: '', monto: 1, moneda: 'USD', periodo: 'mensual', desde: '2026-10-01' })).statusCode).toBe(400);
-    expect((await h.pedir('PUT', '/finanzas/cuentas/x1', { plan: 'Pro', precio: 20 })).statusCode).toBe(400);
+    expect((await h.pedir('PUT', '/finanzas/cuentas/c1', { plan: 'Pro', precio: -5 })).statusCode).toBe(400);
     expect((await h.pedir('POST', '/finanzas/pagos', { clienteId: 99, dia: '2026-10-05', monto: 1, moneda: 'USD', concepto: 'abono' })).statusCode).toBe(400);
   });
 });

@@ -208,8 +208,11 @@ export interface ApiDeps {
    * empresa. Solo lectura, detrás del mismo bearer que las demos.
    */
   finanzas?: {
-    /** Los slots con una cuenta de Claude cargada: cada uno es una suscripción que se paga. */
-    cuentas: () => Promise<{ slot: string; arriba: boolean }[]>;
+    /**
+     * Los slots con una cuenta de Claude cargada, con el mail de esa cuenta si el
+     * gateway lo sabe: varios slots pueden compartir una suscripción.
+     */
+    cuentas: () => Promise<{ slot: string; arriba: boolean; cuenta?: string }[]>;
   };
   demos?: {
     abrir: (p: PedidoDeDemo) => Promise<ResultadoDeDemo>;

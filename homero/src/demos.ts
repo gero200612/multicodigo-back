@@ -20,7 +20,7 @@ export interface ClienteDePunchi {
   abrir(proyecto: string, pliego: string): Promise<{ ok: true; corridaId: string } | { ok: false; motivo: string }>;
   estado(corridaId: string): Promise<{ estado: 'abierta' | 'cerrada'; motivoDeCierre?: string; url?: string } | undefined>;
   /** Los slots con cuenta de Claude: cada uno es una suscripción (ver finanzas.ts). */
-  cuentas(): Promise<{ slot: string }[]>;
+  cuentas(): Promise<{ slot: string; cuenta?: string }[]>;
 }
 
 export interface DepsDeDemos extends DepsDeVentas {
@@ -184,7 +184,7 @@ export function clienteDePunchi(o: { url: string; token: string; chatId: number 
     async cuentas() {
       const r = await fetch(`${base}/interno/finanzas/cuentas`, { headers: auth, signal: AbortSignal.timeout(15_000) });
       if (!r.ok) throw new Error(`Punchi contestó ${r.status} a las cuentas`);
-      return ((await r.json()) as { cuentas?: { slot: string }[] }).cuentas ?? [];
+      return ((await r.json()) as { cuentas?: { slot: string; cuenta?: string }[] }).cuentas ?? [];
     },
   };
 }
