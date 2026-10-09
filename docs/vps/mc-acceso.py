@@ -42,6 +42,10 @@ NOMBRES = {
     '127.0.0.1': 'el propio servidor',
 }
 MAX_PENDIENTES = 5
+# Un Autorizar vale RECORDAR segundos para la MISMA clave, el mismo usuario,
+# el mismo servidor y el mismo origen. Cualquier otra combinacion pregunta.
+RECORDAR = int(os.environ.get('ACCESO_RECORDAR', '1800'))
+recordados = {}  # (servidor, usuario, desde, clave) -> vence (epoch)
 
 API = f'https://api.telegram.org/bot{TOKEN}'
 pendientes = {}  # id -> {'evento': Event, 'ok': bool|None, 'msg': int}
@@ -96,7 +100,14 @@ def escuchar_telegram():
             tg('answerCallbackQuery', callback_query_id=q['id'], text='Autorizado' if p['ok'] else 'Rechazado')
 
 
-def pedir(servidor, usuario, desde):
+def pedir(servidor, usuario, desde, clave=''):
+    llave = (servidor, usuario, desde, clave)
+    if clave:
+        with lock:
+            vence = recordados.get(llave, 0)
+        if vence > time.time():
+            print(f"recordado | {servidor} usuario={usuario} desde={desde} (vence en {int(vence - time.time())} s)", flush=True)
+            return True
     with lock:
         if sum(1 for p in pendientes.values() if p['ok'] is None) >= MAX_PENDIENTES:
             return False
@@ -120,6 +131,9 @@ def pedir(servidor, usuario, desde):
     final = '✅ Autorizado' if ok else ('⛔ Rechazado' if p['ok'] is False else '⌛ Venció sin respuesta')
     print(f"{final} | {pid} | usuario={usuario} desde={desde}", flush=True)
     p['ok'] = ok
+    if ok and clave:
+        with lock:
+            recordados[llave] = time.time() + RECORDAR
     tg('editMessageText', chat_id=USUARIO, message_id=p['msg'], parse_mode='HTML',
        reply_markup={'inline_keyboard': []},
        text=f"{texto.split(chr(10) + chr(10))[0]}\n\n{final}")
@@ -135,7 +149,8 @@ FIJO = '/var/lib/mc-acceso/fijo'
 TEXTO_FIJO = ('🔐 <b>Acceso a los servidores</b>\n\n'
               'Cada vez que alguien entra por SSH al VPS o a la Toshiba (con su clave), '
               'llega acá un pedido con <b>Autorizar</b> / <b>Rechazar</b>. Sin respuesta en '
-              f'{ESPERA} s, no entra. Los pedidos se borran solos al resolverse.')
+              f'{ESPERA} s, no entra. Un Autorizar vale {RECORDAR // 60} min para la misma clave desde '
+              'la misma máquina. Los pedidos se borran solos al resolverse.')
 
 
 def asegurar_fijo():
@@ -167,13 +182,14 @@ class H(BaseHTTPRequestHandler):
             servidor = str(d.get('servidor', '?'))[:30]
             usuario = str(d.get('usuario', '?'))[:40]
             desde = str(d.get('desde', ''))[:60]
+            clave = str(d.get('clave', ''))[:64]
         except Exception:
             self.send_response(400)
             self.end_headers()
             return
         # Lo que viene en el pedido es texto para el mensaje, escapado.
         esc = lambda s: s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        ok = pedir(esc(servidor), esc(usuario), esc(desde))
+        ok = pedir(esc(servidor), esc(usuario), esc(desde), clave)
         cuerpo = json.dumps({'ok': ok}).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')

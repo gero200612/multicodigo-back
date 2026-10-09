@@ -21,7 +21,13 @@ for linea in open('/etc/mc-acceso.conf'):
     if k:
         conf[k] = v
 secreto = open('/root/mc-acceso.secret').read().strip()
+# Que clave uso (sshd lo deja en SSH_AUTH_INFO_0 con ExposeAuthInfo): con
+# eso el Autorizar se recuerda solo para ESA clave, no para cualquiera.
+import hashlib
+info = os.environ.get('SSH_AUTH_INFO_0', '')
+clave = hashlib.sha256(info.encode()).hexdigest()[:32] if info.startswith('publickey ') else ''
 cuerpo = json.dumps({
+    'clave': clave,
     'servidor': conf.get('SERVIDOR', '?'),
     'usuario': os.environ.get('PAM_USER', '?'),
     'desde': os.environ.get('PAM_RHOST', ''),
