@@ -6,9 +6,8 @@ namespace MultiCodigo.Panel.Tests;
 /// <summary>
 /// Borrar un agente: DELETE /api/proyectos/{proyectoId}/agentes/{slot}.
 ///
-/// Borra la fila de `agentes` — el slot queda libre para que el gateway lo
-/// reasigne — y no toca el contenedor Docker ni el historial de jobs/test_runs
-/// de ese slot, que es cosa de otras piezas del sistema.
+/// Borra la fila de `agentes`, el contenedor (el numero queda libre), la cuenta
+/// de Claude cargada y las conversaciones. El historial de jobs/test_runs queda.
 /// </summary>
 public class AgentesTests(PanelFactory f) : IClassFixture<PanelFactory>
 {
@@ -98,4 +97,58 @@ public class AgentesTests(PanelFactory f) : IClassFixture<PanelFactory>
             f.Agentes.FallaBorrar = false;
         }
     }
+
+    /// <summary>"Si borro el c9 se borra": contenedor, cuenta y conversaciones.</summary>
+    [Fact]
+    public async Task Borrar_agente_borra_contenedor_cuenta_y_conversaciones()
+    {
+        f.Gateway.SlotsBorrados.Clear();
+        var r = await Cliente().DeleteAsync($"/api/proyectos/{ProyectoDePrueba}/agentes/c2");
+
+        Assert.Equal(HttpStatusCode.NoContent, r.StatusCode);
+        Assert.Contains("c2", f.Gateway.SlotsBorrados);
+        Assert.Contains("c2", f.Login.Borrados);
+        Assert.Contains("c2", f.Bridge.SesionesBorradas);
+    }
+
+    /// <summary>Trabajando no se borra: la fila vuelve y no se toca la cuenta.</summary>
+    [Fact]
+    public async Task Borrar_agente_trabajando_da_409_y_lo_deja_como_estaba()
+    {
+        f.Gateway.SlotOcupado = true;
+        f.Agentes.Registrados.Clear();
+        f.Login.Borrados.Clear();
+        try
+        {
+            var r = await Cliente().DeleteAsync($"/api/proyectos/{ProyectoDePrueba}/agentes/c1");
+
+            Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
+            Assert.Contains("agente_ocupado", await r.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            Assert.Contains(f.Agentes.Registrados, x => x.ProyectoId == ProyectoDePrueba && x.Slot == "c1");
+            Assert.DoesNotContain("c1", f.Login.Borrados);
+        }
+        finally
+        {
+            f.Gateway.SlotOcupado = false;
+        }
+    }
+
+    /// <summary>Un agente que no es del proyecto no llega a tocar el contenedor.</summary>
+    [Fact]
+    public async Task Borrar_agente_ajeno_no_toca_el_contenedor()
+    {
+        f.Agentes.NoEncontrado = true;
+        f.Gateway.SlotsBorrados.Clear();
+        try
+        {
+            var r = await Cliente().DeleteAsync($"/api/proyectos/{ProyectoDePrueba}/agentes/c9");
+            Assert.Equal(HttpStatusCode.NotFound, r.StatusCode);
+            Assert.Empty(f.Gateway.SlotsBorrados);
+        }
+        finally
+        {
+            f.Agentes.NoEncontrado = false;
+        }
+    }
+
 }

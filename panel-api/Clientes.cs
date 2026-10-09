@@ -18,6 +18,11 @@ public interface IGatewayClient
         string proyecto, string slot, IReadOnlyList<Repo> repos, string? githubToken,
         CancellationToken ct = default);
     Task<string> CrearSlotAsync(string proyecto, CancellationToken ct = default);
+    /// <summary>
+    /// Borra el contenedor del slot: el numero queda libre para el proximo.
+    /// <c>UpstreamException("agente_ocupado", 409)</c> si esta trabajando.
+    /// </summary>
+    Task BorrarSlotAsync(string slot, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -242,6 +247,11 @@ public interface IBridgeClient
     /// </summary>
     Task<ResultadoDesarrollo> DesarrolloAsync(
         string usuarioId, CuerpoDesarrollo cuerpo, CancellationToken ct = default);
+    /// <summary>
+    /// Borra las conversaciones guardadas de un slot: un agente nuevo que reuse
+    /// el numero no puede retomar la charla del que se borro.
+    /// </summary>
+    Task BorrarSesionesAsync(string slot, CancellationToken ct = default);
 }
 
 public interface IHistorialClient
@@ -396,6 +406,17 @@ public sealed class GatewayClient(HttpClient http) : IGatewayClient
     }
 
     private sealed record RespuestaSlot(string Slot);
+
+    public async Task BorrarSlotAsync(string slot, CancellationToken ct = default)
+    {
+        // Parar el contenedor puede tardar lo que tarda su stop.
+        using var cts = Topes.De(ct, 60);
+        var res = await http.DeleteAsync($"/slots/{Uri.EscapeDataString(slot)}", cts.Token);
+        if (res.StatusCode == HttpStatusCode.Conflict) throw new UpstreamException("agente_ocupado", status: 409);
+        // 404: ese slot ya no existe para el gateway, que es lo que se queria.
+        if (res.StatusCode == HttpStatusCode.NotFound) return;
+        if (!res.IsSuccessStatusCode) throw new UpstreamException("slot_no_borrado", status: (int)res.StatusCode);
+    }
 
     public async Task<Cola> ColaAsync(CancellationToken ct = default)
     {
@@ -864,6 +885,16 @@ public sealed class BridgeClient(HttpClient http) : IBridgeClient
     /// otro lado ya quedó anotada.
     /// </summary>
     private static UpstreamException DelBridge(string code) => new(code, delBridge: true);
+
+    public async Task BorrarSesionesAsync(string slot, CancellationToken ct = default)
+    {
+        using var cts = Topes.De(ct, 20);
+        var res = await http.DeleteAsync($"/agents/{Uri.EscapeDataString(slot)}/sessions", cts.Token);
+        if (!res.IsSuccessStatusCode && res.StatusCode != HttpStatusCode.NotFound)
+        {
+            throw new UpstreamException("sesiones_no_borradas", status: (int)res.StatusCode);
+        }
+    }
 }
 
 /// <summary>Con qué cuenta de Google está conectado alguien.</summary>

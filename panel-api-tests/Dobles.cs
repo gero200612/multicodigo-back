@@ -9,6 +9,18 @@ namespace MultiCodigo.Panel.Tests;
 /// </summary>
 public sealed class GatewayFalso : IGatewayClient
 {
+    /// <summary>Los slots que se borraron.</summary>
+    public List<string> SlotsBorrados { get; } = [];
+    /// <summary>El agente está trabajando: BorrarSlotAsync contesta agente_ocupado.</summary>
+    public bool SlotOcupado { get; set; }
+
+    public Task BorrarSlotAsync(string slot, CancellationToken ct = default)
+    {
+        if (SlotOcupado) throw new UpstreamException("agente_ocupado", status: 409);
+        SlotsBorrados.Add(slot);
+        return Task.CompletedTask;
+    }
+
     public List<Agente> Agentes { get; set; } = [new("c1", true), new("c2", false)];
     public Cola Cola { get; set; } = Cola.Vacia;
     public ResultadoTest Resultado { get; set; } = new(true, "hoy", "ok");
@@ -374,6 +386,14 @@ public sealed class LoginFalso : ILoginClient
 
 public sealed class BridgeFalso : IBridgeClient
 {
+    public List<string> SesionesBorradas { get; } = [];
+
+    public Task BorrarSesionesAsync(string slot, CancellationToken ct = default)
+    {
+        SesionesBorradas.Add(slot);
+        return Task.CompletedTask;
+    }
+
     public List<JobResumen> Jobs { get; set; } = [];
     public bool Falla { get; set; }
 
