@@ -52,6 +52,8 @@ export interface ResultadoDePublicacion {
   pendientes: string[];
   /** Los repos cuya rama del agente quedó en main. */
   mergeados?: string[];
+  /** Los repos que ya estaban en main (no se mergearon ahora). */
+  yaEnMain?: string[];
 }
 
 const NOMBRE_DE_APP: Record<string, string> = {
@@ -68,6 +70,7 @@ export async function publicarCambios(
   const publicados: ResultadoDePublicacion['publicados'] = [];
   const pendientes: string[] = [];
   const mergeados: string[] = [];
+  const yaEnMain: string[] = [];
 
   // En serie, como el resto de los bucles de repos: si el segundo falla, el
   // primero ya está y el mensaje puede decir cuál.
@@ -92,9 +95,14 @@ export async function publicarCambios(
       pendientes.push(`no pude pasar ${repo.nombre} a main (${m.output.slice(0, 200)})`);
       continue;
     }
-    mergeados.push(repo.nombre);
+    // Detecta si el merge dice "ya estaba en main"
+    if (/ya estaba/i.test(m.output)) {
+      yaEnMain.push(repo.nombre);
+    } else {
+      mergeados.push(repo.nombre);
+    }
   }
-  return { publicados, pendientes, mergeados };
+  return { publicados, pendientes, mergeados, yaEnMain: yaEnMain.length > 0 ? yaEnMain : undefined };
 }
 
 /**
@@ -164,6 +172,15 @@ export function textoDePublicacion(r: ResultadoDePublicacion): string {
   if (r.mergeados?.length) {
     lineas.push('Pasaron a main:', ...r.mergeados.map((x) => `- ${x}`));
     lineas.push('', 'Para desplegar, andá a Repositorios.');
+  }
+  if (r.yaEnMain?.length) {
+    if (lineas.length) lineas.push('');
+    if (r.mergeados?.length) {
+      lineas.push('Ya estaban en main:', ...r.yaEnMain.map((x) => `- ${x}`));
+    } else {
+      // Si TODOS ya estaban, el mensaje es diferente
+      lineas.push('Ya estaba publicado:', ...r.yaEnMain.map((x) => `- ${x}`));
+    }
   }
   if (r.pendientes.length) {
     if (lineas.length) lineas.push('');
