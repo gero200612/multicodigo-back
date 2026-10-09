@@ -198,6 +198,8 @@ const Env = z.object({
   /** `mc-uso` en el VPS: memoria y disco para el freno. */
   VPS_USO_URL: opcional(z.string().url()),
   VPS_USO_TOKEN: opcional(z.string().min(16)),
+  /** Usuarios (uuid, separados por coma) que administran el VPS: ven todo lo que corre ahi. */
+  VPS_ADMINS: opcional(z.string().min(36)),
 });
 
 const env = Env.parse(process.env);
@@ -408,10 +410,9 @@ const pipelineDeps = {
             panelUrl: env.PANEL_URL!,
             token: env.BRIDGE_API_TOKEN,
           },
-          // `?? true`: si el llamador no lo dice, publico. Privado deja la
-          // corrida sin poder desplegar, que es lo que se mira a la mañana;
-          // para eso esta `publico=no`, escrito a proposito.
-          publico ?? true,
+          // `?? false`: si el llamador no lo dice, privado. Se publica en el
+          // VPS, que clona con su app de GitHub (2026-10-09).
+          publico ?? false,
         )
     : undefined,
   /**
@@ -836,7 +837,12 @@ function despliegueDelPanel() {
         const demo = (await store.demosPorVencer(24 * 400).catch(() => [])).find((d) => d.proyectoId === proyectoId);
         return {
           ok: true as const,
-          estado: { ...(await estadoEnVps(proyectoId, vps)), ...(demo ? { demoApagarEl: demo.apagarEl } : {}) },
+          estado: {
+            ...(await estadoEnVps(proyectoId, vps, {
+              conOtros: (env.VPS_ADMINS ?? '').split(',').map((x) => x.trim()).includes(usuarioId),
+            })),
+            ...(demo ? { demoApagarEl: demo.apagarEl } : {}),
+          },
         };
       },
       publicar: async (usuarioId: string, proyectoId: string) => {

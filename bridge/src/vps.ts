@@ -95,11 +95,23 @@ function parteDe(repo: string): ParteVps {
   return t === 'node' ? 'app' : t;
 }
 
+/**
+ * El dominio de cada parte. Todo cuelga del nombre del proyecto: el front es
+ * `<p>`, el back `<p>-api` y cualquier otra app `<p>-<repo>`. Un proyecto no
+ * puede terminar en `-api` (ver `nombreValido`): si pudiera, `x-api` se
+ * quedaria con el dominio del back de `x`.
+ */
 function dominioDe(slug: string, repo: string): string {
   const t = tipoDeRepo(repo);
   if (t === 'front') return `${slug}.${DOMINIO_VPS}`;
   if (t === 'back') return `${slug}-api.${DOMINIO_VPS}`;
-  return `${nombreDeVps(repo)}.${DOMINIO_VPS}`;
+  const r = nombreDeVps(repo);
+  return `${r.startsWith(`${slug}-`) ? r : `${slug}-${r}`}.${DOMINIO_VPS}`;
+}
+
+/** Si el nombre del proyecto puede tener dominio propio en el VPS. */
+export function nombreValido(slug: string): boolean {
+  return !!slug && !RESERVADOS.has(slug) && !slug.endsWith('-api');
 }
 
 /** `Running:healthy` -> andando, `exited:...` -> apagado, el resto -> construyendo. */
@@ -133,7 +145,7 @@ export async function publicarEnVps(
   const c = deps.config.coolify;
   const slug = nombreDeVps(proyecto);
 
-  if (!slug || RESERVADOS.has(slug)) {
+  if (!nombreValido(slug)) {
     return { publicados, pendientes: [`el nombre "${proyecto}" no se puede usar en el VPS: cambiale el nombre al proyecto`] };
   }
   const propios = repos.filter((r) => !r.solo_lectura);
@@ -163,12 +175,12 @@ export async function publicarEnVps(
   }
 
   // Los dominios que ya usa OTRA cosa en el VPS: pisar uno es robarle el
-  // trafico a otra app. Si no se puede listar, se sigue: Coolify igual rechaza.
+  // trafico a otra app. Si no se puede listar, NO se sigue: sin la lista no hay
+  // forma de saber si el dominio es ajeno.
   const ocupados = new Map<string, string>();
   const listado = await coolify.listarApps(c);
-  if (listado.ok) {
-    for (const a of listado.apps) for (const d of a.dominios) ocupados.set(d.replace(/^https?:\/\//, ''), a.uuid);
-  }
+  if (!listado.ok) return { publicados, pendientes: [`no pude ver qué hay en el VPS (${listado.motivo}): no publiqué nada`] };
+  for (const a of listado.apps) for (const d of a.dominios) ocupados.set(d.replace(/^https?:\/\//, '').replace(/\/$/, ''), a.uuid);
 
   // 1. El proyecto de Coolify.
   let proyectoUuid = de('proyecto')?.coolify_uuid;
@@ -385,8 +397,18 @@ export interface EstadoDelProyectoEnVps {
   demoApagarEl?: string;
 }
 
-/** El estado, refrescado contra Coolify. */
-export async function estadoEnVps(proyectoId: string, deps: VpsDeps): Promise<EstadoDelProyectoEnVps> {
+/**
+ * El estado, refrescado contra Coolify.
+ *
+ * `conOtros`: lo demas que corre en el VPS es de OTRAS cuentas (y de
+ * produccion). Solo lo ve quien administra el VPS; un dueño de proyecto
+ * cualquiera ve solo lo suyo.
+ */
+export async function estadoEnVps(
+  proyectoId: string,
+  deps: VpsDeps,
+  opciones: { conOtros?: boolean } = {},
+): Promise<EstadoDelProyectoEnVps> {
   const c = deps.config.coolify;
   const recursos = await deps.store.recursosVps(proyectoId);
   const partes: ParteVisible[] = [];
@@ -407,8 +429,8 @@ export async function estadoEnVps(proyectoId: string, deps: VpsDeps): Promise<Es
   }
   const propios = new Set(recursos.map((r) => r.coolify_uuid));
   const otros: EstadoDelProyectoEnVps['otros'] = [];
-  const l = await coolify.listarApps(c);
-  if (l.ok) {
+  const l = opciones.conOtros ? await coolify.listarApps(c) : undefined;
+  if (l?.ok) {
     for (const a of l.apps) {
       if (propios.has(a.uuid)) continue;
       otros.push({ nombre: a.nombre, url: a.dominios[0] ?? null, estado: estadoDeCoolify(a.estado) });

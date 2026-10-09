@@ -87,6 +87,25 @@ describe('nombres', () => {
     expect(pedidos.filter((p) => p.metodo !== 'GET')).toEqual([]);
   });
 
+  it('un proyecto no puede terminar en -api: le robaria el back a otro', async () => {
+    const { store, deps, pedidos } = await armar();
+    const r = await publicarEnVps('p1', 'turnos-api', await store.reposDeProyecto('p1'), deps);
+    expect(r.pendientes[0]).toMatch(/no se puede usar/);
+    expect(pedidos.filter((p) => p.metodo !== 'GET')).toEqual([]);
+  });
+
+  it('sin poder ver que hay en el VPS no publica nada', async () => {
+    const { store, deps, pedidos } = await armar();
+    const base = deps.config.coolify.fetchImpl!;
+    deps.config.coolify.fetchImpl = (async (url: string, init?: RequestInit) =>
+      String(url).endsWith('/applications') && (init?.method ?? 'GET') === 'GET'
+        ? new Response('{}', { status: 502 })
+        : base(url, init)) as unknown as typeof fetch;
+    const r = await publicarEnVps('p1', 'turnos', await store.reposDeProyecto('p1'), deps);
+    expect(r.pendientes[0]).toMatch(/no pude ver qué hay en el VPS/);
+    expect(pedidos.filter((p) => p.metodo !== 'GET')).toEqual([]);
+  });
+
   it('traduce los estados de Coolify', () => {
     expect(estadoDeCoolify('running:healthy')).toBe('andando');
     expect(estadoDeCoolify('exited:unhealthy')).toBe('apagado');
@@ -261,7 +280,9 @@ describe('apagar y borrar', () => {
       apps: [{ uuid: 'sincro', name: 'sincroresto-front', fqdn: 'https://sincroresto.com', status: 'running:healthy' }],
     });
     await publicarEnVps('p1', 'turnos', await store.reposDeProyecto('p1'), deps);
-    const e = await estadoEnVps('p1', deps);
+    // Un dueño cualquiera ve solo lo suyo; el que administra el VPS ve todo.
+    expect((await estadoEnVps('p1', deps)).otros).toEqual([]);
+    const e = await estadoEnVps('p1', deps, { conOtros: true });
     expect(e.otros).toEqual([{ nombre: 'sincroresto-front', url: 'https://sincroresto.com', estado: 'andando' }]);
     pedidos.length = 0;
     await apagarEnVps('p1', deps);

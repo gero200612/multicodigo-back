@@ -888,7 +888,7 @@ export async function handleIncoming(
         {
           chatId: input.chatId,
           messageId: input.messageId,
-          text: `/corrida proyecto=${proyecto} publico=si\n${pliegoDeTicket(partes.titulo, partes.descripcion)}`,
+          text: `/corrida proyecto=${proyecto}\n${pliegoDeTicket(partes.titulo, partes.descripcion)}`,
         },
         deps,
       );
@@ -1955,7 +1955,7 @@ export async function pasoDeCorrida(
       nombreDado,
       org,
       deps,
-      input.publico !== false,
+      input.publico === true,
     );
   }
 
@@ -2096,8 +2096,8 @@ async function armarYPedirPliego(
   nombre: string,
   org: string | undefined,
   deps: PipelineDeps,
-  /** Lo que dijo `publico=` en el comando; sin comando, publicos. */
-  publico = true,
+  /** Lo que dijo `publico=` en el comando; sin comando, privados. */
+  publico = false,
 ): Promise<PipelineOutcome> {
   const armado = await armarDesdeElNombre(chatId, usuarioId, nombre, org, deps, publico);
 
@@ -2166,10 +2166,10 @@ async function armarDesdeElNombre(
    * en silencio. Visto al probarlo en produccion — los repos salieron privados
    * con `publico=si` puesto.
    *
-   * El default es publico: un repo privado no lo puede fetchear Render y la
-   * corrida termina sin link. Ver `OpcionesDeCorrida.publico`.
+   * El default es privado: se publica en el VPS, que clona con su app de
+   * GitHub. Ver `OpcionesDeCorrida.publico`.
    */
-  publico = true,
+  publico = false,
 ): Promise<
   | { ok: true; proyecto: string; creado: LoCreado }
   | { ok: false; motivo: string }

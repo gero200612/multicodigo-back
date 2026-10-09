@@ -3746,8 +3746,9 @@ describe('el reparto se queda en los slots de la persona', () => {
  * expone.
  */
 describe('parseOpcionesDeCorrida: publico', () => {
-  it('sin la opcion, los repos son publicos', () => {
-    expect(parseOpcionesDeCorrida('# Stock').publico).toBe(true);
+  // Desde 2026-10-09 todo se publica en el VPS propio, que clona privados.
+  it('sin la opcion, los repos son privados', () => {
+    expect(parseOpcionesDeCorrida('# Stock').publico).toBe(false);
   });
 
   it('publico=si los hace publicos', () => {
@@ -3763,9 +3764,9 @@ describe('parseOpcionesDeCorrida: publico', () => {
   // Solo `no` apaga. Un valor que no se entiende deja el default: si apagara,
   // un typo dejaria la corrida sin desplegar y eso recien se ve a la mañana.
   // Privado se escribe bien, que es la decision que cuesta deshacer.
-  it('un valor que no se entiende deja el default, que es publico', () => {
-    expect(parseOpcionesDeCorrida('publico=quizas\n# Stock').publico).toBe(true);
-    expect(parseOpcionesDeCorrida('publico=false\n# Stock').publico).toBe(true);
+  it('un valor que no se entiende deja el default, que es privado', () => {
+    expect(parseOpcionesDeCorrida('publico=quizas\n# Stock').publico).toBe(false);
+    expect(parseOpcionesDeCorrida('publico=true\n# Stock').publico).toBe(false);
   });
 
   it('la opcion no queda en el pliego', () => {
@@ -3809,11 +3810,11 @@ describe('publico=si llega a crearRepo', () => {
 
   // El default, y el que importa: sin decirlo salen publicos, que es lo que
   // deja que Render los tome y la corrida termine con un link.
-  it('sin la opcion, se piden publicos', async () => {
+  it('sin la opcion, se piden privados', async () => {
     const { d, pedidos } = conCrearRepo();
     await abrirCon(d, 'proyecto=acme2 org=Sincro-arg repos=front,back');
     expect(pedidos.length).toBeGreaterThan(0);
-    expect(pedidos.every((p) => p.publico)).toBe(true);
+    expect(pedidos.every((p) => !p.publico)).toBe(true);
   });
 
   // Y al reves: privado ahora se pide a proposito.
@@ -3863,7 +3864,7 @@ describe('publico=si sin pliego', () => {
     expect(pedidos.every((p) => p)).toBe(true);
   });
 
-  it('sin la opcion tambien los crea publicos', async () => {
+  it('sin la opcion los crea privados', async () => {
     const pedidos: boolean[] = [];
     const d = arnes();
     const crearRepo = vi.fn(
@@ -3882,7 +3883,7 @@ describe('publico=si sin pliego', () => {
       d,
     );
     expect(pedidos.length).toBeGreaterThan(0);
-    expect(pedidos.every((p) => p)).toBe(true);
+    expect(pedidos.every((p) => !p)).toBe(true);
   });
 });
 

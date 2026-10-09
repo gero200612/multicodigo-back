@@ -14,14 +14,15 @@ describe('desarrollo desde el panel', () => {
         referencia: ['sincro-front'],
         org: 'acme',
       }),
-    ).toBe('org=acme repos=vete-front,vete-back referencia=sincro-front publico=si');
+    ).toBe('org=acme repos=vete-front,vete-back referencia=sincro-front');
   });
 
-  it('sin nada, solo publico=si: los repos los decide /corrida como siempre', () => {
-    expect(opcionesDeDesarrollo({ usuarioId: U, proyecto: 'p', pliego: 'x' })).toBe('publico=si');
+  it('sin nada, nada: los repos los decide /corrida, privados', () => {
+    expect(opcionesDeDesarrollo({ usuarioId: U, proyecto: 'p', pliego: 'x' })).toBe('');
+    expect(opcionesDeDesarrollo({ usuarioId: U, proyecto: 'p', pliego: 'x', publico: true })).toBe('publico=si');
   });
 
   it('una org con espacios no entra en el comando', () => {
-    expect(opcionesDeDesarrollo({ usuarioId: U, proyecto: 'p', pliego: 'x', org: 'a b', publico: false })).toBe('publico=no');
+    expect(opcionesDeDesarrollo({ usuarioId: U, proyecto: 'p', pliego: 'x', org: 'a b', publico: false })).toBe('');
   });
 });

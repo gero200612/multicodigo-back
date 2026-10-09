@@ -77,7 +77,7 @@ export async function abrirDemo(
   if (!usuarioId) return { ok: false, motivo: 'ese chat no esta vinculado a una cuenta del panel' };
 
   const out = await handleIncoming(
-    { chatId: p.chatId, messageId: 0, text: `/corrida ${p.proyecto ? `proyecto=${p.proyecto} ` : ''}${p.opciones ?? 'publico=si'}\n${p.pliego}` },
+    { chatId: p.chatId, messageId: 0, text: `/corrida ${p.proyecto ? `proyecto=${p.proyecto} ` : ''}${p.opciones ?? ''}\n${p.pliego}` },
     deps,
   );
   if (out.kind !== 'corrida' || !out.recienAbierta || !out.corrida) {
@@ -196,7 +196,7 @@ export function opcionesDeDesarrollo(p: PedidoDeDesarrollo): string {
     p.org && NOMBRE.test(p.org) ? `org=${p.org}` : '',
     repos.length ? `repos=${repos.join(',')}` : '',
     referencia.length ? `referencia=${referencia.join(',')}` : '',
-    p.publico === false ? 'publico=no' : 'publico=si',
+    p.publico === true ? 'publico=si' : '',
   ]
     .filter(Boolean)
     .join(' ');

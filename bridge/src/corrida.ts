@@ -394,7 +394,11 @@ export interface OpcionesDeCorrida {
   /** Los repos a crear, en el orden en que se nombraron. */
   repos: string[];
   /**
-   * Si los repos a crear nacen PUBLICOS. Por defecto SI.
+   * Si los repos a crear nacen PUBLICOS. Por defecto NO (desde 2026-10-09).
+   *
+   * Todo se publica en el VPS propio (Coolify), que clona con su app de GitHub:
+   * un repo privado se despliega igual. Lo de abajo es la historia de por que
+   * fueron publicos mientras se publicaba en Render.
    *
    * Nacian privados, con el argumento de que privado a publico es un click y al
    * reves no borra lo que ya se indexo. El argumento sigue siendo cierto, pero
@@ -405,8 +409,7 @@ export interface OpcionesDeCorrida {
    * cada corrida terminaba sin desplegar y sin link, que es lo unico que se
    * mira a la mañana. Con el repo publico, `POST /v1/services` funciona.
    *
-   * `publico=no` en el comando lo deja privado, para el trabajo de un cliente
-   * que no se puede exponer. Esa corrida cierra sin link y esta bien.
+   * `publico=si` en el comando lo deja publico.
    */
   publico: boolean;
   /**
@@ -513,7 +516,7 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
   let org: string | undefined;
   let repos: string[] = [];
   let referencia: string[] = [];
-  let publico = true;
+  let publico = false;
   let consumidos = 0;
   for (const t of tokens) {
     const m = OPCION.exec(t);
@@ -530,12 +533,10 @@ export function parseOpcionesDeCorrida(rest: string): OpcionesDeCorrida {
     } else if (m[1] === 'org') {
       if (nombreSano(valor)) org = valor;
     } else if (m[1] === 'publico') {
-      // SOLO `no` apaga. Un `publico=quizas` —o un `publico=false` de quien
-      // piensa en ingles— deja el default, que es publico: el valor que no se
-      // entendio no puede dejar la corrida sin poder desplegar. Para que un
-      // repo quede privado hay que escribirlo bien, que es la decision que
-      // cuesta deshacer.
-      publico = valor.toLowerCase() !== 'no';
+      // SOLO `si` prende. Un `publico=quizas` deja el default, que es
+      // privado: exponer el codigo es la decision que no se deshace (lo que se
+      // indexo, quedo indexado).
+      publico = valor.toLowerCase() === 'si';
     } else {
       // Los invalidos se descartan UNO POR UNO en vez de tirar la lista
       // entera: un `repos=front,back,` con una coma de mas no puede costar los
