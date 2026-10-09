@@ -427,17 +427,20 @@ export async function descartarPlantillasViejas(
 
 /**
  * Al arrancar: los aprobados que no llegaron a existir en Meta (la cola se
- * rindio, p. ej. por el minimo diario) se vuelven a encolar, una vez por dia.
+ * rindio, p. ej. por el minimo diario) se vuelven a encolar.
  * Si ya habia una tarea andando no pasa nada: `publicarAnuncio` sigue desde
  * lo que ya se creo y no duplica.
  */
 export async function retomarPublicaciones(deps: DepsDeAnuncios): Promise<number> {
   if (!deps.meta) return 0;
-  const dia = diaArgentino(deps.ahora());
   let n = 0;
   for (const a of await deps.store.anuncios(['aprobado'])) {
     if (a.metaIds.anuncio) continue;
-    if (await deps.store.encolar({ tipo: 'publicar_anuncio', payload: { anuncioId: a.id }, requiereIa: false, clave: `publicar:${a.id}:arranque:${dia}` })) n++;
+    // Una por arranque (no por dia): si Gero arregla algo en Meta y reinicia,
+    // se reintenta. Dos tareas del mismo anuncio no duplican nada: la cola va
+    // de a una y `publicarAnuncio` sigue desde lo que ya existe.
+    const clave = `publicar:${a.id}:arranque:${deps.ahora().getTime()}`;
+    if (await deps.store.encolar({ tipo: 'publicar_anuncio', payload: { anuncioId: a.id }, requiereIa: false, clave })) n++;
   }
   return n;
 }
