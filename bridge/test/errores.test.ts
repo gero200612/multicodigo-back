@@ -203,7 +203,9 @@ describe.each<[string, () => Promise<RegistroDeErrores>]>([
 
     const ids = await registro.marcarPublicados(PROYECTO, 'c1');
 
-    expect(ids.sort()).toEqual([mio.id, viejo.id].sort());
+    // `viejo` no anotó el proyecto: no se adivina, se publica con su botón.
+    expect(ids).toEqual([mio.id]);
+    expect((await registro.porId(viejo.id))!.estado).toBe('en_rama');
     const fila = (await registro.porId(mio.id))!;
     expect(fila.estado).toBe('publicado');
     expect(fila.arreglo).toMatchObject({ agente: 'c1', resumen: 'r', publicadoCon: 'la rama del agente' });

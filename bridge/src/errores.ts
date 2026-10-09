@@ -67,8 +67,11 @@ export interface RegistroDeErrores {
    *
    * Publicar pasa a main la rama ENTERA del agente, así que un ticket publicado
    * después del arreglo lo lleva adentro: sin esto el error seguía ofreciendo
-   * "Publicar" con el arreglo ya en main. Las filas de antes no anotaban el
-   * proyecto (`arreglo.proyectoId`); esas se marcan solo por agente.
+   * "Publicar" con el arreglo ya en main.
+   *
+   * Tiene que coincidir el PROYECTO, no solo el agente: un slot trabaja en
+   * varios proyectos y publicar en otro no lleva este arreglo. Las filas de
+   * antes, sin `arreglo.proyectoId`, no se tocan: se publican con su botón.
    */
   marcarPublicados(proyectoId: string, agente: string): Promise<number[]>;
 }
@@ -292,7 +295,7 @@ export class PgRegistroDeErrores implements RegistroDeErrores {
                                               'publicadoCon', 'la rama del agente')
         WHERE estado = 'en_rama'
           AND arreglo->>'agente' = $2
-          AND (arreglo->>'proyectoId' = $1 OR arreglo->>'proyectoId' IS NULL)
+          AND arreglo->>'proyectoId' = $1
         RETURNING id`,
       [proyectoId, agente],
     );
@@ -381,7 +384,7 @@ export class RegistroEnMemoria implements RegistroDeErrores {
     for (const f of this.filas) {
       const a = f.arreglo ?? {};
       if (f.estado !== 'en_rama' || a.agente !== agente) continue;
-      if (a.proyectoId !== undefined && a.proyectoId !== proyectoId) continue;
+      if (a.proyectoId !== proyectoId) continue;
       f.estado = 'publicado';
       f.arreglo = { ...a, publicado: new Date().toISOString(), publicadoCon: 'la rama del agente' };
       ids.push(f.id);
