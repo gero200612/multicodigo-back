@@ -8,11 +8,11 @@ import { chatbotsDeHtml, esIpPrivada, leerSitio, mailsDeHtml, textoDeHtml } from
 describe('agenda', () => {
   const martes = new Date('2026-09-29T17:00:00Z');
 
-  it('ofrece tres horarios en tres dias habiles distintos, desde mañana, dentro de 12 a 20', () => {
+  it('ofrece tres horarios en tres dias habiles distintos, desde mañana, dentro de 14 a 20', () => {
     const hs = horariosParaOfrecer(martes, [], []);
     expect(hs.map(horarioEnCastellano)).toEqual([
       'miércoles 30/9 a las 15:00',
-      'jueves 1/10 a las 12:30',
+      'jueves 1/10 a las 14:30',
       'viernes 2/10 a las 18:00',
     ]);
   });
@@ -22,7 +22,7 @@ describe('agenda', () => {
     const hs = horariosParaOfrecer(martes, [tomado], ['2026-10-01']);
     expect(hs.map(horarioEnCastellano)).toEqual([
       'miércoles 30/9 a las 15:30',
-      'viernes 2/10 a las 12:30',
+      'viernes 2/10 a las 14:30',
       'lunes 5/10 a las 18:00',
     ]);
   });
@@ -30,6 +30,8 @@ describe('agenda', () => {
   it('sigueLibre rechaza fuera de franja y fines de semana', () => {
     expect(sigueLibre(new Date('2026-09-30T18:00:00Z'), [], [])).toBe(true);
     expect(sigueLibre(new Date('2026-09-30T12:00:00Z'), [], [])).toBe(false); // 9hs
+    expect(sigueLibre(new Date('2026-09-30T16:00:00Z'), [], [])).toBe(false); // 13hs: antes de las 14 no
+    expect(sigueLibre(new Date('2026-09-30T17:00:00Z'), [], [])).toBe(true); // 14hs
     expect(sigueLibre(new Date('2026-10-03T18:00:00Z'), [], [])).toBe(false); // sabado
   });
 

@@ -31,7 +31,7 @@ Lo que se hizo pensando en **más respuestas**:
 
 Y en **más reuniones**:
 - responde en el mismo hilo sin esperar horario hábil ni cupo: contestar rápido a un interesado es lo que más cierra;
-- ofrece 3 horarios concretos en días y horas distintos (lunes a viernes, 12 a 20), desde mañana;
+- ofrece 3 horarios concretos en días y horas distintos (lunes a viernes, 14 a 20), desde mañana;
 - si elige uno, agenda solo con invitación de calendario; recordatorio el mismo día;
 - un interesado que escribe por su cuenta (no estaba en la base) también entra al circuito.
 

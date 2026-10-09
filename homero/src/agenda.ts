@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { HORAS_DE_DIFERENCIA } from './horas.js';
 
 /**
- * La agenda de reuniones de Gero: lunes a viernes de 12 a 20, de 30 minutos.
+ * La agenda de reuniones de Gero: lunes a viernes de 14 a 20, de 30 minutos
+ * (antes de las 14 Gero no toma reuniones).
  *
  * Es propia (tablas homero.reuniones y homero.ocupados) porque Homero es el
  * unico que agenda. La invitacion viaja como .ics por mail, asi le aparece al
@@ -11,7 +12,7 @@ import { HORAS_DE_DIFERENCIA } from './horas.js';
 
 const HORA = 60 * 60 * 1000;
 const DURACION_MIN = 30;
-const PRIMERA = 12 * 60; // 12:00
+const PRIMERA = 14 * 60; // 14:00
 const ULTIMA = 19 * 60 + 30; // 19:30, la ultima que termina a las 20
 
 /** Instante de un dia de Argentina (fecha en campos UTC) a una hora local. */
@@ -42,7 +43,7 @@ export function horariosParaOfrecer(
   ocupados: string[],
   cantidad = 3,
 ): Date[] {
-  const preferidos = [15 * 60, 12 * 60 + 30, 18 * 60];
+  const preferidos = [15 * 60, 14 * 60 + 30, 18 * 60];
   const choca = (d: Date) =>
     tomados.some((t) => Math.abs(t.getTime() - d.getTime()) < DURACION_MIN * 60_000);
   const libres: Date[] = [];
@@ -66,10 +67,10 @@ export function horariosParaOfrecer(
 
 /**
  * Los horarios libres para que Gero elija cuales ofrecer: tres por dia habil
- * (12:30, 15 y 18, o la siguiente media hora libre), desde mañana.
+ * (14:30, 16 y 18, o la siguiente media hora libre), desde mañana.
  */
 export function horariosLibres(ahora: Date, tomados: Date[], ocupados: string[], cantidad = 6): Date[] {
-  const preferidos = [12 * 60 + 30, 15 * 60, 18 * 60];
+  const preferidos = [14 * 60 + 30, 16 * 60, 18 * 60];
   const choca = (d: Date) =>
     tomados.some((t) => Math.abs(t.getTime() - d.getTime()) < DURACION_MIN * 60_000);
   const libres: Date[] = [];
