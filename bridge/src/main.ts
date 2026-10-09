@@ -234,6 +234,7 @@ const MIGRACIONES = [
   '045_agentes_borrar.sql',
   '046_agentes_sin_bot.sql',
   '047_errores.sql',
+  '048_borrar_agente_solo_duenio.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
 // La misma conexion que el store: la tabla `errores` es de la 047.

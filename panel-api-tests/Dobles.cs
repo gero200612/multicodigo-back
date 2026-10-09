@@ -337,6 +337,12 @@ public sealed class AgentesFalso : IAgentesClient
     /// <summary>El upstream (Supabase) falla: BorrarAsync tira UpstreamException.</summary>
     public bool FallaBorrar { get; set; }
 
+    /// <summary>El Claude es de otra persona: PuedeBorrarAsync contesta no_es_tuyo.</summary>
+    public bool NoEsTuyo { get; set; }
+
+    public Task<string> PuedeBorrarAsync(string jwt, string proyectoId, string slot, CancellationToken ct = default)
+        => Task.FromResult(NoEncontrado ? "no_existe" : NoEsTuyo ? "no_es_tuyo" : "ok");
+
     public Task<bool> BorrarAsync(string jwt, string proyectoId, string slot, CancellationToken ct = default)
     {
         if (FallaBorrar) throw new UpstreamException("no se pudo borrar el agente");
@@ -380,6 +386,14 @@ public sealed class LoginFalso : ILoginClient
     public Task BorrarAsync(string slot, CancellationToken ct = default)
     {
         Borrados.Add(slot);
+        return Task.CompletedTask;
+    }
+
+    public List<string> HomesVaciados { get; } = [];
+
+    public Task VaciarHomeAsync(string slot, CancellationToken ct = default)
+    {
+        HomesVaciados.Add(slot);
         return Task.CompletedTask;
     }
 }

@@ -1939,20 +1939,21 @@ api.MapPost("/proyectos/{proyectoId}/agentes", async (
 });
 
 // Borra por completo el agente (2026-10-09, lo pidió Gero: "si borro el c9 se
-// borra, el siguiente que abro tiene que ser el c9"):
+// borra, el siguiente que abro tiene que ser el c9"). En este orden:
 //
-//   1. La fila de `agentes`. Va PRIMERO porque es la que decide si se puede:
-//      RLS solo deja borrar a quien escribe en el proyecto, y un slot de otro
-//      proyecto no aparece. Nada se destruye antes de saber eso.
-//   2. El contenedor (gateway): el numero queda libre y el proximo que se cree
-//      lo reusa. Si el agente esta trabajando, NO: se vuelve a anotar la fila y
-//      se contesta 409, para no cortarle el turno a nadie.
-//   3. La cuenta de Claude cargada (login): sin esto seguia contando como gasto
-//      y el proximo agente con ese numero la heredaba.
-//   4. Sus conversaciones (bridge): un c9 nuevo no retoma la charla del viejo.
+//   1. Se PREGUNTA si se puede (migración 048): escribir en el proyecto y que
+//      el Claude sea suyo, o uno de antes sin dueño. Nada se toca antes de eso:
+//      borrar le desconecta la cuenta de Claude a su dueño.
+//   2. El contenedor (gateway): el número queda libre y el próximo lo reusa. El
+//      gateway TOMA el slot mientras borra: si está trabajando, 409 y no se
+//      tocó nada todavía.
+//   3. La fila de `agentes` (y sus grupos compartidos, en cascada).
+//   4. La cuenta de Claude y el HOME entero (login): conversaciones y config
+//      no las hereda el próximo dueño del número. El worktree lo vació el
+//      gateway en el paso 2.
+//   5. Sus conversaciones guardadas (bridge).
 //
-// 3 y 4 no deshacen nada si fallan: el agente ya no existe, y lo que quede se
-// pisa cuando se cree otro con ese numero. El historial de jobs/test_runs queda.
+// 4 y 5 se loguean si fallan pero no deshacen: el agente ya no existe.
 api.MapDelete("/proyectos/{proyectoId}/agentes/{slot}", async (
     string proyectoId, string slot, HttpContext ctx, IAgentesClient agentesDb,
     IGatewayClient gateway, ILoginClient login, IBridgeClient bridge, CancellationToken ct) =>
@@ -1962,8 +1963,14 @@ api.MapDelete("/proyectos/{proyectoId}/agentes/{slot}", async (
     var jwt = await JwtDe(ctx);
     try
     {
-        var borrado = await agentesDb.BorrarAsync(jwt, proyectoId, slot, ct);
-        if (!borrado)
+        var puede = await agentesDb.PuedeBorrarAsync(jwt, proyectoId, slot, ct);
+        if (puede == "no_es_tuyo")
+        {
+            return Results.Json(
+                new { code = "no_es_tu_claude", message = "ese Claude es de otra persona: solo su dueño lo puede borrar" },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+        if (puede != "ok")
         {
             return Results.NotFound(new { code = "agente_no_encontrado", message = slot });
         }
@@ -1981,16 +1988,30 @@ api.MapDelete("/proyectos/{proyectoId}/agentes/{slot}", async (
     }
     catch (Exception ex) when (ex is UpstreamException or HttpRequestException or TaskCanceledException)
     {
-        // El agente sigue existiendo: la fila vuelve a su proyecto.
-        try { await agentesDb.RegistrarAsync(jwt, proyectoId, slot, CancellationToken.None); }
-        catch (Exception ex2) { app.Logger.LogError(ex2, "no se pudo volver a anotar {Slot} en {Proyecto}", slot, proyectoId); }
         return ex is UpstreamException { Message: "agente_ocupado" }
             ? Results.Conflict(new { code = "agente_ocupado", message = "ese agente está trabajando: esperá a que termine y borralo de nuevo" })
             : Results.Json(new { code = "agente_no_borrado", message = "no se pudo borrar el agente" }, statusCode: StatusCodes.Status502BadGateway);
     }
 
-    try { await login.BorrarAsync(slot, CancellationToken.None); }
-    catch (Exception ex) { app.Logger.LogError(ex, "se borró {Slot} pero no su cuenta de Claude", slot); }
+    try
+    {
+        // false = otro pedido lo borró en el medio: igual ya no existe, que es lo pedido.
+        await agentesDb.BorrarAsync(jwt, proyectoId, slot, ct);
+    }
+    catch (UpstreamException)
+    {
+        return Results.Json(
+            new { code = "agente_no_borrado", message = "no se pudo borrar el agente" },
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+
+    try { await login.VaciarHomeAsync(slot, CancellationToken.None); }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "se borró {Slot} pero no su HOME: pruebo al menos la cuenta", slot);
+        try { await login.BorrarAsync(slot, CancellationToken.None); }
+        catch (Exception ex2) { app.Logger.LogError(ex2, "se borró {Slot} pero no su cuenta de Claude", slot); }
+    }
     try { await bridge.BorrarSesionesAsync(slot, CancellationToken.None); }
     catch (Exception ex) { app.Logger.LogError(ex, "se borró {Slot} pero no sus conversaciones", slot); }
 

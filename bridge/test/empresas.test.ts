@@ -416,6 +416,23 @@ describe('041: Claudes por persona y grupos', () => {
     expect(await usa(U.gero, 'c99')).toBe(true);
   });
 
+  // 048: borrar un agente le desconecta la cuenta a su dueño, asi que lo decide el dueño.
+  it('borrar un Claude: el dueño (o uno de antes, quien escribe); el de otro, no', async () => {
+    const puede = (u: string, proyecto: string, slot: string) =>
+      como(u, () => q<{ r: string }>('SELECT public.puede_borrar_agente($1, $2) AS r', [proyecto, slot])).then((r) => r[0]!.r);
+    const deC50 = (await q<{ p: string }>(`SELECT proyecto_id AS p FROM agentes WHERE slot = 'c50'`))[0]!.p;
+    // c50 es de antes (sin dueño): lo borra quien escribe en su proyecto, no un lector.
+    expect(await puede(U.ana, deC50, 'c50')).toBe('ok');
+    expect(await puede(U.lucia, deC50, 'c50')).toBe('no_existe');
+    // c60 es de U.otro: ana, aunque escriba en el proyecto, no.
+    expect(await puede(U.ana, web, 'c60')).not.toBe('ok');
+    expect(await como(U.ana, () => q(`DELETE FROM agentes WHERE slot = 'c60' RETURNING slot`))).toEqual([]);
+    expect(await q(`SELECT slot FROM agentes WHERE slot = 'c60'`)).toHaveLength(1);
+    // El superadmin, siempre; y un slot que no es de ese proyecto no existe.
+    expect(await puede(U.gero, web, 'c60')).toBe('ok');
+    expect(await puede(U.gero, '99999999-0000-4000-8000-000000000099', 'c60')).toBe('no_existe');
+  });
+
   it('compartir con un grupo le da el Claude a los del grupo y a nadie mas', async () => {
     grupo = (await como(U.otro, () => q<{ id: string }>(`SELECT public.crear_grupo('backend') AS id`)))[0]!.id;
     await como(U.otro, () => q('SELECT public.sumar_a_grupo($1, $2)', [grupo, U.ana]));

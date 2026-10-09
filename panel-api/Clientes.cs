@@ -100,6 +100,11 @@ public interface IAgentesClient
     /// mismo que si no existiera.
     /// </summary>
     Task<bool> BorrarAsync(string jwt, string proyectoId, string slot, CancellationToken ct = default);
+    /// <summary>
+    /// Si el usuario puede borrar ese agente: "ok", "no_existe" (o no lo ve) o
+    /// "no_es_tuyo" (el Claude es de otra persona). Ver la migración 048.
+    /// </summary>
+    Task<string> PuedeBorrarAsync(string jwt, string proyectoId, string slot, CancellationToken ct = default);
 }
 
 public interface ILoginClient
@@ -109,6 +114,8 @@ public interface ILoginClient
     Task CodigoAsync(string slot, string code, CancellationToken ct = default);
     Task TokenAsync(string slot, string token, string account, CancellationToken ct = default);
     Task BorrarAsync(string slot, CancellationToken ct = default);
+    /// <summary>Borra la cuenta Y vacía el HOME del slot: para cuando se borra el agente entero.</summary>
+    Task VaciarHomeAsync(string slot, CancellationToken ct = default);
 }
 
 public interface IBridgeClient
@@ -535,6 +542,13 @@ public sealed class LoginClient(HttpClient http) : ILoginClient
         try { e = await res.Content.ReadFromJsonAsync<ErrorUpstream>(Json.Opciones, ct); }
         catch (JsonException) { /* sin cuerpo util; se usa el status */ }
         throw new UpstreamException(e?.Message ?? $"el servicio de login respondió {(int)res.StatusCode}");
+    }
+
+    public async Task VaciarHomeAsync(string slot, CancellationToken ct = default)
+    {
+        using var cts = Topes.De(ct, 60);
+        var res = await http.DeleteAsync($"/homes/{Uri.EscapeDataString(slot)}", cts.Token);
+        if (!res.IsSuccessStatusCode) throw new UpstreamException("home_no_vaciado", status: (int)res.StatusCode);
     }
 }
 
@@ -1574,6 +1588,31 @@ public sealed class AgentesClient(HttpClient http, string anonKey, ILogger<Agent
         {
             log.LogError(ex, "no se pudo anotar el agente {Slot}", slot);
             throw new UpstreamException("no se pudo anotar el agente");
+        }
+    }
+
+    public async Task<string> PuedeBorrarAsync(
+        string jwt, string proyectoId, string slot, CancellationToken ct = default)
+    {
+        if (!Slot.EsValido(slot)) return "no_existe";
+        try
+        {
+            var req = new HttpRequestMessage(HttpMethod.Post, "/rest/v1/rpc/puede_borrar_agente");
+            req.Headers.TryAddWithoutValidation("apikey", anonKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+            req.Content = JsonContent.Create(new { p_proyecto = proyectoId, p_slot = slot }, options: Json.Opciones);
+            var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode)
+            {
+                log.LogError("no se pudo preguntar si se puede borrar {Slot}: {Status}", slot, (int)res.StatusCode);
+                throw new UpstreamException("no se pudo borrar el agente");
+            }
+            return await res.Content.ReadFromJsonAsync<string>(Json.Supabase, ct) ?? "no_existe";
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            log.LogError(ex, "no se pudo preguntar si se puede borrar {Slot}", slot);
+            throw new UpstreamException("no se pudo borrar el agente");
         }
     }
 
