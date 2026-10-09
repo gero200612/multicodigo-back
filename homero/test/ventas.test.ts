@@ -34,7 +34,7 @@ const leeYEscribe: Guion['vendedor'] = async (usar) => {
   expect(pagina.texto).toContain('<no_confiable>');
   expect((await usar('verificar_mail', { email: mail.email })).texto).toMatch(/^SI/);
   const r = await usar('dejar_mail_listo', mail);
-  expect(r).toEqual({ texto: 'Listo: el mail queda en la cola de envio.', error: false });
+  expect(r).toMatchObject({ texto: 'Listo: el mail queda en la cola de envio.', error: false });
 };
 
 const paginas = { 'https://ladistri.com.ar': '<html><body>Distribuidora La Distri. Pedidos por WhatsApp. ventas@ladistri.com.ar</body></html>' };

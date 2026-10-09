@@ -2,7 +2,7 @@ import type { DepsDeCola } from '../src/cola.js';
 import type { Correo, MailSaliente } from '../src/envio.js';
 import type { Hallazgo } from '../src/fuentes.js';
 import type { PedidoDeCorrida, RespuestaDeCorrida } from '../src/gateway.js';
-import { SesionesMcp } from '../src/mcp.js';
+import { SesionesMcp, type Bloque } from '../src/mcp.js';
 import type { Meta } from '../src/meta.js';
 import { MemoriaStore } from './memoria.js';
 
@@ -88,12 +88,13 @@ export function armar(o: Opciones = {}) {
  * usa las herramientas por la MISMA puerta que el modelo (token de la corrida y
  * validacion incluidos): lo que se prueba es lo que Homero hace con eso.
  */
-export type Usar = (nombre: string, args?: unknown) => Promise<{ texto: string; error: boolean }>;
+export type Usar = (nombre: string, args?: unknown) => Promise<{ texto: string; error: boolean; bloques: Bloque[] }>;
 export interface Guion {
   buscador?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
   vendedor?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
   atencion?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
   publicista?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
+  revisor?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
 }
 
 export function agenteDe(g: Guion) {
@@ -105,7 +106,9 @@ export function agenteDe(g: Guion) {
         ? g.vendedor
         : p.herramientas.includes('proponer_anuncio')
           ? g.publicista
-          : g.atencion;
+          : p.herramientas.includes('veredicto')
+            ? g.revisor
+            : g.atencion;
     if (!quien) throw new Error(`este test no esperaba una corrida con ${p.herramientas.join(',')}`);
     await quien(usar, p);
     return { texto: 'informe', slot: 'c3' };

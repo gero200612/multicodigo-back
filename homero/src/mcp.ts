@@ -18,7 +18,14 @@ import type { z } from 'zod';
  * dependencia mas para eso es mas superficie que el codigo que ahorra.
  */
 
-/** Lo que hace una herramienta. Devuelve texto para el modelo. */
+/**
+ * Un pedazo de lo que devuelve una herramienta, como lo define MCP. La imagen
+ * va en base64: el SDK del agente se la pasa a Claude como imagen (asi el
+ * revisor VE el anuncio, no una descripcion).
+ */
+export type Bloque = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string };
+
+/** Lo que hace una herramienta. Devuelve texto para el modelo, o bloques si lleva una imagen. */
 export interface Herramienta<T = unknown> {
   nombre: string;
   descripcion: string;
@@ -26,7 +33,7 @@ export interface Herramienta<T = unknown> {
   esquema: Record<string, unknown>;
   /** La validacion de verdad: el esquema de arriba es una sugerencia para el modelo. */
   validar: z.ZodType<T>;
-  correr(args: T): Promise<string>;
+  correr(args: T): Promise<string | Bloque[]>;
 }
 
 /** Un error que el agente tiene que leer (argumento malo, tope alcanzado). */
@@ -34,7 +41,7 @@ export class ErrorParaElAgente extends Error {}
 
 /** Lo que un agente esta haciendo ahora, para el tablero de la web. */
 export interface Actividad {
-  agente: 'buscador' | 'vendedor' | 'atencion' | 'publicista';
+  agente: 'buscador' | 'vendedor' | 'atencion' | 'publicista' | 'revisor';
   corridaId: number;
   desde: Date;
   /** El negocio de la corrida, si es de uno (vendedor, atencion). */
@@ -91,15 +98,22 @@ export class SesionesMcp {
    * Usa una herramienta como lo haria el modelo por MCP: mismo token, misma
    * validacion. Lo usan los tests para hacer de agente.
    */
-  async usar(corrida: string, token: string, nombre: string, args: unknown = {}): Promise<{ texto: string; error: boolean }> {
+  async usar(
+    corrida: string,
+    token: string,
+    nombre: string,
+    args: unknown = {},
+  ): Promise<{ texto: string; error: boolean; bloques: Bloque[] }> {
     const s = this.sesion(corrida, token);
-    if (!s) return { texto: 'corrida desconocida o terminada', error: true };
+    if (!s) return { texto: 'corrida desconocida o terminada', error: true, bloques: [] };
     const r = (await atender({ id: 1, method: 'tools/call', params: { name: nombre, arguments: args } }, s)) as {
-      result?: { content: { text: string }[]; isError?: boolean };
+      result?: { content: Bloque[]; isError?: boolean };
       error?: { message: string };
     };
-    if (r.error) return { texto: r.error.message, error: true };
-    return { texto: r.result!.content[0]!.text, error: r.result!.isError === true };
+    if (r.error) return { texto: r.error.message, error: true, bloques: [] };
+    const bloques = r.result!.content;
+    const texto = bloques.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n');
+    return { texto, error: r.result!.isError === true, bloques };
   }
 
   /** La sesion si el token es el de ESA corrida. */
@@ -163,9 +177,10 @@ async function atender(p: PedidoRpc, s: Sesion): Promise<Record<string, unknown>
         return ok({ content: [{ type: 'text', text: `Argumentos invalidos: ${args.error.message}` }], isError: true });
       }
       try {
-        const texto = await h.correr(args.data);
-        const recortado = texto.length > LARGO_MAXIMO ? `${texto.slice(0, LARGO_MAXIMO)}\n[…recortado]` : texto;
-        return ok({ content: [{ type: 'text', text: recortado }] });
+        const salida = await h.correr(args.data);
+        const recortar = (t: string) => (t.length > LARGO_MAXIMO ? `${t.slice(0, LARGO_MAXIMO)}\n[…recortado]` : t);
+        const bloques: Bloque[] = typeof salida === 'string' ? [{ type: 'text', text: salida }] : salida;
+        return ok({ content: bloques.map((b) => (b.type === 'text' ? { type: 'text', text: recortar(b.text) } : b)) });
       } catch (err) {
         // Al agente le llega el motivo de lo que el agente puede arreglar; el
         // resto es un error interno que no le dice nada util y queda en el log.

@@ -2,10 +2,10 @@ import { z } from 'zod';
 import { diaArgentino, horarioEnCastellano, horariosParaOfrecer } from './agenda.js';
 import { enviarMail } from './envio.js';
 import { relojArgentino } from './horas.js';
-import { imagenDeAnuncio } from './imagen.js';
+import { ErrorDePlantilla, imagenDeAnuncio, PLANTILLAS, type Plantilla } from './imagen.js';
 import type { Meta, Pregunta } from './meta.js';
 import { neutralizar } from './prompts.js';
-import type { Anuncio, Lead, Store } from './store.js';
+import { CRITERIOS, type Anuncio, type Criterio, type Lead, type Ronda, type Store } from './store.js';
 import { casillaDeLead, ensayoActivo, type Boton, type DepsDeVentas } from './ventas.js';
 
 /**
@@ -213,17 +213,19 @@ export const Propuesta = z.object({
   rubro: z.string().trim().min(2).max(40),
   titulo: z.string().trim().min(5).max(40),
   texto: z.string().trim().min(20).max(400),
-  frase: z
-    .string()
-    .trim()
-    .min(3)
-    .max(70)
-    .refine((f) => f.split(/\s+/).length <= 10, 'la frase de la imagen va en 10 palabras o menos'),
+  plantilla: z.enum(PLANTILLAS as [Plantilla, ...Plantilla[]]),
+  /** Los textos de la imagen; cada plantilla tiene su esquema (imagen.ts). */
+  contenido: z.record(z.unknown()),
   preguntas: z.array(z.string().trim().min(5).max(80)).max(2),
   diario: z.number().min(DIARIO_MINIMO).max(1_000_000),
   porQue: z.string().trim().min(10).max(600),
 });
 export type Propuesta = z.infer<typeof Propuesta>;
+
+/** Vueltas del revisor: si a la tercera no pasa, Gero no lo ve. */
+export const RONDAS_DE_REVISION = 3;
+/** Lo minimo en CADA criterio para pasar. */
+export const PUNTAJE_MINIMO = 8;
 
 export const botonesDeAnuncio = (id: number): Boton[] => [
   { texto: '✅ Aprobar', datos: `aa:${id}` },
@@ -231,7 +233,15 @@ export const botonesDeAnuncio = (id: number): Boton[] => [
   { texto: '🗑 Descartar', datos: `ad:${id}` },
 ];
 
-export function tarjetaDeAnuncio(a: Pick<Anuncio, 'id' | 'rubro' | 'titulo' | 'texto' | 'preguntas' | 'diario' | 'porQue'>): string {
+/** `gancho 9 · claridad 8 · ...`, para la tarjeta y el panel. */
+export function lineaDePuntajes(r: Ronda): string {
+  return CRITERIOS.map((c) => `${c.replace(/_/g, ' ')} ${r.puntajes[c]}`).join(' · ');
+}
+
+export function tarjetaDeAnuncio(
+  a: Pick<Anuncio, 'id' | 'rubro' | 'titulo' | 'texto' | 'preguntas' | 'diario' | 'porQue'> & { revision?: Ronda[] },
+): string {
+  const ultima = a.revision?.at(-1);
   return [
     `📣 Anuncio nuevo para aprobar (#${a.id}, ${a.rubro})`,
     '',
@@ -243,25 +253,124 @@ export function tarjetaDeAnuncio(a: Pick<Anuncio, 'id' | 'rubro' | 'titulo' | 't
     `Diario propuesto: ${pesos(a.diario)}`,
     '',
     `Por qué: ${a.porQue}`,
+    ...(ultima ? ['', `✔️ Revisado (vuelta ${ultima.ronda}): ${lineaDePuntajes(ultima)}`] : []),
     '',
     'Nada se gasta hasta que lo apruebes. Con ✏️ Cambiar me escribís qué cambiar y lo rehago.',
   ].join('\n');
 }
 
 /**
- * Deja un anuncio propuesto: la imagen armada, la fila en la base y la tarjeta
- * a Gero. No toca Meta.
+ * Arma la imagen y deja el anuncio `revisando`: Gero todavia no lo ve. Lo
+ * mira primero el revisor (`agente_revisar`); recien si pasa le llega la
+ * tarjeta. Con `rehacer`, es el mismo anuncio corregido despues de una vuelta
+ * del revisor. No toca Meta.
+ *
+ * Si un texto no entra en la plantilla tira `ErrorDePlantilla`, que el agente lee.
  */
-export async function proponerAnuncio(p: Propuesta, deps: DepsDeAnuncios): Promise<number> {
-  if (/https?:\/\/|www\./i.test(`${p.titulo} ${p.texto} ${p.frase}`)) {
-    throw new Error('sin links en el anuncio: el formulario ya lleva a la web');
+export async function proponerAnuncio(p: Propuesta, deps: DepsDeAnuncios, rehacer?: number): Promise<number> {
+  const textos = JSON.stringify(p.contenido);
+  if (/https?:\/\/|www\./i.test(`${p.titulo} ${p.texto} ${textos}`)) {
+    throw new ErrorDePlantilla('sin links en el anuncio: el formulario ya lleva a la web');
   }
-  const imagen = imagenDeAnuncio(p.frase);
-  const id = await deps.store.crearAnuncio({ ...p, imagen });
-  await deps.mandarFoto?.(imagen, `#${id} · ${p.titulo}`).catch((e) => console.error('[homero] no pude mandar la imagen:', e));
-  const msg = await deps.proponer(tarjetaDeAnuncio({ id, ...p }), botonesDeAnuncio(id));
-  if (msg) await deps.store.actualizarAnuncio(id, { telegramMsg: msg });
+  const imagen = imagenDeAnuncio(p.plantilla, p.contenido);
+  const titulo = String((p.contenido as { titulo?: unknown }).titulo ?? p.titulo);
+  const nuevo = { ...p, frase: titulo, imagen };
+  let id: number;
+  if (rehacer !== undefined) {
+    id = rehacer;
+    await deps.store.rehacerAnuncio(id, nuevo);
+  } else {
+    id = await deps.store.crearAnuncio(nuevo);
+  }
+  const ronda = ((await deps.store.anuncio(id))?.revision.length ?? 0) + 1;
+  await deps.store.encolar({
+    tipo: 'agente_revisar',
+    payload: { anuncioId: id },
+    requiereIa: true,
+    clave: `revisar:${id}:${ronda}`,
+  });
   return id;
+}
+
+/** Paso el revisor: la imagen y la tarjeta a Gero, con los puntajes. */
+async function presentarAnuncio(id: number, deps: DepsDeAnuncios): Promise<void> {
+  const a = (await deps.store.anuncio(id))!;
+  await deps.store.actualizarAnuncio(id, { estado: 'propuesto' });
+  const imagen = await deps.store.imagenDelAnuncio(id);
+  if (imagen) {
+    await deps.mandarFoto?.(imagen, `#${id} · ${a.titulo}`).catch((e) => console.error('[homero] no pude mandar la imagen:', e));
+  }
+  const msg = await deps.proponer(tarjetaDeAnuncio(a), botonesDeAnuncio(id));
+  if (msg) await deps.store.actualizarAnuncio(id, { telegramMsg: msg });
+}
+
+export const Veredicto = z.object({
+  aprobado: z.boolean(),
+  puntajes: z.object(Object.fromEntries(CRITERIOS.map((c) => [c, z.number().int().min(1).max(10)])) as Record<Criterio, z.ZodNumber>).strict(),
+  correcciones: z.string().trim().max(2000),
+});
+export type Veredicto = z.infer<typeof Veredicto>;
+
+/**
+ * Lo que dijo el revisor. Pasa solo si lo aprueba Y tiene 8 o mas en todo:
+ * el codigo no le cree a un "aprobado" con un 6 adentro. Si no pasa, vuelve al
+ * publicista con las correcciones; a la tercera, se descarta y Gero recibe una
+ * linea, nunca la imagen.
+ */
+export async function registrarVeredicto(
+  id: number,
+  v: Veredicto,
+  deps: DepsDeAnuncios,
+): Promise<{ resultado: 'pasa' | 'rehacer' | 'descartado'; ronda: number }> {
+  const a = await deps.store.anuncio(id);
+  if (!a || a.estado !== 'revisando') throw new Error(`el anuncio ${id} no está en revisión`);
+  const pasa = v.aprobado && CRITERIOS.every((c) => v.puntajes[c] >= PUNTAJE_MINIMO);
+  const ronda: Ronda = {
+    ronda: a.revision.length + 1,
+    aprobado: pasa,
+    puntajes: v.puntajes,
+    correcciones: v.correcciones,
+    en: deps.ahora().toISOString(),
+  };
+  await deps.store.actualizarAnuncio(id, { revision: [...a.revision, ronda] });
+  if (pasa) {
+    await presentarAnuncio(id, deps);
+    return { resultado: 'pasa', ronda: ronda.ronda };
+  }
+  if (ronda.ronda >= RONDAS_DE_REVISION) {
+    await deps.store.actualizarAnuncio(id, {
+      estado: 'descartado',
+      motivo: `no pasó la revisión en ${RONDAS_DE_REVISION} vueltas: ${v.correcciones.slice(0, 300)}`,
+    });
+    await deps.avisar(`🗑 Descarté un anuncio para ${a.rubro} ("${a.titulo}"): no pasó la revisión en ${RONDAS_DE_REVISION} vueltas.`);
+    return { resultado: 'descartado', ronda: ronda.ronda };
+  }
+  await deps.store.encolar({
+    tipo: 'agente_publicitar',
+    payload: { rehacer: { anuncioId: id, correcciones: v.correcciones || 'no llegó a 8 en todo' } },
+    requiereIa: true,
+    clave: `publicitar:rehacer:${id}:${ronda.ronda}`,
+  });
+  return { resultado: 'rehacer', ronda: ronda.ronda };
+}
+
+/**
+ * Una sola vez, al arrancar: los propuestos de antes de las plantillas (sin
+ * `plantilla`) se descartan y el publicista corre una vez para reemplazarlos.
+ * Sus tarjetas pierden los botones.
+ */
+export async function descartarPlantillasViejas(
+  deps: DepsDeAnuncios & { cambiarBotones?: (msg: number, botones: Boton[] | undefined) => Promise<void> },
+): Promise<number> {
+  const viejos = (await deps.store.anuncios(['propuesto'])).filter((a) => !a.plantilla);
+  for (const a of viejos) {
+    await deps.store.actualizarAnuncio(a.id, { estado: 'descartado', motivo: 'plantilla vieja' });
+    if (a.telegramMsg) await deps.cambiarBotones?.(a.telegramMsg, undefined);
+  }
+  if (viejos.length > 0 && deps.meta) {
+    await deps.store.encolar({ tipo: 'agente_publicitar', payload: {}, requiereIa: true, clave: 'publicitar:plantillas-nuevas' });
+  }
+  return viejos.length;
 }
 
 export type ResultadoDeAnuncio = { ok: true; anuncio: Anuncio; nota?: string } | { ok: false; motivo: string };
@@ -704,7 +813,7 @@ export async function numerosDelMes(deps: { store: Store; ahora: () => Date }): 
     deps.store.resultadosDeAnuncios(inicioDeHoy),
   ]);
   const filas = anuncios
-    .filter((a) => a.estado !== 'propuesto')
+    .filter((a) => a.estado !== 'propuesto' && a.estado !== 'revisando')
     .map((anuncio) => {
       const suyos = gastos.filter((g) => g.anuncioId === anuncio.id);
       const r = resultados.find((x) => x.anuncioId === anuncio.id);

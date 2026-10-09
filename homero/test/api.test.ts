@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { aprobarAnuncio, cambiarPresupuesto, descartarAnuncio, pedirCambio, proponerAnuncio, type DepsDeAnuncios } from '../src/anuncios.js';
+import {
+  aprobarAnuncio,
+  cambiarPresupuesto,
+  descartarAnuncio,
+  pedirCambio,
+  proponerAnuncio,
+  registrarVeredicto,
+  type DepsDeAnuncios,
+} from '../src/anuncios.js';
+import { CRITERIOS, type Criterio } from '../src/store.js';
+import { PANEL } from './ejemplos.js';
 import { crearApi } from '../src/api.js';
 import { cambiarEnsayo, estadoDeHomero } from '../src/comandos.js';
 import { armarDemo, cancelarDemo, editarPliego, enviarDemo, type DepsDeDemos } from '../src/demos.js';
@@ -216,6 +226,7 @@ describe('API de Homero', () => {
       vendedor: { tenerEnCuenta: [], evitar: [] },
       atencion: { tenerEnCuenta: [], evitar: [] },
       publicista: { tenerEnCuenta: [], evitar: [] },
+      revisor: { tenerEnCuenta: [], evitar: [] },
     });
     expect(a.corridas.map((c: { id: number }) => c.id)).toEqual([nueva, vieja]);
     expect(a.corridas[0]).toMatchObject({ agente: 'vendedor', estado: 'fallida', error: 'no cerro con dejar_listo', leadId, lead: 'Taller Gómez' });
@@ -258,19 +269,35 @@ describe('API de Homero', () => {
       rubro: 'taller',
       titulo: 'Turnos sin perder ninguno',
       texto: 'Los turnos que hoy entran por WhatsApp quedan agendados solos.',
-      frase: 'Cero turnos perdidos',
+      plantilla: 'panel' as const,
+      contenido: PANEL,
       preguntas: [],
       diario: 2000,
       porQue: 'Los talleres responden.',
     };
+    const nueves = Object.fromEntries(CRITERIOS.map((c) => [c, 9])) as Record<Criterio, number>;
+    /** Como queda despues de que el revisor lo aprueba. */
+    async function propuesto(h: ReturnType<typeof conApi>) {
+      const id = await proponerAnuncio(propuesta, h.deps);
+      await registrarVeredicto(id, { aprobado: true, puntajes: nueves, correcciones: '' }, h.deps);
+      return id;
+    }
 
     it('lista con los números del mes, sirve la imagen y aprueba como el botón de Telegram', async () => {
       const f = metaFalsa();
       const h = conApi({ meta: f.meta });
-      const id = await proponerAnuncio(propuesta, h.deps);
+      const id = await propuesto(h);
       const lista = (await h.pedir('GET', '/anuncios')).json();
       expect(lista.mes).toMatchObject({ presupuesto: 50_000, gastado: 0 });
-      expect(lista.anuncios).toEqual([expect.objectContaining({ id, estado: 'propuesto', imagen: `/anuncios/${id}/imagen`, gasto: 0 })]);
+      expect(lista.anuncios).toEqual([expect.objectContaining({
+          id,
+          estado: 'propuesto',
+          plantilla: 'panel',
+          contenido: PANEL,
+          revision: [expect.objectContaining({ ronda: 1, aprobado: true, puntajes: nueves })],
+          imagen: `/anuncios/${id}/imagen`,
+          gasto: 0,
+        })]);
 
       const img = await h.pedir('GET', `/anuncios/${id}/imagen`);
       expect(img.headers['content-type']).toBe('image/png');
@@ -286,8 +313,8 @@ describe('API de Homero', () => {
 
     it('pedir un cambio y descartar', async () => {
       const h = conApi({ meta: metaFalsa().meta });
-      const a = await proponerAnuncio(propuesta, h.deps);
-      const b = await proponerAnuncio(propuesta, h.deps);
+      const a = await propuesto(h);
+      const b = await propuesto(h);
       expect((await h.pedir('POST', `/anuncios/${a}/cambiar`, {})).statusCode).toBe(400);
       expect((await h.pedir('POST', `/anuncios/${a}/cambiar`, { pedido: 'más corto' })).json().anuncio).toMatchObject({ estado: 'descartado' });
       expect(h.store.tareas.at(-1)).toMatchObject({ tipo: 'agente_publicitar', payload: { cambio: { anuncioId: a, pedido: 'más corto' } } });

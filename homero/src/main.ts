@@ -5,6 +5,7 @@ import {
   aprobarAnuncio,
   cambiarPresupuesto,
   descartarAnuncio,
+  descartarPlantillasViejas,
   leerLeadsDeMeta,
   pedirCambio,
   planificarAnuncios,
@@ -40,7 +41,7 @@ import {
 } from './ventas.js';
 import { bajarPaginaConDestino, recibeMail } from './web.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
@@ -137,6 +138,11 @@ async function main() {
     cambiarPresupuesto: (monto: number) => cambiarPresupuesto(monto, deps),
   };
   conectar(acciones);
+
+  // Una sola vez: los anuncios propuestos con la plantilla de antes (una frase
+  // sola) no le llegan a Gero; el publicista los reemplaza con las nuevas.
+  const viejos = await descartarPlantillasViejas({ ...deps, cambiarBotones });
+  if (viejos > 0) console.log(`[homero] descarté ${viejos} anuncio(s) con la plantilla vieja`);
 
   const api = config.apiToken
     ? crearApi({

@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import {
   DIARIO_MINIMO,
+  lineaDePuntajes,
   numerosDelMes,
+  PUNTAJE_MINIMO,
+  registrarVeredicto,
+  Veredicto,
   pausarAnuncio,
   Propuesta,
   proponerAnuncio,
@@ -12,10 +16,12 @@ import {
 import { horarioEnCastellano, horariosLibres, sigueLibre } from './agenda.js';
 import { dominio } from './cadenas.js';
 import { ErrorParaElAgente, type Herramienta } from './mcp.js';
+import { ErrorDePlantilla, imagenDeAnuncio, PLANTILLAS, type Plantilla } from './imagen.js';
+import { catalogo } from './ofrecemos.js';
 import { escribirLibreta as escribirLaLibreta, ITEMS_POR_LISTA, LARGO_DE_ITEM, Libreta } from './libreta.js';
 import { neutralizar } from './prompts.js';
 import { rubroPorId, RUBROS } from './rubros.js';
-import type { Agente, Lead, Recibido } from './store.js';
+import { CRITERIOS, type Agente, type Anuncio, type Lead, type Recibido } from './store.js';
 import { chatbotsDeHtml, mailsDeHtml, textoDeHtml } from './web.js';
 import {
   crearSecuencia,
@@ -757,7 +763,11 @@ const PROPUESTAS_POR_CORRIDA = 2;
 
 export function herramientasDelPublicista(
   deps: DepsDeHerramientas,
-  ctx: { registro: Registro; cambio?: { anuncioId: number; pedido: string } },
+  ctx: {
+    registro: Registro;
+    cambio?: { anuncioId: number; pedido: string };
+    rehacer?: { anuncioId: number; correcciones: string };
+  },
 ): Herramienta<any>[] {
   let propuestas = 0;
   const anotar = (hecho: string) => {
@@ -815,21 +825,26 @@ export function herramientasDelPublicista(
     rubro: string;
     titulo: string;
     texto: string;
-    frase_imagen: string;
+    plantilla: Plantilla;
+    contenido: Record<string, unknown>;
     preguntas: string[];
     diario: number;
     por_que: string;
   }> = {
     nombre: 'proponer_anuncio',
     descripcion:
-      'Arma la imagen con la plantilla de Sincro y le pasa el anuncio a Gero para aprobar. No gasta nada: recien ' +
-      `cuando Gero lo aprueba se crea en Meta. Hasta ${PROPUESTAS_POR_CORRIDA} por corrida.`,
+      'Arma la imagen con una de las plantillas de Sincro y la pasa al REVISOR: si la aprueba le llega a Gero, si no ' +
+      'vuelve con correcciones. No gasta nada: recien cuando Gero aprueba se crea en Meta. ' +
+      `Hasta ${ctx.rehacer ? 1 : PROPUESTAS_POR_CORRIDA} por corrida. Si un texto no entra en su lugar te dice que campo y ` +
+      'cuantas letras entran: acortalo y volvé a llamar.\n\n' +
+      PLANTILLAS_EXPLICADAS,
     esquema: objeto(
       {
         rubro: texto('El rubro al que apunta (contable, taller, gastronomia...)'),
-        titulo: texto('Hasta 40 letras'),
+        titulo: texto('El titulo de la PUBLICACION (no de la imagen): hasta 40 letras'),
         texto: texto('El texto de la publicacion: 2 o 3 renglones cortos, sin links'),
-        frase_imagen: texto('La frase grande de la imagen: hasta 8 palabras, que frene el scroll'),
+        plantilla: { type: 'string', enum: PLANTILLAS, description: 'La plantilla de la imagen' },
+        contenido: { type: 'object', description: 'Los textos de la imagen, con la forma de la plantilla elegida (ver ejemplos)' },
         preguntas: {
           type: 'array',
           items: { type: 'string' },
@@ -839,29 +854,32 @@ export function herramientasDelPublicista(
         diario: { type: 'number', description: `Presupuesto diario en pesos, desde ${DIARIO_MINIMO}` },
         por_que: texto('Por que este anuncio ahora: lo lee Gero en la tarjeta'),
       },
-      ['rubro', 'titulo', 'texto', 'frase_imagen', 'preguntas', 'diario', 'por_que'],
+      ['rubro', 'titulo', 'texto', 'plantilla', 'contenido', 'preguntas', 'diario', 'por_que'],
     ),
     validar: z.object({
       rubro: z.string(),
       titulo: z.string(),
       texto: z.string(),
-      frase_imagen: z.string(),
+      plantilla: z.enum(PLANTILLAS as [Plantilla, ...Plantilla[]]),
+      contenido: z.record(z.unknown()),
       preguntas: z.array(z.string()),
       diario: z.number(),
       por_que: z.string(),
     }),
     async correr(a) {
-      if (propuestas >= PROPUESTAS_POR_CORRIDA) {
-        throw new ErrorParaElAgente(`Ya propusiste ${PROPUESTAS_POR_CORRIDA} en esta corrida. Cerrá con lo que tenés.`);
+      const tope = ctx.rehacer ? 1 : PROPUESTAS_POR_CORRIDA;
+      if (propuestas >= tope) {
+        throw new ErrorParaElAgente(`Ya propusiste ${tope} en esta corrida. Cerrá con lo que tenés.`);
       }
-      if ((await deps.store.anuncios(['propuesto'])).length >= TOPE_DE_PROPUESTOS) {
+      if (!ctx.rehacer && (await deps.store.anuncios(['propuesto', 'revisando'])).length >= TOPE_DE_PROPUESTOS) {
         throw new ErrorParaElAgente(`Gero tiene ${TOPE_DE_PROPUESTOS} anuncios sin decidir: no propongas más hasta que los mire.`);
       }
       const p = Propuesta.safeParse({
         rubro: a.rubro,
         titulo: a.titulo,
         texto: a.texto,
-        frase: a.frase_imagen,
+        plantilla: a.plantilla,
+        contenido: a.contenido,
         preguntas: a.preguntas,
         diario: a.diario,
         porQue: a.por_que,
@@ -869,14 +887,17 @@ export function herramientasDelPublicista(
       if (!p.success) {
         throw new ErrorParaElAgente(`No va así: ${p.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
       }
-      if (/https?:\/\/|www\./i.test(`${p.data.titulo} ${p.data.texto} ${p.data.frase}`)) {
-        throw new ErrorParaElAgente('Sin links: el formulario ya lleva a la web.');
+      let id: number;
+      try {
+        id = await proponerAnuncio(p.data, deps, ctx.rehacer?.anuncioId);
+      } catch (err) {
+        if (err instanceof ErrorDePlantilla) throw new ErrorParaElAgente(`No entra: ${err.message}`);
+        throw err;
       }
-      const id = await proponerAnuncio(p.data, deps);
       propuestas++;
       ctx.registro.cerro = true;
-      anotar(`Propuso el anuncio #${id} (${p.data.rubro}): ${p.data.titulo}`);
-      return `Listo: el anuncio #${id} le llegó a Gero para aprobar.`;
+      anotar(`${ctx.rehacer ? 'Rehizo' : 'Propuso'} el anuncio #${id} (${p.data.rubro}, ${p.data.plantilla}): ${p.data.titulo}`);
+      return `Listo: el anuncio #${id} pasó al revisor. Si lo aprueba le llega a Gero.`;
     },
   };
 
@@ -919,7 +940,111 @@ export function herramientasDelPublicista(
     },
   };
 
-  // Rehaciendo uno que Gero pidio cambiar: solo mirar y proponer.
-  if (ctx.cambio) return [resultados, proponer, escribirLibreta('publicista', deps)];
+  // Rehaciendo uno (lo pidio Gero o lo devolvio el revisor): solo mirar y proponer.
+  if (ctx.cambio || ctx.rehacer) return [resultados, proponer, escribirLibreta('publicista', deps)];
   return [resultados, proponer, repartir, pausar, escribirLibreta('publicista', deps)];
+}
+
+/**
+ * Lo que el publicista ve de cada plantilla, con un ejemplo entero: elige la
+ * que mejor cuenta ESTE anuncio y llena sus textos.
+ */
+const PLANTILLAS_EXPLICADAS = `Plantillas (todas llevan arriba "publico" en mayusculas y el "titulo" grande en hasta dos renglones; abajo van solos el boton "Quiero verlo" y la marca):
+
+1. "chat": un telefono con mensajes y archivos que llegan, una flecha y una tarjeta con el resultado ordenado y tildado. Para lo que entra desordenado (WhatsApp, mail) y queda cargado. 3 a 5 mensajes; 3 o 4 filas.
+{"publico":"Para estudios contables","titulo":"Las facturas se cargan solas.","bajada":"Llegan por WhatsApp y quedan ordenadas.","chat":{"nombre":"Clientes","estado":"23 mensajes nuevos","mensajes":[{"texto":"Te paso la de octubre"},{"archivo":"factura_0231.pdf"},{"archivo":"factura_0232.pdf"},{"texto":"Van dos más, ¿llegaron?"}]},"resultado":{"titulo":"Facturas cargadas","etiqueta":"al día","filas":[{"nombre":"Distribuidora Sur","detalle":"$184.500"},{"nombre":"Ferretería Mitre","detalle":"$42.300"},{"nombre":"Gráfica Norte","detalle":"$96.800"}]}}
+
+2. "panel": un tablero con barras y estados (ok / bajo / alerta), un aviso automatico arriba y una tarjeta destacada. Para stock, turnos, cobranzas: lo que se controla solo y avisa. 3 o 4 filas; "nivel" de 0 a 1 llena la barra.
+{"publico":"Para talleres","titulo":"Nunca más sin el repuesto.","panel":{"titulo":"Stock del taller","subtitulo":"Actualizado hace 2 minutos","filas":[{"nombre":"Filtro de aceite","valor":"24","nivel":0.8,"estado":"ok","etiqueta":"OK"},{"nombre":"Pastillas de freno","valor":"6","nivel":0.2,"estado":"bajo","etiqueta":"Bajo"},{"nombre":"Correa de distribución","valor":"0","nivel":0,"estado":"alerta","etiqueta":"Pedir"}]},"aviso":{"titulo":"Falta correa de distribución","detalle":"Pedido enviado al proveedor","pie":"Hoy 9:41 · automático"},"destacado":{"grande":"24/7","texto":"el stock al día, sin contar a mano"}}
+
+3. "antes_despues": dos columnas, ANTES (con cruces) y CON SINCRO (con tildes), 3 o 4 items cada una, cada item con una linea fuerte y una suave. Para mostrar el cambio de un proceso entero.
+{"publico":"Para distribuidoras","titulo":"¿Cuántas horas se van en copiar pedidos?","antes":{"etiqueta":"ANTES","items":[{"fuerte":"Pedidos por WhatsApp","suave":"copiados a mano"},{"fuerte":"Planillas sueltas","suave":"que nadie actualiza"},{"fuerte":"Errores al facturar","suave":"y clientes esperando"}]},"despues":{"etiqueta":"CON SINCRO","items":[{"fuerte":"Pedidos que entran","suave":"solos al sistema"},{"fuerte":"Todo en un lugar","suave":"y al día"},{"fuerte":"Facturas sin tipeo","suave":"desde el mismo pedido"}]}}
+
+"bajada" (una linea bajo el titulo) va solo en chat y antes_despues, y es opcional. Un salto de linea (\\n) en el titulo elige donde cortar.`;
+
+// ------------------------------------------------------------ revisor
+
+/** Lo que el revisor mira de un anuncio: todo menos la imagen, que va aparte. */
+function fichaDeAnuncio(a: Anuncio): string {
+  return [
+    `Anuncio #${a.id} · rubro ${a.rubro} · plantilla ${a.plantilla ?? '?'}`,
+    `Titulo de la publicacion: ${a.titulo}`,
+    `Texto de la publicacion: ${a.texto}`,
+    `Preguntas propias del formulario: ${a.preguntas.length ? a.preguntas.join(' | ') : 'ninguna'}`,
+    `Diario propuesto: ${pesos(a.diario)}`,
+    `Por que lo propone el publicista: ${a.porQue}`,
+    `Textos de la imagen: ${JSON.stringify(a.contenido)}`,
+    ...(a.revision.length
+      ? ['', 'Vueltas anteriores del revisor:', ...a.revision.map((r) => `- vuelta ${r.ronda}: ${lineaDePuntajes(r)}. Correcciones: ${r.correcciones}`)]
+      : []),
+    '',
+    'Lo que Sincro ofrece de verdad (una promesa fuera de esto es una promesa incumplible):',
+    catalogo(),
+  ].join('\n');
+}
+
+/** El ancho de la imagen que ve el revisor: alcanza para leer y no se pasa del tope de MCP. */
+const ANCHO_PARA_REVISAR = 720;
+
+export function herramientasDelRevisor(
+  deps: DepsDeHerramientas,
+  ctx: { anuncioId: number; registro: Registro },
+): Herramienta<any>[] {
+  const ver: Herramienta<Record<string, never>> = {
+    nombre: 'ver_anuncio',
+    descripcion:
+      'La imagen del anuncio tal cual se va a ver en Instagram (mas chica, como en el celular), los textos de la ' +
+      'publicacion, las vueltas anteriores y lo que Sincro ofrece de verdad. Usala primero.',
+    esquema: objeto({}),
+    validar: z.object({}).strict() as z.ZodType<Record<string, never>>,
+    async correr() {
+      const a = await deps.store.anuncio(ctx.anuncioId);
+      if (!a || !a.plantilla) throw new ErrorParaElAgente('Ese anuncio ya no está para revisar.');
+      // Se vuelve a dibujar del contenido guardado, chica: la de 1080 pesa de mas para el contexto.
+      const png = imagenDeAnuncio(a.plantilla as Plantilla, a.contenido, ANCHO_PARA_REVISAR);
+      return [
+        { type: 'image', data: png.toString('base64'), mimeType: 'image/png' },
+        { type: 'text', text: fichaDeAnuncio(a) },
+      ];
+    },
+  };
+
+  const puntaje = { type: 'integer', minimum: 1, maximum: 10 };
+  const veredicto: Herramienta<Veredicto> = {
+    nombre: 'veredicto',
+    descripcion:
+      `Tu decision, una sola vez. Puntajes de 1 a 10; pasa SOLO con ${PUNTAJE_MINIMO} o mas en todos. Si no pasa, ` +
+      '"correcciones" es lo que el publicista tiene que cambiar, concreto y accionable ("el titulo promete 3 horas: ' +
+      'sacalo o hacelo pregunta"; "la fila 2 dice Dist. Sur: poné el nombre entero"). Si pasa, puede ir vacio.',
+    esquema: objeto(
+      {
+        aprobado: { type: 'boolean' },
+        puntajes: objeto(Object.fromEntries(CRITERIOS.map((c) => [c, puntaje])), [...CRITERIOS]),
+        correcciones: texto('Lo que hay que cambiar, una cosa por oracion'),
+      },
+      ['aprobado', 'puntajes', 'correcciones'],
+    ),
+    validar: Veredicto,
+    async correr(v) {
+      if (ctx.registro.cerro) throw new ErrorParaElAgente('Ya diste tu veredicto. Terminá la corrida.');
+      if (!v.aprobado && v.correcciones.length < 10) {
+        throw new ErrorParaElAgente('Si no lo aprobás, decí en "correcciones" qué cambiar.');
+      }
+      const r = await registrarVeredicto(ctx.anuncioId, v, deps);
+      ctx.registro.cerro = true;
+      ctx.registro.resumen =
+        r.resultado === 'pasa'
+          ? `Aprobó el anuncio #${ctx.anuncioId} (vuelta ${r.ronda}): le llegó a Gero`
+          : r.resultado === 'rehacer'
+            ? `Devolvió el anuncio #${ctx.anuncioId} con correcciones (vuelta ${r.ronda})`
+            : `Descartó el anuncio #${ctx.anuncioId}: no pasó en ${r.ronda} vueltas`;
+      return r.resultado === 'pasa'
+        ? 'Pasó: le llega a Gero.'
+        : r.resultado === 'rehacer'
+          ? 'No pasó: vuelve al publicista con tus correcciones.'
+          : 'No pasó en la última vuelta: queda descartado.';
+    },
+  };
+
+  return [ver, veredicto, escribirLibreta('revisor', deps)];
 }

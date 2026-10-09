@@ -43,7 +43,7 @@ const CORRIDAS_EN_LISTA = 50;
 const LARGO_DE_INFORME_EN_LISTA = 300;
 
 const Id = z.coerce.number().int().positive();
-const AgenteValido = z.enum(['buscador', 'vendedor', 'atencion', 'publicista']);
+const AgenteValido = z.enum(['buscador', 'vendedor', 'atencion', 'publicista', 'revisor']);
 
 function recortar(texto: string | undefined, largo: number): string | null {
   if (!texto) return null;
@@ -322,11 +322,12 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
   });
 
   app.get('/agentes', async () => {
-    const [buscador, vendedor, atencion, publicista, corridas] = await Promise.all([
+    const [buscador, vendedor, atencion, publicista, revisor, corridas] = await Promise.all([
       store.libreta('buscador'),
       store.libreta('vendedor'),
       store.libreta('atencion'),
       store.libreta('publicista'),
+      store.libreta('revisor'),
       store.corridas({ limite: CORRIDAS_EN_LISTA }),
     ]);
     // Varias corridas suelen ser del mismo lead: se busca cada nombre una vez.
@@ -340,6 +341,7 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
         vendedor: leerLibreta(vendedor),
         atencion: leerLibreta(atencion),
         publicista: leerLibreta(publicista),
+        revisor: leerLibreta(revisor),
       },
       corridas: corridas.map((c) => ({
         id: c.id,

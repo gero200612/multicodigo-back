@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { agentePublicitar, CorridaSinCerrar } from '../src/agentes.js';
+import { describe, expect, it, vi } from 'vitest';
+import { agentePublicitar, agenteRevisar, CorridaSinCerrar } from '../src/agentes.js';
 import {
   aprobarAnuncio,
   cambiarPresupuesto,
   chequearReparto,
+  descartarPlantillasViejas,
   escribirALeadMeta,
   estadoDelMes,
   leerInsights,
@@ -14,6 +15,7 @@ import {
   planificarAnuncios,
   proponerAnuncio,
   publicarAnuncio,
+  registrarVeredicto,
   repartirPresupuesto,
   resumenDeAnuncios,
   type Propuesta,
@@ -21,17 +23,40 @@ import {
 import { casillaPausada } from '../src/envio.js';
 import { leerMonto } from '../src/telegram.js';
 import { agenteDe, armar, casilla, type Opciones } from './armar.js';
+import { CRITERIOS, type Criterio } from '../src/store.js';
+import { CHAT, PANEL } from './ejemplos.js';
 import { metaFalsa } from './meta-falsa.js';
 
 const PROPUESTA: Propuesta = {
   rubro: 'taller',
   titulo: 'Turnos sin perder ninguno',
   texto: 'Los turnos que hoy entran por WhatsApp quedan agendados solos. Menos llamadas, cero olvidos.',
-  frase: '¿Cuántos turnos se te pierden por semana?',
+  plantilla: 'panel',
+  contenido: PANEL,
   preguntas: ['¿Qué tarea les lleva más tiempo hoy?'],
   diario: 2000,
   porQue: 'Los talleres son el rubro que más responde a los mails.',
 };
+
+/** La propuesta como la manda el agente a la herramienta. */
+const comoHerramienta = (p: Propuesta) => ({
+  rubro: p.rubro,
+  titulo: p.titulo,
+  texto: p.texto,
+  plantilla: p.plantilla,
+  contenido: p.contenido,
+  preguntas: p.preguntas,
+  diario: p.diario,
+  por_que: p.porQue,
+});
+
+/** Propuesto y ya aprobado por el revisor: lo que Gero ve en Telegram. */
+async function propuesto(h: ReturnType<typeof armar>, p: Propuesta) {
+  const id = await proponerAnuncio(p, h.deps);
+  const nueves = Object.fromEntries(CRITERIOS.map((c) => [c, 9])) as Record<Criterio, number>;
+  await registrarVeredicto(id, { aprobado: true, puntajes: nueves, correcciones: '' }, h.deps);
+  return id;
+}
 
 function conMeta(o: Opciones = {}) {
   const f = metaFalsa();
@@ -40,7 +65,7 @@ function conMeta(o: Opciones = {}) {
 
 /** Un anuncio ya publicado en Meta, con su diario. */
 async function activo(h: ReturnType<typeof conMeta>, diario: number, n = 1) {
-  const id = await h.store.crearAnuncio({ ...PROPUESTA, diario, imagen: Buffer.from('png') });
+  const id = await h.store.crearAnuncio({ ...PROPUESTA, frase: PANEL.titulo, diario, imagen: Buffer.from('png') });
   await h.store.actualizarAnuncio(id, {
     estado: 'activo',
     metaIds: { imagen: `hash${n}`, formulario: `form${n}`, conjunto: `set${n}`, creativo: `cre${n}`, anuncio: `ad${n}` },
@@ -138,13 +163,13 @@ describe('el tope de plata', () => {
   it('aprobar con el diario que propuso, o con lo que entra, o nada si no entra el mínimo', async () => {
     const h = conMeta();
     const otro = await activo(h, 1000);
-    const id = await proponerAnuncio({ ...PROPUESTA, diario: 3000 }, h.deps);
+    const id = await propuesto(h, { ...PROPUESTA, diario: 3000 });
     // Gastado 45.000 de 50.000 y el otro anuncio a 1.000 × 2 dias: entra 1.500 por dia para este.
     await h.store.guardarGastos([gasto('2026-09-10', otro, 44_000)]);
     const r = await aprobarAnuncio(id, h.deps);
     expect(r).toMatchObject({ ok: true, anuncio: { estado: 'aprobado', diario: 2000 } });
 
-    const id2 = await proponerAnuncio(PROPUESTA, h.deps);
+    const id2 = await propuesto(h, PROPUESTA);
     const r2 = await aprobarAnuncio(id2, h.deps);
     expect(r2).toMatchObject({ ok: false });
     if (!r2.ok) expect(r2.motivo).toContain('no entra');
@@ -174,33 +199,24 @@ describe('el tope de plata', () => {
 });
 
 describe('nada se crea en Meta sin aprobación', () => {
-  it('el publicista propone: imagen, tarjeta con botones y ni una llamada a Meta', async () => {
+  it('el publicista propone: imagen armada, al revisor y ni una llamada a Meta', async () => {
     const h = conMeta({
       agente: agenteDe({
         publicista: async (usar, p) => {
           expect(p.herramientas).toEqual(['ver_resultados', 'proponer_anuncio', 'repartir_presupuesto', 'pausar_anuncio', 'escribir_libreta']);
+          expect(p.sistema).toContain('SincroResto');
           expect((await usar('ver_resultados')).texto).toContain('Presupuesto del mes: $50.000');
-          const r = await usar('proponer_anuncio', {
-            rubro: PROPUESTA.rubro,
-            titulo: PROPUESTA.titulo,
-            texto: PROPUESTA.texto,
-            frase_imagen: PROPUESTA.frase,
-            preguntas: PROPUESTA.preguntas,
-            diario: PROPUESTA.diario,
-            por_que: PROPUESTA.porQue,
-          });
-          expect(r).toEqual({ texto: 'Listo: el anuncio #1 le llegó a Gero para aprobar.', error: false });
+          const r = await usar('proponer_anuncio', comoHerramienta(PROPUESTA));
+          expect(r).toMatchObject({ texto: 'Listo: el anuncio #1 pasó al revisor. Si lo aprueba le llega a Gero.', error: false });
           // Un link no pasa.
-          const link = await usar('proponer_anuncio', {
-            rubro: 'taller',
-            titulo: 'Mirá www.sincroresto.com',
-            texto: PROPUESTA.texto,
-            frase_imagen: PROPUESTA.frase,
-            preguntas: [],
-            diario: 2000,
-            por_que: PROPUESTA.porQue,
-          });
+          const link = await usar('proponer_anuncio', { ...comoHerramienta(PROPUESTA), titulo: 'Mirá www.sincroresto.com' });
           expect(link.error).toBe(true);
+          // Un texto que no entra vuelve con el campo y lo que entra.
+          const largo = await usar('proponer_anuncio', {
+            ...comoHerramienta(PROPUESTA),
+            contenido: { ...PANEL, aviso: { ...PANEL.aviso, titulo: 'Falta la correa del Volkswagen Gol' } },
+          });
+          expect(largo).toMatchObject({ error: true, texto: expect.stringMatching(/^No entra: aviso\.titulo: .*letras o menos/) });
           // Repartir sobre uno que Gero no aprobo, tampoco.
           expect((await usar('repartir_presupuesto', { anuncios: [{ id: 1, diario: 3000 }] })).texto).toContain('no está aprobado');
         },
@@ -209,21 +225,21 @@ describe('nada se crea en Meta sin aprobación', () => {
     await agentePublicitar({}, h.deps);
 
     expect(h.f.llamadas).toEqual([]);
-    expect(await h.store.anuncio(1)).toMatchObject({ estado: 'propuesto', diario: 2000, preguntas: PROPUESTA.preguntas });
-    expect(h.fotos).toHaveLength(1);
-    expect(h.fotos[0]!.png.subarray(1, 4).toString()).toBe('PNG');
-    expect(h.tarjetas.at(-1)!.datos).toEqual(['aa:1', 'ac:1', 'ad:1']);
-    expect(h.tarjetas.at(-1)!.texto).toContain('¿Qué tarea les lleva más tiempo hoy?');
+    expect(await h.store.anuncio(1)).toMatchObject({ estado: 'revisando', plantilla: 'panel', frase: PANEL.titulo, diario: 2000 });
+    // Gero todavia no vio nada: lo ve el revisor primero.
+    expect(h.fotos).toHaveLength(0);
+    expect(h.tarjetas).toHaveLength(0);
+    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['agente_revisar']);
     expect(h.store.corridasGuardadas.at(-1)).toMatchObject({ agente: 'publicista', estado: 'lista' });
     expect(h.store.corridasGuardadas.at(-1)!.resumen).toContain('Propuso el anuncio #1');
   });
 
   it('al aprobar se encola la publicación, y recién ahí se crea todo en Meta', async () => {
     const h = conMeta();
-    const id = await proponerAnuncio(PROPUESTA, h.deps);
+    const id = await propuesto(h, PROPUESTA);
     expect(await aprobarAnuncio(id, h.deps)).toMatchObject({ ok: true });
     expect(h.f.llamadas).toEqual([]);
-    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['publicar_anuncio', 'agente_publicitar']);
+    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['agente_revisar', 'publicar_anuncio', 'agente_publicitar']);
 
     await publicarAnuncio({ anuncioId: id }, h.deps);
     expect(h.f.llamadas.map((l) => l.metodo)).toEqual([
@@ -256,9 +272,15 @@ describe('nada se crea en Meta sin aprobación', () => {
     expect(h.f.llamadas).toHaveLength(8);
   });
 
-  it('si Meta falla a mitad, el reintento sigue desde ahí sin duplicar', async () => {
+  it('un anuncio en revisión no se puede aprobar', async () => {
     const h = conMeta();
     const id = await proponerAnuncio(PROPUESTA, h.deps);
+    expect(await aprobarAnuncio(id, h.deps)).toMatchObject({ ok: false, motivo: 'ya estaba decidido (revisando)' });
+  });
+
+  it('si Meta falla a mitad, el reintento sigue desde ahí sin duplicar', async () => {
+    const h = conMeta();
+    const id = await propuesto(h, PROPUESTA);
     await aprobarAnuncio(id, h.deps);
     h.f.datos.fallar = 'crearCreativo';
     await expect(publicarAnuncio({ anuncioId: id }, h.deps)).rejects.toThrow('falló crearCreativo');
@@ -276,30 +298,23 @@ describe('nada se crea en Meta sin aprobación', () => {
         publicista: async (usar, p) => {
           expect(p.objetivo).toContain('más corto, y para contables');
           expect(p.herramientas).not.toContain('repartir_presupuesto');
-          await usar('proponer_anuncio', {
-            rubro: 'contable',
-            titulo: 'Facturas que se cargan solas',
-            texto: 'Tus clientes mandan la factura por WhatsApp y queda cargada.',
-            frase_imagen: '¿Seguís cargando facturas a mano?',
-            preguntas: [],
-            diario: 2000,
-            por_que: 'Lo pidió Gero: más corto y para contables.',
-          });
+          await usar('proponer_anuncio', comoHerramienta({ ...PROPUESTA, rubro: 'contable', plantilla: 'chat', contenido: CHAT }));
         },
       }),
     });
-    const id = await proponerAnuncio(PROPUESTA, h.deps);
+    const id = await propuesto(h, PROPUESTA);
     expect(await pedirCambio(id, 'más corto, y para contables', h.deps)).toMatchObject({ ok: true });
     expect(await h.store.anuncio(id)).toMatchObject({ estado: 'descartado', motivo: 'Gero pidió cambiar: más corto, y para contables' });
     const tarea = h.store.tareas.find((t) => t.tipo === 'agente_publicitar')!;
     await agentePublicitar(tarea.payload, h.deps);
-    expect(await h.store.anuncio(2)).toMatchObject({ estado: 'propuesto', rubro: 'contable' });
+    // El nuevo tambien pasa por el revisor.
+    expect(await h.store.anuncio(2)).toMatchObject({ estado: 'revisando', rubro: 'contable', plantilla: 'chat' });
     expect(h.f.llamadas).toEqual([]);
   });
 
   it('una corrida de cambio que no propone nada queda fallida', async () => {
     const h = conMeta({ agente: agenteDe({ publicista: async () => {} }) });
-    const id = await proponerAnuncio(PROPUESTA, h.deps);
+    const id = await propuesto(h, PROPUESTA);
     await pedirCambio(id, 'otro color', h.deps);
     const tarea = h.store.tareas.find((t) => t.tipo === 'agente_publicitar')!;
     await expect(agentePublicitar(tarea.payload, h.deps)).rejects.toBeInstanceOf(CorridaSinCerrar);
@@ -307,12 +322,102 @@ describe('nada se crea en Meta sin aprobación', () => {
 
   it('sin Meta configurado, ni se aprueba ni corre el publicista', async () => {
     const h = armar({ agente: async () => ({}) });
-    const id = await proponerAnuncio(PROPUESTA, h.deps);
+    const id = await propuesto(h, PROPUESTA);
     expect(await aprobarAnuncio(id, h.deps)).toMatchObject({ ok: false, motivo: expect.stringContaining('META_TOKEN') });
     await agentePublicitar({}, h.deps);
     expect(h.corridas).toHaveLength(0);
     await planificarAnuncios(h.deps);
-    expect(h.store.tareas).toHaveLength(0);
+    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['agente_revisar']);
+  });
+});
+
+describe('el revisor: a Gero le llegan anuncios chequeados', () => {
+  const nueves = Object.fromEntries(CRITERIOS.map((c) => [c, 9])) as Record<Criterio, number>;
+
+  it('ve la imagen de verdad por MCP y, si pasa, a Gero le llega la tarjeta con los puntajes', async () => {
+    const h = conMeta({
+      agente: agenteDe({
+        revisor: async (usar, p) => {
+          expect(p.herramientas).toEqual(['ver_anuncio', 'veredicto', 'escribir_libreta']);
+          expect(p.maxTurnos).toBe(8);
+          const visto = await usar('ver_anuncio');
+          const imagen = visto.bloques.find((b) => b.type === 'image');
+          expect(imagen).toMatchObject({ type: 'image', mimeType: 'image/png' });
+          const png = Buffer.from((imagen as { data: string }).data, 'base64');
+          expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([720, 720]);
+          expect(visto.texto).toContain('Textos de la imagen: {"publico":"Para talleres"');
+          expect(visto.texto).toContain('SincroResto');
+          // Sin correcciones no se puede rechazar.
+          expect((await usar('veredicto', { aprobado: false, puntajes: nueves, correcciones: '' })).error).toBe(true);
+          expect((await usar('veredicto', { aprobado: true, puntajes: nueves, correcciones: '' })).texto).toBe('Pasó: le llega a Gero.');
+        },
+      }),
+    });
+    const id = await proponerAnuncio(PROPUESTA, h.deps);
+    await agenteRevisar({ anuncioId: id }, h.deps);
+    const a = (await h.store.anuncio(id))!;
+    expect(a).toMatchObject({ estado: 'propuesto', revision: [{ ronda: 1, aprobado: true, puntajes: nueves }] });
+    expect(h.fotos).toHaveLength(1);
+    expect(h.fotos[0]!.png.readUInt32BE(16)).toBe(1080);
+    expect(h.tarjetas.at(-1)!.datos).toEqual(['aa:1', 'ac:1', 'ad:1']);
+    expect(h.tarjetas.at(-1)!.texto).toContain('✔️ Revisado (vuelta 1): gancho 9 · claridad 9');
+    expect(h.store.corridasGuardadas.at(-1)).toMatchObject({ agente: 'revisor', estado: 'lista' });
+  });
+
+  it('un "aprobado" con un 7 adentro no pasa: vuelve al publicista, que rehace el MISMO anuncio', async () => {
+    const h = conMeta({
+      agente: agenteDe({
+        publicista: async (usar, p) => {
+          expect(p.objetivo).toContain('El destacado "24/7" no es cierto');
+          expect(p.herramientas).toEqual(['ver_resultados', 'proponer_anuncio', 'escribir_libreta']);
+          const r = await usar('proponer_anuncio', comoHerramienta({ ...PROPUESTA, contenido: { ...PANEL, destacado: { grande: 'Al día', texto: 'sin contar a mano' } } }));
+          expect(r.texto).toContain('#1');
+          // Una sola vez al rehacer.
+          expect((await usar('proponer_anuncio', comoHerramienta(PROPUESTA))).error).toBe(true);
+        },
+      }),
+    });
+    const id = await proponerAnuncio(PROPUESTA, h.deps);
+    const r = await registrarVeredicto(id, { aprobado: true, puntajes: { ...nueves, sin_cifras_inventadas: 7 }, correcciones: 'El destacado "24/7" no es cierto: cambialo.' }, h.deps);
+    expect(r).toEqual({ resultado: 'rehacer', ronda: 1 });
+    expect(h.tarjetas).toHaveLength(0);
+    const tarea = h.store.tareas.find((t) => t.tipo === 'agente_publicitar')!;
+    await agentePublicitar(tarea.payload, h.deps);
+    const a = (await h.store.anuncio(id))!;
+    expect(a).toMatchObject({ estado: 'revisando', contenido: { destacado: { grande: 'Al día' } } });
+    expect(a.revision).toHaveLength(1);
+    expect(h.store.anunciosGuardados).toHaveLength(1);
+    expect(h.store.tareas.filter((t) => t.tipo === 'agente_revisar').map((t) => t.clave)).toEqual(['revisar:1:1', 'revisar:1:2']);
+  });
+
+  it('a la tercera vuelta sin pasar se descarta y Gero recibe una línea, nunca la imagen', async () => {
+    const h = conMeta();
+    const id = await proponerAnuncio(PROPUESTA, h.deps);
+    const mal = { aprobado: false, puntajes: { ...nueves, gancho: 5 }, correcciones: 'El título no engancha.' };
+    expect((await registrarVeredicto(id, mal, h.deps)).resultado).toBe('rehacer');
+    await proponerAnuncio(PROPUESTA, h.deps, id);
+    expect((await registrarVeredicto(id, mal, h.deps)).resultado).toBe('rehacer');
+    await proponerAnuncio(PROPUESTA, h.deps, id);
+    expect(await registrarVeredicto(id, mal, h.deps)).toEqual({ resultado: 'descartado', ronda: 3 });
+    expect(await h.store.anuncio(id)).toMatchObject({ estado: 'descartado', motivo: expect.stringContaining('no pasó la revisión en 3 vueltas') });
+    expect(h.fotos).toHaveLength(0);
+    expect(h.tarjetas).toHaveLength(0);
+    expect(h.avisos).toEqual(['🗑 Descarté un anuncio para taller ("Turnos sin perder ninguno"): no pasó la revisión en 3 vueltas.']);
+    expect(h.store.tareas.filter((t) => t.tipo === 'agente_publicitar')).toHaveLength(2);
+  });
+
+  it('al arrancar, los propuestos con la plantilla vieja se descartan una vez y el publicista los reemplaza', async () => {
+    const h = conMeta();
+    const viejo = await h.store.crearAnuncio({ ...PROPUESTA, plantilla: undefined, contenido: undefined, frase: 'Frase vieja', imagen: Buffer.from('png') });
+    await h.store.actualizarAnuncio(viejo, { estado: 'propuesto', telegramMsg: 77 });
+    const nuevo = await propuesto(h, PROPUESTA);
+    const cambiarBotones = vi.fn(async () => {});
+    expect(await descartarPlantillasViejas({ ...h.deps, cambiarBotones })).toBe(1);
+    expect(await h.store.anuncio(viejo)).toMatchObject({ estado: 'descartado', motivo: 'plantilla vieja' });
+    expect((await h.store.anuncio(nuevo))!.estado).toBe('propuesto');
+    expect(cambiarBotones).toHaveBeenCalledWith(77, undefined);
+    expect(await descartarPlantillasViejas({ ...h.deps, cambiarBotones })).toBe(0);
+    expect(h.store.tareas.filter((t) => t.tipo === 'agente_publicitar')).toHaveLength(1);
   });
 });
 

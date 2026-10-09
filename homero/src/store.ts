@@ -16,6 +16,7 @@ export type TipoDeTarea =
   | 'agente_vender'
   | 'agente_atender'
   | 'agente_publicitar'
+  | 'agente_revisar'
   | 'publicar_anuncio'
   | 'leer_insights'
   | 'escribir_a_lead_meta'
@@ -155,11 +156,33 @@ export interface FiltroDeLeads {
   desde: number;
 }
 
-export type Agente = 'buscador' | 'vendedor' | 'atencion' | 'publicista';
+export type Agente = 'buscador' | 'vendedor' | 'atencion' | 'publicista' | 'revisor';
 
 // ---- Anuncios (spec 2026-10-08-homero-anuncios-meta)
 
-export type EstadoDeAnuncio = 'propuesto' | 'aprobado' | 'activo' | 'pausado' | 'descartado';
+/** `revisando`: armado, esperando que lo apruebe el revisor; Gero todavia no lo vio. */
+export type EstadoDeAnuncio = 'revisando' | 'propuesto' | 'aprobado' | 'activo' | 'pausado' | 'descartado';
+
+/** Lo que mira el revisor en cada anuncio, de 1 a 10. */
+export const CRITERIOS = [
+  'gancho',
+  'claridad',
+  'legibilidad',
+  'coherencia',
+  'promesas_cumplibles',
+  'sin_cifras_inventadas',
+  'terminacion',
+] as const;
+export type Criterio = (typeof CRITERIOS)[number];
+
+/** Una vuelta del revisor sobre un anuncio. */
+export interface Ronda {
+  ronda: number;
+  aprobado: boolean;
+  puntajes: Record<Criterio, number>;
+  correcciones: string;
+  en: string;
+}
 
 /** Lo que se creo en Meta para un anuncio. Se va llenando al publicar: un corte a mitad retoma. */
 export interface IdsEnMeta {
@@ -175,8 +198,13 @@ export interface Anuncio {
   rubro: string;
   titulo: string;
   texto: string;
-  /** La frase grande de la imagen. */
+  /** El titulo de la imagen (antes, la frase grande de la plantilla unica). */
   frase: string;
+  /** La plantilla de la imagen y sus textos. Los viejos (de antes de las plantillas) no tienen. */
+  plantilla?: string;
+  contenido?: unknown;
+  /** Las vueltas del revisor, la ultima al final. */
+  revision: Ronda[];
   /** Las preguntas propias del formulario (nombre, mail, telefono y empresa van siempre). */
   preguntas: string[];
   /** Por que lo propone el publicista: lo lee Gero en la tarjeta. */
@@ -194,9 +222,11 @@ export interface Anuncio {
 
 export type NuevoAnuncio = Pick<Anuncio, 'rubro' | 'titulo' | 'texto' | 'frase' | 'preguntas' | 'porQue' | 'diario'> & {
   imagen: Buffer;
+  plantilla?: string;
+  contenido?: unknown;
 };
 
-export type CambiosDeAnuncio = Partial<Pick<Anuncio, 'estado' | 'diario' | 'motivo' | 'metaIds' | 'telegramMsg' | 'aprobadoEn'>>;
+export type CambiosDeAnuncio = Partial<Pick<Anuncio, 'estado' | 'diario' | 'motivo' | 'metaIds' | 'telegramMsg' | 'aprobadoEn' | 'revision'>>;
 
 /** Lo que gasto un anuncio en un dia (de los insights de Meta), en pesos. */
 export interface Gasto {
@@ -406,7 +436,10 @@ export interface Store {
   actualizarPresupuesto(id: number, c: CambiosDePresupuesto): Promise<void>;
 
   // ---- Anuncios
+  /** Nace `revisando`: lo ve el revisor antes que Gero. */
   crearAnuncio(a: NuevoAnuncio): Promise<number>;
+  /** El publicista lo rehizo con las correcciones del revisor: textos e imagen nuevos, vuelve a `revisando`. */
+  rehacerAnuncio(id: number, a: NuevoAnuncio): Promise<void>;
   anuncio(id: number): Promise<Anuncio | undefined>;
   /** Los mas nuevos primero. Sin `estados`, todos. */
   anuncios(estados?: EstadoDeAnuncio[]): Promise<Anuncio[]>;
@@ -1117,11 +1150,43 @@ export class PgStore implements Store {
 
   async crearAnuncio(a: NuevoAnuncio) {
     const r = await this.pool.query(
-      `INSERT INTO homero.anuncios (rubro, titulo, texto, frase, preguntas, por_que, diario, imagen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-      [a.rubro, a.titulo, a.texto, a.frase, JSON.stringify(a.preguntas), a.porQue, a.diario, a.imagen],
+      `INSERT INTO homero.anuncios (rubro, titulo, texto, frase, preguntas, por_que, diario, imagen, plantilla, contenido, estado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'revisando') RETURNING id`,
+      [
+        a.rubro,
+        a.titulo,
+        a.texto,
+        a.frase,
+        JSON.stringify(a.preguntas),
+        a.porQue,
+        a.diario,
+        a.imagen,
+        a.plantilla ?? null,
+        a.contenido === undefined ? null : JSON.stringify(a.contenido),
+      ],
     );
     return Number(r.rows[0].id);
+  }
+
+  async rehacerAnuncio(id: number, a: NuevoAnuncio) {
+    await this.pool.query(
+      `UPDATE homero.anuncios SET rubro = $2, titulo = $3, texto = $4, frase = $5, preguntas = $6, por_que = $7,
+         diario = $8, imagen = $9, plantilla = $10, contenido = $11, estado = 'revisando'
+       WHERE id = $1`,
+      [
+        id,
+        a.rubro,
+        a.titulo,
+        a.texto,
+        a.frase,
+        JSON.stringify(a.preguntas),
+        a.porQue,
+        a.diario,
+        a.imagen,
+        a.plantilla ?? null,
+        a.contenido === undefined ? null : JSON.stringify(a.contenido),
+      ],
+    );
   }
 
   async anuncio(id: number) {
@@ -1152,7 +1217,7 @@ export class PgStore implements Store {
       `UPDATE homero.anuncios SET
          estado = COALESCE($2, estado), diario = COALESCE($3, diario), motivo = COALESCE($4, motivo),
          meta_ids = COALESCE($5::jsonb, meta_ids), telegram_msg = COALESCE($6, telegram_msg),
-         aprobado_en = COALESCE($7, aprobado_en)
+         aprobado_en = COALESCE($7, aprobado_en), revision = COALESCE($8::jsonb, revision)
        WHERE id = $1`,
       [
         id,
@@ -1162,6 +1227,7 @@ export class PgStore implements Store {
         c.metaIds ? JSON.stringify(c.metaIds) : null,
         c.telegramMsg ?? null,
         c.aprobadoEn ?? null,
+        c.revision ? JSON.stringify(c.revision) : null,
       ],
     );
   }
@@ -1259,7 +1325,8 @@ export class PgStore implements Store {
 
 /** Todo menos la imagen, que pesa: se pide aparte. */
 const COLUMNAS_DE_ANUNCIO =
-  'id, rubro, titulo, texto, frase, preguntas, por_que, estado, diario, motivo, meta_ids, telegram_msg, creado_en, aprobado_en';
+  'id, rubro, titulo, texto, frase, preguntas, por_que, estado, diario, motivo, meta_ids, telegram_msg, creado_en, aprobado_en, ' +
+  'plantilla, contenido, revision';
 
 type Fila = Record<string, unknown>;
 const opc = <T>(v: unknown) => (v === null || v === undefined ? undefined : (v as T));
@@ -1299,6 +1366,9 @@ function aAnuncio(f: Fila): Anuncio {
     telegramMsg: num(f.telegram_msg),
     creadoEn: f.creado_en as Date,
     aprobadoEn: opc(f.aprobado_en),
+    plantilla: opc(f.plantilla),
+    contenido: opc(f.contenido),
+    revision: (f.revision as Ronda[] | null) ?? [],
   };
 }
 

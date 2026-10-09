@@ -51,10 +51,12 @@ ALTER TABLE homero.leads ADD CONSTRAINT leads_estado_check
   CHECK (estado IN ('nuevo', 'descartado', 'borrador', 'aprobado', 'contactado',
                     'respondio', 'reunion', 'cerrado', 'baja', 'rebotado', 'caliente'));
 
--- El publicista es un agente mas: sus corridas y su libreta.
+-- El publicista es un agente mas: sus corridas y su libreta. La lista lleva
+-- tambien al revisor (009): estas lineas corren en cada arranque, y con una
+-- corrida del revisor en la tabla una lista sin el haria fallar el arranque.
 ALTER TABLE homero.corridas DROP CONSTRAINT IF EXISTS corridas_agente_check;
 ALTER TABLE homero.corridas ADD CONSTRAINT corridas_agente_check
-  CHECK (agente IN ('buscador', 'vendedor', 'atencion', 'publicista'));
+  CHECK (agente IN ('buscador', 'vendedor', 'atencion', 'publicista', 'revisor'));
 ALTER TABLE homero.libretas DROP CONSTRAINT IF EXISTS libretas_agente_check;
 ALTER TABLE homero.libretas ADD CONSTRAINT libretas_agente_check
-  CHECK (agente IN ('buscador', 'vendedor', 'atencion', 'publicista'));
+  CHECK (agente IN ('buscador', 'vendedor', 'atencion', 'publicista', 'revisor'));

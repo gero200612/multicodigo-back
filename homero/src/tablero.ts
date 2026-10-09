@@ -42,6 +42,7 @@ const TIPOS: Record<Agente, TipoDeTarea[]> = {
   vendedor: ['agente_vender', 'investigar'],
   atencion: ['agente_atender', 'resumir_respuesta'],
   publicista: ['agente_publicitar'],
+  revisor: ['agente_revisar'],
 };
 
 /** Que hace una herramienta, dicho para Gero. */
@@ -69,6 +70,8 @@ const VERBOS: Record<string, string> = {
   proponer_anuncio: 'Te pasó un anuncio para aprobar:',
   repartir_presupuesto: 'Repartiendo el presupuesto',
   pausar_anuncio: 'Pausó un anuncio:',
+  ver_anuncio: 'Mirando el anuncio',
+  veredicto: 'Dio su veredicto',
 };
 
 export function describirPaso(herramienta: string, dato?: string): string {
@@ -86,6 +89,7 @@ const QUE_ESPERA_LIBRE: Record<Agente, (ahora: Date) => string> = {
   vendedor: () => 'Sin negocios para investigar: espera a que el buscador anote',
   atencion: () => 'Esperando respuestas: revisa las bandejas cada 10 minutos',
   publicista: () => 'Mira los anuncios todos los días a las 10, y cada vez que aprobás uno',
+  revisor: () => 'Revisa cada anuncio que arma el publicista antes de que te llegue',
 };
 
 export async function armarTablero(
@@ -156,7 +160,13 @@ export async function armarTablero(
   };
 
   return {
-    agentes: { buscador: uno('buscador'), vendedor: uno('vendedor'), atencion: uno('atencion'), publicista: uno('publicista') },
+    agentes: {
+      buscador: uno('buscador'),
+      vendedor: uno('vendedor'),
+      atencion: uno('atencion'),
+      publicista: uno('publicista'),
+      revisor: uno('revisor'),
+    },
     iaPausadaHasta,
     pausaManual: !!pausaManual,
   };

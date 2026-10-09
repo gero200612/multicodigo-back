@@ -430,12 +430,24 @@ export class MemoriaStore implements Store {
 
   async crearAnuncio(a: NuevoAnuncio) {
     const id = this.anunciosGuardados.length + 1;
-    this.anunciosGuardados.push({ ...copia({ ...a, imagen: undefined }), imagen: a.imagen, id, estado: 'propuesto', metaIds: {}, creadoEn: this.ahora() });
+    this.anunciosGuardados.push({
+      ...copia({ ...a, imagen: undefined }),
+      imagen: a.imagen,
+      id,
+      estado: 'revisando',
+      metaIds: {},
+      revision: [],
+      creadoEn: this.ahora(),
+    });
     return id;
+  }
+  async rehacerAnuncio(id: number, a: NuevoAnuncio) {
+    const f = this.anunciosGuardados.find((x) => x.id === id)!;
+    Object.assign(f, copia({ ...a, imagen: undefined }), { imagen: a.imagen, estado: 'revisando' });
   }
   private sinImagen(a: Anuncio & { imagen: Buffer }): Anuncio {
     const { imagen: _, ...resto } = a;
-    return { ...resto, metaIds: { ...resto.metaIds }, preguntas: [...resto.preguntas] };
+    return { ...resto, metaIds: { ...resto.metaIds }, preguntas: [...resto.preguntas], revision: copia(resto.revision) };
   }
   async anuncio(id: number) {
     const a = this.anunciosGuardados.find((x) => x.id === id);
@@ -458,6 +470,7 @@ export class MemoriaStore implements Store {
     const a = this.anunciosGuardados.find((x) => x.id === id)!;
     Object.assign(a, Object.fromEntries(Object.entries(c).filter(([, v]) => v !== undefined)));
     if (c.metaIds) a.metaIds = { ...c.metaIds };
+    if (c.revision) a.revision = copia(c.revision);
   }
   async guardarGastos(g: Gasto[]) {
     for (const f of g) {
