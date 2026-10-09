@@ -54,6 +54,18 @@ public class CualquieraTests
     }
 
     [Fact]
+    public async Task UnSlotAjenoSeDescartaYSigueConOtro()
+    {
+        var pedidos = new List<string>();
+        var r = await Cualquiera.ConElPrimeroLibre(
+            _ => Task.FromResult<IEnumerable<SlotVista>>([S("c1"), S("c2")]),
+            slot => { pedidos.Add(slot); return slot == "c1" ? throw new UpstreamException("slot_ajeno") : Task.FromResult(slot); },
+            null, CancellationToken.None, cada: TimeSpan.Zero);
+        Assert.Equal("c2", r);
+        Assert.Equal(["c1", "c2"], pedidos);
+    }
+
+    [Fact]
     public async Task OtroErrorDelTurnoSube()
     {
         await Assert.ThrowsAsync<UpstreamException>(() => Cualquiera.ConElPrimeroLibre<string>(

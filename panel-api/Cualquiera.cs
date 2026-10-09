@@ -26,8 +26,9 @@ public static class Cualquiera
     public static bool Es(string? slot) => slot == Valor;
 
     /// <summary>El primer slot libre, en orden numérico (`c10` va después de `c2`), o null.</summary>
-    public static string? Libre(IEnumerable<SlotVista> slots)
+    public static string? Libre(IEnumerable<SlotVista> slots, IReadOnlySet<string>? ajenos = null)
         => slots
+            .Where(s => ajenos is null || !ajenos.Contains(s.Slot))
             .Where(s => s.TieneCredencial && s.ProyectoId is not null && !s.Trabajando && s.SinCuotaHasta is null)
             .Select(s => s.Slot)
             .OrderBy(s => int.TryParse(s.AsSpan(1), out var n) ? n : int.MaxValue)
@@ -51,10 +52,15 @@ public static class Cualquiera
         var reloj = ahora ?? (() => DateTimeOffset.UtcNow);
         var hasta = reloj() + (tope ?? Tope);
         var avisado = false;
+        // El panorama trae los slots de los proyectos donde sos miembro, que son
+        // más que los que podés USAR (`puede_usar_slot`: los tuyos y los
+        // compartidos con tu grupo). El bridge lo hace cumplir con `slot_ajeno`;
+        // acá ese rechazo descarta el slot y se sigue con otro.
+        var ajenos = new HashSet<string>();
 
         while (true)
         {
-            var slot = Libre(await slots(ct));
+            var slot = Libre(await slots(ct), ajenos);
             if (slot is not null)
             {
                 try
@@ -65,6 +71,11 @@ public static class Cualquiera
                 {
                     // Lo tomó otro entre que lo vimos libre y lo pedimos: se
                     // sigue esperando, no es una falla del pedido.
+                }
+                catch (UpstreamException e) when (e.Message == "slot_ajeno")
+                {
+                    ajenos.Add(slot);
+                    continue;
                 }
             }
 
