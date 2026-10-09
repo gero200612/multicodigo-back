@@ -187,6 +187,31 @@ describe.each<[string, () => Promise<RegistroDeErrores>]>([
     expect((await registro.porId(a.id))!.veces).toBe(1);
   });
 
+  // Publicar un ticket pasa a main la rama entera del agente: los arreglos que
+  // estaban en esa rama ya no tienen que ofrecer "Publicar".
+  it('marcarPublicados pasa a publicado los en_rama de ese agente en ese proyecto', async () => {
+    const OTRO = '00000000-0000-4000-8000-000000000099';
+    const mio = await registro.registrar(reporte({ huella: 'h1' }));
+    const viejo = await registro.registrar(reporte({ huella: 'h2' }));
+    const otroAgente = await registro.registrar(reporte({ huella: 'h3' }));
+    const otroProyecto = await registro.registrar(reporte({ huella: 'h4' }));
+    const nuevo = await registro.registrar(reporte({ huella: 'h5' }));
+    await registro.cambiarEstado(mio.id, 'en_rama', { agente: 'c1', proyectoId: PROYECTO, resumen: 'r' });
+    await registro.cambiarEstado(viejo.id, 'en_rama', { agente: 'c1' });
+    await registro.cambiarEstado(otroAgente.id, 'en_rama', { agente: 'c2', proyectoId: PROYECTO });
+    await registro.cambiarEstado(otroProyecto.id, 'en_rama', { agente: 'c1', proyectoId: OTRO });
+
+    const ids = await registro.marcarPublicados(PROYECTO, 'c1');
+
+    expect(ids.sort()).toEqual([mio.id, viejo.id].sort());
+    const fila = (await registro.porId(mio.id))!;
+    expect(fila.estado).toBe('publicado');
+    expect(fila.arreglo).toMatchObject({ agente: 'c1', resumen: 'r', publicadoCon: 'la rama del agente' });
+    expect((await registro.porId(otroAgente.id))!.estado).toBe('en_rama');
+    expect((await registro.porId(otroProyecto.id))!.estado).toBe('en_rama');
+    expect((await registro.porId(nuevo.id))!.estado).toBe('nuevo');
+  });
+
   it('mientras se arregla, repetirse suma en la misma fila', async () => {
     const a = await registro.registrar(reporte());
     await registro.cambiarEstado(a.id, 'arreglando');

@@ -702,6 +702,16 @@ function despliegueDelPanel() {
             : {}),
         },
       );
+      // Lo que pasó a main lleva los arreglos de errores que hizo este agente
+      // en este proyecto: dejan de ofrecer "Publicar".
+      if (resultado.mergeados?.length && registroDeErrores) {
+        await registroDeErrores
+          .marcarPublicados(proyectoId, agente)
+          .then((ids) => {
+            if (ids.length) console.log(`[bridge] errores ya en main con la rama de ${agente}: #${ids.join(', #')}`);
+          })
+          .catch((err: unknown) => console.error('[bridge] no pude marcar los errores publicados:', err));
+      }
       const texto = textoDePublicacion(resultado);
       // La publicación automática no tiene a nadie mirando el panel: el
       // resultado va al Telegram vinculado, si hay.

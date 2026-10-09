@@ -431,6 +431,9 @@ public sealed class CorrectorDeErrores(
                 // El que contestó: con el relevo puede no ser el pedido, y
                 // Publicar necesita la rama de ESE agente.
                 agente = r.Agente ?? p.Slot,
+                // La rama es del par (agente, proyecto): el bridge lo usa para
+                // marcarlo publicado cuando esa rama pasa a main por otro lado.
+                proyectoId = p.ProyectoId,
                 resumen = Reportes.Cortar(r.Texto, 4000),
                 terminado = Ahora(),
             }, CancellationToken.None);

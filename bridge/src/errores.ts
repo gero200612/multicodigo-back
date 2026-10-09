@@ -62,6 +62,15 @@ export interface RegistroDeErrores {
     estado: EstadoDeError,
     arreglo?: Record<string, unknown> | null,
   ): Promise<ErrorRegistrado | undefined | typeof YA_ABIERTO>;
+  /**
+   * Los arreglos `en_rama` de ese agente en ese proyecto pasan a `publicado`.
+   *
+   * Publicar pasa a main la rama ENTERA del agente, así que un ticket publicado
+   * después del arreglo lo lleva adentro: sin esto el error seguía ofreciendo
+   * "Publicar" con el arreglo ya en main. Las filas de antes no anotaban el
+   * proyecto (`arreglo.proyectoId`); esas se marcan solo por agente.
+   */
+  marcarPublicados(proyectoId: string, agente: string): Promise<number[]>;
 }
 
 // --- saneado ---------------------------------------------------------------
@@ -273,6 +282,22 @@ export class PgRegistroDeErrores implements RegistroDeErrores {
       throw err;
     }
   }
+
+  async marcarPublicados(proyectoId: string, agente: string): Promise<number[]> {
+    const { rows } = await this.db.query<{ id: number }>(
+      `UPDATE public.errores
+          SET estado = 'publicado',
+              arreglo = COALESCE(arreglo, '{}'::jsonb)
+                        || jsonb_build_object('publicado', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+                                              'publicadoCon', 'la rama del agente')
+        WHERE estado = 'en_rama'
+          AND arreglo->>'agente' = $2
+          AND (arreglo->>'proyectoId' = $1 OR arreglo->>'proyectoId' IS NULL)
+        RETURNING id`,
+      [proyectoId, agente],
+    );
+    return rows.map((r) => Number(r.id));
+  }
 }
 
 // --- en memoria ---------------------------------------------------------------
@@ -349,6 +374,19 @@ export class RegistroEnMemoria implements RegistroDeErrores {
     f.estado = estado;
     if (arreglo !== undefined) f.arreglo = arreglo === null ? null : sanearDetalle(arreglo);
     return { ...f };
+  }
+
+  async marcarPublicados(proyectoId: string, agente: string): Promise<number[]> {
+    const ids: number[] = [];
+    for (const f of this.filas) {
+      const a = f.arreglo ?? {};
+      if (f.estado !== 'en_rama' || a.agente !== agente) continue;
+      if (a.proyectoId !== undefined && a.proyectoId !== proyectoId) continue;
+      f.estado = 'publicado';
+      f.arreglo = { ...a, publicado: new Date().toISOString(), publicadoCon: 'la rama del agente' };
+      ids.push(f.id);
+    }
+    return ids;
   }
 }
 

@@ -46,6 +46,8 @@ export interface ResultadoDePublicacion {
   publicados: { repo: string; url: string; app: string }[];
   /** Lo que no se pudo, dicho para una persona. */
   pendientes: string[];
+  /** Los repos cuya rama del agente quedó en main (aunque después no se haya desplegado). */
+  mergeados?: string[];
 }
 
 const NOMBRE_DE_APP: Record<string, string> = {
@@ -61,6 +63,7 @@ export async function publicarCambios(
 ): Promise<ResultadoDePublicacion> {
   const publicados: ResultadoDePublicacion['publicados'] = [];
   const pendientes: string[] = [];
+  const mergeados: string[] = [];
   const conexiones = await deps.store.conexionesDeDespliegue(p.usuarioId);
 
   // En serie, como el resto de los bucles de repos: si el segundo falla, el
@@ -86,6 +89,7 @@ export async function publicarCambios(
       pendientes.push(`no pude pasar ${repo.nombre} a main (${m.output.slice(0, 200)})`);
       continue;
     }
+    mergeados.push(repo.nombre);
 
     if (repo.destino) {
       const r = await aDestino(repo, conexiones, p.proyectoId, deps);
@@ -107,7 +111,7 @@ export async function publicarCambios(
     }
     pendientes.push(`${repo.nombre} pasó a main; elegí en Repositorios en qué app se publica`);
   }
-  return { publicados, pendientes };
+  return { publicados, pendientes, mergeados };
 }
 
 /**

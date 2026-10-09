@@ -225,6 +225,7 @@ describe('/turnos anota sus fallas', () => {
       listar: async () => [],
       porId: async () => undefined,
       cambiarEstado: async () => undefined,
+      marcarPublicados: async () => [],
     };
     const { app } = conRegistro(roto, {
       ask: async () => {
