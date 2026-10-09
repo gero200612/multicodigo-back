@@ -207,6 +207,11 @@ export interface PipelineDeps {
    *
    * OPCIONAL: sin esto el ciclo queda como estaba.
    */
+  /**
+   * El VPS esta configurado: los repos sin app elegida se publican ahi, y la
+   * base nace en el VPS al publicar (no en Supabase). Ver `vps.ts`.
+   */
+  vpsPorDefecto?: boolean;
   verificarApp?: (
     proyectoId: string,
     proyecto: string,
@@ -3940,7 +3945,19 @@ async function hechosDelProyecto(
   deps: PipelineDeps,
 ): Promise<string[]> {
   const hechos: string[] = [];
-  if (proyectoId && /supabase|postgres/i.test(corrida.md)) {
+  const repos = proyectoId ? await deps.store.reposDeProyecto(proyectoId).catch(() => []) : [];
+  const propios = repos.filter((r) => !r.solo_lectura);
+  const enVps =
+    propios.length > 0 &&
+    propios.every((r) => r.destino === 'vps' || (deps.vpsPorDefecto === true && !r.destino && !r.render_service_id));
+  if (enVps && /supabase|postgres|base de datos/i.test(corrida.md)) {
+    hechos.push(
+      'Este proyecto se publica en el VPS: la base Postgres la crea el SISTEMA al publicar y le carga al ' +
+        'back ConnectionStrings__DefaultConnection, DATABASE_URL y Jwt__Key. NO es un hueco que no haya ' +
+        'base ni conexion, y no hay que crear una en Supabase. Lo que SI tiene que estar es que el back ' +
+        'aplique su esquema al arrancar (EF Core: db.Database.Migrate() en Program.cs, con los datos sembrados).',
+    );
+  } else if (proyectoId && /supabase|postgres/i.test(corrida.md)) {
     const conexion = await deps.store.conexionDeBase(proyectoId).catch(() => 'desconocido');
     if (conexion && conexion !== 'desconocido') {
       // El hecho en positivo, por lo mismo que el negativo: sin esto los
@@ -3968,10 +3985,11 @@ async function hechosDelProyecto(
   if (proyectoId) {
     const repos = await deps.store.reposDeProyecto(proyectoId).catch(() => []);
     for (const r of repos) {
-      if (r.render_url && /-front$/i.test(r.nombre)) {
+      const url = r.destino_url ?? r.render_url;
+      if (url && /-front$/i.test(r.nombre)) {
         hechos.push(
-          `El front ${r.nombre} esta publicado en ${r.render_url}. Para mirarlo con su back y su ` +
-            `base reales, pasale publicado=${r.render_url} a mirar (y login si tiene).`,
+          `El front ${r.nombre} esta publicado en ${url}. Para mirarlo con su back y su ` +
+            `base reales, pasale publicado=${url} a mirar (y login si tiene).`,
         );
       }
     }

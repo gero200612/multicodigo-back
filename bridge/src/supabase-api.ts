@@ -64,6 +64,12 @@ export interface SupabaseApiDeps {
    * "liberar un proyecto de Supabase" sobre una base que ya andaba.
    */
   baseExistente?: (jobId: string) => Promise<boolean>;
+  /**
+   * Si el proyecto de este turno se publica en el VPS. Ahi la base la crea el
+   * sistema al publicar (Postgres propio en Coolify, ver `vps.ts`), y crear
+   * otra en Supabase dejaria dos bases y el back apuntando a la del VPS.
+   */
+  usaVps?: (jobId: string) => Promise<boolean>;
   /** La organizacion de Supabase donde nacen los proyectos. */
   orgId?: string;
   /** El bearer del par gateway-bridge, el mismo que el resto de `/interno`. */
@@ -281,6 +287,17 @@ export function registrarSupabase(app: FastifyInstance, deps: SupabaseApiDeps): 
     const cuerpo = CrearProyecto.safeParse(request.body);
     if (!cuerpo.success) {
       return reply.code(400).send({ code: 'cuerpo_invalido', message: 'faltan datos del pedido' });
+    }
+    // 200 y no un error, por lo mismo que la base existente de abajo.
+    if (await deps.usaVps?.(cuerpo.data.jobId).catch(() => false)) {
+      return reply.code(200).send({
+        output:
+          'este proyecto se publica en el VPS: su base Postgres la crea el sistema al publicar y le ' +
+          'carga al back ConnectionStrings__DefaultConnection (formato Npgsql), DATABASE_URL (postgres://) ' +
+          'y Jwt__Key. NO crees una base en Supabase. El esquema lo tiene que aplicar el back AL ARRANCAR ' +
+          '(en .NET con EF Core: db.Database.Migrate() en Program.cs, con los datos sembrados ahi); para ' +
+          'probar mientras trabajas usa una base local. No es un pendiente.',
+      });
     }
     // 200 y no un error: no hay nada que arreglar, y un error haria que el
     // agente lo anote como pendiente.

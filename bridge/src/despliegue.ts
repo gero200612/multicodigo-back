@@ -24,6 +24,8 @@
 export interface RepoPublicable {
   nombre: string;
   render_url?: string | null;
+  /** La URL en la app elegida o en el VPS. Gana sobre la de Render. */
+  destino_url?: string | null;
   solo_lectura?: boolean;
 }
 
@@ -39,7 +41,8 @@ export function bloqueDeDespliegue(
   const propios = (repos ?? []).filter((r) => !r.solo_lectura);
   if (propios.length === 0) return undefined;
 
-  const publicados = propios.filter((r) => r.render_url);
+  const url = (r: RepoPublicable) => r.destino_url ?? r.render_url;
+  const publicados = propios.filter((r) => url(r));
   const lineas = [
     '[contexto del sistema, no lo dijo la persona]',
     publicados.length > 0
@@ -47,13 +50,13 @@ export function bloqueDeDespliegue(
       : 'De este proyecto NO hay nada publicado todavia.',
   ];
   for (const r of propios) {
-    lineas.push(` · ${r.nombre}: ${r.render_url ?? 'sin publicar'}`);
+    lineas.push(` · ${r.nombre}: ${url(r) ?? 'sin publicar'}`);
   }
   lineas.push(
     publicados.length > 0
       ? 'Si te preguntan por el link, es ese. No inventes otro ni lo armes a partir del nombre.'
       : 'Si te preguntan por el link, decile que todavia no se publico y que para publicarlo ' +
-        'hace falta una corrida que cierre bien, o hacerlo a mano en Render. No inventes una URL.',
+        'hace falta una corrida que cierre bien, o tocar Publicar en Repositorios. No inventes una URL.',
   );
   return lineas.join('\n');
 }

@@ -190,7 +190,7 @@ export interface RepoDelProyecto {
    */
   render_url: string | null;
   /** Donde se publica: la app que eligio la persona. Ausente = como antes. */
-  destino?: Proveedor | null;
+  destino?: Destino | null;
   /** El id del lado del proveedor (servicio, proyecto, sitio). */
   destino_id?: string | null;
   destino_url?: string | null;
@@ -199,6 +199,43 @@ export interface RepoDelProyecto {
 /** Las apps donde se puede publicar un repo. */
 export const PROVEEDORES = ['render', 'vercel', 'netlify', 'railway'] as const;
 export type Proveedor = (typeof PROVEEDORES)[number];
+
+/**
+ * Donde se publica un repo: una app de la persona, o el VPS del sistema.
+ *
+ * `vps` NO es un `Proveedor`: no hay token de la persona que conectar (el de
+ * Coolify vive en el entorno del bridge). Por eso va aparte y no en
+ * `PROVEEDORES`, que es la lista de lo que se puede conectar.
+ */
+export const DESTINOS = [...PROVEEDORES, 'vps'] as const;
+export type Destino = (typeof DESTINOS)[number];
+
+export type ParteVps = 'proyecto' | 'base' | 'back' | 'front' | 'app';
+export type EstadoVps = 'creando' | 'construyendo' | 'andando' | 'apagado' | 'fallo';
+
+/** Algo que Punchi creo en el Coolify del VPS (migracion 049). */
+export interface RecursoVps {
+  proyecto_id: string;
+  parte: ParteVps;
+  /** '' para el proyecto de Coolify y la base. */
+  repo: string;
+  coolify_uuid: string;
+  url: string | null;
+  estado: EstadoVps;
+  motivo: string | null;
+  /** La conexion a la base, CIFRADA. Solo en la parte `base`. */
+  secreto: string | null;
+  produccion: boolean;
+  actualizado_el: string;
+}
+
+/** Una demo con fecha de apagado (migracion 049). */
+export interface DemoConVencimiento {
+  proyectoId: string;
+  nombre: string;
+  apagarEl: string;
+  avisada: boolean;
+}
 
 /** Una conexion guardada: el token va CIFRADO (ver cifrado.ts). */
 export interface ConexionGuardada {
@@ -601,7 +638,18 @@ export interface Store {
   guardarCuentaDemo(proyectoId: string, c: CuentaDemo, usuarioId: string): Promise<void>;
   borrarCuentaDemo(proyectoId: string): Promise<void>;
   /** Elige donde se publica un repo. Cambiarlo olvida el vinculo anterior. */
-  guardarDestino(proyectoId: string, repo: string, destino: Proveedor | null): Promise<void>;
+  guardarDestino(proyectoId: string, repo: string, destino: Destino | null): Promise<void>;
+  /** Lo que Punchi creo en el VPS para este proyecto. */
+  recursosVps(proyectoId: string): Promise<RecursoVps[]>;
+  /** Alta o reemplazo por (proyecto, parte, repo). */
+  guardarRecursoVps(r: Pick<RecursoVps, 'proyecto_id' | 'parte' | 'repo' | 'coolify_uuid' | 'url' | 'secreto'>): Promise<void>;
+  estadoRecursoVps(coolifyUuid: string, estado: EstadoVps, motivo: string | null): Promise<void>;
+  borrarRecursosVps(proyectoId: string): Promise<void>;
+  /** Cuando se apaga sola la demo; null = nunca. Vuelve a habilitar el aviso. */
+  guardarDemoApagarEl(proyectoId: string, cuando: Date | null): Promise<void>;
+  /** Demos que vencen en menos de `horas` (o ya vencieron). */
+  demosPorVencer(horas: number): Promise<DemoConVencimiento[]>;
+  marcarDemoAvisada(proyectoId: string): Promise<void>;
   /** El servicio/proyecto/sitio que se creo del lado del proveedor. */
   guardarVinculoDeDestino(proyectoId: string, repo: string, id: string, url: string): Promise<void>;
   /** El servicio de Render ya creado para ese repo. Da idempotencia. */
@@ -1419,7 +1467,60 @@ export class InMemoryStore implements Store {
     );
   }
 
-  async guardarDestino(proyectoId: string, repo: string, destino: Proveedor | null): Promise<void> {
+  private readonly vps = new Map<string, RecursoVps>();
+  private readonly demos = new Map<string, { nombre: string; apagarEl: string; avisada: boolean }>();
+
+  async recursosVps(proyectoId: string): Promise<RecursoVps[]> {
+    return [...this.vps.values()].filter((r) => r.proyecto_id === proyectoId);
+  }
+
+  async guardarRecursoVps(
+    r: Pick<RecursoVps, 'proyecto_id' | 'parte' | 'repo' | 'coolify_uuid' | 'url' | 'secreto'>,
+  ): Promise<void> {
+    const previo = [...this.vps.values()].find(
+      (x) => x.proyecto_id === r.proyecto_id && x.parte === r.parte && x.repo === r.repo,
+    );
+    if (previo) this.vps.delete(previo.coolify_uuid);
+    this.vps.set(r.coolify_uuid, {
+      ...r,
+      secreto: r.secreto ?? previo?.secreto ?? null,
+      estado: previo?.estado ?? 'creando',
+      motivo: previo?.motivo ?? null,
+      produccion: previo?.produccion ?? false,
+      actualizado_el: new Date().toISOString(),
+    });
+  }
+
+  async estadoRecursoVps(coolifyUuid: string, estado: EstadoVps, motivo: string | null): Promise<void> {
+    const r = this.vps.get(coolifyUuid);
+    if (r) this.vps.set(coolifyUuid, { ...r, estado, motivo, actualizado_el: new Date().toISOString() });
+  }
+
+  async borrarRecursosVps(proyectoId: string): Promise<void> {
+    for (const [k, r] of this.vps) if (r.proyecto_id === proyectoId && !r.produccion) this.vps.delete(k);
+  }
+
+  async guardarDemoApagarEl(proyectoId: string, cuando: Date | null): Promise<void> {
+    if (!cuando) {
+      this.demos.delete(proyectoId);
+      return;
+    }
+    this.demos.set(proyectoId, { nombre: proyectoId, apagarEl: cuando.toISOString(), avisada: false });
+  }
+
+  async demosPorVencer(horas: number): Promise<DemoConVencimiento[]> {
+    const limite = Date.now() + horas * 3_600_000;
+    return [...this.demos.entries()]
+      .filter(([, d]) => Date.parse(d.apagarEl) <= limite)
+      .map(([proyectoId, d]) => ({ proyectoId, ...d }));
+  }
+
+  async marcarDemoAvisada(proyectoId: string): Promise<void> {
+    const d = this.demos.get(proyectoId);
+    if (d) d.avisada = true;
+  }
+
+  async guardarDestino(proyectoId: string, repo: string, destino: Destino | null): Promise<void> {
     const repos = this.reposPorProyecto.get(proyectoId) ?? [];
     const i = repos.findIndex((x) => x.nombre === repo);
     if (i >= 0 && repos[i]!.destino !== destino) {
@@ -2486,7 +2587,7 @@ export class PgStore implements Store {
         creado_por_el_bot: boolean;
         render_service_id: string | null;
         render_url: string | null;
-        destino: Proveedor | null;
+        destino: Destino | null;
         destino_id: string | null;
         destino_url: string | null;
       }>(
@@ -2604,7 +2705,65 @@ export class PgStore implements Store {
     ]);
   }
 
-  async guardarDestino(proyectoId: string, repo: string, destino: Proveedor | null): Promise<void> {
+  async recursosVps(proyectoId: string): Promise<RecursoVps[]> {
+    const r = await this.pool.query<Omit<RecursoVps, 'actualizado_el'> & { actualizado_el: Date }>(
+      `SELECT proyecto_id, parte, repo, coolify_uuid, url, estado, motivo, secreto, produccion, actualizado_el
+         FROM vps_recursos WHERE proyecto_id = $1 ORDER BY parte, repo`,
+      [proyectoId],
+    );
+    return r.rows.map((x) => ({ ...x, actualizado_el: new Date(x.actualizado_el).toISOString() }));
+  }
+
+  async guardarRecursoVps(
+    r: Pick<RecursoVps, 'proyecto_id' | 'parte' | 'repo' | 'coolify_uuid' | 'url' | 'secreto'>,
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO vps_recursos (proyecto_id, parte, repo, coolify_uuid, url, secreto)
+         VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (proyecto_id, parte, repo) DO UPDATE
+         SET coolify_uuid = EXCLUDED.coolify_uuid, url = EXCLUDED.url,
+             secreto = COALESCE(EXCLUDED.secreto, vps_recursos.secreto), actualizado_el = now()`,
+      [r.proyecto_id, r.parte, r.repo, r.coolify_uuid, r.url, r.secreto],
+    );
+  }
+
+  async estadoRecursoVps(coolifyUuid: string, estado: EstadoVps, motivo: string | null): Promise<void> {
+    await this.pool.query(
+      'UPDATE vps_recursos SET estado = $2, motivo = $3, actualizado_el = now() WHERE coolify_uuid = $1',
+      [coolifyUuid, estado, motivo],
+    );
+  }
+
+  async borrarRecursosVps(proyectoId: string): Promise<void> {
+    await this.pool.query('DELETE FROM vps_recursos WHERE proyecto_id = $1 AND NOT produccion', [proyectoId]);
+  }
+
+  async guardarDemoApagarEl(proyectoId: string, cuando: Date | null): Promise<void> {
+    await this.pool.query('UPDATE proyectos SET demo_apagar_el = $2, demo_avisada = false WHERE id = $1', [
+      proyectoId,
+      cuando,
+    ]);
+  }
+
+  async demosPorVencer(horas: number): Promise<DemoConVencimiento[]> {
+    const r = await this.pool.query<{ id: string; nombre: string; demo_apagar_el: Date; demo_avisada: boolean }>(
+      `SELECT id, nombre, demo_apagar_el, demo_avisada FROM proyectos
+        WHERE demo_apagar_el IS NOT NULL AND demo_apagar_el <= now() + make_interval(hours => $1::int)`,
+      [horas],
+    );
+    return r.rows.map((x) => ({
+      proyectoId: x.id,
+      nombre: x.nombre,
+      apagarEl: new Date(x.demo_apagar_el).toISOString(),
+      avisada: x.demo_avisada,
+    }));
+  }
+
+  async marcarDemoAvisada(proyectoId: string): Promise<void> {
+    await this.pool.query('UPDATE proyectos SET demo_avisada = true WHERE id = $1', [proyectoId]);
+  }
+
+  async guardarDestino(proyectoId: string, repo: string, destino: Destino | null): Promise<void> {
     // Cambiar de app olvida el vinculo anterior: el id de un proyecto de Vercel
     // no sirve en Netlify. Elegir la MISMA no lo borra.
     await this.pool.query(

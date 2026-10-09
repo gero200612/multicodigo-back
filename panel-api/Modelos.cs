@@ -303,6 +303,7 @@ public sealed record CuerpoConexionDespliegue(
 
 /// <summary>En qué app se publica un repo; null = ninguna elegida.</summary>
 public sealed record CuerpoDestino([property: JsonPropertyName("destino")] string? Destino);
+public sealed record CuerpoBorrarVps([property: JsonPropertyName("confirmacion")] string? Confirmacion);
 
 /// <summary>Publicar lo que hizo un ticket: la rama de ese agente.</summary>
 public sealed record CuerpoPublicar([property: JsonPropertyName("agente")] string? Agente);

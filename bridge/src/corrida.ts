@@ -799,6 +799,7 @@ export function esProyectoNuevo(
         creado_por_el_bot?: boolean;
         render_service_id?: string | null;
         render_url?: string | null;
+        destino_url?: string | null;
       }[]
     | undefined,
 ): boolean {
@@ -808,7 +809,7 @@ export function esProyectoNuevo(
   // encima, recibia el plan de "proyecto nuevo, repos vacios, ng new": el
   // planificador lo noto, contesto preguntando en vez de planificar, y la
   // corrida se cerro sola.
-  if (propios.some((r) => r.render_service_id || r.render_url)) return false;
+  if (propios.some((r) => r.render_service_id || r.render_url || r.destino_url)) return false;
   return propios.length > 0 && propios.every((r) => r.creado_por_el_bot === true);
 }
 

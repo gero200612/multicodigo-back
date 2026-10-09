@@ -2131,6 +2131,9 @@ api.MapPost("/proyectos/{proyectoId}/agentes/{slot}/turnos", async (
 // el usuario del JWT. Ver `publicar-ticket.ts` y `proveedores.ts` del bridge.
 
 string[] Proveedores = ["render", "vercel", "netlify", "railway"];
+// Donde se puede publicar un repo: las apps de arriba o el VPS del sistema
+// (que no se "conecta": su token vive en el bridge).
+string[] Destinos = [.. Proveedores, "vps"];
 
 IResult Pasamano((int Status, string Cuerpo) r) =>
     Results.Content(r.Cuerpo, "application/json", System.Text.Encoding.UTF8, r.Status == 0 ? 502 : r.Status);
@@ -2209,7 +2212,7 @@ api.MapPut("/proyectos/{proyectoId}/repos/{repo}/destino", async (
     if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
     if (await proyectos.RolDeAsync(await JwtDe(ctx), proyectoId, ct) != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
     var destino = string.IsNullOrWhiteSpace(cuerpo.Destino) ? null : cuerpo.Destino;
-    if (destino is not null && !Proveedores.Contains(destino)) return Results.BadRequest(new { code = "proveedor_desconocido", message = "esa app no está" });
+    if (destino is not null && !Destinos.Contains(destino)) return Results.BadRequest(new { code = "proveedor_desconocido", message = "esa app no está" });
     return Pasamano(await bridge.DespliegueAsync(HttpMethod.Put, "/interno/despliegue/destino",
         new { usuarioId, proyectoId, repo, destino }, ct));
 });
@@ -2226,6 +2229,43 @@ api.MapPost("/proyectos/{proyectoId}/repos/{repo}/desplegar", async (
     if (await proyectos.RolDeAsync(await JwtDe(ctx), proyectoId, ct) != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
     return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, "/interno/despliegue/desplegar",
         new { usuarioId, proyectoId, repo }, ct));
+});
+
+// El VPS del proyecto (ver bridge/src/vps.ts). Todo del DUEÑO. Apagar y
+// borrar existen solo desde aca: ni los agentes ni las corridas los tienen.
+api.MapGet("/proyectos/{proyectoId}/vps", async (
+    string proyectoId, HttpContext ctx, IProyectosClient proyectos, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (!Guid.TryParse(proyectoId, out _)) return Results.NotFound();
+    if (await proyectos.RolDeAsync(await JwtDe(ctx), proyectoId, ct) != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, "/interno/vps/estado", new { usuarioId, proyectoId }, ct));
+});
+
+foreach (var accion in new[] { "publicar", "apagar", "mantener" })
+{
+    api.MapPost($"/proyectos/{{proyectoId}}/vps/{accion}", async (
+        string proyectoId, HttpContext ctx, IProyectosClient proyectos, IBridgeClient bridge, CancellationToken ct) =>
+    {
+        var usuarioId = ctx.User.FindFirst("sub")?.Value;
+        if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+        if (!Guid.TryParse(proyectoId, out _)) return Results.NotFound();
+        if (await proyectos.RolDeAsync(await JwtDe(ctx), proyectoId, ct) != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, $"/interno/vps/{accion}", new { usuarioId, proyectoId }, ct));
+    });
+}
+
+api.MapPost("/proyectos/{proyectoId}/vps/borrar", async (
+    string proyectoId, CuerpoBorrarVps cuerpo, HttpContext ctx,
+    IProyectosClient proyectos, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (!Guid.TryParse(proyectoId, out _)) return Results.NotFound();
+    if (await proyectos.RolDeAsync(await JwtDe(ctx), proyectoId, ct) != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, "/interno/vps/borrar",
+        new { usuarioId, proyectoId, confirmacion = cuerpo.Confirmacion ?? "" }, ct));
 });
 
 api.MapPost("/proyectos/{proyectoId}/publicar", async (

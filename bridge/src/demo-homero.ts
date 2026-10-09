@@ -34,7 +34,14 @@ export interface PedidoDeDemo {
   opciones?: string;
   /** El aviso al abrir. Por defecto, el de Homero. */
   aviso?: (proyecto: string) => string;
+  /** Las demos de Homero se apagan solas del VPS 14 dias despues de la reunion. */
+  apagarSola?: boolean;
+  /** ISO. Sin fecha, se cuenta desde hoy. */
+  reunionEl?: string;
 }
+
+/** Cuanto queda prendida una demo de Homero despues de la reunion. */
+export const DIAS_DE_DEMO = 14;
 
 export type ResultadoDeDemo = { ok: true; corridaId: string } | { ok: false; motivo: string };
 
@@ -81,6 +88,15 @@ export async function abrirDemo(
   }
 
   const corrida = out.corrida;
+  if (p.apagarSola) {
+    const desde = p.reunionEl ? Date.parse(p.reunionEl) : Date.now();
+    const id = await deps.store.idDeProyecto(corrida.proyecto).catch(() => null);
+    if (id) {
+      await deps.store
+        .guardarDemoApagarEl(id, new Date((Number.isFinite(desde) ? desde : Date.now()) + DIAS_DE_DEMO * 86_400_000))
+        .catch((err: unknown) => console.error('[bridge] no pude guardar cuando se apaga la demo:', err));
+    }
+  }
   await avisar(
     p.aviso
       ? p.aviso(corrida.proyecto)
@@ -135,8 +151,10 @@ export async function estadoDeDemo(
   );
   const repos = proyecto ? await deps.store.reposDeProyecto(proyecto.id) : [];
   // El front es lo que se muestra en la reunion; el back solo si no hay front.
-  const front = repos.find((r) => r.nombre.endsWith('-front') && r.render_url);
-  const url = front?.render_url ?? repos.find((r) => r.render_url)?.render_url ?? undefined;
+  // La del VPS (`destino_url`) primero: es donde publica Punchi por defecto.
+  const link = (r: (typeof repos)[number]) => r.destino_url ?? r.render_url;
+  const front = repos.find((r) => r.nombre.endsWith('-front') && link(r));
+  const url = (front ? link(front) : undefined) ?? repos.map(link).find(Boolean) ?? undefined;
   return {
     estado: corrida.estado,
     ...(corrida.motivoDeCierre ? { motivoDeCierre: corrida.motivoDeCierre } : {}),

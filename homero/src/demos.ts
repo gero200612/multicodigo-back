@@ -17,7 +17,8 @@ import type { Boton, DepsDeVentas } from './ventas.js';
 
 /** Lo que Homero necesita del bridge de Punchi. */
 export interface ClienteDePunchi {
-  abrir(proyecto: string, pliego: string): Promise<{ ok: true; corridaId: string } | { ok: false; motivo: string }>;
+  /** `reunionEl`: con eso Punchi apaga la demo del VPS a los 14 días de la reunión. */
+  abrir(proyecto: string, pliego: string, reunionEl?: string): Promise<{ ok: true; corridaId: string } | { ok: false; motivo: string }>;
   estado(corridaId: string): Promise<{ estado: 'abierta' | 'cerrada'; motivoDeCierre?: string; url?: string } | undefined>;
   /** Los slots con cuenta de Claude: cada uno es una suscripción (ver finanzas.ts). */
   cuentas(): Promise<{ slot: string; cuenta?: string }[]>;
@@ -116,7 +117,8 @@ export async function enviarDemo(demoId: number, deps: DepsDeDemos): Promise<Res
   if (!deps.punchi) return { ok: false, motivo: 'las demos no están configuradas (falta BRIDGE_URL)' };
   const demo = await deps.store.demo(demoId);
   if (!demo?.pliego || demo.estado !== 'pliego') return { ok: false, motivo: 'esa demo no está esperando para enviarse' };
-  const r = await deps.punchi.abrir(demo.proyecto, demo.pliego);
+  const reunion = await deps.store.reunion(demo.reunionId).catch(() => undefined);
+  const r = await deps.punchi.abrir(demo.proyecto, demo.pliego, reunion ? new Date(reunion.inicio).toISOString() : undefined);
   if (!r.ok) {
     await deps.store.actualizarDemo(demoId, { error: r.motivo });
     return { ok: false, motivo: r.motivo };
@@ -162,11 +164,11 @@ export function clienteDePunchi(o: { url: string; token: string; chatId: number 
   const base = o.url.replace(/\/+$/, '');
   const auth = { authorization: `Bearer ${o.token}` };
   return {
-    async abrir(proyecto, pliego) {
+    async abrir(proyecto, pliego, reunionEl) {
       const r = await fetch(`${base}/interno/corrida/desde-homero`, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify({ chatId: o.chatId, proyecto, pliego }),
+        body: JSON.stringify({ chatId: o.chatId, proyecto, pliego, ...(reunionEl ? { reunionEl } : {}) }),
         signal: AbortSignal.timeout(60_000),
       });
       const cuerpo = (await r.json().catch(() => ({}))) as { corridaId?: string; message?: string };

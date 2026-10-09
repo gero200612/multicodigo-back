@@ -31,7 +31,8 @@ import { registrarTrabajo, type TrabajoVisible } from './trabajo.js';
 import { registrarClaudes } from './claudes.js';
 import type { EstadoDeDemo, PedidoDeDemo, PedidoDeDesarrollo, ResultadoDeDemo } from './demo-homero.js';
 import type { ResultadoDePublicacion } from './publicar-ticket.js';
-import { PROVEEDORES, type Proveedor } from './store.js';
+import { DESTINOS, PROVEEDORES, type Destino, type Proveedor } from './store.js';
+import type { EstadoDelProyectoEnVps, ResultadoVps } from './vps.js';
 
 /** Tope duro. Sin esto, un `?limit=` de la URL deja pedir la tabla entera. */
 const MAX_JOBS = 50;
@@ -188,8 +189,16 @@ export interface ApiDeps {
       usuarioId: string,
       proyectoId: string,
       repo: string,
-      destino: Proveedor | null,
+      destino: Destino | null,
     ) => Promise<{ ok: true } | { ok: false; motivo: string }>;
+    /** El VPS del proyecto (ver `vps.ts`). Solo el dueño. */
+    vps?: {
+      estado: (usuarioId: string, proyectoId: string) => Promise<{ ok: true; estado: EstadoDelProyectoEnVps | { configurado: false; partes: []; otros: [] } } | { ok: false; motivo: string }>;
+      publicar: (usuarioId: string, proyectoId: string) => Promise<({ ok: true } & ResultadoVps) | { ok: false; motivo: string }>;
+      apagar: (usuarioId: string, proyectoId: string) => Promise<{ ok: true } | { ok: false; motivo: string }>;
+      borrar: (usuarioId: string, proyectoId: string, confirmacion: string) => Promise<{ ok: true } | { ok: false; motivo: string }>;
+      mantener: (usuarioId: string, proyectoId: string) => Promise<{ ok: true } | { ok: false; motivo: string }>;
+    };
     publicar: (
       usuarioId: string,
       proyectoId: string,
@@ -257,8 +266,10 @@ const CuerpoDestino = z.object({
   usuarioId: z.string().uuid(),
   proyectoId: z.string().uuid(),
   repo: z.string().min(1).max(100),
-  destino: ProveedorZ.nullable(),
+  destino: z.enum(DESTINOS).nullable(),
 });
+const CuerpoVps = z.object({ usuarioId: z.string().uuid(), proyectoId: z.string().uuid() });
+const CuerpoBorrarVps = CuerpoVps.extend({ confirmacion: z.string().max(200) });
 const CuerpoDesplegar = z.object({
   usuarioId: z.string().uuid(),
   proyectoId: z.string().uuid(),
@@ -275,6 +286,8 @@ const CuerpoDemo = z.object({
   // La misma forma que valida `/corrida proyecto=`.
   proyecto: z.string().regex(/^[a-zA-Z0-9._-]+$/).max(60),
   pliego: z.string().min(20).max(60_000),
+  /** Cuando es la reunion: la demo se apaga sola del VPS 14 dias despues. */
+  reunionEl: opcional(z.string().datetime({ offset: true })),
 });
 
 /** Cuantas corridas muestra el dashboard: la abierta y las ultimas. */
@@ -987,6 +1000,38 @@ export function buildWebhookServer(
       return r.ok ? reply.send({ ok: true }) : reply.code(404).send({ code: 'no_existe', message: r.motivo });
     });
 
+    // El VPS del proyecto. Todas del dueño (lo chequea `api.despliegue.vps`).
+    // Apagar y borrar existen SOLO aca: el gateway no le da a los agentes
+    // ninguna ruta de VPS.
+    app.post('/interno/vps/estado', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue?.vps) return reply.code(503).send({ code: 'sin_vps', message: 'VPS no configurado' });
+      const c = CuerpoVps.safeParse(request.body);
+      if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto' });
+      const r = await api.despliegue.vps.estado(c.data.usuarioId, c.data.proyectoId);
+      return r.ok ? reply.send(r.estado) : reply.code(403).send({ code: 'no_es_tuyo', message: r.motivo });
+    });
+
+    for (const accion of ['publicar', 'apagar', 'mantener'] as const) {
+      app.post(`/interno/vps/${accion}`, async (request, reply) => {
+        if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+        if (!api.despliegue?.vps) return reply.code(503).send({ code: 'sin_vps', message: 'VPS no configurado' });
+        const c = CuerpoVps.safeParse(request.body);
+        if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto' });
+        const r = await api.despliegue.vps[accion](c.data.usuarioId, c.data.proyectoId);
+        return r.ok ? reply.send(r) : reply.code(409).send({ code: `no_${accion}`, message: r.motivo });
+      });
+    }
+
+    app.post('/interno/vps/borrar', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue?.vps) return reply.code(503).send({ code: 'sin_vps', message: 'VPS no configurado' });
+      const c = CuerpoBorrarVps.safeParse(request.body);
+      if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta la confirmación' });
+      const r = await api.despliegue.vps.borrar(c.data.usuarioId, c.data.proyectoId, c.data.confirmacion);
+      return r.ok ? reply.send({ ok: true }) : reply.code(409).send({ code: 'no_borrado', message: r.motivo });
+    });
+
     app.post('/interno/despliegue/desplegar', async (request, reply) => {
       if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
       if (!api.despliegue?.desplegar) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
@@ -1035,7 +1080,7 @@ export function buildWebhookServer(
       if (!cuerpo.success) {
         return rechazo(request, cuerpo.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta chatId, proyecto o pliego' });
       }
-      const r = await api.demos.abrir(cuerpo.data);
+      const r = await api.demos.abrir({ ...cuerpo.data, apagarSola: true });
       return r.ok
         ? reply.code(200).send({ corridaId: r.corridaId })
         : reply.code(409).send({ code: 'no_abierta', message: r.motivo });

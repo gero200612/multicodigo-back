@@ -44,6 +44,14 @@ export interface PublicarDeps {
   tienePackageJson: (agent: string, project: string, repo: string) => Promise<boolean>;
   /** Publica en la app elegida un repo que ya está en main. Ver `aDestino`. */
   enDestino?: (repo: RepoDelProyecto) => Promise<{ ok: true; url: string } | { ok: false; motivo: string }>;
+  /**
+   * Publica en el VPS los repos que van ahi, ya en main, todos juntos: base,
+   * back y front se conectan entre si (ver `vps.ts`).
+   *
+   * Con esto el VPS es el destino POR DEFECTO: un repo sin app elegida y sin
+   * servicio de Render de antes va al VPS. Sin esto, todo queda como estaba.
+   */
+  enVps?: (repos: RepoDelProyecto[]) => Promise<{ publicados: Publicado[]; pendientes: string[] }>;
   usaSqlite?: (agent: string, project: string, repo: string) => Promise<boolean>;
   /**
    * Si el repo se puede ARRANCAR: si su `package.json` tiene script `start`.
@@ -265,6 +273,8 @@ export async function publicar(
   const servicios = new Map<string, string>();
   /** El `owner/nombre` de GitHub de cada repo publicado, para reescribirle archivos. */
   const githubDe = new Map<string, string>();
+  /** Los repos que van al VPS: se publican juntos al final. */
+  const aVps: RepoDelProyecto[] = [];
 
   // EN SERIE y no en paralelo, por la misma razon que el bucle que crea los
   // repos en `pipeline.ts`: si el tercero falla, los dos primeros ya estan y el
@@ -286,7 +296,10 @@ export async function publicar(
     // los dos y ahorra una llamada al gateway por agente.
     // Un repo con app elegida se publica en ESA app (más abajo, después del
     // merge), no en el Render del sistema.
-    if (repo.render_service_id && !repo.destino) {
+    // El VPS es el destino por defecto: un repo sin app elegida y sin servicio
+    // de Render de antes va ahi.
+    const vaAlVps = !!deps.enVps && (repo.destino === 'vps' || (!repo.destino && !repo.render_service_id));
+    if (repo.render_service_id && !repo.destino && !vaAlVps) {
       // Pero NO se saltea sin mas: hay que desplegar lo que la corrida acaba de
       // mergear. Los servicios se crean con `autoDeploy: 'no'` —con un repo
       // publico Render no se entera de los push— asi que saltear dejaria el
@@ -372,11 +385,22 @@ export async function publicar(
     // entro.
     if (mergeados.length === 0) continue;
 
+    if (vaAlVps) {
+      aVps.push(repo);
+      continue;
+    }
+    // Un repo que eligio VPS en un sistema sin VPS configurado: decirlo, no
+    // mandarlo a Render callado.
+    if (repo.destino === 'vps') {
+      pendientes.push(`${repo.nombre} se publica en el VPS, pero el VPS no está configurado en el servidor`);
+      continue;
+    }
+
     // La app que eligió la persona para este repo (Render, Vercel, Netlify o
     // Railway, con SU cuenta). Lo de abajo —start, Dockerfile, servicio en el
     // Render del sistema— es el camino de los repos sin app elegida.
     if (repo.destino && deps.enDestino) {
-      const r = await deps.enDestino(repo);
+      const r = await deps.enDestino({ ...repo, destino: repo.destino });
       if (r.ok) publicados.push({ repo: repo.nombre, url: r.url });
       else pendientes.push(r.motivo);
       continue;
@@ -454,6 +478,15 @@ export async function publicar(
           'los datos no van a sobrevivir. Para que persistan hay que pasarlo a Postgres o pagar un disco',
       );
     }
+  }
+
+  if (aVps.length > 0 && deps.enVps) {
+    const r = await deps.enVps(aVps).catch((err) => ({
+      publicados: [] as Publicado[],
+      pendientes: [`no pude publicar en el VPS (${err instanceof Error ? err.message : 'error'})`],
+    }));
+    publicados.push(...r.publicados);
+    pendientes.push(...r.pendientes);
   }
 
   // Ya publicados los dos, se conectan: el front no puede saber la URL del back

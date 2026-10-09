@@ -39,6 +39,10 @@ import { abrirDemo, abrirDesarrollo, estadoDeDemo } from './demo-homero.js';
 import { cifrar, claveDe, descifrar } from './cifrado.js';
 import { verificar } from './proveedores.js';
 import { aDestino, desplegarRepo, publicarCambios, textoDePublicacion } from './publicar-ticket.js';
+import type { Destino } from './store.js';
+import { apagarEnVps, borrarDelVps, estadoEnVps, publicarEnVps, revisarDemos, type VpsDeps } from './vps.js';
+import { usoDelVps } from './vps-uso.js';
+import { asegurarDockerfileDeFront } from './dockerfile-front.js';
 import { partirParaTelegram } from './codigo.js';
 import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
@@ -179,6 +183,21 @@ const Env = z.object({
   GATEWAY_ADMIN_TOKEN: opcional(z.string().min(16)),
   /** Con qué se cifran los tokens de Render/Vercel/Netlify/Railway. Sin ella, se deriva del BRIDGE_API_TOKEN. */
   CONEXIONES_CLAVE: opcional(z.string().min(16)),
+  /**
+   * El VPS (Coolify) donde Punchi publica por defecto. Ver `vps.ts`.
+   *
+   * Sin `COOLIFY_TOKEN` el VPS no existe para el sistema y todo publica como
+   * antes. `COOLIFY_URL` va por Tailscale: el panel de Coolify no esta abierto
+   * a internet.
+   */
+  COOLIFY_URL: opcional(z.string().url()),
+  COOLIFY_TOKEN: opcional(z.string().min(16)),
+  COOLIFY_SERVIDOR: opcional(z.string().min(8)),
+  /** `owner=uuid,owner=uuid`: que GitHub App de Coolify ve cada cuenta/org. */
+  COOLIFY_GITHUB_APPS: opcional(z.string().min(3)),
+  /** `mc-uso` en el VPS: memoria y disco para el freno. */
+  VPS_USO_URL: opcional(z.string().url()),
+  VPS_USO_TOKEN: opcional(z.string().min(16)),
 });
 
 const env = Env.parse(process.env);
@@ -235,8 +254,57 @@ const MIGRACIONES = [
   '046_agentes_sin_bot.sql',
   '047_errores.sql',
   '048_borrar_agente_solo_duenio.sql',
+  '049_vps.sql',
 ].map((f) => fileURLToPath(new URL('../migrations/' + f, import.meta.url)));
 const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
+
+/**
+ * Lo que necesita `vps.ts`, o `undefined` si el VPS no esta configurado.
+ *
+ * `githubToken` es el de la instalacion del proyecto: con el se escriben el
+ * Dockerfile y el config del front. Sin el se publica igual, sin esos arreglos.
+ */
+function depsDeVps(githubToken?: string, esperarMs = 0): VpsDeps | undefined {
+  if (!env.COOLIFY_URL || !env.COOLIFY_TOKEN || !env.COOLIFY_SERVIDOR) return undefined;
+  const githubApps: Record<string, string> = {};
+  for (const par of (env.COOLIFY_GITHUB_APPS ?? '').split(',')) {
+    const [owner, uuid] = par.split('=').map((x) => x.trim());
+    if (owner && uuid) githubApps[owner.toLowerCase()] = uuid;
+  }
+  const gh = githubToken ? { token: githubToken } : undefined;
+  return {
+    config: {
+      coolify: { url: env.COOLIFY_URL, token: env.COOLIFY_TOKEN, servidor: env.COOLIFY_SERVIDOR },
+      githubApps,
+      clave: claveDe(env.CONEXIONES_CLAVE ?? env.BRIDGE_API_TOKEN),
+    },
+    store,
+    ...(env.VPS_USO_URL && env.VPS_USO_TOKEN
+      ? { uso: () => usoDelVps({ url: env.VPS_USO_URL!, token: env.VPS_USO_TOKEN! }) }
+      : {}),
+    ...(gh
+      ? {
+          asegurarDockerfileBack: (repo: string) => asegurarDockerfile(repo, gh),
+          asegurarDockerfileFront: (repo: string) => asegurarDockerfileDeFront(repo, gh),
+          asegurarOutputPath: (repo: string) => asegurarOutputPathDeAngular(repo, gh),
+          reescribirConfig: (repo: string, url: string) =>
+            reescribirConfig(repo, url, {
+              leer: (r, ruta) => leerArchivo(r, ruta, gh),
+              escribir: (r, ruta, texto, sha, mensaje) => escribirArchivo(r, ruta, texto, sha, mensaje, gh),
+            }),
+        }
+      : {}),
+    esperarMs,
+  };
+}
+
+/** El token de la App de GitHub del proyecto, o undefined. */
+async function githubTokenDe(proyectoId: string): Promise<string | undefined> {
+  const instalacion = await store.instalacionDeProyecto(proyectoId).catch(() => undefined);
+  return instalacion !== undefined && env.PANEL_URL
+    ? await firmarToken(instalacion, { panelUrl: env.PANEL_URL, token: env.BRIDGE_API_TOKEN }).catch(() => undefined)
+    : undefined;
+}
 // La misma conexion que el store: la tabla `errores` es de la 047.
 registroDeErrores = new PgRegistroDeErrores(store.consulta);
 
@@ -388,8 +456,12 @@ const pipelineDeps = {
           // Con las cuentas del DUEÑO del proyecto, no de quien abrió la corrida.
           const dueno = await store.duenoDeProyecto(proyectoId).catch(() => undefined);
           const conexiones = dueno ? await store.conexionesDeDespliegue(dueno).catch(() => []) : [];
+          // El cierre espera los armados (hasta 20 min): asi el informe dice
+          // si el link anda, y no solo que se pidio.
+          const vps = depsDeVps(githubToken, 20 * 60_000);
           return publicar(proyectoId, corrida.proyecto, agentes, {
             store,
+            ...(vps ? { enVps: (repos) => publicarEnVps(proyectoId, corrida.proyecto, repos, vps) } : {}),
             enDestino: (repo) =>
               aDestino(repo, conexiones, proyectoId, {
                 store,
@@ -570,15 +642,18 @@ const pipelineDeps = {
    * todas hechas y no se podia entrar. Esto le pide la pagina a la URL
    * publica y, si no responde, lo devuelve como trabajo.
    */
+  vpsPorDefecto: Boolean(depsDeVps()),
   verificarApp: async (proyectoId: string) => {
     const repos = await store.reposDeProyecto(proyectoId).catch(() => []);
     const problemas = await verificarDespliegue(
       repos
-        .filter((r) => r.render_service_id || r.render_url)
+        .filter((r) => r.render_service_id || r.render_url || r.destino_url)
         .map((r) => ({
           nombre: r.nombre,
-          ...(r.render_service_id ? { serviceId: r.render_service_id } : {}),
-          ...(r.render_url ? { url: r.render_url } : {}),
+          // El estado del deploy solo se le pregunta a Render; en el VPS (o en
+          // otra app) alcanza con que la URL responda.
+          ...(r.render_service_id && !r.destino ? { serviceId: r.render_service_id } : {}),
+          ...((r.destino_url ?? r.render_url) ? { url: (r.destino_url ?? r.render_url)! } : {}),
         })),
       {
         estadoDeDeploy: (serviceId: string) =>
@@ -673,7 +748,7 @@ function despliegueDelPanel() {
       usuarioId: string,
       proyectoId: string,
       repo: string,
-      destino: Parameters<typeof verificar>[0] | null,
+      destino: Destino | null,
     ) => {
       if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'solo el dueño del proyecto elige dónde se publica' };
       if (!(await store.reposDeProyecto(proyectoId)).some((x) => x.nombre === repo)) {
@@ -728,7 +803,19 @@ function despliegueDelPanel() {
     },
     desplegar: async (usuarioId: string, proyectoId: string, repo: string) => {
       // Del dueño, como publicar: despliega con SUS cuentas.
-      if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'solo el dueño del proyecto puede desplegar' };
+      const proyecto = await esSuyo(usuarioId, proyectoId);
+      if (!proyecto) return { ok: false as const, motivo: 'solo el dueño del proyecto puede desplegar' };
+      const fila = (await store.reposDeProyecto(proyectoId)).find((r) => r.nombre === repo);
+      const vps = depsDeVps(await githubTokenDe(proyectoId));
+      if (fila && vps && (fila.destino === 'vps' || (!fila.destino && !fila.render_service_id))) {
+        // En el VPS el proyecto se publica entero: el front necesita al back y
+        // el back a su base.
+        const r = await publicarEnVps(proyectoId, proyecto.nombre, await store.reposDeProyecto(proyectoId), vps);
+        const url = r.publicados.find((x) => x.repo === repo)?.url;
+        return url
+          ? { ok: true as const, url, app: 'VPS' }
+          : { ok: false as const, motivo: r.pendientes.join('; ') || `${repo} no se publicó en el VPS` };
+      }
       return desplegarRepo(usuarioId, proyectoId, repo, {
         store,
         clave,
@@ -736,6 +823,54 @@ function despliegueDelPanel() {
           ? { renderDelSistema: { apiKey: env.RENDER_API_KEY, ...(env.RENDER_OWNER_ID ? { ownerId: env.RENDER_OWNER_ID } : {}) } }
           : {}),
       });
+    },
+    /**
+     * El VPS de un proyecto, desde Repositorios. Solo el dueño, como publicar.
+     * Apagar y borrar existen SOLO aca: ni los agentes ni las corridas los tienen.
+     */
+    vps: {
+      estado: async (usuarioId: string, proyectoId: string) => {
+        if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'solo el dueño del proyecto' };
+        const vps = depsDeVps();
+        if (!vps) return { ok: true as const, estado: { configurado: false, partes: [], otros: [] } };
+        const demo = (await store.demosPorVencer(24 * 400).catch(() => [])).find((d) => d.proyectoId === proyectoId);
+        return {
+          ok: true as const,
+          estado: { ...(await estadoEnVps(proyectoId, vps)), ...(demo ? { demoApagarEl: demo.apagarEl } : {}) },
+        };
+      },
+      publicar: async (usuarioId: string, proyectoId: string) => {
+        const proyecto = await esSuyo(usuarioId, proyectoId);
+        if (!proyecto) return { ok: false as const, motivo: 'solo el dueño del proyecto puede publicar' };
+        const vps = depsDeVps(await githubTokenDe(proyectoId));
+        if (!vps) return { ok: false as const, motivo: 'el VPS no está configurado en el servidor' };
+        const repos = (await store.reposDeProyecto(proyectoId)).filter(
+          (r) => !r.solo_lectura && (r.destino === 'vps' || (!r.destino && !r.render_service_id)),
+        );
+        if (repos.length === 0) return { ok: false as const, motivo: 'ningún repo de este proyecto se publica en el VPS' };
+        return { ok: true as const, ...(await publicarEnVps(proyectoId, proyecto.nombre, repos, vps)) };
+      },
+      apagar: async (usuarioId: string, proyectoId: string) => {
+        if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'solo el dueño del proyecto puede apagar' };
+        const vps = depsDeVps();
+        if (!vps) return { ok: false as const, motivo: 'el VPS no está configurado en el servidor' };
+        const r = await apagarEnVps(proyectoId, vps);
+        return r.ok ? { ok: true as const } : { ok: false as const, motivo: r.pendientes.join('; ') };
+      },
+      borrar: async (usuarioId: string, proyectoId: string, confirmacion: string) => {
+        const proyecto = await esSuyo(usuarioId, proyectoId);
+        if (!proyecto) return { ok: false as const, motivo: 'solo el dueño del proyecto puede borrar' };
+        const vps = depsDeVps();
+        if (!vps) return { ok: false as const, motivo: 'el VPS no está configurado en el servidor' };
+        const r = await borrarDelVps(proyectoId, proyecto.nombre, confirmacion, vps);
+        return r.ok ? { ok: true as const } : { ok: false as const, motivo: r.pendientes.join('; ') };
+      },
+      /** Una demo que se queda prendida: deja de apagarse sola. */
+      mantener: async (usuarioId: string, proyectoId: string) => {
+        if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'solo el dueño del proyecto' };
+        await store.guardarDemoApagarEl(proyectoId, null);
+        return { ok: true as const };
+      },
     },
     /**
      * La cuenta de demo de un proyecto (043): la carga quien puede ESCRIBIR en
@@ -841,10 +976,23 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   // Los dos JUNTOS o ninguno, igual que Drive: con el token y sin la org no se
   // puede crear un proyecto, y la feature existiria a medias hasta que alguien
   // la use a las tres de la mañana.
-  supabase:
-    env.SUPABASE_ACCESS_TOKEN && env.SUPABASE_ORG_ID
+  supabase: {
+    ...(env.SUPABASE_ACCESS_TOKEN && env.SUPABASE_ORG_ID
       ? { accessToken: env.SUPABASE_ACCESS_TOKEN, orgId: env.SUPABASE_ORG_ID }
-      : {},
+      : {}),
+    // Con VPS, la base del proyecto nace en el VPS al publicar: no se crea en
+    // Supabase. Un proyecto con repos de Render/Vercel de antes sigue igual.
+    ...(depsDeVps()
+      ? {
+          usaVps: async (jobId: string) => {
+            const ctx = await store.contextoDeJob(jobId).catch(() => undefined);
+            if (!ctx?.proyectoId) return false;
+            const repos = (await store.reposDeProyecto(ctx.proyectoId)).filter((r) => !r.solo_lectura);
+            return repos.length > 0 && repos.every((r) => r.destino === 'vps' || (!r.destino && !r.render_service_id));
+          },
+        }
+      : {}),
+  },
   registrarClaude: (usuarioId: string, proyectoId: string, slot: string) =>
     store.registrarClaude(usuarioId, proyectoId, slot),
   // El trabajo en curso de la empresa, para la sección "En curso" del panel.
@@ -916,3 +1064,21 @@ await app.listen({ port: env.PORT, host: '0.0.0.0' });
 // DESPUES del listen y sin await: el bucle de una corrida puede durar horas, y
 // esperarlo aca dejaria el webhook sin escuchar. Ver `retomarCorridas`.
 retomarCorridas(bot, botDeps);
+
+// Las demos de Homero en el VPS: aviso el dia antes y apagado a los 14 dias de
+// la reunion. Nunca se borran solas. Cada hora alcanza: el aviso es "mañana".
+const vpsParaDemos = depsDeVps();
+if (vpsParaDemos) {
+  const revisar = () =>
+    revisarDemos({
+      ...vpsParaDemos,
+      demos: store,
+      avisar: async ({ proyectoId, texto }) => {
+        const dueno = await store.duenoDeProyecto(proyectoId).catch(() => undefined);
+        const [chat] = dueno ? await store.chatsDeUsuario(dueno).catch(() => [] as number[]) : [];
+        if (chat !== undefined) await bot.api.sendMessage(chat, `🖥️ ${texto}`).catch(() => undefined);
+      },
+    }).catch((err: unknown) => console.error('[bridge] no pude revisar las demos del VPS:', err));
+  setInterval(revisar, 60 * 60_000).unref();
+  setTimeout(revisar, 60_000).unref();
+}

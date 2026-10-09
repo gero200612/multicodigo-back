@@ -70,7 +70,7 @@ describe('el camino de una demo', () => {
 
     const e = await enviarDemo(demo.id, h.deps);
     expect(e.ok).toBe(true);
-    expect(h.cliente.abrir).toHaveBeenCalledWith('estudio-perez-asoc-demo', PLIEGO);
+    expect(h.cliente.abrir).toHaveBeenCalledWith('estudio-perez-asoc-demo', PLIEGO, '2026-10-02T15:00:00.000Z');
     expect((await h.store.demo(demo.id))!.estado).toBe('enviada');
 
     // Mientras la corrida sigue abierta, no cambia ni avisa.
@@ -137,7 +137,7 @@ describe('el camino de una demo', () => {
 
     expect((await editarPliego(demo.id, `${PLIEGO}\nCon login admin/admin.`, h.deps)).ok).toBe(true);
     await enviarDemo(demo.id, h.deps);
-    expect(h.cliente.abrir).toHaveBeenCalledWith(demo.proyecto, `${PLIEGO}\nCon login admin/admin.`);
+    expect(h.cliente.abrir).toHaveBeenCalledWith(demo.proyecto, `${PLIEGO}\nCon login admin/admin.`, '2026-10-02T15:00:00.000Z');
     expect(await editarPliego(demo.id, `${PLIEGO} otra vez`, h.deps)).toEqual({ ok: false, motivo: expect.any(String) });
   });
 
