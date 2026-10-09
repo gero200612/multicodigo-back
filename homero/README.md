@@ -205,7 +205,25 @@ docker exec homero node --experimental-strip-types scripts/meta-humo.ts
 | `PUT /anuncios/presupuesto` | `{ monto }` en pesos por mes; devuelve `aviso` si pasa el límite de la cuenta en Meta |
 | `GET /anuncios/resumen` | Los números del resumen de las 20 y su texto |
 
-La fuente de la imagen es Inter (`assets/fuentes`, licencia OFL en `OFL.txt`).
+### Imágenes y revisor
+
+Las imágenes salen de tres plantillas (`src/imagen.ts`): **chat** (mensajes y
+archivos que llegan por WhatsApp → una planilla tildada), **panel** (tablero con
+barras y estados, un aviso automático y un destacado) y **antes_despues** (dos
+columnas de 3 o 4 items). El publicista elige la plantilla y escribe sus textos;
+cada texto se mide con la fuente real y, si no entra en su lugar, la herramienta
+lo rechaza diciendo qué campo y cuántas letras entran. Lo que se puede prometer
+está en `src/ofrecemos.ts` (lo leen el publicista y el revisor).
+
+Antes de llegarle a Gero, cada anuncio pasa por el **revisor**: otra corrida que
+ve la imagen de verdad (la herramienta `ver_anuncio` la devuelve como imagen por
+MCP) y puntúa de 1 a 10 gancho, claridad, legibilidad, coherencia, promesas
+cumplibles, cifras inventadas y terminación. Pasa solo con 8 o más en todo; si no,
+vuelve al publicista con las correcciones. A la tercera vuelta sin pasar se
+descarta y a Gero le llega una línea, sin la imagen. Las vueltas quedan en
+`homero.anuncios.revision` y salen en `GET /anuncios`.
+
+La fuente de las imágenes es Inter (`assets/fuentes`, licencia OFL en `OFL.txt`).
 
 ## Desarrollo
 
