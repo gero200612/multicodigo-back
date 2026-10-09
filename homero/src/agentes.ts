@@ -99,13 +99,16 @@ const TOPES_DE_CAMBIO: Topes = { maxTurnos: 10, maxMinutos: 5 };
 
 /**
  * El buscador necesita mas vueltas cuanto mas negocios le piden: con 40 fijos,
- * un pedido de 30 se cortaba leyendo paginas antes de anotar ninguno. El techo
- * es el que acepta el gateway (80 turnos, 30 minutos).
+ * un pedido de 30 se cortaba leyendo paginas antes de anotar ninguno.
+ *
+ * NO hay techo artificial: el gateway y el slot aceptan lo que el buscador
+ * necesita. El tope de minutos sigue siendo 40 (el maximo que espera el usuario)
+ * pero los turnos salen de la formula sin recortar.
  */
 export function topesDelBuscador(cantidad: number): Topes {
   return {
-    maxTurnos: Math.min(80, TOPES.buscador.maxTurnos + 2 * cantidad),
-    maxMinutos: Math.min(30, TOPES.buscador.maxMinutos + cantidad / 2),
+    maxTurnos: TOPES.buscador.maxTurnos + 2 * cantidad,
+    maxMinutos: Math.min(40, TOPES.buscador.maxMinutos + cantidad / 2),
   };
 }
 

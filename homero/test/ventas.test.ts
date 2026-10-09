@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { topesDelBuscador } from '../src/agentes.js';
 import { correrSiguiente } from '../src/cola.js';
 import type { PedidoDeCorrida } from '../src/gateway.js';
 import type { Recibido } from '../src/store.js';
@@ -91,10 +92,18 @@ describe('de la busqueda al primer mail', () => {
     const h = armar({ agente: async () => ({ texto: '', slot: 'c3', cortada: 'turnos' as const }) });
     await h.store.encolar({ tipo: 'agente_buscar', payload: { cantidad: 30 }, requiereIa: true });
     await vaciar(h.deps);
-    expect(h.corridas[0]!.maxTurnos).toBe(80);
+    // 40 base + 2 * 30 = 100 turnos, sin techo artificial.
+    expect(h.corridas[0]!.maxTurnos).toBe(100);
     expect(h.corridas[0]!.maxMinutos).toBe(30);
     expect(h.avisos.some((a) => a.includes('se cortó por tope de turnos'))).toBe(true);
     expect(h.store.corridasGuardadas[0]!.resumen).toBe('Se cortó por tope de turnos sin anotar ninguno');
+  });
+
+  it('topesDelBuscador da los turnos necesarios sin recortar', () => {
+    // 40 base + 2 * cantidad, sin techo que impida buscar.
+    expect(topesDelBuscador(1)).toEqual({ maxTurnos: 42, maxMinutos: 15.5 });
+    expect(topesDelBuscador(30)).toEqual({ maxTurnos: 100, maxMinutos: 30 });
+    expect(topesDelBuscador(50)).toEqual({ maxTurnos: 140, maxMinutos: 40 });
   });
 
   it('al aprobar sale el inicial y el unico seguimiento queda a la semana, en el mismo hilo', async () => {
