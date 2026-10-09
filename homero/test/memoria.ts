@@ -26,6 +26,13 @@ import type {
   Saliente,
   Store,
   Tarea,
+  Cliente,
+  CuentaClaude,
+  Fijo,
+  NuevoCliente,
+  NuevoFijo,
+  NuevoPago,
+  Pago,
 } from '../src/store.js';
 
 interface Fila extends Tarea {
@@ -509,5 +516,76 @@ export class MemoriaStore implements Store {
       porAnuncio.set(l.anuncioId, r);
     }
     return [...porAnuncio.entries()].map(([anuncioId, r]) => ({ anuncioId, ...r }));
+  }
+
+  // ---------------------------------------------------------------- finanzas
+  private fijosG: Fijo[] = [];
+  private cuentasG = new Map<string, CuentaClaude>();
+  private fotos = new Map<string, string[]>();
+  private clientesG: Cliente[] = [];
+  private pagosG: Pago[] = [];
+  private cotizacionesG = new Map<string, number>();
+  private idFinanzas = 1;
+
+  async fijos() {
+    return [...this.fijosG].sort((a, b) => a.desde.localeCompare(b.desde) || a.id - b.id).map((f) => ({ ...f }));
+  }
+  async guardarFijo(f: NuevoFijo & { id?: number }) {
+    const id = f.id ?? this.idFinanzas++;
+    this.fijosG = [...this.fijosG.filter((x) => x.id !== id), { ...f, id }];
+    return id;
+  }
+  async borrarFijo(id: number) {
+    this.fijosG = this.fijosG.filter((x) => x.id !== id);
+  }
+  async cuentasClaude() {
+    return [...this.cuentasG.values()].sort((a, b) => a.slot.localeCompare(b.slot)).map((c) => ({ ...c }));
+  }
+  async guardarCuentaClaude(c: CuentaClaude) {
+    this.cuentasG.set(c.slot, { ...c });
+  }
+  async guardarCuentasDelDia(dia: string, slots: string[]) {
+    this.fotos.set(dia, [...slots]);
+  }
+  async cuentasPorDia(desde: string) {
+    return [...this.fotos.entries()]
+      .filter(([dia]) => dia >= desde)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([dia, slots]) => ({ dia, slots: [...slots] }));
+  }
+  async clientes() {
+    return [...this.clientesG].sort((a, b) => a.desde.localeCompare(b.desde) || a.id - b.id).map((c) => ({ ...c }));
+  }
+  async guardarCliente(c: NuevoCliente & { id?: number }) {
+    const id = c.id ?? this.idFinanzas++;
+    this.clientesG = [...this.clientesG.filter((x) => x.id !== id), { ...c, id }];
+    return id;
+  }
+  async borrarCliente(id: number) {
+    this.clientesG = this.clientesG.filter((x) => x.id !== id);
+    this.pagosG = this.pagosG.filter((p) => p.clienteId !== id);
+  }
+  async pagos(desde: string, hasta: string) {
+    return this.pagosG
+      .filter((p) => p.dia >= desde && p.dia <= hasta)
+      .sort((a, b) => a.dia.localeCompare(b.dia) || a.id - b.id)
+      .map((p) => ({ ...p }));
+  }
+  async guardarPago(p: NuevoPago & { id?: number }) {
+    const id = p.id ?? this.idFinanzas++;
+    this.pagosG = [...this.pagosG.filter((x) => x.id !== id), { ...p, id }];
+    return id;
+  }
+  async borrarPago(id: number) {
+    this.pagosG = this.pagosG.filter((x) => x.id !== id);
+  }
+  async guardarCotizacion(dia: string, valor: number) {
+    this.cotizacionesG.set(dia, valor);
+  }
+  async cotizaciones(hasta: string) {
+    return [...this.cotizacionesG.entries()]
+      .filter(([dia]) => dia <= hasta)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([dia, valor]) => ({ dia, valor }));
   }
 }

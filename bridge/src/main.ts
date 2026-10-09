@@ -783,6 +783,14 @@ export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
   store,
   apiToken: env.BRIDGE_API_TOKEN,
   errores: registroDeErrores,
+  finanzas: {
+    // Los de la máquina con cuenta: en este servidor todos son de Gero.
+    cuentas: async () =>
+      (await listarAgentes(gatewayDeps))
+        .filter((a) => a.cuenta)
+        .map((a) => ({ slot: a.id, arriba: a.arriba }))
+        .sort((a, b) => a.slot.localeCompare(b.slot, 'en', { numeric: true })),
+  },
   // Las demos de Homero avisan en el chat de Punchi como cualquier corrida.
   despliegue: despliegueDelPanel(),
   demos: {

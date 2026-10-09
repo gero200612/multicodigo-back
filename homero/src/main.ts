@@ -16,6 +16,7 @@ import { crearBuzonGmail, revisarBandejas } from './bandeja.js';
 import { cambiarEnsayo, estadoDeHomero } from './comandos.js';
 import { armarDemo, cancelarDemo, clienteDePunchi, editarPliego, enviarDemo, seguirDemos } from './demos.js';
 import { correrSiguiente, type DepsDeCola } from './cola.js';
+import { planificarFinanzas } from './finanzas.js';
 import { leerConfig } from './config.js';
 import { correoGmail } from './envio.js';
 import { fuenteGoogle, fuenteOsm } from './fuentes.js';
@@ -42,7 +43,7 @@ import {
 } from './ventas.js';
 import { bajarPaginaConDestino, recibeMail } from './web.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
@@ -200,7 +201,9 @@ async function main() {
   const bandeja = setInterval(barrer, config.bandejaCadaMs);
 
   const plan = () =>
-    Promise.all([planificar(deps), planificarAnuncios(deps)]).catch((err) => console.error('[homero] planificador:', err));
+    Promise.all([planificar(deps), planificarAnuncios(deps), planificarFinanzas(deps)]).catch((err) =>
+      console.error('[homero] planificador:', err),
+    );
   void plan();
   const planificador = setInterval(plan, PLANIFICADOR_MS);
 

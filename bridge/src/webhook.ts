@@ -203,6 +203,14 @@ export interface ApiDeps {
       repo: string,
     ) => Promise<{ ok: true; url: string; app: string } | { ok: false; motivo: string }>;
   };
+  /**
+   * Lo que el Administrador de Homero necesita de Punchi para las cuentas de la
+   * empresa. Solo lectura, detrás del mismo bearer que las demos.
+   */
+  finanzas?: {
+    /** Los slots con una cuenta de Claude cargada: cada uno es una suscripción que se paga. */
+    cuentas: () => Promise<{ slot: string; arriba: boolean }[]>;
+  };
   demos?: {
     abrir: (p: PedidoDeDemo) => Promise<ResultadoDeDemo>;
     estado: (chatId: number, corridaId: string) => Promise<EstadoDeDemo | undefined>;
@@ -1001,6 +1009,19 @@ export function buildWebhookServer(
      * Homero pide una demo: abre la corrida y la arranca sin el boton de
      * confirmar. Ver `demo-homero.ts`.
      */
+    app.get('/interno/finanzas/cuentas', async (request, reply) => {
+      if (!isTokenValid(request.headers.authorization, api.apiToken)) {
+        return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      }
+      if (!api.finanzas) return reply.code(503).send({ code: 'sin_finanzas', message: 'finanzas no configuradas' });
+      try {
+        return reply.send({ cuentas: await api.finanzas.cuentas() });
+      } catch {
+        // El gateway no contestó: 503, y Homero sigue con la última foto que tenga.
+        return reply.code(503).send({ code: 'agent_unavailable', message: 'el gateway no contestó' });
+      }
+    });
+
     app.post('/interno/corrida/desde-homero', async (request, reply) => {
       if (!isTokenValid(request.headers.authorization, api.apiToken)) {
         return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });

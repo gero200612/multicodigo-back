@@ -5,11 +5,11 @@ import type { Demo, Lead, Store } from './store.js';
 import type { DepsDeVentas } from './ventas.js';
 
 /**
- * Patán arma el presupuesto de una app despues de la reunion: un precio por
- * armarla y un abono mensual de mantenimiento con horas de soporte.
+ * Los precios: el presupuesto de una app despues de la reunion, con un precio
+ * por armarla y un abono mensual de mantenimiento con horas de soporte.
  *
- * Vive adentro de Homero (misma base, misma cola, misma cuenta de Claude sin
- * herramientas). En la web es su propia seccion, /patan.
+ * Antes era "Patán", con su propia seccion. Desde 2026-10-09 es la pestaña
+ * Precios del Administrador de Homero (`/homero/administrador/precios`).
  *
  * El precio sale del VALOR para el cliente: Claude estima cuantas horas por
  * mes le ahorra la app y cuanto cuesta esa hora, y la regla de Gero lo
@@ -33,24 +33,45 @@ export const Regla = z.object({
   /** Parte del armado que se paga al aprobar (el resto, a la entrega). */
   anticipo: z.number().min(0).max(1),
   validezDias: z.number().int().min(1).max(365),
+  /**
+   * Lo que se le suma al costo de la app para el piso por costo (0,3 = 30%).
+   * El piso se aplica cuando se conoce el costo (ver costos.ts).
+   */
+  margen: z.number().min(0).max(5).default(0.3),
+  /** Lo que vale una hora de Gero, SOLO para el piso por costo (USD). No es lo que gana. */
+  valorHora: z.number().min(0).max(1000).default(15),
 });
 export type Regla = z.infer<typeof Regla>;
 
+/** Los mínimos los puso Gero el 2026-10-09: "1000 es muy alto", el piso es 400 y el abono 50. */
 export const REGLA_INICIAL: Regla = {
   mesesDeAhorro: 4,
-  pisoArmado: 1000,
+  pisoArmado: 400,
   porcentajeAbono: 0.12,
-  pisoAbono: 60,
+  pisoAbono: 50,
   horasSoporte: 4,
   anticipo: 0.5,
   validezDias: 15,
+  margen: 0.3,
+  valorHora: 15,
 };
 
-const CLAVE_DE_REGLA = 'patan:regla';
+const CLAVE_DE_REGLA = 'precios:regla';
+/** Donde la guardaba Patán. Se lee si todavía no hay una nueva. */
+const CLAVE_VIEJA = 'patan:regla';
 
 export async function reglaActual(store: Store): Promise<Regla> {
-  const guardada = Regla.safeParse(await store.leerEstado(CLAVE_DE_REGLA));
-  return guardada.success ? guardada.data : REGLA_INICIAL;
+  const nueva = Regla.safeParse(await store.leerEstado(CLAVE_DE_REGLA));
+  if (nueva.success) return nueva.data;
+  const vieja = Regla.safeParse(await store.leerEstado(CLAVE_VIEJA));
+  if (!vieja.success) return REGLA_INICIAL;
+  // Una regla vieja con los mínimos de antes (1000 / 60) toma los de Gero: los
+  // de antes eran los de fábrica, no los suyos. Si los había cambiado, se respetan.
+  return {
+    ...vieja.data,
+    ...(vieja.data.pisoArmado === 1000 ? { pisoArmado: REGLA_INICIAL.pisoArmado } : {}),
+    ...(vieja.data.pisoAbono === 60 ? { pisoAbono: REGLA_INICIAL.pisoAbono } : {}),
+  };
 }
 
 export async function guardarRegla(store: Store, regla: Regla): Promise<void> {
@@ -119,7 +140,7 @@ const RespuestaDeIa = z.object({
 export function promptDePresupuesto(o: { lead: Lead; demo: Demo; notas: string; regla: Regla }): string {
   const { lead, demo, notas, regla } = o;
   const inv = lead.investigacion;
-  return `Sos Patán, el que arma los presupuestos de Gero (Geronimo Enrici, de Sincro). Gero arma aplicaciones a medida para pymes argentinas: automatizan procesos (facturas, cobranzas, stock, turnos, pedidos), con IA y un bot de WhatsApp cuando suma.
+  return `Sos Homero, el que arma los presupuestos de Gero (Geronimo Enrici, de Sincro). Gero arma aplicaciones a medida para pymes argentinas: automatizan procesos (facturas, cobranzas, stock, turnos, pedidos), con IA y un bot de WhatsApp cuando suma.
 
 Ya hubo una reunión con este cliente y Punchi armó una demo. Tu trabajo: definir qué se va a armar y estimar cuánto le ahorra al cliente por mes. El PRECIO no lo ponés vos: sale de tu estimación del ahorro.
 
@@ -230,7 +251,7 @@ export async function pedirPresupuesto(demoId: number, notas: string, store: Sto
   const demo = await store.demo(demoId);
   if (!demo || !PRESUPUESTABLE.has(demo.estado)) return { ok: false, motivo: 'esa demo todavía no está para presupuestar' };
   const previo = await store.presupuestoDeDemo(demoId);
-  if (previo?.estado === 'armando') return { ok: false, motivo: 'Patán ya está armando ese presupuesto' };
+  if (previo?.estado === 'armando') return { ok: false, motivo: 'ya estoy armando ese presupuesto' };
   const id = await store.guardarPedidoDePresupuesto({ demoId, leadId: demo.leadId, notas: notas.trim() });
   await store.encolar({ tipo: 'presupuestar', payload: { presupuestoId: id }, requiereIa: true });
   return { ok: true, presupuestoId: id };
@@ -265,7 +286,7 @@ export async function presupuestar(payload: unknown, deps: DepsDeVentas): Promis
     if (leido) {
       await deps.store.actualizarPresupuesto(presupuestoId, { ...leido, estado: 'listo', error: '' });
       await deps.avisar(
-        `📄 Patán armó el presupuesto de ${lead.nombre}: armado USD ${leido.contenido.armado.precio}, abono USD ${leido.contenido.abono.precio}/mes. Revisalo en punchi.dev/patan.`,
+        `📄 Armé el presupuesto de ${lead.nombre}: armado USD ${leido.contenido.armado.precio}, abono USD ${leido.contenido.abono.precio}/mes. Revisalo en punchi.dev/homero/administrador/precios.`,
       );
       return;
     }

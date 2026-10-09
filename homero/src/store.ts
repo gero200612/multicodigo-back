@@ -1,4 +1,4 @@
-import type { Contenido, Justificacion } from './patan.js';
+import type { Contenido, Justificacion } from './precios.js';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 
@@ -20,7 +20,8 @@ export type TipoDeTarea =
   | 'publicar_anuncio'
   | 'leer_insights'
   | 'escribir_a_lead_meta'
-  | 'resumen_anuncios';
+  | 'resumen_anuncios'
+  | 'finanzas_del_dia';
 
 export type EstadoDeLead =
   | 'nuevo'
@@ -47,9 +48,9 @@ export interface Investigacion {
   chatbots?: string[];
   /** De donde salio la informacion: la ficha del lugar y las paginas leidas. */
   fuentes?: string[];
-  /** Estimado de cuanta gente trabaja ahi (para Patán). */
+  /** Estimado de cuanta gente trabaja ahi (para el presupuesto). */
   personas?: number;
-  /** Quien usaria la app y cuantos (para Patán). */
+  /** Quien usaria la app y cuantos (para el presupuesto). */
   usuarios?: string;
   /** Por que lo eligio el agente buscador. */
   por_que?: string;
@@ -130,7 +131,7 @@ export interface Demo {
 
 export type EstadoDePresupuesto = 'armando' | 'listo' | 'fallido';
 
-/** El presupuesto de Patán para una demo. Uno por demo. */
+/** El presupuesto de una demo. Uno por demo. */
 export interface Presupuesto {
   id: number;
   demoId: number;
@@ -321,6 +322,53 @@ export interface Recibido {
   enRespuestaA?: string;
 }
 
+// ------------------------------------------------------------ finanzas
+
+export type Moneda = 'ARS' | 'USD';
+
+/** Un gasto que se repite fuera de Claude y de Meta (la VPS, la prepaga). */
+export interface Fijo {
+  id: number;
+  nombre: string;
+  monto: number;
+  moneda: Moneda;
+  periodo: 'mensual' | 'anual';
+  /** AAAA-MM-DD. */
+  desde: string;
+  hasta?: string;
+}
+export type NuevoFijo = Omit<Fijo, 'id'>;
+
+/** El plan de una cuenta de Claude, si no es la Pro de USD 20. */
+export interface CuentaClaude {
+  slot: string;
+  plan: string;
+  precio: number;
+}
+
+export interface Cliente {
+  id: number;
+  nombre: string;
+  /** El proyecto de Punchi (la app que se le hizo). */
+  proyecto?: string;
+  /** Lo acordado, en USD. */
+  armado: number;
+  abono: number;
+  desde: string;
+  estado: 'activo' | 'baja';
+}
+export type NuevoCliente = Omit<Cliente, 'id'>;
+
+export interface Pago {
+  id: number;
+  clienteId: number;
+  dia: string;
+  monto: number;
+  moneda: Moneda;
+  concepto: 'armado' | 'abono' | 'otro';
+}
+export type NuevoPago = Omit<Pago, 'id'>;
+
 export interface Store {
   leerEstado<T>(clave: string): Promise<T | undefined>;
   /** `null` borra la clave. */
@@ -460,6 +508,28 @@ export interface Store {
   >;
   /** Por anuncio: cuantos leads trajo y cuantos llegaron a reunion, de los creados desde `desde`. */
   resultadosDeAnuncios(desde?: Date): Promise<ResultadoDeAnuncio[]>;
+
+  // ---- finanzas (el Administrador)
+  fijos(): Promise<Fijo[]>;
+  /** Con `id` actualiza; sin, crea. Devuelve el id. */
+  guardarFijo(f: NuevoFijo & { id?: number }): Promise<number>;
+  borrarFijo(id: number): Promise<void>;
+  cuentasClaude(): Promise<CuentaClaude[]>;
+  guardarCuentaClaude(c: CuentaClaude): Promise<void>;
+  /** Pisa la foto de ese día. */
+  guardarCuentasDelDia(dia: string, slots: string[]): Promise<void>;
+  /** Las fotos desde ese día inclusive, en orden. */
+  cuentasPorDia(desde: string): Promise<{ dia: string; slots: string[] }[]>;
+  clientes(): Promise<Cliente[]>;
+  guardarCliente(c: NuevoCliente & { id?: number }): Promise<number>;
+  borrarCliente(id: number): Promise<void>;
+  /** Los pagos entre dos días inclusive. */
+  pagos(desde: string, hasta: string): Promise<Pago[]>;
+  guardarPago(p: NuevoPago & { id?: number }): Promise<number>;
+  borrarPago(id: number): Promise<void>;
+  guardarCotizacion(dia: string, valor: number): Promise<void>;
+  /** Las cotizaciones guardadas hasta ese día inclusive, de la más vieja a la más nueva. */
+  cotizaciones(hasta: string): Promise<{ dia: string; valor: number }[]>;
 }
 
 export class PgStore implements Store {
@@ -1320,6 +1390,159 @@ export class PgStore implements Store {
       [desde ?? null],
     );
     return r.rows.map((f) => ({ anuncioId: Number(f.anuncio_id), leads: Number(f.leads), reuniones: Number(f.reuniones) }));
+  }
+
+  // ---------------------------------------------------------------- finanzas
+
+  async fijos() {
+    const r = await this.pool.query(
+      `SELECT id, nombre, monto, moneda, periodo, to_char(desde, 'YYYY-MM-DD') AS desde, to_char(hasta, 'YYYY-MM-DD') AS hasta
+       FROM homero.fijos ORDER BY desde, id`,
+    );
+    return r.rows.map((f) => ({
+      id: Number(f.id),
+      nombre: f.nombre as string,
+      monto: Number(f.monto),
+      moneda: f.moneda as Moneda,
+      periodo: f.periodo as Fijo['periodo'],
+      desde: f.desde as string,
+      ...(f.hasta ? { hasta: f.hasta as string } : {}),
+    }));
+  }
+
+  async guardarFijo(f: NuevoFijo & { id?: number }) {
+    const v = [f.nombre, f.monto, f.moneda, f.periodo, f.desde, f.hasta ?? null];
+    if (f.id) {
+      await this.pool.query(
+        `UPDATE homero.fijos SET nombre = $2, monto = $3, moneda = $4, periodo = $5, desde = $6, hasta = $7 WHERE id = $1`,
+        [f.id, ...v],
+      );
+      return f.id;
+    }
+    const r = await this.pool.query(
+      `INSERT INTO homero.fijos (nombre, monto, moneda, periodo, desde, hasta) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      v,
+    );
+    return Number(r.rows[0].id);
+  }
+
+  async borrarFijo(id: number) {
+    await this.pool.query(`DELETE FROM homero.fijos WHERE id = $1`, [id]);
+  }
+
+  async cuentasClaude() {
+    const r = await this.pool.query(`SELECT slot, plan, precio FROM homero.cuentas_claude ORDER BY slot`);
+    return r.rows.map((f) => ({ slot: f.slot as string, plan: f.plan as string, precio: Number(f.precio) }));
+  }
+
+  async guardarCuentaClaude(c: CuentaClaude) {
+    await this.pool.query(
+      `INSERT INTO homero.cuentas_claude (slot, plan, precio) VALUES ($1, $2, $3)
+       ON CONFLICT (slot) DO UPDATE SET plan = EXCLUDED.plan, precio = EXCLUDED.precio`,
+      [c.slot, c.plan, c.precio],
+    );
+  }
+
+  async guardarCuentasDelDia(dia: string, slots: string[]) {
+    await this.pool.query(
+      `INSERT INTO homero.cuentas_por_dia (dia, slots) VALUES ($1, $2::jsonb)
+       ON CONFLICT (dia) DO UPDATE SET slots = EXCLUDED.slots`,
+      [dia, JSON.stringify(slots)],
+    );
+  }
+
+  async cuentasPorDia(desde: string) {
+    const r = await this.pool.query(
+      `SELECT to_char(dia, 'YYYY-MM-DD') AS dia, slots FROM homero.cuentas_por_dia WHERE dia >= $1 ORDER BY dia`,
+      [desde],
+    );
+    return r.rows.map((f) => ({ dia: f.dia as string, slots: f.slots as string[] }));
+  }
+
+  async clientes() {
+    const r = await this.pool.query(
+      `SELECT id, nombre, proyecto, armado, abono, to_char(desde, 'YYYY-MM-DD') AS desde, estado FROM homero.clientes ORDER BY desde, id`,
+    );
+    return r.rows.map((f) => ({
+      id: Number(f.id),
+      nombre: f.nombre as string,
+      ...(f.proyecto ? { proyecto: f.proyecto as string } : {}),
+      armado: Number(f.armado),
+      abono: Number(f.abono),
+      desde: f.desde as string,
+      estado: f.estado as Cliente['estado'],
+    }));
+  }
+
+  async guardarCliente(c: NuevoCliente & { id?: number }) {
+    const v = [c.nombre, c.proyecto ?? null, c.armado, c.abono, c.desde, c.estado];
+    if (c.id) {
+      await this.pool.query(
+        `UPDATE homero.clientes SET nombre = $2, proyecto = $3, armado = $4, abono = $5, desde = $6, estado = $7 WHERE id = $1`,
+        [c.id, ...v],
+      );
+      return c.id;
+    }
+    const r = await this.pool.query(
+      `INSERT INTO homero.clientes (nombre, proyecto, armado, abono, desde, estado) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      v,
+    );
+    return Number(r.rows[0].id);
+  }
+
+  async borrarCliente(id: number) {
+    await this.pool.query(`DELETE FROM homero.clientes WHERE id = $1`, [id]);
+  }
+
+  async pagos(desde: string, hasta: string) {
+    const r = await this.pool.query(
+      `SELECT id, cliente_id, to_char(dia, 'YYYY-MM-DD') AS dia, monto, moneda, concepto
+       FROM homero.pagos WHERE dia BETWEEN $1 AND $2 ORDER BY dia, id`,
+      [desde, hasta],
+    );
+    return r.rows.map((f) => ({
+      id: Number(f.id),
+      clienteId: Number(f.cliente_id),
+      dia: f.dia as string,
+      monto: Number(f.monto),
+      moneda: f.moneda as Moneda,
+      concepto: f.concepto as Pago['concepto'],
+    }));
+  }
+
+  async guardarPago(p: NuevoPago & { id?: number }) {
+    const v = [p.clienteId, p.dia, p.monto, p.moneda, p.concepto];
+    if (p.id) {
+      await this.pool.query(
+        `UPDATE homero.pagos SET cliente_id = $2, dia = $3, monto = $4, moneda = $5, concepto = $6 WHERE id = $1`,
+        [p.id, ...v],
+      );
+      return p.id;
+    }
+    const r = await this.pool.query(
+      `INSERT INTO homero.pagos (cliente_id, dia, monto, moneda, concepto) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      v,
+    );
+    return Number(r.rows[0].id);
+  }
+
+  async borrarPago(id: number) {
+    await this.pool.query(`DELETE FROM homero.pagos WHERE id = $1`, [id]);
+  }
+
+  async guardarCotizacion(dia: string, valor: number) {
+    await this.pool.query(
+      `INSERT INTO homero.cotizaciones (dia, valor) VALUES ($1, $2) ON CONFLICT (dia) DO UPDATE SET valor = EXCLUDED.valor`,
+      [dia, valor],
+    );
+  }
+
+  async cotizaciones(hasta: string) {
+    const r = await this.pool.query(
+      `SELECT to_char(dia, 'YYYY-MM-DD') AS dia, valor FROM homero.cotizaciones WHERE dia <= $1 ORDER BY dia`,
+      [hasta],
+    );
+    return r.rows.map((f) => ({ dia: f.dia as string, valor: Number(f.valor) }));
   }
 }
 

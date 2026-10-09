@@ -9,7 +9,7 @@ import {
   REGLA_INICIAL,
   reglaActual,
   type Contenido,
-} from '../src/patan.js';
+} from '../src/precios.js';
 import type { Acciones } from '../src/telegram.js';
 import { armar } from './armar.js';
 
@@ -53,7 +53,7 @@ describe('la regla de precio', () => {
     // 480 USD/mes de ahorro: 4 meses = 1920 -> 1900; abono 12% = 57.6 -> piso 60
     expect(precios(480, REGLA_INICIAL)).toEqual({ armado: 1900, abono: 60 });
     // Ahorro chico: los dos pisos.
-    expect(precios(50, REGLA_INICIAL)).toEqual({ armado: 1000, abono: 60 });
+    expect(precios(50, REGLA_INICIAL)).toEqual({ armado: 400, abono: 50 });
     // Ahorro grande: 2000 * 4 = 8000; 12% = 240.
     expect(precios(2000, REGLA_INICIAL)).toEqual({ armado: 8000, abono: 240 });
   });
@@ -87,7 +87,7 @@ describe('pedir y armar un presupuesto', () => {
     expect(p.estado).toBe('listo');
     expect(p.contenido!.titulo).toContain('Clínica Levín');
     expect(h.prompts.at(-1)).toContain('Tienen 2 recepcionistas');
-    expect(h.avisos.at(-1)).toContain('Patán armó el presupuesto de Clínica Levín');
+    expect(h.avisos.at(-1)).toContain('Armé el presupuesto de Clínica Levín');
   });
 
   it('una demo que no se mandó a Punchi todavía no se presupuesta', async () => {
@@ -114,7 +114,7 @@ describe('pedir y armar un presupuesto', () => {
   });
 });
 
-describe('la API de Patán', () => {
+describe('la API de precios (antes Patán)', () => {
   const TOKEN = 'token-de-la-api-de-homero';
   async function conApi() {
     const h = await conDemo({ pedirIa: async () => RESPUESTA });

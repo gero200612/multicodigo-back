@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { redactarPliego, type DepsDeDemos } from './demos.js';
 import { enviarMail } from './envio.js';
 import { horaArgentina } from './horas.js';
-import { presupuestar } from './patan.js';
+import { finanzasDelDia } from './finanzas.js';
+import { presupuestar } from './precios.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
 import { agenteAtender, agenteBuscar, agentePublicitar, agenteRevisar, agenteVender, type DepsDeAgentes } from './agentes.js';
 import { escribirALeadMeta, leerInsights, publicarAnuncio, resumenDeAnuncios } from './anuncios.js';
@@ -169,5 +170,8 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       return escribirALeadMeta(tarea.payload, deps);
     case 'resumen_anuncios':
       return resumenDeAnuncios(deps);
+    case 'finanzas_del_dia':
+      await finanzasDelDia(deps);
+      return;
   }
 }

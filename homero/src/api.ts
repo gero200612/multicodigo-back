@@ -4,7 +4,8 @@ import { z } from 'zod';
 import { estadoDelMes, numerosDelMes, presupuestoDelMes, textoDelResumen } from './anuncios.js';
 import { cortarBusquedas, pausar, pedirBusqueda, ponerModo, seguir } from './comandos.js';
 import { inicioDelDia } from './horas.js';
-import { Contenido, editarPresupuesto, guardarRegla, pedirPresupuesto, Regla, reglaActual } from './patan.js';
+import { ClienteNuevo, FijoNuevo, mesActual, numerosDeFinanzas, PagoNuevo, PLAN_POR_DEFECTO, PlanDeCuenta } from './finanzas.js';
+import { Contenido, editarPresupuesto, guardarRegla, pedirPresupuesto, Regla, reglaActual } from './precios.js';
 import { RUBROS } from './rubros.js';
 import type { Store } from './store.js';
 import type { Acciones } from './telegram.js';
@@ -461,45 +462,123 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
     return { ...n, texto: textoDelResumen(n) };
   });
 
-  // ------------------------------------------------------------ patán
+  // ------------------------------------------------------------ precios
   //
-  // Vive en Homero, pero en la web es su propia seccion (/patan).
+  // Lo que era Patán: la pestaña Precios del Administrador. Las rutas `/patan`
+  // siguen como alias mientras el front viejo pueda estar abierto (el front y
+  // Homero se despliegan por separado).
 
-  app.get('/patan', async () => {
-    const clientes = [];
-    for (const demo of await store.demosPresupuestables()) {
-      clientes.push({
-        demo,
-        lead: (await store.lead(demo.leadId)) ?? null,
-        reunion: (await store.reunion(demo.reunionId)) ?? null,
-        presupuesto: (await store.presupuestoDeDemo(demo.id)) ?? null,
-      });
-    }
-    return { regla: await reglaActual(store), clientes };
+  for (const base of ['/precios', '/patan']) {
+    app.get(base, async () => {
+      const clientes = [];
+      for (const demo of await store.demosPresupuestables()) {
+        clientes.push({
+          demo,
+          lead: (await store.lead(demo.leadId)) ?? null,
+          reunion: (await store.reunion(demo.reunionId)) ?? null,
+          presupuesto: (await store.presupuestoDeDemo(demo.id)) ?? null,
+        });
+      }
+      return { regla: await reglaActual(store), clientes };
+    });
+
+    app.post<{ Params: { id: string } }>(`${base}/demos/:id/armar`, async (request, reply) => {
+      const id = Id.safeParse(request.params.id);
+      const b = z.object({ notas: z.string().max(20_000).default('') }).safeParse(request.body ?? {});
+      if (!id.success || !b.success) return invalido(reply);
+      const r = await pedirPresupuesto(id.data, b.data.notas, store);
+      return r.ok ? { presupuesto: await store.presupuesto(r.presupuestoId) } : noSe(reply, r.motivo);
+    });
+
+    app.patch<{ Params: { id: string } }>(`${base}/presupuestos/:id`, async (request, reply) => {
+      const id = Id.safeParse(request.params.id);
+      const b = z.object({ contenido: Contenido }).safeParse(request.body);
+      if (!id.success) return invalido(reply);
+      if (!b.success) return invalido(reply, b.error.issues[0]?.message ?? 'presupuesto invalido');
+      const r = await editarPresupuesto(id.data, b.data.contenido, store);
+      return r.ok ? { presupuesto: await store.presupuesto(r.presupuestoId) } : noSe(reply, r.motivo);
+    });
+
+    app.patch(`${base}/regla`, async (request, reply) => {
+      const b = z.object({ regla: Regla }).safeParse(request.body);
+      if (!b.success) return invalido(reply);
+      await guardarRegla(store, b.data.regla);
+      return { regla: b.data.regla };
+    });
+  }
+
+  // ------------------------------------------------------------ finanzas
+  //
+  // Los números del Administrador y lo que se carga a mano. Ver finanzas.ts.
+
+  app.get<{ Querystring: { mes?: string } }>('/finanzas', async (request, reply) => {
+    const mes = request.query.mes ?? mesActual(d.ahora());
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(mes)) return invalido(reply, 'el mes va como AAAA-MM');
+    const regla = await reglaActual(store);
+    const [numeros, fijos, clientes, planes] = await Promise.all([
+      numerosDeFinanzas({ store }, mes, regla.pisoAbono),
+      store.fijos(),
+      store.clientes(),
+      store.cuentasClaude(),
+    ]);
+    return { numeros, fijos, clientes, planes, planPorDefecto: PLAN_POR_DEFECTO };
   });
 
-  app.post<{ Params: { id: string } }>('/patan/demos/:id/armar', async (request, reply) => {
-    const id = Id.safeParse(request.params.id);
-    const b = z.object({ notas: z.string().max(20_000).default('') }).safeParse(request.body ?? {});
-    if (!id.success || !b.success) return invalido(reply);
-    const r = await pedirPresupuesto(id.data, b.data.notas, store);
-    return r.ok ? { presupuesto: await store.presupuesto(r.presupuestoId) } : noSe(reply, r.motivo);
+  app.post('/finanzas/fijos', async (request, reply) => {
+    const b = FijoNuevo.safeParse(request.body);
+    if (!b.success) return invalido(reply, b.error.issues[0]?.message);
+    return { id: await store.guardarFijo(b.data) };
   });
-
-  app.patch<{ Params: { id: string } }>('/patan/presupuestos/:id', async (request, reply) => {
+  app.put<{ Params: { id: string } }>('/finanzas/fijos/:id', async (request, reply) => {
     const id = Id.safeParse(request.params.id);
-    const b = z.object({ contenido: Contenido }).safeParse(request.body);
+    const b = FijoNuevo.safeParse(request.body);
+    if (!id.success || !b.success) return invalido(reply, b.success ? undefined : b.error.issues[0]?.message);
+    return { id: await store.guardarFijo({ ...b.data, id: id.data }) };
+  });
+  app.delete<{ Params: { id: string } }>('/finanzas/fijos/:id', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
     if (!id.success) return invalido(reply);
-    if (!b.success) return invalido(reply, b.error.issues[0]?.message ?? 'presupuesto invalido');
-    const r = await editarPresupuesto(id.data, b.data.contenido, store);
-    return r.ok ? { presupuesto: await store.presupuesto(r.presupuestoId) } : noSe(reply, r.motivo);
+    await store.borrarFijo(id.data);
+    return { ok: true };
   });
 
-  app.patch('/patan/regla', async (request, reply) => {
-    const b = z.object({ regla: Regla }).safeParse(request.body);
-    if (!b.success) return invalido(reply);
-    await guardarRegla(store, b.data.regla);
-    return { regla: b.data.regla };
+  app.put<{ Params: { slot: string } }>('/finanzas/cuentas/:slot', async (request, reply) => {
+    const slot = z.string().regex(/^c[1-9][0-9]?$/).safeParse(request.params.slot);
+    const b = PlanDeCuenta.safeParse(request.body);
+    if (!slot.success || !b.success) return invalido(reply);
+    await store.guardarCuentaClaude({ slot: slot.data, ...b.data });
+    return { ok: true };
+  });
+
+  app.post('/finanzas/clientes', async (request, reply) => {
+    const b = ClienteNuevo.safeParse(request.body);
+    if (!b.success) return invalido(reply, b.error.issues[0]?.message);
+    return { id: await store.guardarCliente(b.data) };
+  });
+  app.put<{ Params: { id: string } }>('/finanzas/clientes/:id', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
+    const b = ClienteNuevo.safeParse(request.body);
+    if (!id.success || !b.success) return invalido(reply, b.success ? undefined : b.error.issues[0]?.message);
+    return { id: await store.guardarCliente({ ...b.data, id: id.data }) };
+  });
+  app.delete<{ Params: { id: string } }>('/finanzas/clientes/:id', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
+    if (!id.success) return invalido(reply);
+    await store.borrarCliente(id.data);
+    return { ok: true };
+  });
+
+  app.post('/finanzas/pagos', async (request, reply) => {
+    const b = PagoNuevo.safeParse(request.body);
+    if (!b.success) return invalido(reply, b.error.issues[0]?.message);
+    if (!(await store.clientes()).some((c) => c.id === b.data.clienteId)) return invalido(reply, 'ese cliente no existe');
+    return { id: await store.guardarPago(b.data) };
+  });
+  app.delete<{ Params: { id: string } }>('/finanzas/pagos/:id', async (request, reply) => {
+    const id = Id.safeParse(request.params.id);
+    if (!id.success) return invalido(reply);
+    await store.borrarPago(id.data);
+    return { ok: true };
   });
 
   return app;
