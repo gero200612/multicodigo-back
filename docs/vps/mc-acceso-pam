@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Lo llama PAM (pam_exec) en cada entrada por SSH, DESPUES de la clave.
+
+Le pregunta a mc-acceso (en el VPS) y espera tu toque en Telegram.
+Sale 0 = deja entrar; cualquier otra cosa = corta. Si mc-acceso no contesta,
+corta: sin autorizacion no se entra (la consola fisica / KVM no pasa por aca).
+
+Config: /etc/mc-acceso.conf  ->  URL=http://...:8092/pedir  SERVIDOR=VPS|Toshiba
+"""
+import json
+import os
+import sys
+import urllib.request
+
+if os.environ.get('PAM_TYPE') != 'auth':
+    sys.exit(0)
+
+conf = {}
+for linea in open('/etc/mc-acceso.conf'):
+    k, _, v = linea.strip().partition('=')
+    if k:
+        conf[k] = v
+secreto = open('/root/mc-acceso.secret').read().strip()
+cuerpo = json.dumps({
+    'servidor': conf.get('SERVIDOR', '?'),
+    'usuario': os.environ.get('PAM_USER', '?'),
+    'desde': os.environ.get('PAM_RHOST', ''),
+}).encode()
+req = urllib.request.Request(conf['URL'], data=cuerpo, method='POST',
+                             headers={'Authorization': 'Bearer ' + secreto, 'Content-Type': 'application/json'})
+try:
+    with urllib.request.urlopen(req, timeout=90) as r:
+        sys.exit(0 if json.loads(r.read()).get('ok') is True else 1)
+except Exception:
+    sys.exit(1)
