@@ -29,9 +29,16 @@ export interface DepsDeAnuncios extends DepsDeVentas {
 /** Clave en homero.estado: el presupuesto del mes en pesos. */
 export const PRESUPUESTO_MES = 'presupuesto_mes';
 export const PRESUPUESTO_INICIAL = 50_000;
-/** El diario mas chico que se le pone a un anuncio: menos que esto Meta casi no lo muestra. */
+/**
+ * Piso propio del diario. El de verdad lo pone Meta y cambia con el dolar
+ * ($1.529,21 el 2026-10-08): ver `minimoDiario`.
+ */
 export const DIARIO_MINIMO = 1_000;
-/** Al llegar a esta parte del presupuesto del mes se pausa todo. */
+/** Clave en homero.estado: el minimo diario de Meta que se aprendio, en pesos. */
+export const MINIMO_DE_META = 'meta:minimo_diario';
+/** Margen sobre el minimo de Meta: el dolar se mueve entre que se lee y se usa. */
+const MARGEN_DEL_MINIMO = 1.05;
+/** A esta parte del presupuesto del mes se avisa; la pausa es cuando ya no queda para un dia. */
 export const TOPE_DE_ALERTA = 0.9;
 export const WEB = 'https://www.sincroresto.com';
 export const PRIVACIDAD = 'https://www.sincroresto.com/privacidad';
@@ -79,7 +86,10 @@ export interface EstadoDelMes {
   diasQueFaltan: number;
   /** Lo que el mes va a terminar gastando si nada cambia. */
   comprometido: number;
-  /** El diario total mas alto que entra en lo que queda del mes. */
+  /**
+   * El diario total mas alto que entra: lo que queda del presupuesto. Gero
+   * eligio gastar hasta agotarlo (y cortar ahi) en vez de estirarlo al mes.
+   */
   diarioQueEntra: number;
 }
 
@@ -100,7 +110,7 @@ export async function estadoDelMes(deps: { store: Store; ahora: () => Date }): P
     diarios,
     diasQueFaltan: mes.diasQueFaltan,
     comprometido: gastado + diarios * mes.diasQueFaltan,
-    diarioQueEntra: Math.max(0, Math.floor((presupuesto - gastado) / mes.diasQueFaltan)),
+    diarioQueEntra: Math.max(0, Math.floor(presupuesto - gastado)),
   };
 }
 
@@ -119,19 +129,21 @@ export function chequearReparto(m: EstadoDelMes, diarios: Map<number, number>, a
   // bajando uno y subiendo otro se mantendria el gasto con el mes ya pasado.
   const soloBaja = [...diarios].every(([id, d]) => d <= (antes.get(id) ?? 0));
   if (soloBaja && total <= totalAntes) return { ok: true };
-  if (m.gastado >= m.presupuesto * TOPE_DE_ALERTA) {
+  if (m.gastado >= m.presupuesto) {
     return {
       ok: false,
-      motivo: `ya se gastó ${pesos(m.gastado)} de ${pesos(m.presupuesto)} (más del ${TOPE_DE_ALERTA * 100}%): este mes solo se puede bajar o pausar`,
-      entra: Math.min(totalAntes, m.diarioQueEntra),
+      motivo: `ya se gastó ${pesos(m.gastado)} de ${pesos(m.presupuesto)}: este mes solo se puede bajar o pausar`,
+      entra: 0,
     };
   }
-  const final = m.gastado + total * m.diasQueFaltan;
+  // Hasta agotar: alcanza con que quede plata para un dia mas con esos
+  // diarios. Cuando no queda, `controlarTope` pausa todo.
+  const final = m.gastado + total;
   if (final > m.presupuesto) {
     return {
       ok: false,
       motivo:
-        `no entra: ${pesos(m.gastado)} gastado + ${pesos(total)} por día × ${m.diasQueFaltan} días = ${pesos(final)}, ` +
+        `no entra: ${pesos(m.gastado)} gastado + ${pesos(total)} por día = ${pesos(final)}, ` +
         `y el presupuesto del mes es ${pesos(m.presupuesto)}. Entra hasta ${pesos(m.diarioQueEntra)} por día en total`,
       entra: m.diarioQueEntra,
     };
@@ -150,7 +162,7 @@ async function diarioQueEntraPara(anuncioId: number, deps: DepsDeAnuncios): Prom
   const otros = [...(await diariosActuales(deps.store)).entries()]
     .filter(([id]) => id !== anuncioId)
     .reduce((n, [, d]) => n + d, 0);
-  if (m.gastado >= m.presupuesto * TOPE_DE_ALERTA) return 0;
+  if (m.gastado >= m.presupuesto) return 0;
   return Math.max(0, m.diarioQueEntra - otros);
 }
 
@@ -188,18 +200,50 @@ export async function cambiarPresupuesto(
  */
 export async function controlarTope(deps: DepsDeAnuncios): Promise<number> {
   const m = await estadoDelMes(deps);
-  if (m.gastado < m.presupuesto * TOPE_DE_ALERTA) return 0;
+  const marcaAviso = `tope_aviso:${mesDe(deps.ahora()).primerDia}`;
+  if (m.gastado >= m.presupuesto * TOPE_DE_ALERTA && m.diarios > 0 && !(await deps.store.leerEstado(marcaAviso))) {
+    await deps.store.guardarEstado(marcaAviso, true);
+    await deps.avisar(`💸 Ya se gastó ${pesos(m.gastado)} de ${pesos(m.presupuesto)} este mes. Cuando no alcance para otro día, pauso todo.`);
+  }
+  // Se corta cuando lo que queda no cubre otro dia con los diarios que hay.
+  // El limite de la cuenta en Meta es el segundo freno, por si el gasto llega tarde.
+  if (m.diarios === 0 || m.gastado + m.diarios <= m.presupuesto) return 0;
   const activos = await deps.store.anuncios(GASTAN);
-  for (const a of activos) await pausarEnMeta(a, `llegó al ${TOPE_DE_ALERTA * 100}% del presupuesto del mes`, deps);
+  for (const a of activos) await pausarEnMeta(a, 'se terminó el presupuesto del mes', deps);
   const marca = `tope:${mesDe(deps.ahora()).primerDia}`;
   if (activos.length > 0 && !(await deps.store.leerEstado(marca))) {
     await deps.store.guardarEstado(marca, true);
     await deps.avisar(
-      `🛑 Se gastó ${pesos(m.gastado)} de ${pesos(m.presupuesto)} este mes (${Math.round((m.gastado / m.presupuesto) * 100)}%). ` +
-        `Pausé ${activos.length} anuncio(s). Si querés seguir: /presupuesto <monto nuevo>.`,
+      `🛑 Se terminó el presupuesto del mes: ${pesos(m.gastado)} de ${pesos(m.presupuesto)}. ` +
+        `Pausé ${activos.length} anuncio(s) hasta el mes que viene. Si querés seguir: /presupuesto <monto nuevo>.`,
     );
   }
   return activos.length;
+}
+
+/**
+ * El diario minimo de verdad, en pesos: el que exige Meta (sale de la cuenta o
+ * de lo que dijo el ultimo rechazo) con un margen, y nunca menos que el piso propio.
+ */
+export async function minimoDiario(deps: DepsDeAnuncios): Promise<number> {
+  let deMeta = (await deps.store.leerEstado<number>(MINIMO_DE_META)) ?? 0;
+  if (!deMeta && deps.meta) {
+    try {
+      deMeta = (await deps.meta.cuenta()).minimoDiario ?? 0;
+      if (deMeta) await deps.store.guardarEstado(MINIMO_DE_META, deMeta);
+    } catch {
+      // Sin la cuenta queda el piso propio; si Meta lo rechaza, se aprende del error.
+    }
+  }
+  return Math.max(DIARIO_MINIMO, Math.ceil((deMeta * MARGEN_DEL_MINIMO) / 10) * 10);
+}
+
+/** "Your ad set budget must be more than ARS1,529.21": el minimo, en pesos. */
+export function minimoDelError(mensaje: string): number | undefined {
+  const m = /must be more than ARS\s?([\d.,]+)/i.exec(mensaje);
+  if (!m) return undefined;
+  const n = Number(m[1]!.replace(/,/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 async function pausarEnMeta(a: Anuncio, motivo: string, deps: DepsDeAnuncios): Promise<void> {
@@ -373,6 +417,23 @@ export async function descartarPlantillasViejas(
   return viejos.length;
 }
 
+/**
+ * Al arrancar: los aprobados que no llegaron a existir en Meta (la cola se
+ * rindio, p. ej. por el minimo diario) se vuelven a encolar, una vez por dia.
+ * Si ya habia una tarea andando no pasa nada: `publicarAnuncio` sigue desde
+ * lo que ya se creo y no duplica.
+ */
+export async function retomarPublicaciones(deps: DepsDeAnuncios): Promise<number> {
+  if (!deps.meta) return 0;
+  const dia = diaArgentino(deps.ahora());
+  let n = 0;
+  for (const a of await deps.store.anuncios(['aprobado'])) {
+    if (a.metaIds.anuncio) continue;
+    if (await deps.store.encolar({ tipo: 'publicar_anuncio', payload: { anuncioId: a.id }, requiereIa: false, clave: `publicar:${a.id}:arranque:${dia}` })) n++;
+  }
+  return n;
+}
+
 export type ResultadoDeAnuncio = { ok: true; anuncio: Anuncio; nota?: string } | { ok: false; motivo: string };
 
 /**
@@ -386,20 +447,26 @@ export async function aprobarAnuncio(id: number, deps: DepsDeAnuncios): Promise<
   if (!a) return { ok: false, motivo: 'ese anuncio no existe' };
   if (a.estado !== 'propuesto') return { ok: false, motivo: `ya estaba decidido (${a.estado})` };
   const entra = await diarioQueEntraPara(id, deps);
-  if (entra < DIARIO_MINIMO) {
+  const minimo = await minimoDiario(deps);
+  if (entra < minimo) {
     return {
       ok: false,
-      motivo: `no entra en el presupuesto del mes (quedan ${pesos(entra)} por día). Bajá otro anuncio o subí el presupuesto con /presupuesto`,
+      motivo: `no entra en el presupuesto del mes (quedan ${pesos(entra)} y Meta pide ${pesos(minimo)} por día). Pausá otro anuncio o subí el presupuesto con /presupuesto`,
     };
   }
-  const diario = Math.min(a.diario, entra);
+  const diario = Math.min(Math.max(a.diario, minimo), entra);
   await deps.store.actualizarAnuncio(id, { estado: 'aprobado', diario, aprobadoEn: deps.ahora() });
   await deps.store.encolar({ tipo: 'publicar_anuncio', payload: { anuncioId: id }, requiereIa: false, clave: `publicar:${id}` });
   await deps.store.encolar({ tipo: 'agente_publicitar', payload: {}, requiereIa: true, clave: `publicitar:aprobado:${id}` });
   return {
     ok: true,
     anuncio: (await deps.store.anuncio(id))!,
-    nota: diario < a.diario ? `Sale con ${pesos(diario)} por día (pedía ${pesos(a.diario)}): es lo que entra en el mes.` : undefined,
+    nota:
+      diario < a.diario
+        ? `Sale con ${pesos(diario)} por día (pedía ${pesos(a.diario)}): es lo que entra en el mes.`
+        : diario > a.diario
+          ? `Sale con ${pesos(diario)} por día (pedía ${pesos(a.diario)}): es el mínimo que acepta Meta.`
+          : undefined,
   };
 }
 
@@ -480,12 +547,13 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
   if (!ids.conjunto) {
     // El gasto pudo cambiar desde que Gero aprobo: se vuelve a mirar el tope.
     const entra = await diarioQueEntraPara(a.id, deps);
-    if (entra < DIARIO_MINIMO) {
+    const minimo = await minimoDiario(deps);
+    if (entra < minimo) {
       await deps.store.actualizarAnuncio(a.id, { estado: 'pausado', motivo: 'no entraba en el presupuesto del mes al publicarlo' });
       await deps.avisar(`⚠️ No publiqué el anuncio #${a.id} (${a.titulo}): ya no entra en el presupuesto del mes.`);
       return;
     }
-    const diario = Math.min(a.diario, entra);
+    const diario = Math.min(Math.max(a.diario, minimo), entra);
     const intereses = [];
     for (const q of ['Pequeña y mediana empresa', a.rubro]) {
       try {
@@ -494,7 +562,14 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
         // Sin intereses el conjunto sale igual, a toda Argentina de 25 a 65.
       }
     }
-    ids.conjunto = await meta.crearConjunto({ campana, nombre: `#${a.id} · ${a.rubro}`, diario, intereses });
+    try {
+      ids.conjunto = await meta.crearConjunto({ campana, nombre: `#${a.id} · ${a.rubro}`, diario, intereses });
+    } catch (err) {
+      // Meta dice cual es su minimo: se aprende y la cola reintenta con ese.
+      const aprendido = minimoDelError(err instanceof Error ? err.message : String(err));
+      if (aprendido) await deps.store.guardarEstado(MINIMO_DE_META, aprendido);
+      throw err;
+    }
     await deps.store.actualizarAnuncio(a.id, { metaIds: ids, diario });
   }
   if (!ids.creativo) {
@@ -532,8 +607,9 @@ export async function repartirPresupuesto(cambios: { anuncioId: number; diario: 
     if (!a || !APROBADOS.includes(a.estado)) {
       return { ok: false, motivo: `el anuncio #${c.anuncioId} no está aprobado por Gero: solo se reparte entre aprobados`, entra: 0 };
     }
-    if (c.diario > 0 && c.diario < DIARIO_MINIMO) {
-      return { ok: false, motivo: `el diario mínimo es ${pesos(DIARIO_MINIMO)} (o 0 para pausar)`, entra: 0 };
+    const minimo = await minimoDiario(deps);
+    if (c.diario > 0 && c.diario < minimo) {
+      return { ok: false, motivo: `el diario mínimo es ${pesos(minimo)} (lo pide Meta; o 0 para pausar)`, entra: 0 };
     }
     anuncios.set(a.id, a);
   }

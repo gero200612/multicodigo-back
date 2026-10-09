@@ -11,6 +11,8 @@ import {
   leerLeadsDeMeta,
   linkDeWhatsapp,
   mesDe,
+  minimoDelError,
+  minimoDiario,
   pedirCambio,
   planificarAnuncios,
   proponerAnuncio,
@@ -89,25 +91,26 @@ describe('el mes', () => {
     await h.store.guardarGastos([gasto('2026-09-30', id, 49_000), gasto('2026-10-01', id, 300)]);
     const m = await estadoDelMes(h.deps);
     expect(m).toMatchObject({ presupuesto: 50_000, gastado: 300, gastadoHoy: 300, diarios: 1000, diasQueFaltan: 31 });
-    expect(m.diarioQueEntra).toBe(Math.floor(49_700 / 31));
+    // Hasta agotar: entra todo lo que queda.
+    expect(m.diarioQueEntra).toBe(49_700);
   });
 });
 
 describe('el tope de plata', () => {
-  it('rechaza un reparto que no entra en el mes y dice cuánto entra', async () => {
-    const h = conMeta(); // martes 29/9: faltan 2 dias
+  it('rechaza un reparto si no queda plata para un día más y dice cuánto entra', async () => {
+    const h = conMeta();
     const a = await activo(h, 2000, 1);
     const b = await activo(h, 2000, 2);
-    await h.store.guardarGastos([gasto('2026-09-10', a, 30_000), gasto('2026-08-31', a, 99_999)]);
+    await h.store.guardarGastos([gasto('2026-09-10', a, 40_000), gasto('2026-08-31', a, 99_999)]);
 
-    // 30.000 + (6.000 + 5.000) × 2 = 52.000 > 50.000
+    // 40.000 + 6.000 + 5.000 = 51.000 > 50.000: no queda para otro día así.
     const r = await repartirPresupuesto([{ anuncioId: a, diario: 6000 }, { anuncioId: b, diario: 5000 }], h.deps);
     expect(r).toMatchObject({ ok: false, entra: 10_000 });
     if (!r.ok) expect(r.motivo).toContain('$10.000');
     expect(h.f.de('cambiarDiario')).toHaveLength(0);
     expect((await h.store.anuncio(a))!.diario).toBe(2000);
 
-    // 30.000 + 10.000 × 2 = 50.000: entra justo.
+    // 40.000 + 10.000 = 50.000: entra justo (aunque no alcance para el resto del mes).
     expect(await repartirPresupuesto([{ anuncioId: a, diario: 6000 }, { anuncioId: b, diario: 4000 }], h.deps)).toEqual({ ok: true });
     expect(h.f.de('cambiarDiario').map((l) => l.args)).toEqual([
       ['set1', 6000],
@@ -133,18 +136,20 @@ describe('el tope de plata', () => {
     expect(chequearReparto(m, new Map([[1, 2000], [3, 2000], [2, 2000]]), antes)).toMatchObject({ ok: false });
   });
 
-  it('al 90% del mes pausa todo, avisa una sola vez y no deja volver a subir', async () => {
+  it('gasta hasta agotar: avisa al 90% y pausa todo cuando no queda para otro día', async () => {
     const h = conMeta();
     const a = await activo(h, 2000, 1);
     const b = await activo(h, 2000, 2);
-    h.f.datos.insights = [{ anuncio: 'ad1', dia: '2026-09-28', gasto: 44_900, impresiones: 9000, consultas: 12 }];
-    await leerInsights(h.deps);
-    // 44.900 es el 89,8%: sigue andando.
-    expect(h.f.de('cambiarEstado')).toHaveLength(0);
-    expect(await h.store.gastos('2026-09-01')).toEqual([{ dia: '2026-09-28', anuncioId: a, gasto: 44_900, impresiones: 9000, consultas: 12 }]);
-
     h.f.datos.insights = [{ anuncio: 'ad1', dia: '2026-09-28', gasto: 45_000, impresiones: 9000, consultas: 12 }];
     await leerInsights(h.deps);
+    // 45.000 + 4.000 de diarios = 49.000: queda para otro día, sigue andando con un aviso.
+    expect(h.f.de('cambiarEstado')).toHaveLength(0);
+    expect(h.avisos.filter((t) => t.startsWith('💸'))).toHaveLength(1);
+    expect(await h.store.gastos('2026-09-01')).toEqual([{ dia: '2026-09-28', anuncioId: a, gasto: 45_000, impresiones: 9000, consultas: 12 }]);
+
+    h.f.datos.insights = [{ anuncio: 'ad1', dia: '2026-09-28', gasto: 46_500, impresiones: 9000, consultas: 12 }];
+    await leerInsights(h.deps);
+    // 46.500 + 4.000 > 50.000: se corta.
     expect(h.f.de('cambiarEstado').map((l) => l.args)).toEqual([
       ['set2', 'PAUSED'],
       ['set1', 'PAUSED'],
@@ -152,20 +157,47 @@ describe('el tope de plata', () => {
     expect((await h.store.anuncio(a))!.estado).toBe('pausado');
     expect((await h.store.anuncio(b))!.estado).toBe('pausado');
     expect(h.avisos.filter((t) => t.startsWith('🛑'))).toHaveLength(1);
+    expect(h.avisos.filter((t) => t.startsWith('💸'))).toHaveLength(1);
 
     await leerInsights(h.deps);
     expect(h.avisos.filter((t) => t.startsWith('🛑'))).toHaveLength(1);
-    const r = await repartirPresupuesto([{ anuncioId: a, diario: 1000 }], h.deps);
+    // Prender uno con 2.000 no entra: 46.500 + 2.000 = 48.500 sí entraría, pero 4.000 no.
+    const r = await repartirPresupuesto([{ anuncioId: a, diario: 4000 }], h.deps);
     expect(r).toMatchObject({ ok: false });
-    if (!r.ok) expect(r.motivo).toContain('solo se puede bajar o pausar');
+  });
+
+  it('el mínimo diario lo pone Meta: se lee de la cuenta o se aprende del rechazo', async () => {
+    expect(minimoDelError('Meta: Invalid parameter · Your ad set budget must be more than ARS1,529.21 or your ads may not deliver.')).toBe(1529.21);
+    expect(minimoDelError('otra cosa')).toBeUndefined();
+
+    const h = conMeta();
+    // Sin dato de Meta queda el piso propio.
+    expect(await minimoDiario(h.deps)).toBe(1000);
+    await h.store.guardarEstado('meta:minimo_diario', 1529.21);
+    // Con 5% de margen, redondeado a la decena.
+    expect(await minimoDiario(h.deps)).toBe(1610);
+  });
+
+  it('si Meta rechaza el diario por el mínimo, lo aprende y el reintento sale con ese', async () => {
+    const h = conMeta();
+    const id = await propuesto(h, { ...PROPUESTA, diario: 1000 });
+    expect(await aprobarAnuncio(id, h.deps)).toMatchObject({ ok: true });
+    h.f.datos.fallar = 'crearConjunto';
+    h.f.datos.mensaje = 'Meta: Invalid parameter · Your ad set budget must be more than ARS1,529.21 or your ads may not deliver.';
+    await expect(publicarAnuncio({ anuncioId: id }, h.deps)).rejects.toThrow('must be more than');
+    expect(await h.store.leerEstado('meta:minimo_diario')).toBe(1529.21);
+
+    await publicarAnuncio({ anuncioId: id }, h.deps);
+    expect(h.f.de('crearConjunto').at(-1)!.args[0]).toMatchObject({ diario: 1610 });
+    expect((await h.store.anuncio(id))!).toMatchObject({ estado: 'activo', diario: 1610 });
   });
 
   it('aprobar con el diario que propuso, o con lo que entra, o nada si no entra el mínimo', async () => {
     const h = conMeta();
     const otro = await activo(h, 1000);
     const id = await propuesto(h, { ...PROPUESTA, diario: 3000 });
-    // Gastado 45.000 de 50.000 y el otro anuncio a 1.000 × 2 dias: entra 1.500 por dia para este.
-    await h.store.guardarGastos([gasto('2026-09-10', otro, 44_000)]);
+    // Gastado 47.000 de 50.000 y el otro anuncio a 1.000: quedan 2.000 para este.
+    await h.store.guardarGastos([gasto('2026-09-10', otro, 47_000)]);
     const r = await aprobarAnuncio(id, h.deps);
     expect(r).toMatchObject({ ok: true, anuncio: { estado: 'aprobado', diario: 2000 } });
 
@@ -182,8 +214,9 @@ describe('el tope de plata', () => {
     expect((await cambiarPresupuesto(80_000, h.deps)).aviso).toContain('límite de gasto de $50.000');
     expect((await cambiarPresupuesto(30_000, h.deps)).aviso).toBeUndefined();
 
-    const a = await activo(h, 1000);
+    const a = await activo(h, 2500);
     await h.store.guardarGastos([gasto('2026-09-10', a, 28_000)]);
+    // 28.000 + 2.500 > 30.000: no queda para otro día.
     const r = await cambiarPresupuesto(30_000, h.deps);
     expect(r.pausados).toBe(1);
     expect(await h.store.leerEstado('presupuesto_mes')).toBe(30_000);
@@ -224,7 +257,7 @@ describe('nada se crea en Meta sin aprobación', () => {
     });
     await agentePublicitar({}, h.deps);
 
-    expect(h.f.llamadas).toEqual([]);
+    expect(h.f.llamadas.filter((l) => l.metodo !== 'cuenta')).toEqual([]);
     expect(await h.store.anuncio(1)).toMatchObject({ estado: 'revisando', plantilla: 'panel', frase: PANEL.titulo, diario: 2000 });
     // Gero todavia no vio nada: lo ve el revisor primero.
     expect(h.fotos).toHaveLength(0);
@@ -238,11 +271,11 @@ describe('nada se crea en Meta sin aprobación', () => {
     const h = conMeta();
     const id = await propuesto(h, PROPUESTA);
     expect(await aprobarAnuncio(id, h.deps)).toMatchObject({ ok: true });
-    expect(h.f.llamadas).toEqual([]);
+    expect(h.f.llamadas.filter((l) => l.metodo !== 'cuenta')).toEqual([]);
     expect(h.store.tareas.map((t) => t.tipo)).toEqual(['agente_revisar', 'publicar_anuncio', 'agente_publicitar']);
 
     await publicarAnuncio({ anuncioId: id }, h.deps);
-    expect(h.f.llamadas.map((l) => l.metodo)).toEqual([
+    expect(h.f.llamadas.map((l) => l.metodo).filter((m) => m !== 'cuenta')).toEqual([
       'crearCampana',
       'subirImagen',
       'crearFormulario',
@@ -269,7 +302,7 @@ describe('nada se crea en Meta sin aprobación', () => {
 
     // Otra vez no hace nada: ya esta activo.
     await publicarAnuncio({ anuncioId: id }, h.deps);
-    expect(h.f.llamadas).toHaveLength(8);
+    expect(h.f.llamadas.filter((l) => l.metodo !== 'cuenta')).toHaveLength(8);
   });
 
   it('un anuncio en revisión no se puede aprobar', async () => {
@@ -309,7 +342,7 @@ describe('nada se crea en Meta sin aprobación', () => {
     await agentePublicitar(tarea.payload, h.deps);
     // El nuevo tambien pasa por el revisor.
     expect(await h.store.anuncio(2)).toMatchObject({ estado: 'revisando', rubro: 'contable', plantilla: 'chat' });
-    expect(h.f.llamadas).toEqual([]);
+    expect(h.f.llamadas.filter((l) => l.metodo !== 'cuenta')).toEqual([]);
   });
 
   it('una corrida de cambio que no propone nada queda fallida', async () => {

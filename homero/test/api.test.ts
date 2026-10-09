@@ -308,7 +308,7 @@ describe('API de Homero', () => {
       expect(r.json().anuncio).toMatchObject({ estado: 'aprobado' });
       expect(h.cambiarBotones).toHaveBeenCalledWith(1001, undefined);
       expect((await h.pedir('POST', `/anuncios/${id}/aprobar`)).statusCode).toBe(409);
-      expect(f.llamadas).toEqual([]);
+      expect(f.llamadas.filter((l) => l.metodo !== 'cuenta')).toEqual([]);
     });
 
     it('pedir un cambio y descartar', async () => {

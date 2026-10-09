@@ -15,12 +15,14 @@ export function metaFalsa() {
     limite: 0,
     /** Si esta, la proxima llamada con ese metodo falla. */
     fallar: undefined as string | undefined,
+    /** El mensaje de esa falla; si no, uno generico. */
+    mensaje: undefined as string | undefined,
   };
   const anotar = (metodo: string, ...args: unknown[]) => {
     llamadas.push({ metodo, args });
     if (datos.fallar === metodo) {
       datos.fallar = undefined;
-      throw new Error(`Meta: falló ${metodo}`);
+      throw new Error(datos.mensaje ?? `Meta: falló ${metodo}`);
     }
   };
   const meta: Meta = {

@@ -83,6 +83,8 @@ export interface CuentaDeMeta {
   gastado: number;
   /** El limite de gasto de la cuenta en pesos; 0 = sin limite. */
   limite: number;
+  /** El diario minimo que acepta Meta para esta cuenta, en pesos (si lo informa). */
+  minimoDiario?: number;
 }
 
 export type EstadoEnMeta = 'ACTIVE' | 'PAUSED';
@@ -241,7 +243,7 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
 
   return {
     async cuenta() {
-      const r = await llamar('GET', cuenta, { fields: 'name,currency,account_status,amount_spent,spend_cap' });
+      const r = await llamar('GET', cuenta, { fields: 'name,currency,account_status,amount_spent,spend_cap,min_daily_budget' });
       return {
         nombre: String(r.name ?? ''),
         moneda: String(r.currency ?? ''),
@@ -249,6 +251,8 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
         // `amount_spent` y `spend_cap` vienen como texto en centavos.
         gastado: dePesos(Number(r.amount_spent ?? 0)),
         limite: dePesos(Number(r.spend_cap ?? 0)),
+        // Tambien en centavos.
+        minimoDiario: r.min_daily_budget ? dePesos(Number(r.min_daily_budget)) : undefined,
       };
     },
 

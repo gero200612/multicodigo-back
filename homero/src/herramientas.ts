@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  DIARIO_MINIMO,
+  minimoDiario,
   lineaDePuntajes,
   numerosDelMes,
   PUNTAJE_MINIMO,
@@ -787,8 +787,8 @@ export function herramientasDelPublicista(
       const propuestos = await deps.store.anuncios(['propuesto']);
       const lineas = [
         `Presupuesto del mes: ${pesos(mes.presupuesto)} · gastado: ${pesos(mes.gastado)} · hoy: ${pesos(mes.gastadoHoy)}`,
-        `Diarios andando: ${pesos(mes.diarios)} × ${mes.diasQueFaltan} días que faltan = el mes cierra en ${pesos(mes.comprometido)}`,
-        `Diario total que entra en lo que queda del mes: ${pesos(mes.diarioQueEntra)} (mínimo por anuncio ${pesos(DIARIO_MINIMO)})`,
+        `Diarios andando: ${pesos(mes.diarios)} por día. Se gasta hasta agotar el presupuesto y ahí se pausa todo hasta el mes que viene.`,
+        `Lo que queda del mes: ${pesos(mes.diarioQueEntra)} · mínimo por anuncio que pide Meta: ${pesos(await minimoDiario(deps))}`,
         `Consultas del mes: ${n.consultasMes}${n.costoPorConsulta !== undefined ? ` (${pesos(n.costoPorConsulta)} cada una)` : ''} · reuniones: ${n.reunionesMes}`,
         '',
         'Anuncios (id · estado · rubro · título · diario · gasto del mes · impresiones · consultas Meta / en la base · reuniones):',
@@ -851,7 +851,7 @@ export function herramientasDelPublicista(
           maxItems: 2,
           description: 'Preguntas propias del formulario (nombre, mail, telefono y empresa ya van). Hasta 2, o ninguna.',
         },
-        diario: { type: 'number', description: `Presupuesto diario en pesos, desde ${DIARIO_MINIMO}` },
+        diario: { type: 'number', description: `Presupuesto diario en pesos. Si es menos que el mínimo de Meta (ver_resultados), sale con el mínimo` },
         por_que: texto('Por que este anuncio ahora: lo lee Gero en la tarjeta'),
       },
       ['rubro', 'titulo', 'texto', 'plantilla', 'contenido', 'preguntas', 'diario', 'por_que'],

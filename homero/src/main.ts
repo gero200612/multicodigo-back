@@ -6,6 +6,7 @@ import {
   cambiarPresupuesto,
   descartarAnuncio,
   descartarPlantillasViejas,
+  retomarPublicaciones,
   leerLeadsDeMeta,
   pedirCambio,
   planificarAnuncios,
@@ -143,6 +144,8 @@ async function main() {
   // sola) no le llegan a Gero; el publicista los reemplaza con las nuevas.
   const viejos = await descartarPlantillasViejas({ ...deps, cambiarBotones });
   if (viejos > 0) console.log(`[homero] descarté ${viejos} anuncio(s) con la plantilla vieja`);
+  const retomados = await retomarPublicaciones(deps);
+  if (retomados > 0) console.log(`[homero] vuelvo a publicar ${retomados} anuncio(s) aprobado(s)`);
 
   const api = config.apiToken
     ? crearApi({
