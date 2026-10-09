@@ -38,7 +38,7 @@ import { buildWebhookServer } from './webhook.js';
 import { abrirDemo, abrirDesarrollo, estadoDeDemo } from './demo-homero.js';
 import { cifrar, claveDe, descifrar } from './cifrado.js';
 import { verificar } from './proveedores.js';
-import { aDestino, publicarCambios, textoDePublicacion } from './publicar-ticket.js';
+import { aDestino, desplegarRepo, publicarCambios, textoDePublicacion } from './publicar-ticket.js';
 import { partirParaTelegram } from './codigo.js';
 import { startWatching } from './approvals.js';
 import { LimitePorChat } from './vinculacion.js';
@@ -724,6 +724,17 @@ function despliegueDelPanel() {
         }
       }
       return { ok: true as const, resultado, texto };
+    },
+    desplegar: async (usuarioId: string, proyectoId: string, repo: string) => {
+      // Del dueño, como publicar: despliega con SUS cuentas.
+      if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'solo el dueño del proyecto puede desplegar' };
+      return desplegarRepo(usuarioId, proyectoId, repo, {
+        store,
+        clave,
+        ...(env.RENDER_API_KEY
+          ? { renderDelSistema: { apiKey: env.RENDER_API_KEY, ...(env.RENDER_OWNER_ID ? { ownerId: env.RENDER_OWNER_ID } : {}) } }
+          : {}),
+      });
     },
     /**
      * La cuenta de demo de un proyecto (043): la carga quien puede ESCRIBIR en

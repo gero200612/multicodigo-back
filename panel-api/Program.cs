@@ -2160,6 +2160,20 @@ api.MapPut("/proyectos/{proyectoId}/repos/{repo}/destino", async (
         new { usuarioId, proyectoId, repo, destino }, ct));
 });
 
+// Desplegar es aparte de Publicar: Publicar solo pasa ramas a main, y cada repo
+// se despliega desde Repositorios. Del dueño, por lo mismo que elegir la app.
+api.MapPost("/proyectos/{proyectoId}/repos/{repo}/desplegar", async (
+    string proyectoId, string repo, HttpContext ctx,
+    IProyectosClient proyectos, IBridgeClient bridge, CancellationToken ct) =>
+{
+    var usuarioId = ctx.User.FindFirst("sub")?.Value;
+    if (string.IsNullOrWhiteSpace(usuarioId)) return Results.Unauthorized();
+    if (!NombreDeRepoValido(repo)) return Results.BadRequest(new { code = "repo_invalido", message = "ese nombre de repo no vale" });
+    if (await proyectos.RolDeAsync(await JwtDe(ctx), proyectoId, ct) != "dueño") return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return Pasamano(await bridge.DespliegueAsync(HttpMethod.Post, "/interno/despliegue/desplegar",
+        new { usuarioId, proyectoId, repo }, ct));
+});
+
 api.MapPost("/proyectos/{proyectoId}/publicar", async (
     string proyectoId, CuerpoPublicar cuerpo, HttpContext ctx,
     IProyectosClient proyectos, IBridgeClient bridge, CancellationToken ct) =>

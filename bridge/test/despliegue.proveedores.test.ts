@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { cifrar, claveDe, descifrar } from '../src/cifrado.js';
 import { desplegar, nombreDeServicio, verificar, vincular } from '../src/proveedores.js';
-import { publicarCambios, textoDePublicacion } from '../src/publicar-ticket.js';
+import { desplegarRepo, publicarCambios, textoDePublicacion } from '../src/publicar-ticket.js';
 import { InMemoryStore, type RepoDelProyecto } from '../src/store.js';
 
 const U = '22222222-2222-4222-8222-222222222222';
@@ -129,28 +129,41 @@ describe('publicar un ticket', () => {
     expect(merges).toEqual([{ repo: 'mio', autorizadoPorPersona: true }]);
   });
 
-  it('sin la cuenta conectada, lo dice', async () => {
-    const { store, mergear } = armar([repo({ destino: 'vercel' })]);
-    const r = await publicarCambios({ usuarioId: U, proyectoId: P, proyecto: 'x', agente: 'c2', explicito: true }, { store, clave: CLAVE, mergear });
-    expect(r.pendientes[0]).toContain('Conexiones');
+  // Publicar solo pasa ramas a main: desplegar es aparte, desde Repositorios.
+  it('publicar dice qué pasó a main y no despliega nada', async () => {
+    const { store, mergear } = armar([repo({ destino: 'vercel', destino_id: 'prj_1|front' }), repo({ nombre: 'back' })]);
+    await store.guardarConexionDeDespliegue(U, { proveedor: 'vercel', tokenCifrado: cifrar('vc', CLAVE), extra: {}, cuenta: 'g' });
+    const { f, pedidos } = falso([]);
+    const r = await publicarCambios({ usuarioId: U, proyectoId: P, proyecto: 'x', agente: 'c2', explicito: true }, { store, clave: CLAVE, mergear, fetchImpl: f });
+    expect(pedidos).toEqual([]);
+    expect(r.mergeados).toEqual(['front', 'back']);
+    expect(r.publicados).toEqual([]);
+    expect(textoDePublicacion(r)).toBe('Pasaron a main:\n- front\n- back\n\nPara desplegar, andá a Repositorios.');
   });
 
-  it('con la cuenta, vincula la primera vez y guarda el vínculo', async () => {
-    const { store, mergear } = armar([repo({ destino: 'vercel' })]);
+  it('desplegar sin la cuenta conectada, lo dice', async () => {
+    const { store } = armar([repo({ destino: 'vercel' })]);
+    const r = await desplegarRepo(U, P, 'front', { store, clave: CLAVE });
+    expect(r).toMatchObject({ ok: false });
+    expect(!r.ok && r.motivo).toContain('Conexiones');
+  });
+
+  it('desplegar con la cuenta vincula la primera vez y guarda el vínculo', async () => {
+    const { store } = armar([repo({ destino: 'vercel' })]);
     await store.guardarConexionDeDespliegue(U, { proveedor: 'vercel', tokenCifrado: cifrar('vc', CLAVE), extra: {}, cuenta: 'g' });
     const { f } = falso([
       [/v11\/projects/, 200, { id: 'prj_1', name: 'front' }],
       [/v13\/deployments/, 200, {}],
     ]);
-    const r = await publicarCambios({ usuarioId: U, proyectoId: P, proyecto: 'x', agente: 'c2', explicito: true }, { store, clave: CLAVE, mergear, fetchImpl: f });
-    expect(r.publicados).toEqual([{ repo: 'front', url: 'https://front.vercel.app', app: 'Vercel' }]);
+    const r = await desplegarRepo(U, P, 'front', { store, clave: CLAVE, fetchImpl: f });
+    expect(r).toEqual({ ok: true, url: 'https://front.vercel.app', app: 'Vercel' });
     expect((await store.reposDeProyecto(P))[0]!.destino_id).toBe('prj_1|front');
-    expect(textoDePublicacion(r)).toContain('https://front.vercel.app');
   });
 
-  it('sin app elegida, pide elegirla', async () => {
-    const { store, mergear } = armar([repo({})]);
-    const r = await publicarCambios({ usuarioId: U, proyectoId: P, proyecto: 'x', agente: 'c2', explicito: true }, { store, clave: CLAVE, mergear });
-    expect(r.pendientes[0]).toContain('Repositorios');
+  it('desplegar sin app elegida, pide elegirla; un repo que no es del proyecto, no', async () => {
+    const { store } = armar([repo({})]);
+    const r = await desplegarRepo(U, P, 'front', { store, clave: CLAVE });
+    expect(!r.ok && r.motivo).toContain('elegí');
+    expect(await desplegarRepo(U, P, 'otro', { store, clave: CLAVE })).toEqual({ ok: false, motivo: 'ese repo no está en el proyecto' });
   });
 });

@@ -4,8 +4,11 @@ import { dispararDeploy } from './render-api.js';
 import type { ConexionGuardada, RepoDelProyecto, Store } from './store.js';
 
 /**
- * Publicar lo que hizo un ticket: su rama a `main` y `main` a la app de cada
- * repo (Render, Vercel, Netlify o Railway, con la cuenta de la persona).
+ * Publicar lo que hizo un ticket: su rama a `main`, y nada más.
+ *
+ * Desplegar es otro paso y se hace desde Repositorios (`desplegarRepo`), repo
+ * por repo: Gero lo pidió así (2026-10-09). Publicar solo dice qué ramas
+ * pasaron a main; dónde y cuándo se despliega lo decide él.
  *
  * Dos formas de llegar:
  *
@@ -43,10 +46,11 @@ export interface PublicarDeps {
 }
 
 export interface ResultadoDePublicacion {
+  /** Lo que se desplegó. Publicar ya no despliega: queda vacío (ver `desplegarRepo`). */
   publicados: { repo: string; url: string; app: string }[];
   /** Lo que no se pudo, dicho para una persona. */
   pendientes: string[];
-  /** Los repos cuya rama del agente quedó en main (aunque después no se haya desplegado). */
+  /** Los repos cuya rama del agente quedó en main. */
   mergeados?: string[];
 }
 
@@ -64,7 +68,6 @@ export async function publicarCambios(
   const publicados: ResultadoDePublicacion['publicados'] = [];
   const pendientes: string[] = [];
   const mergeados: string[] = [];
-  const conexiones = await deps.store.conexionesDeDespliegue(p.usuarioId);
 
   // En serie, como el resto de los bucles de repos: si el segundo falla, el
   // primero ya está y el mensaje puede decir cuál.
@@ -90,26 +93,6 @@ export async function publicarCambios(
       continue;
     }
     mergeados.push(repo.nombre);
-
-    if (repo.destino) {
-      const r = await aDestino(repo, conexiones, p.proyectoId, deps);
-      if (r.ok) publicados.push({ repo: repo.nombre, url: r.url, app: r.app });
-      else pendientes.push(r.motivo);
-      continue;
-    }
-
-    // Sin app elegida: el Render del sistema, si el repo ya tenía servicio
-    // (los de las corridas de antes). Si no, se dice qué falta.
-    if (repo.render_service_id && deps.renderDelSistema) {
-      const d = await dispararDeploy(repo.render_service_id, {
-        ...deps.renderDelSistema,
-        ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
-      });
-      if (d.ok) publicados.push({ repo: repo.nombre, url: repo.render_url ?? '', app: 'Render' });
-      else pendientes.push(`${repo.nombre} pasó a main pero Render no desplegó (${d.motivo})`);
-      continue;
-    }
-    pendientes.push(`${repo.nombre} pasó a main; elegí en Repositorios en qué app se publica`);
   }
   return { publicados, pendientes, mergeados };
 }
@@ -149,16 +132,42 @@ export async function aDestino(
   return { ok: true, url: v.url, app };
 }
 
+/**
+ * Desplegar UN repo desde Repositorios: lo que ya está en su `main`, a la app
+ * que eligió (la primera vez lo crea ahí), o al Render del sistema si el repo
+ * es de antes y ya tenía servicio.
+ */
+export async function desplegarRepo(
+  usuarioId: string,
+  proyectoId: string,
+  nombre: string,
+  deps: Omit<PublicarDeps, 'mergear'>,
+): Promise<{ ok: true; url: string; app: string } | { ok: false; motivo: string }> {
+  const repo = (await deps.store.reposDeProyecto(proyectoId)).find((r) => r.nombre === nombre);
+  if (!repo) return { ok: false, motivo: 'ese repo no está en el proyecto' };
+  if (repo.destino) return aDestino(repo, await deps.store.conexionesDeDespliegue(usuarioId), proyectoId, deps);
+  if (repo.render_service_id && deps.renderDelSistema) {
+    const d = await dispararDeploy(repo.render_service_id, {
+      ...deps.renderDelSistema,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    });
+    return d.ok
+      ? { ok: true, url: repo.render_url ?? '', app: 'Render' }
+      : { ok: false, motivo: `Render no desplegó ${repo.nombre} (${d.motivo})` };
+  }
+  return { ok: false, motivo: `elegí primero en qué app se publica ${repo.nombre}` };
+}
+
 /** El resultado para mostrar: en el chat del ticket y en Telegram. */
 export function textoDePublicacion(r: ResultadoDePublicacion): string {
   const lineas: string[] = [];
-  if (r.publicados.length) {
-    lineas.push('Publicado:');
-    for (const x of r.publicados) lineas.push(`- ${x.repo} en ${x.app}${x.url ? `: ${x.url}` : ''}`);
+  if (r.mergeados?.length) {
+    lineas.push('Pasaron a main:', ...r.mergeados.map((x) => `- ${x}`));
+    lineas.push('', 'Para desplegar, andá a Repositorios.');
   }
   if (r.pendientes.length) {
     if (lineas.length) lineas.push('');
-    lineas.push('Falta:', ...r.pendientes.map((x) => `- ${x}`));
+    lineas.push('No pasaron:', ...r.pendientes.map((x) => `- ${x}`));
   }
-  return lineas.join('\n') || 'No había nada para publicar.';
+  return lineas.join('\n') || 'No había nada nuevo para pasar a main.';
 }

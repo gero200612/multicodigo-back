@@ -196,6 +196,12 @@ export interface ApiDeps {
       agente: string,
       explicito: boolean,
     ) => Promise<{ ok: true; resultado: ResultadoDePublicacion; texto: string } | { ok: false; motivo: string }>;
+    /** Desde Repositorios: lo que está en `main` de un repo, a su app. Publicar ya no despliega. */
+    desplegar?: (
+      usuarioId: string,
+      proyectoId: string,
+      repo: string,
+    ) => Promise<{ ok: true; url: string; app: string } | { ok: false; motivo: string }>;
   };
   demos?: {
     abrir: (p: PedidoDeDemo) => Promise<ResultadoDeDemo>;
@@ -240,6 +246,11 @@ const CuerpoDestino = z.object({
   proyectoId: z.string().uuid(),
   repo: z.string().min(1).max(100),
   destino: ProveedorZ.nullable(),
+});
+const CuerpoDesplegar = z.object({
+  usuarioId: z.string().uuid(),
+  proyectoId: z.string().uuid(),
+  repo: z.string().min(1).max(100),
 });
 const CuerpoPublicar = z.object({
   usuarioId: z.string().uuid(),
@@ -962,6 +973,17 @@ export function buildWebhookServer(
       if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el repo o la app' });
       const r = await api.despliegue.elegirDestino(c.data.usuarioId, c.data.proyectoId, c.data.repo, c.data.destino);
       return r.ok ? reply.send({ ok: true }) : reply.code(404).send({ code: 'no_existe', message: r.motivo });
+    });
+
+    app.post('/interno/despliegue/desplegar', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      if (!api.despliegue?.desplegar) return reply.code(503).send({ code: 'sin_despliegue', message: 'despliegue no configurado' });
+      const c = CuerpoDesplegar.safeParse(request.body);
+      if (!c.success) return rechazo(request, c.error, reply).code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto o el repo' });
+      const r = await api.despliegue.desplegar(c.data.usuarioId, c.data.proyectoId, c.data.repo);
+      return r.ok
+        ? reply.send({ url: r.url, app: r.app })
+        : reply.code(409).send({ code: 'no_desplegado', message: r.motivo });
     });
 
     app.post('/interno/despliegue/publicar', async (request, reply) => {
