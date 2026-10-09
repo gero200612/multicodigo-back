@@ -5,6 +5,7 @@ import type { Config } from './config.js';
 import { horaArgentina, inicioDelDia } from './horas.js';
 import { ErrorDeCuenta, ErrorDeLimite } from './ia.js';
 import { SinLugar } from './gateway.js';
+import { PAUSA_MANUAL } from './cola.js';
 import { CIUDADES } from './rubros.js';
 import type { CambioDeEnsayo, EstadoDeHomero } from './comandos.js';
 import { cortarBusquedas, pausar, pedirBusqueda, ponerModo, seguir } from './comandos.js';
@@ -28,6 +29,7 @@ export const COMANDOS = [
   { command: 'libre', description: 'Liberar un día: /libre 30/9' },
   { command: 'rubros', description: 'Cómo responde cada rubro' },
   { command: 'presupuesto', description: 'Anuncios: /presupuesto [monto del mes]' },
+  { command: 'anunciar', description: 'Anuncios: que el publicista proponga ya' },
   { command: 'ensayo', description: 'Modo ensayo: /ensayo [mail] | off' },
   { command: 'modo', description: 'Pedir OK o automático: /modo aprobar | auto' },
   { command: 'probar_ia', description: 'Probar que Claude responde' },
@@ -334,6 +336,21 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         .filter(Boolean)
         .join('\n'),
     );
+  });
+
+  // El publicista corre solo a las 10; esto es para no esperar al otro dia.
+  bot.command('anunciar', async (ctx) => {
+    if (await store.leerEstado(PAUSA_MANUAL)) {
+      await ctx.reply('Estoy en /pausa: mandá /seguir y después /anunciar.');
+      return;
+    }
+    await store.encolar({
+      tipo: 'agente_publicitar',
+      payload: {},
+      requiereIa: true,
+      clave: `publicitar:manual:${ahora().getTime()}`,
+    });
+    await ctx.reply('📣 Le pido al publicista anuncios nuevos. Te llegan acá cuando pasen la revisión (unos minutos).');
   });
 
   bot.command('rubros', async (ctx) => {
