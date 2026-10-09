@@ -125,7 +125,7 @@ export type CambioDeEnsayo =
  * prende hacia ahi. Sin nada, lo prende hacia el ultimo mail (o el de Gero).
  */
 export async function cambiarEnsayo(deps: DepsDeDemos, pedido: 'off' | string | undefined): Promise<CambioDeEnsayo> {
-  if (pedido === 'off') {
+  if (pedido?.toLowerCase() === 'off') {
     const liberados = await apagarEnsayo(deps);
     const repropuestos = await reproponerBorradores(deps);
     return { apagado: true, liberados, repropuestos };

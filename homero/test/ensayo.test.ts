@@ -64,6 +64,16 @@ describe('modo ensayo', () => {
     expect(await ensayoActivo(h.deps)).toBeUndefined();
   });
 
+  it('un valor corrupto (sin @) se trata como apagado', async () => {
+    const h = armar({ ensayo: true });
+    // Si de alguna forma se guardo "off" o cualquier string sin @ como email,
+    // no debe mostrarse como ensayo activo.
+    await h.store.guardarEstado(ENSAYO, { a: 'off' });
+    expect(await ensayoActivo(h.deps)).toBeUndefined();
+    await h.store.guardarEstado(ENSAYO, { a: 'of' });
+    expect(await ensayoActivo(h.deps)).toBeUndefined();
+  });
+
   it('al mail le llega el mail tal cual y a Telegram la informacion, y nada al cliente', async () => {
     const h = await conUnBorrador();
     const { enviados, store } = h;

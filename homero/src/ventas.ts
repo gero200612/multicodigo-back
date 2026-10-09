@@ -194,6 +194,8 @@ export async function ensayoActivo(
 ): Promise<string | undefined> {
   const e = await deps.store.leerEstado<{ a?: string; apagado?: boolean }>(ENSAYO);
   if (e?.apagado) return undefined;
+  // Un valor corrupto (ej. "off" guardado como email) no es un mail valido.
+  if (e?.a && !e.a.includes('@')) return undefined;
   return e?.a ?? deps.emailGero;
 }
 
