@@ -11,6 +11,7 @@ import {
   leerLeadsDeMeta,
   linkDeWhatsapp,
   mesDe,
+  interesesObsoletosDelError,
   minimoDelError,
   minimoDiario,
   pedirCambio,
@@ -176,6 +177,29 @@ describe('el tope de plata', () => {
     await h.store.guardarEstado('meta:minimo_diario', 1529.21);
     // Con 5% de margen, redondeado a la decena.
     expect(await minimoDiario(h.deps)).toBe(1610);
+  });
+
+  it('si Meta rechaza intereses obsoletos, los saca, reintenta y no los vuelve a usar', async () => {
+    const msj =
+      'Meta: Invalid parameter · Please update the targeting spec to remove them or replace them with alternative options. ' +
+      'Relevant alternative options: [{"deprecated_interest_id":"6002988755250","alternative_interest_id":"6003"}]';
+    expect(interesesObsoletosDelError(msj)).toEqual(['6002988755250']);
+    expect(interesesObsoletosDelError(msj.replace(/"/g, '\\"'))).toEqual(['6002988755250']);
+
+    const h = conMeta();
+    const buscar = h.f.meta.buscarIntereses;
+    h.f.meta.buscarIntereses = async () => [{ id: '6002988755250', name: 'Pymes (viejo)' }, { id: '6003', name: 'Pymes' }];
+    const id = await propuesto(h, PROPUESTA);
+    expect(await aprobarAnuncio(id, h.deps)).toMatchObject({ ok: true });
+    h.f.datos.fallar = 'crearConjunto';
+    h.f.datos.mensaje = msj;
+    await publicarAnuncio({ anuncioId: id }, h.deps);
+    const conjuntos = h.f.de('crearConjunto').map((l) => (l.args[0] as { intereses: { id: string }[] }).intereses.map((i) => i.id));
+    expect(conjuntos[0]).toContain('6002988755250');
+    expect(conjuntos[1]).not.toContain('6002988755250');
+    expect((await h.store.anuncio(id))!.estado).toBe('activo');
+    expect(await h.store.leerEstado('meta:intereses_obsoletos')).toEqual(['6002988755250']);
+    h.f.meta.buscarIntereses = buscar;
   });
 
   it('si Meta rechaza el diario por el mínimo, lo aprende y el reintento sale con ese', async () => {

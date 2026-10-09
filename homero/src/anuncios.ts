@@ -238,6 +238,14 @@ export async function minimoDiario(deps: DepsDeAnuncios): Promise<number> {
   return Math.max(DIARIO_MINIMO, Math.ceil((deMeta * MARGEN_DEL_MINIMO) / 10) * 10);
 }
 
+/** Clave en homero.estado: intereses que Meta rechazo por obsoletos. */
+export const INTERESES_OBSOLETOS = 'meta:intereses_obsoletos';
+
+/** Los ids de `deprecated_interest_id` de un rechazo del conjunto. */
+export function interesesObsoletosDelError(mensaje: string): string[] {
+  return [...mensaje.matchAll(/deprecated_interest_id\\?"?\s*:\s*\\?"?(\d+)/g)].map((m) => m[1]!);
+}
+
 /** "Your ad set budget must be more than ARS1,529.21": el minimo, en pesos. */
 export function minimoDelError(mensaje: string): number | undefined {
   const m = /must be more than ARS\s?([\d.,]+)/i.exec(mensaje);
@@ -554,21 +562,31 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
       return;
     }
     const diario = Math.min(Math.max(a.diario, minimo), entra);
-    const intereses = [];
+    // La busqueda de Meta devuelve intereses que despues el conjunto rechaza
+    // por obsoletos: los que ya rechazo una vez no se vuelven a usar.
+    const obsoletos = new Set((await deps.store.leerEstado<string[]>(INTERESES_OBSOLETOS)) ?? []);
+    let intereses: { id: string; name: string }[] = [];
     for (const q of ['Pequeña y mediana empresa', a.rubro]) {
       try {
-        intereses.push(...(await meta.buscarIntereses(q)).slice(0, 1));
+        intereses.push(...(await meta.buscarIntereses(q)).filter((i) => !obsoletos.has(i.id)).slice(0, 1));
       } catch {
         // Sin intereses el conjunto sale igual, a toda Argentina de 25 a 65.
       }
     }
+    const crear = () => meta.crearConjunto({ campana, nombre: `#${a.id} · ${a.rubro}`, diario, intereses });
     try {
-      ids.conjunto = await meta.crearConjunto({ campana, nombre: `#${a.id} · ${a.rubro}`, diario, intereses });
+      ids.conjunto = await crear();
     } catch (err) {
+      const mensaje = err instanceof Error ? err.message : String(err);
       // Meta dice cual es su minimo: se aprende y la cola reintenta con ese.
-      const aprendido = minimoDelError(err instanceof Error ? err.message : String(err));
+      const aprendido = minimoDelError(mensaje);
       if (aprendido) await deps.store.guardarEstado(MINIMO_DE_META, aprendido);
-      throw err;
+      const rechazados = interesesObsoletosDelError(mensaje);
+      if (rechazados.length === 0) throw err;
+      // Intereses dados de baja: se anotan, se sacan y se prueba una vez mas ahora.
+      await deps.store.guardarEstado(INTERESES_OBSOLETOS, [...new Set([...obsoletos, ...rechazados])]);
+      intereses = intereses.filter((i) => !rechazados.includes(i.id));
+      ids.conjunto = await crear();
     }
     await deps.store.actualizarAnuncio(a.id, { metaIds: ids, diario });
   }
