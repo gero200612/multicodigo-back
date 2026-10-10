@@ -33,11 +33,16 @@ capacidades conecta cada número una vez y le da a cada app solo lo que pidió.
 - Dijo: el **tope de gasto lo define cada cliente al vincular la cuenta**. Se ve en
   el apartado de ese negocio en Homero, junto con su gasto, y **Gero lo puede
   cambiar**.
-- Se asume: al llegar al 100 % del tope, el bot **frena lo que se paga**
+- Dijo: al llegar al 100 % del tope, el bot **frena lo que se paga**
   (plantillas fuera de la ventana de 24 h) y **sigue contestando lo gratis**
-  (servicio dentro de la ventana). Avisa a Gero y a la app.
-- Se asume: el cliente ve su gasto y su tope en su app, pero **solo para leer**.
-  Para cambiar el tope se lo pide a Gero.
+  (servicio dentro de la ventana). Avisa a Gero.
+- Dijo: **el cliente no ve gasto ni tope**. Si quiere saber algo, le pregunta a
+  Gero.
+- Dijo: el botón **"Conectar WhatsApp" lo pone Punchi** en la app cuando la arma.
+- Dijo, y es **regla de diseño clave**: **no se da más de lo que se pidió**. Cada app
+  tiene solo las capacidades que el cliente pidió. Un taller que solo recibe
+  facturas no puede mandar promociones ni avisos. Dentro de "Conectar WhatsApp" se
+  muestran los permisos que va a tener esa app.
 - Se asume: los costos se muestran en ARS (lo que cobra Meta) y en USD, pasados con
   el **dólar tarjeta** que ya usa el Administrador de Homero.
 - Éxito:
@@ -78,7 +83,7 @@ capacidades conecta cada número una vez y le da a cada app solo lo que pidió.
   a internet.
 - **Clave por negocio:** cada app la tiene en su entorno como `SINCRO_WA_KEY`. El bot
   guarda solo el hash. La clave define qué número puede usar esa app (solo el suyo)
-  y qué capacidades. Homero tiene una clave de administrador aparte.
+  y qué capacidades (ver §3.0). Homero tiene una clave de administrador aparte.
 - **Token de Meta:** el bot usa el token del system user (el mismo que está en
   `/root/mc.env`), guardado en su propio entorno. Para los números de clientes usa
   el token que da el Embedded Signup, guardado cifrado.
@@ -105,6 +110,40 @@ Cada capacidad es una entrada en el catálogo: un nombre, qué eventos de WhatsA
 le pasa a la app, qué endpoints del bot puede usar la app y qué endpoint tiene que
 exponer la app. Agregar una (por ejemplo, pedidos) es sumar una entrada al catálogo y
 el endpoint en la app, sin rehacer el bot.
+
+Catálogo inicial: `leads` (solo Homero), `facturas`, `avisos`, `atender` y
+`promociones`. `promociones` existe solo para dárselo a quien lo pidió (plantillas de
+marketing).
+
+### 3.0 Permisos: no se da más de lo que se pidió
+
+Esta es la regla que manda sobre todo el diseño.
+
+- **Quién decide:** Punchi, cuando arma la app, a partir de lo que pidió el
+  cliente (el análisis funcional). Da de alta el negocio en el bot con **exactamente**
+  esas capacidades, recibe la `SINCRO_WA_KEY` y pone el botón "Conectar WhatsApp" en
+  la app. Si el cliente no pidió WhatsApp, la app no tiene botón ni clave.
+- **Qué ve el cliente al conectar:** la pantalla de "Conectar WhatsApp" lista en
+  palabras simples lo que esa app va a poder hacer con su número. Por ejemplo:
+  "Recibir facturas que te manden por WhatsApp y contestar que quedaron cargadas".
+  También pide el tope de gasto mensual. Recién después abre el Embedded Signup de
+  Meta.
+- **El bot niega todo por defecto:**
+  - Cada endpoint revisa que la clave tenga la capacidad. Si no la tiene, responde
+    `403 sin_permiso` y lo registra.
+  - Solo le pasa a la app los eventos de sus capacidades. Por ejemplo, un taller con
+    solo `facturas` no recibe charlas para atender.
+  - Las plantillas quedan atadas a la capacidad. `facturas` no puede crear ni mandar
+    plantillas. `avisos` solo puede usar plantillas de utilidad. Marketing requiere
+    `promociones`. Si Meta pasa una plantilla de utilidad a marketing, el bot la
+    bloquea para esa app y avisa a Gero.
+- **Los permisos de Meta no alcanzan solos:** el Embedded Signup le pide al cliente
+  los mismos permisos de WhatsApp a todos (`whatsapp_business_management` y
+  `whatsapp_business_messaging`), y Meta no deja recortarlos por función. El límite
+  real lo pone el bot.
+- **Cambiar permisos:** solo Gero, desde Homero, y el cambio queda registrado. La app
+  no puede pedir ni sumar capacidades. Si el cliente quiere algo más, se lo pide a
+  Gero.
 
 ### 3.1 Leads (Homero, número de Sincro)
 
@@ -135,8 +174,9 @@ el endpoint en la app, sin rehacer el bot.
    baja, que no se pase el tope de Meta ni el tope de gasto. Después lo manda.
 3. Le avisa a la app cómo terminó (entregado, leído o falló, y por qué) con
    `POST /bot/estados`.
-4. La app da de alta las plantillas a través del bot (`POST /plantillas`). El bot las
-   manda a aprobar a Meta. El estado se ve en Homero y la app lo puede consultar.
+4. La app da de alta las plantillas a través del bot (`POST /plantillas`), solo de la
+   categoría que le permiten sus capacidades (ver §3.0). El bot las manda a aprobar a
+   Meta. El estado se ve en Homero y la app lo puede consultar.
 
 ### 3.4 Atender con IA
 
@@ -155,7 +195,8 @@ clave de administrador. Solo la ve Gero, como el resto del panel.
 
 1. **Negocios vinculados:** número, estado, calidad según Meta (verde, amarilla o
    roja), tope diario de Meta, capacidades activas y último uso de la clave. Tiene
-   un botón para rotar la clave. **En el apartado de cada negocio están el gasto del
+   un botón para rotar la clave. Gero puede sumar o sacar capacidades desde acá
+   (ver §3.0). **En el apartado de cada negocio están el gasto del
    mes y su tope, y Gero puede editar el tope desde ahí.**
 2. **Mensajes:** por negocio y por día, separados por categoría, y las charlas con
    ventana abierta.
@@ -188,11 +229,12 @@ clave de administrador. Solo la ve Gero, como el resto del panel.
   mes. Es obligatorio para terminar la vinculación.
 - Se guarda en el bot por negocio. Gero lo cambia desde Homero, y cada cambio queda
   registrado (quién, cuándo, de cuánto a cuánto).
-- La app lo puede leer junto con el gasto (`GET /uso`) para mostrárselo al cliente.
-  La app no lo puede cambiar.
-- Al 80 %: aviso a Gero por Telegram y a la app (`POST /bot/estados`, tipo `tope`).
+- El cliente no ve el gasto ni el tope después de conectar. La app no los puede
+  leer ni cambiar. Si el cliente pregunta, le contesta Gero.
+- Al 80 %: aviso a Gero por Telegram.
 - Al 100 %: el bot rechaza los envíos que se pagan con `402 tope_alcanzado` y sigue
-  contestando lo gratis. Vuelve a habilitar al empezar el mes siguiente o cuando
+  contestando lo gratis. La app recibe el 402 para no reintentar en vano, pero no
+  le muestra nada al cliente. Vuelve a habilitar al empezar el mes siguiente o cuando
   Gero sube el tope.
 
 ## 6. Alertas por Telegram
@@ -218,7 +260,8 @@ clave de administrador. Solo la ve Gero, como el resto del panel.
   rechazo.
 - `uso_ia`: negocio, capacidad, modelo, tokens de entrada y salida, costo USD, fecha.
 - `precios_meta`: categoría, precio ARS, vigente desde.
-- `cambios_tope`: negocio, antes, después, quién, cuándo.
+- `cambios`: negocio, qué cambió (tope o capacidades), antes, después, quién,
+  cuándo.
 
 ## 8. Fallas
 
@@ -235,8 +278,12 @@ clave de administrador. Solo la ve Gero, como el resto del panel.
 
 - Firma del webhook: válida pasa, inválida o ausente da 401.
 - Ruteo: un phone_number_id desconocido se descarta y se registra.
-- Clave: la app A no puede mandar desde el número de B ni usar una capacidad que no
-  tiene.
+- Clave: la app A no puede mandar desde el número de B.
+- Permisos: una app con solo `facturas` recibe 403 en `POST /avisos`,
+  `POST /plantillas` y `POST /mensajes` fuera de una respuesta a factura, y no le
+  llegan charlas para atender. Una app con `avisos` no puede crear plantillas de
+  marketing. Una plantilla que Meta pasa a marketing queda bloqueada para una app
+  sin `promociones`.
 - Bajas: después de "baja", `POST /avisos` a ese contacto se rechaza.
 - Ventana: texto libre a las 25 h se rechaza. Plantilla a las 25 h pasa.
 - Tope: al 80 % salen los avisos y al 100 % lo pago da 402 mientras lo gratis sigue.
@@ -253,8 +300,9 @@ clave de administrador. Solo la ve Gero, como el resto del panel.
 4. Avisos y plantillas.
 5. Facturas con IA.
 6. Atender con IA.
-7. Botón "Conectar WhatsApp" para clientes (Embedded Signup v4). Se bloquea hasta
-   que el portfolio esté verificado y Sincro sea Tech Provider.
+7. "Conectar WhatsApp" para clientes: Punchi lo suma al armar cada app que pidió
+   WhatsApp, con la pantalla de permisos y el tope, y después el Embedded Signup v4.
+   Se bloquea hasta que el portfolio esté verificado y Sincro sea Tech Provider.
 
 ## Fuera de alcance
 
