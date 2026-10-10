@@ -211,6 +211,81 @@ describe('publicar en el VPS', () => {
   });
 });
 
+/**
+ * La prueba de humo despues del deploy. Ver `src/humo.ts`.
+ *
+ * Prueba_completa (2026-10-10): /health en 200 y el back "andando", pero
+ * pacientes y turnos daban 500 porque las tablas no existian.
+ */
+describe('la prueba de humo de lo publicado', () => {
+  const CON_500 = {
+    probadas: 5,
+    entro: true,
+    fallas: [{ ruta: '/api/pacientes', status: 500, cuerpo: '{"error":"x"}' }],
+  };
+
+  async function publicarCon(humo: VpsDeps['humo'], logs?: string) {
+    const a = await armar();
+    const base = a.deps.config.coolify.fetchImpl!;
+    if (logs !== undefined) {
+      a.deps.config.coolify.fetchImpl = (async (url: string, init?: RequestInit) =>
+        /\/logs/.test(String(url)) ? new Response(JSON.stringify({ logs })) : base(url, init)) as unknown as typeof fetch;
+    }
+    const vistos: string[] = [];
+    const r = await publicarEnVps('p1', 'turnos', await a.store.reposDeProyecto('p1'), {
+      ...a.deps,
+      esperarMs: 60_000,
+      dormir: async () => undefined,
+      ...(humo
+        ? {
+            humo: async (url: string) => {
+              vistos.push(url);
+              return humo(url);
+            },
+          }
+        : {}),
+    });
+    return { ...a, r, vistos };
+  }
+
+  it('prueba el back recien armado y un 5xx lo deja en fallo', async () => {
+    const { r, store, vistos } = await publicarCon(async () => CON_500, 'info: arranco\nfail: relation "Pacientes" does not exist');
+    expect(vistos).toEqual(['https://turnos-api.apps.punchi.dev']);
+    const back = (await store.recursosVps('p1')).find((x) => x.parte === 'back')!;
+    expect(back.estado).toBe('fallo');
+    expect(back.motivo).toContain('GET /api/pacientes -> 500');
+    expect(r.pendientes.join('\n')).toContain('relation "Pacientes" does not exist');
+  });
+
+  it('si todo contesta, queda andando', async () => {
+    const { store } = await publicarCon(async () => ({ probadas: 5, entro: true, fallas: [] }));
+    expect((await store.recursosVps('p1')).find((x) => x.parte === 'back')!.estado).toBe('andando');
+  });
+
+  // Sin login las rutas protegidas dan 401 y la prueba no dice nada: eso se
+  // avisa, no se calla.
+  it('si no pudo entrar, lo avisa sin marcar fallo', async () => {
+    const { r, store } = await publicarCon(async () => ({ probadas: 5, entro: false, fallas: [] }));
+    expect((await store.recursosVps('p1')).find((x) => x.parte === 'back')!.estado).toBe('andando');
+    expect(r.pendientes.join()).toMatch(/no pude entrar/i);
+  });
+
+  // El contenedor sigue corriendo aunque la app falle: el refresco del estado
+  // no puede borrar el fallo de la prueba de humo solo porque Coolify dice
+  // `running`.
+  it('el refresco no tapa un fallo de humo reciente', async () => {
+    let llamadas = 0;
+    const { store, deps } = await publicarCon(async () => {
+      llamadas++;
+      return CON_500;
+    });
+    const e = await estadoEnVps('p1', { ...deps, humo: async () => (llamadas++, CON_500) });
+    expect(e.partes.find((x) => x.parte === 'back')!.estado).toBe('fallo');
+    expect(llamadas).toBe(1);
+    expect((await store.recursosVps('p1')).find((x) => x.parte === 'back')!.estado).toBe('fallo');
+  });
+});
+
 describe('el cierre de una corrida', () => {
   it('manda al VPS los repos sin app elegida, despues del merge', async () => {
     const { store, deps } = await armar();

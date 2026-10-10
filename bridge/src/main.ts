@@ -41,6 +41,7 @@ import { verificar } from './proveedores.js';
 import { aDestino, desplegarRepo, publicarCambios, textoDePublicacion } from './publicar-ticket.js';
 import type { Destino } from './store.js';
 import { apagarEnVps, borrarDelVps, estadoEnVps, publicarEnVps, revisarDemos, type VpsDeps } from './vps.js';
+import { probarEnVivo, type ResultadoDeHumo } from './humo.js';
 import { usoDelVps } from './vps-uso.js';
 import { asegurarDockerfileDeFront } from './dockerfile-front.js';
 import { partirParaTelegram } from './codigo.js';
@@ -266,7 +267,7 @@ const store = await PgStore.connect(env.DATABASE_URL, MIGRACIONES);
  * `githubToken` es el de la instalacion del proyecto: con el se escriben el
  * Dockerfile y el config del front. Sin el se publica igual, sin esos arreglos.
  */
-function depsDeVps(githubToken?: string, esperarMs = 0): VpsDeps | undefined {
+function depsDeVps(githubToken?: string, esperarMs = 0, proyectoId?: string): VpsDeps | undefined {
   if (!env.COOLIFY_URL || !env.COOLIFY_TOKEN || !env.COOLIFY_SERVIDOR) return undefined;
   const githubApps: Record<string, string> = {};
   for (const par of (env.COOLIFY_GITHUB_APPS ?? '').split(',')) {
@@ -297,7 +298,34 @@ function depsDeVps(githubToken?: string, esperarMs = 0): VpsDeps | undefined {
         }
       : {}),
     esperarMs,
+    ...(proyectoId ? { humo: (backUrl: string) => humoDe(proyectoId, backUrl) } : {}),
   };
+}
+
+/**
+ * La prueba de humo del back publicado de un proyecto (ver `humo.ts`): con el
+ * contrato y el pliego de la ultima corrida del DUEÑO sobre ese proyecto —la
+ * corrida guarda el nombre, no el id, y otro usuario puede tener uno que se
+ * llame igual— y la cuenta de demo si la hay.
+ */
+async function humoDe(proyectoId: string, backUrl: string): Promise<ResultadoDeHumo | undefined> {
+  const [nombre, dueno] = await Promise.all([
+    store.nombreDeProyecto(proyectoId).catch(() => undefined),
+    store.duenoDeProyecto(proyectoId).catch(() => undefined),
+  ]);
+  if (!nombre || !dueno) return undefined;
+  const corrida = (await store.corridasDeUsuario(dueno, 30).catch(() => [])).find(
+    (c) => c.proyecto === nombre && c.contrato,
+  );
+  if (!corrida) return undefined;
+  const c = await store.cuentaDemo(proyectoId).catch(() => undefined);
+  let demo: { email: string; password: string } | undefined;
+  try {
+    if (c) demo = { email: c.usuario, password: descifrar(c.passwordCifrada, claveDe(env.CONEXIONES_CLAVE ?? env.BRIDGE_API_TOKEN)) };
+  } catch {
+    demo = undefined;
+  }
+  return probarEnVivo({ backUrl, contrato: corrida.contrato, md: corrida.md, ...(demo ? { demo } : {}), hoy: new Date() });
 }
 
 /** El token de la App de GitHub del proyecto, o undefined. */
@@ -459,7 +487,7 @@ const pipelineDeps = {
           const conexiones = dueno ? await store.conexionesDeDespliegue(dueno).catch(() => []) : [];
           // El cierre espera los armados (hasta 20 min): asi el informe dice
           // si el link anda, y no solo que se pidio.
-          const vps = depsDeVps(githubToken, 20 * 60_000);
+          const vps = depsDeVps(githubToken, 20 * 60_000, proyectoId);
           return publicar(proyectoId, corrida.proyecto, agentes, {
             store,
             ...(vps ? { enVps: (repos) => publicarEnVps(proyectoId, corrida.proyecto, repos, vps) } : {}),
@@ -832,7 +860,7 @@ function despliegueDelPanel() {
     vps: {
       estado: async (usuarioId: string, proyectoId: string) => {
         if (!(await esSuyo(usuarioId, proyectoId))) return { ok: false as const, motivo: 'solo el dueño del proyecto' };
-        const vps = depsDeVps();
+        const vps = depsDeVps(undefined, 0, proyectoId);
         if (!vps) return { ok: true as const, estado: { configurado: false, partes: [], otros: [] } };
         const demo = (await store.demosPorVencer(24 * 400).catch(() => [])).find((d) => d.proyectoId === proyectoId);
         return {
@@ -905,6 +933,15 @@ function despliegueDelPanel() {
       if (!(await puedeEscribir(usuarioId, proyectoId))) return false;
       await store.borrarCuentaDemo(proyectoId);
       return true;
+    },
+    publicadosDe: async (proyecto: string) => {
+      const id = await store.idDeProyecto(proyecto);
+      if (!id) return [];
+      const repos = await store.reposDeProyecto(id);
+      return repos
+        .filter((r) => !r.solo_lectura)
+        .map((r) => r.destino_url ?? r.render_url)
+        .filter((u): u is string => typeof u === 'string' && u.startsWith('https://'));
     },
     /** Para el gateway (`mirar`), por nombre de proyecto: con la contraseña en claro. */
     loginDeDemo: async (proyecto: string) => {

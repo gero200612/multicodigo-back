@@ -185,6 +185,8 @@ export interface ApiDeps {
     ) => Promise<boolean>;
     borrarCuentaDemo?: (usuarioId: string, proyectoId: string) => Promise<boolean>;
     loginDeDemo?: (proyecto: string) => Promise<{ ruta: string; email: string; password: string } | undefined>;
+    /** Las URLs publicadas del proyecto: lo unico a lo que `probar_api` y `mirar` le pueden pegar. */
+    publicadosDe?: (proyecto: string) => Promise<string[]>;
     elegirDestino: (
       usuarioId: string,
       proyectoId: string,
@@ -980,6 +982,15 @@ export function buildWebhookServer(
       if (!p.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto' });
       const login = await api.despliegue?.loginDeDemo?.(p.data);
       return reply.send({ login: login ?? null });
+    });
+
+    // Lo que publico ESTE proyecto. El gateway lo usa para que un agente no
+    // le pegue a la app publicada de otro (probar_api puede escribir).
+    app.get<{ Querystring: { proyecto?: string } }>('/interno/mirar/publicados', async (request, reply) => {
+      if (!conBearer(request)) return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
+      const p = z.string().min(1).max(100).safeParse(request.query.proyecto);
+      if (!p.success) return reply.code(400).send({ code: 'cuerpo_invalido', message: 'falta el proyecto' });
+      return reply.send({ urls: (await api.despliegue?.publicadosDe?.(p.data)) ?? [] });
     });
 
     app.post('/interno/despliegue/desconectar', async (request, reply) => {

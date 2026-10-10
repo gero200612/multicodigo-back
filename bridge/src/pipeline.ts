@@ -3998,6 +3998,14 @@ async function hechosDelProyecto(
             `base reales, pasale publicado=${url} a mirar (y login si tiene).`,
         );
       }
+      // El back publicado se PRUEBA, no se supone: sus tests corren con base en
+      // memoria y no ven si en la de verdad faltan tablas (Prueba_completa).
+      if (url && /-(back|api)$/i.test(r.nombre)) {
+        hechos.push(
+          `El back ${r.nombre} esta publicado en ${url}. Probá sus rutas con probar_api contra esa URL ` +
+            '(login primero con el usuario de prueba): un 5xx ahi es un hueco aunque los tests den verde.',
+        );
+      }
     }
   }
   for (const p of corrida.pendientes ?? []) {

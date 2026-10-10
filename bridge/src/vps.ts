@@ -6,6 +6,7 @@ import { tipoDeRepo } from './render-api.js';
 import { frontYBackDe, type ResultadoDeConfig } from './conectar.js';
 import type { Publicado } from './publicar.js';
 import type { EstadoVps, ParteVps, RecursoVps, RepoDelProyecto, Store } from './store.js';
+import { textoDeFallas, type ResultadoDeHumo } from './humo.js';
 
 /**
  * Publicar un proyecto de Punchi en el VPS: base, back y front, conectados.
@@ -70,6 +71,50 @@ export interface VpsDeps {
    */
   esperarMs?: number;
   dormir?: (ms: number) => Promise<void>;
+  /**
+   * La prueba de humo de un back recien armado: login y cada GET del
+   * contrato. Sin esto un back con /health en 200 queda "andando" aunque cada
+   * ruta de verdad de 500 (Prueba_completa, 2026-10-10). Ver `humo.ts`.
+   */
+  humo?: (backUrl: string) => Promise<ResultadoDeHumo | undefined>;
+}
+
+/** Con esto empieza el motivo de un fallo de la prueba de humo: el refresco lo reconoce. */
+const MARCA_DE_HUMO = 'prueba de humo: ';
+
+/** Cada cuanto se vuelve a probar un back que fallo la prueba, desde el refresco del panel. */
+const REPROBAR_HUMO_MS = 2 * 60_000;
+
+/** Lo que dice el log del back, quedandose con los errores. */
+async function ultimasDelLog(uuid: string, deps: VpsDeps): Promise<string | undefined> {
+  const l = await coolify.logsDe(uuid, 200, deps.config.coolify).catch(() => undefined);
+  if (!l?.ok || !l.log.trim()) return undefined;
+  const lineas = l.log.split('\n').map((x) => x.trimEnd()).filter(Boolean);
+  const errores = lineas.filter((x) => /fail|error|exception|does not exist|denied|refused/i.test(x));
+  return (errores.length > 0 ? errores : lineas).slice(-8).join('\n').slice(0, 1500);
+}
+
+/**
+ * Prueba un back que Coolify da por andando. Si alguna ruta del contrato da
+ * 5xx lo deja en `fallo` con el detalle y el log; si no pudo entrar, lo dice.
+ */
+async function probarBack(uuid: string, url: string, deps: VpsDeps): Promise<{ fallo?: string; aviso?: string }> {
+  if (!deps.humo) return {};
+  const r = await deps.humo(url).catch(() => undefined);
+  if (!r) return {};
+  if (r.fallas.length > 0) {
+    const texto = textoDeFallas(r, await ultimasDelLog(uuid, deps));
+    await deps.store.estadoRecursoVps(uuid, 'fallo', (MARCA_DE_HUMO + texto).slice(0, 2000));
+    return { fallo: texto };
+  }
+  if (!r.entro) {
+    return {
+      aviso:
+        'no pude entrar al back publicado con el usuario de prueba, asi que solo probe las rutas sin login: ' +
+        'cargá la cuenta de demo del proyecto para que la prueba entre',
+    };
+  }
+  return {};
 }
 
 export interface ResultadoVps {
@@ -344,9 +389,16 @@ export async function publicarEnVps(
   }
 
   if ((deps.esperarMs ?? 0) > 0 && enArmado.length > 0) {
-    const fallados = await esperarArmados(enArmado, deps);
+    const { fallados, listos } = await esperarArmados(enArmado, deps);
     for (const f of fallados) {
       pendientes.push(`el armado de ${f.repo} falló en el VPS${f.log ? ` (${f.log})` : ''}: miralo en Repositorios`);
+    }
+    for (const a of listos) {
+      const url = urls.get(a.repo);
+      if (tipoDeRepo(a.repo) !== 'back' || !url) continue;
+      const h = await probarBack(a.uuid, url, deps);
+      if (h.fallo) pendientes.push(`${a.repo} quedó publicado pero NO anda: ${h.fallo}`);
+      if (h.aviso) pendientes.push(`${a.repo}: ${h.aviso}`);
     }
   }
   return { publicados, pendientes };
@@ -357,15 +409,16 @@ function peso(repo: string): number {
   return t === 'back' ? 0 : t === 'node' ? 1 : 2;
 }
 
-/** Sigue los deploys hasta que terminen o se acabe el tiempo. Devuelve los que fallaron. */
+/** Sigue los deploys hasta que terminen o se acabe el tiempo. Devuelve los que fallaron y los que quedaron. */
 async function esperarArmados(
   enArmado: { uuid: string; repo: string; despliegue?: string }[],
   deps: VpsDeps,
-): Promise<{ repo: string; log?: string }[]> {
+): Promise<{ fallados: { repo: string; log?: string }[]; listos: { uuid: string; repo: string }[] }> {
   const dormir = deps.dormir ?? dormirDeVerdad;
   const limite = Date.now() + (deps.esperarMs ?? 0);
   const pendientes = new Map(enArmado.filter((a) => a.despliegue).map((a) => [a.uuid, a]));
   const fallados: { repo: string; log?: string }[] = [];
+  const listos: { uuid: string; repo: string }[] = [];
   while (pendientes.size > 0 && Date.now() < limite) {
     await dormir(10_000);
     for (const [uuid, a] of [...pendientes]) {
@@ -374,6 +427,7 @@ async function esperarArmados(
       if (e.estado === 'finished') {
         pendientes.delete(uuid);
         await deps.store.estadoRecursoVps(uuid, 'andando', null);
+        listos.push({ uuid, repo: a.repo });
       } else if (e.estado === 'failed' || e.estado.startsWith('cancelled')) {
         pendientes.delete(uuid);
         await deps.store.estadoRecursoVps(uuid, 'fallo', e.log ?? 'el armado falló');
@@ -381,7 +435,7 @@ async function esperarArmados(
       }
     }
   }
-  return fallados;
+  return { fallados, listos };
 }
 
 /** Lo que se muestra en Repositorios, sin secretos. */
@@ -430,7 +484,25 @@ export async function estadoEnVps(
       const armandoHace = Date.now() - Date.parse(r.actualizado_el);
       const sigueArmando = r.estado === 'construyendo' && real !== 'andando' && armandoHace < 25 * 60_000;
       if (!sigueArmando && !(r.estado === 'fallo' && real !== 'andando')) estado = real;
-      if (estado !== r.estado) await deps.store.estadoRecursoVps(r.coolify_uuid, estado, estado === 'fallo' ? r.motivo : null);
+      let motivo = r.motivo;
+      // Un back que va a quedar andando pasa antes por la prueba de humo: el
+      // contenedor corre aunque cada ruta de 500, y Coolify solo ve eso. Un
+      // fallo de humo reciente se respeta sin volver a probar en cada refresco.
+      if (r.parte === 'back' && estado === 'andando' && r.estado !== 'andando' && r.url && deps.humo) {
+        const deHumo = r.estado === 'fallo' && (r.motivo ?? '').startsWith(MARCA_DE_HUMO);
+        const hace = Date.now() - Date.parse(r.actualizado_el);
+        if (deHumo && hace < REPROBAR_HUMO_MS) {
+          estado = 'fallo';
+        } else {
+          const h = await probarBack(r.coolify_uuid, r.url, deps);
+          if (h.fallo) {
+            estado = 'fallo';
+            motivo = MARCA_DE_HUMO + h.fallo;
+          }
+        }
+      }
+      if (estado !== r.estado) await deps.store.estadoRecursoVps(r.coolify_uuid, estado, estado === 'fallo' ? motivo : null);
+      r.motivo = motivo;
     }
     partes.push({ parte: r.parte, repo: r.repo, url: r.url, estado, motivo: estado === 'fallo' ? r.motivo : null, produccion: r.produccion });
   }

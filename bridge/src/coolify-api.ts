@@ -209,6 +209,13 @@ export async function estadoDeDespliegue(id: string, deps: CoolifyDeps): Promise
   return { ok: true, estado: String(r.json?.status ?? 'desconocido'), ...(log ? { log: sinToken(log, deps.token) } : {}) };
 }
 
+/** Las ultimas lineas que escribio una app (su stdout). Para explicar por que falla. */
+export async function logsDe(uuid: string, lineas: number, deps: CoolifyDeps): Promise<Resultado<{ log: string }>> {
+  const r = await pedir(deps, 'GET', `/applications/${encodeURIComponent(uuid)}/logs?lines=${lineas}`);
+  if (!r.ok) return r;
+  return { ok: true, log: sinToken(String(r.json?.logs ?? ''), deps.token) };
+}
+
 export async function estadoDe(tipo: TipoDeRecurso, uuid: string, deps: CoolifyDeps): Promise<Resultado<Estado>> {
   const r = await pedir(deps, 'GET', `/${tipo}/${uuid}`);
   if (!r.ok) return r;

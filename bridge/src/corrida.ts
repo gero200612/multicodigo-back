@@ -679,10 +679,18 @@ const PISO: Record<Eje, readonly string[]> = {
     'Cada cosa que pide el pliego existe y responde.',
     'Los errores devuelven un mensaje que se entiende, no un stack.',
     'El front no se rompe si el back no esta: avisa que no se pudo conectar.',
+    // Prueba_completa (2026-10-10): tests verdes con base en memoria y la app
+    // publicada dando 500 porque las migraciones no se aplicaron.
+    'Si el back esta PUBLICADO, cada ruta del contrato contesta en la app publicada: probala con ' +
+      'probar_api, entrando antes con el usuario de prueba por la ruta de login. Un 5xx ahi es un hueco ' +
+      'aunque los tests den verde, y la tarea nombra la ruta, el status y lo que contesto.',
   ],
   testeos: [
     'Hay tests y CORRIERON VERDES con la herramienta run. "Se escribieron tests" no cuenta.',
     'Cubren el camino feliz y al menos un error de cada endpoint.',
+    'Los tests con base en memoria no prueban las migraciones ni la base de verdad: si el back esta ' +
+      'PUBLICADO, comprobá con probar_api que las rutas del contrato contesten sin 5xx. Si alguna falla, ' +
+      'es un hueco: los tests no estan probando lo que corre.',
   ],
 };
 

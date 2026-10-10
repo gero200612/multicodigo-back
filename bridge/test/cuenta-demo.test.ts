@@ -34,6 +34,7 @@ function servidor() {
       const c = proyecto === 'tienda' ? guardadas.get(PROYECTO) : undefined;
       return c ? { ruta: c.ruta, email: c.usuario, password: c.password } : undefined;
     },
+    publicadosDe: async (proyecto: string) => (proyecto === 'tienda' ? ['https://tienda-api.apps.punchi.dev'] : []),
   };
   return buildWebhookServer(bot, SECRET, {
     store: new InMemoryStore(),
@@ -63,6 +64,15 @@ describe('cuenta de demo', () => {
 
     const login = await app.inject({ method: 'GET', url: '/interno/mirar/login?proyecto=tienda', headers: auth });
     expect(login.json()).toEqual({ login: { ruta: '/login', email: 'demo@tienda.com', password: 'secreta' } });
+  });
+
+  // Lo que el gateway deja tocar a probar_api y mirar: solo lo de este proyecto.
+  it('el gateway recibe las URLs publicadas del proyecto', async () => {
+    const app = servidor();
+    const r = await app.inject({ method: 'GET', url: '/interno/mirar/publicados?proyecto=tienda', headers: auth });
+    expect(r.json()).toEqual({ urls: ['https://tienda-api.apps.punchi.dev'] });
+    const sin = await app.inject({ method: 'GET', url: '/interno/mirar/publicados?proyecto=tienda' });
+    expect(sin.statusCode).toBe(401);
   });
 
   it('sin el token interno no sale nada', async () => {

@@ -4334,6 +4334,16 @@ describe('el contrato front/back', () => {
     expect(v).not.toContain(CONTRATO);
   });
 
+  // Prueba_completa (2026-10-10): los tests corrian con base en memoria, todos
+  // verdes, y la app publicada daba 500 porque faltaban las tablas.
+  it('funcionamiento y testeos prueban la app PUBLICADA, no solo los tests locales', () => {
+    for (const eje of ['funcionamiento', 'testeos'] as const) {
+      const p = promptDeAnalisis('# x', 1, { eje, contrato: CONTRATO });
+      expect(p).toContain('probar_api');
+      expect(p).toMatch(/5xx/);
+    }
+  });
+
   it('el ciclo se lo pasa a las tareas y al analista de funcionamiento', async () => {
     const d = arnes({ analista: () => [] });
     await abrir(d);
