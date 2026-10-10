@@ -1536,6 +1536,11 @@ export async function ejecutarTurnoConRelevo(
   const probados: string[] = [];
   const relevos: string[] = [];
   let turno = t;
+  // El primer `usage_limit` de la vuelta. Si ningun relevo contesta, sube ESTE
+  // y no el del ultimo slot: sin tokens se espera al reset, sin sesion no hay
+  // nada que esperar. Con c2 agotado y c6-c9 sin sesion subia `auth_expired`,
+  // y la corrida se cerraba por fallos en vez de esperar (2026-10-10).
+  let sinTokens: unknown;
 
   for (let intento = 0; intento < TOPE_DE_RELEVOS; intento++) {
     probados.push(turno.agente);
@@ -1553,9 +1558,10 @@ export async function ejecutarTurnoConRelevo(
       // `git_failed` lo unico que hace es repetir el mismo error en otro slot y
       // esconder la causa.
       if (!CODIGOS_DE_RELEVO.has(codigo)) throw err;
+      if (codigo === 'usage_limit' && sinTokens === undefined) sinTokens = err;
 
       const siguiente = await elegirRelevo(deps, turno.proyecto, probados, t.usuarioId);
-      if (!siguiente) throw err;
+      if (!siguiente) throw sinTokens ?? err;
 
       // El hilo del slot que se agoto, no del que releva: es donde esta lo que
       // venia pasando.

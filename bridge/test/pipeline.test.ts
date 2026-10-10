@@ -3,6 +3,7 @@ import {
   handleIncoming,
   ejecutarTurno,
   ejecutarTurnoConRelevo,
+  ErrorDeTurno,
   correrCola,
   type PipelineDeps,
 } from '../src/pipeline.js';
@@ -720,6 +721,35 @@ describe('el relevo cuando un slot se queda sin tokens', () => {
         TURNO,
       ),
     ).rejects.toThrow('usage_limit');
+  });
+
+  // El error que sube es el del slot que se agoto, no el del ultimo relevo.
+  // Corrida `Prueba_completa` (2026-10-10): c2 y c1 sin tokens, c6-c9 sin
+  // sesion; subia `auth_expired` de c9, la corrida no esperaba al reset y se
+  // cerraba por `demasiados_fallos` con las cuentas volviendo en minutos.
+  it('sin tokens y los relevos sin sesion, sube usage_limit con su reset', async () => {
+    const ask = vi.fn(async (req: { agent: string }) => {
+      if (req.agent === 'c1') {
+        throw Object.assign(new Error('usage_limit'), { resets: '4:10am (UTC)' });
+      }
+      throw new Error('auth_expired');
+    });
+    const err = await ejecutarTurnoConRelevo(
+      deps({ ask, listarAgentes: async () => CON_CUENTA }),
+      TURNO,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ErrorDeTurno);
+    expect((err as ErrorDeTurno).codigo).toBe('usage_limit');
+    expect((err as ErrorDeTurno).resets).toBe('4:10am (UTC)');
+  });
+
+  it('si ninguno se quedo sin tokens, sube el error del ultimo', async () => {
+    const ask = vi.fn(async () => {
+      throw new Error('auth_expired');
+    });
+    await expect(
+      ejecutarTurnoConRelevo(deps({ ask, listarAgentes: async () => CON_CUENTA }), TURNO),
+    ).rejects.toThrow('auth_expired');
   });
 
   // Una sesion vencida es de la cuenta de ESE slot: otro con su cuenta sigue.
