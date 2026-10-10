@@ -959,6 +959,7 @@ function despliegueDelPanel() {
 }
 
 export const app = buildWebhookServer(bot, env.TELEGRAM_WEBHOOK_SECRET, {
+  vpsPorDefecto: Boolean(depsDeVps()),
   store,
   apiToken: env.BRIDGE_API_TOKEN,
   errores: registroDeErrores,

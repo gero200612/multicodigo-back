@@ -780,6 +780,28 @@ describe('correrCola dentro de una corrida', () => {
     expect(avisos.some((a) => a.includes('quedo sin guardar'))).toBe(true);
   });
 
+  // Prueba_completa (2026-10-10): el gateway se estaba reiniciando por un
+  // deploy, guardarTrabajo dio "fetch failed" y el informe dijo que el trabajo
+  // quedo sin guardar con los worktrees limpios. Un gateway que no contesta no
+  // es un worktree sucio: se reintenta.
+  it('si el gateway no contesta, reintenta antes de anotar que quedo sin guardar', async () => {
+    let llamadas = 0;
+    const d = arnes({
+      analista: () => [],
+      fallan: { dos: 'agent_timeout' },
+      guardarTrabajo: async () => {
+        llamadas++;
+        if (llamadas === 1) throw new Error('fetch failed');
+        return { ok: true, commiteo: true };
+      },
+    });
+    await abrir(d);
+    await encolarEnLaCorrida(d, ['uno', 'dos', 'tres']);
+    const avisos = await correr(d);
+    expect(llamadas).toBe(2);
+    expect(avisos.some((a) => a.includes('quedo sin guardar'))).toBe(false);
+  });
+
   /**
    * El techo de RONDAS no cierra con una cortada a medio terminar.
    *
@@ -4946,5 +4968,18 @@ describe('corrida en revision, retomada', () => {
     await correr(d);
     const dos = d.ask.mock.calls.map((x) => x[0] as { agent?: string; prompt: string }).find((x) => x.prompt.includes('dos') && !x.prompt.includes('--- PLIEGO ---'));
     expect(dos?.agent).toBe('c2');
+  });
+});
+
+// Prueba_completa (2026-10-10): el informe pedia CORS, Jwt__Key y la URL del
+// back con todo andando en el VPS.
+describe('el aviso de lo que carga el VPS', () => {
+  it('va al principio de la tarea cuando se pasa, y no va si no', async () => {
+    const { promptDeTareaDesatendida } = await import('../src/corrida.js');
+    const { AVISO_DE_VPS } = await import('../src/pipeline.js');
+    const con = promptDeTareaDesatendida('armar el login', 1, undefined, false, undefined, AVISO_DE_VPS);
+    expect(con.startsWith(AVISO_DE_VPS)).toBe(true);
+    expect(con).toContain('Cors__AllowedOrigins__0');
+    expect(promptDeTareaDesatendida('armar el login', 1)).not.toContain('Cors__AllowedOrigins__0');
   });
 });

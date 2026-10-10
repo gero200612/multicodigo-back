@@ -579,6 +579,9 @@ const ES_DE_ENTORNO = new Set(['agent_start_failed', 'unknown_agent', 'agent_una
 /** Lo que se espera antes de seguir, cuando el entorno todavia no esta. */
 const ESPERA_DE_ENTORNO_MS = 30_000;
 
+/** Un detalle de error que dice que no se pudo hablar con el gateway, no que algo este mal. */
+const ES_DE_ENTORNO_EL_DETALLE = /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|agent_unavailable/i;
+
 /**
  * Cuantas veces se perdona un fallo de entorno antes de tratarlo como uno real.
  *
@@ -3512,6 +3515,7 @@ export async function correrCola(
               corrida.contrato,
               esProyectoNuevo(ctx.repos),
               corrida.fichas,
+              (await seProyectaEnVps(ctx.proyectoId, deps)) ? AVISO_DE_VPS : undefined,
             )
           : tarea.texto,
         modo,
@@ -3782,18 +3786,26 @@ export async function correrCola(
           // worktree sucio moria en un `console.error` del gateway.
           let guardado = true;
           if (deps.guardarTrabajo) {
-            const g = await deps
-              .guardarTrabajo(
+            const guardar = () =>
+              deps.guardarTrabajo!(
                 tarea.proyecto,
                 tarea.agente,
                 // Una linea y corto: es el `git log` de la mañana, no el pliego.
                 `${tarea.texto.replace(/\s+/g, ' ').slice(0, 60)} (cortada por tiempo)`,
-              )
-              .catch((err) => ({
+              ).catch((err) => ({
                 ok: false,
                 detalle: err instanceof Error ? err.message : 'error',
                 commiteo: false,
               }));
+            let g = await guardar();
+            // Un gateway que no contesta (un deploy lo esta reiniciando) no es
+            // un worktree sucio: se espera y se reintenta. Sin esto el informe
+            // de Prueba_completa (2026-10-10) dijo "quedo sin guardar" con los
+            // worktrees limpios.
+            for (let i = 0; i < 3 && !g.ok && ES_DE_ENTORNO_EL_DETALLE.test(g.detalle ?? ''); i++) {
+              await (deps.dormir ?? porDefectoDormir)(ESPERA_DE_ENTORNO_MS);
+              g = await guardar();
+            }
             guardado = g.ok;
             // Y si se guardo, entra a main como cualquier trabajo terminado: es
             // lo que hace que el que la retome —este slot u otro, da igual—
@@ -3945,6 +3957,28 @@ export async function correrCola(
  * - Pendientes de la corrida (un merge a main que fallo, por ejemplo).
  * - Tareas cortadas por tiempo: trabajo que quedo a medias.
  */
+/**
+ * Lo que la publicacion en el VPS carga sola (ver `vps.ts`). Sin esto los
+ * agentes ven los placeholders del repo y anotan como pendiente cosas que ya
+ * estan: en Prueba_completa (2026-10-10) el informe pedia CORS, Jwt__Key y la
+ * URL del back, con la app publicada y andando.
+ */
+export const AVISO_DE_VPS =
+  'Al publicar en el VPS el sistema le carga al back Jwt__Key, Cors__AllowedOrigins__0 (la URL del front), ' +
+  'FRONT_URL y la conexion a la base, y reescribe la URL del back en el environment del front. Los ' +
+  'placeholders del repo (CAMBIAR-URL-DEL-BACK, appsettings vacios) estan bien asi: NO son huecos ni ' +
+  'pendientes, no los anotes.';
+
+/** Si los repos del proyecto van al VPS: con destino vps, o sin destino si el VPS es el default. */
+async function seProyectaEnVps(proyectoId: string | undefined, deps: PipelineDeps): Promise<boolean> {
+  if (!proyectoId) return false;
+  const propios = (await deps.store.reposDeProyecto(proyectoId).catch(() => [])).filter((r) => !r.solo_lectura);
+  return (
+    propios.length > 0 &&
+    propios.every((r) => r.destino === 'vps' || (deps.vpsPorDefecto === true && !r.destino && !r.render_service_id))
+  );
+}
+
 async function hechosDelProyecto(
   corrida: Corrida,
   proyectoId: string | undefined,
@@ -3956,6 +3990,7 @@ async function hechosDelProyecto(
   const enVps =
     propios.length > 0 &&
     propios.every((r) => r.destino === 'vps' || (deps.vpsPorDefecto === true && !r.destino && !r.render_service_id));
+  if (enVps) hechos.push(AVISO_DE_VPS);
   if (enVps && /supabase|postgres|base de datos/i.test(corrida.md)) {
     hechos.push(
       'Este proyecto se publica en el VPS: la base Postgres la crea el SISTEMA al publicar y le carga al ' +

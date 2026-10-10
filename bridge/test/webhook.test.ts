@@ -752,9 +752,54 @@ describe('esPendienteDeBase', () => {
     }
   });
 
+  // Prueba_completa (2026-10-10): en el VPS el sistema carga CORS, Jwt__Key, la
+  // base y reescribe la URL del back en el front. El informe pedia las cuatro.
+  it('reconoce lo que el VPS resuelve solo', async () => {
+    const { esPendienteQueResuelveElVps } = await import('../src/webhook.js');
+    for (const t of [
+      'Si el front y el back de Turnero quedan en dominios distintos, fijar environment.apiBaseUrl a la URL pública del back',
+      'En producción, fijar Cors__AllowedOrigins__0 (y __1, __2...) con la URL del front desplegado',
+      "En Prueba_completa-front/src/environments/environment.ts falta reemplazar 'https://CAMBIAR-URL-DEL-BACK/api' por la URL real del back",
+      'En producción hay que definir la variable de entorno Jwt__Key (clave larga y secreta)',
+    ]) {
+      expect(esPendienteQueResuelveElVps(t)).toBe(true);
+    }
+    expect(esPendienteQueResuelveElVps('Dar de alta la cuenta de Mercado Pago y cargar MP_ACCESS_TOKEN')).toBe(false);
+  });
+
   it('deja pasar los pendientes que no son de la base', async () => {
     const { esPendienteDeBase } = await import('../src/webhook.js');
     expect(esPendienteDeBase('Dar de alta la cuenta de Mercado Pago y cargar MP_ACCESS_TOKEN')).toBe(false);
     expect(esPendienteDeBase('Apuntar el dominio pozoauto.com al front')).toBe(false);
+  });
+});
+
+// Prueba_completa (2026-10-10): con el proyecto en el VPS, el informe pedia
+// CORS, Jwt__Key y la URL del back, que la publicacion carga sola.
+describe('pendientes que el VPS resuelve solo', () => {
+  async function anotar(vpsPorDefecto: boolean, texto: string) {
+    const store = new InMemoryStore();
+    await store.vincularRepo(PROYECTO, 'turnero-back', 'org/turnero-back', false, true);
+    const corrida = (await store.abrirCorrida({ chatId: 9, proyecto: 'turnero', md: '# x', techoRondas: 3, techoHora: '07:00' }))!;
+    const jobId = await store.createJob({ chatId: 9, agent: 'c1' as const, project: 'turnero', proyectoId: PROYECTO, prompt: 'x', messageId: 1 });
+    const app = buildWebhookServer(bot, SECRET, { store, apiToken: API_TOKEN, vpsPorDefecto });
+    const r = await app.inject({
+      method: 'POST',
+      url: '/interno/corrida/pendiente',
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+      payload: { jobId, texto },
+    });
+    return { r, guardados: (await store.corridaAbierta(9))?.pendientes ?? [], corrida };
+  }
+
+  it('en un proyecto del VPS no se anotan', async () => {
+    const { r, guardados } = await anotar(true, 'En producción, fijar Cors__AllowedOrigins__0 con la URL del front');
+    expect(r.json().output).toMatch(/no lo anote/);
+    expect(guardados).toEqual([]);
+  });
+
+  it('fuera del VPS se anotan como siempre', async () => {
+    const { guardados } = await anotar(false, 'En producción, fijar Cors__AllowedOrigins__0 con la URL del front');
+    expect(guardados).toHaveLength(1);
   });
 });

@@ -1588,8 +1588,11 @@ export function promptDeTareaDesatendida(
   nuevo = false,
   /** Las fichas de la corrida. Ver `Corrida.fichas`. */
   fichas?: string,
+  /** Lo que la publicacion carga sola, si el proyecto va al VPS. Ver `AVISO_DE_VPS`. */
+  avisoDeDespliegue?: string,
 ): string {
   return [
+    ...(avisoDeDespliegue ? [avisoDeDespliegue, ''] : []),
     'Esto corre en una corrida desatendida: del otro lado no hay nadie despierto',
     'para contestarte, asi que una pregunta tuya no la va a leer nadie hasta la',
     'mañana y el turno se cierra igual.',

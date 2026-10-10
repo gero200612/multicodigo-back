@@ -45,8 +45,11 @@ const JOBS_POR_DEFECTO = 20;
  * es como arranco. Los tests que no la ejercitan no la pasan.
  */
 export interface ApiDeps {
+  /** Si un repo sin destino elegido va al VPS (ver `vpsPorDefecto` en pipeline). */
+  vpsPorDefecto?: boolean;
   store: Pick<
     Store,
+    | 'reposDeProyecto'
     | 'recentJobs'
     | 'canjearCodigo'
     | 'usuarioDeChat'
@@ -1266,6 +1269,17 @@ export function buildWebhookServer(
       texto: z.string().min(1).max(300),
     });
 
+    /** Si los repos del proyecto del job van al VPS: con destino vps, o sin destino si el VPS es el default. */
+    const seProyectaEnVps = async (jobId: string): Promise<boolean> => {
+      const ctx = await api.store.contextoDeJob(jobId).catch(() => undefined);
+      if (!ctx?.proyectoId) return false;
+      const propios = (await api.store.reposDeProyecto(ctx.proyectoId).catch(() => [])).filter((r) => !r.solo_lectura);
+      return (
+        propios.length > 0 &&
+        propios.every((r) => r.destino === 'vps' || (api.vpsPorDefecto === true && !r.destino && !r.render_service_id))
+      );
+    };
+
     app.post('/interno/corrida/pendiente', async (request, reply) => {
       if (!isTokenValid(request.headers.authorization, api.apiToken)) {
         return reply.code(401).send({ code: 'unauthorized', message: 'bearer invalido' });
@@ -1298,6 +1312,14 @@ export function buildWebhookServer(
             'no lo anote: este proyecto ya tiene la base creada y el sistema le carga ' +
             'ConnectionStrings__DefaultConnection y Jwt__Key al back en Render. Los placeholders de ' +
             'appsettings.json estan bien asi: en produccion mandan las variables de entorno.',
+        });
+      }
+      if (esPendienteQueResuelveElVps(cuerpo.data.texto) && (await seProyectaEnVps(cuerpo.data.jobId))) {
+        return reply.code(200).send({
+          output:
+            'no lo anote: este proyecto se publica en el VPS, y al publicar el sistema crea la base y le carga ' +
+            'al back ConnectionStrings__DefaultConnection, DATABASE_URL, Jwt__Key, Cors__AllowedOrigins__0 y ' +
+            'FRONT_URL, y reescribe la URL del back en el environment del front. Los placeholders del repo estan bien asi.',
         });
       }
       await api.store.anotarPendiente(corrida.id, cuerpo.data.texto);
@@ -1531,6 +1553,19 @@ export function buildWebhookServer(
   }
 
   return app;
+}
+
+/**
+ * Si un pendiente es algo que la publicacion en el VPS hace sola: la base y su
+ * conexion, Jwt__Key, CORS con la URL del front, FRONT_URL, y la URL del back
+ * reescrita en el environment del front (ver `vps.ts`). En Prueba_completa
+ * (2026-10-10) el informe pedia las cuatro con la app publicada y andando.
+ */
+export function esPendienteQueResuelveElVps(texto: string): boolean {
+  return (
+    esPendienteDeBase(texto) ||
+    /Cors__AllowedOrigins|\bCORS\b|FRONT_URL|DATABASE_URL|api(Base)?Url|environment(\.[a-z]+)?\.ts|CAMBIAR-URL|URL (p[uú]blica |real )?del back/i.test(texto)
+  );
 }
 
 /**
