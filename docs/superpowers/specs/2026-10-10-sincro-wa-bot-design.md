@@ -129,14 +129,18 @@ Esta es la regla que manda sobre todo el diseño.
   También pide el tope de gasto mensual. Recién después abre el Embedded Signup de
   Meta.
 - **El bot niega todo por defecto:**
-  - Cada endpoint revisa que la clave tenga la capacidad. Si no la tiene, responde
-    `403 sin_permiso` y lo registra.
+  - La clave que crea Punchi lleva adentro solo las APIs de sus capacidades. Para esa
+    clave, el resto de las APIs **no existe**: responden `404`, como si no
+    estuvieran publicadas, y el intento queda registrado.
   - Solo le pasa a la app los eventos de sus capacidades. Por ejemplo, un taller con
     solo `facturas` no recibe charlas para atender.
   - Las plantillas quedan atadas a la capacidad. `facturas` no puede crear ni mandar
     plantillas. `avisos` solo puede usar plantillas de utilidad. Marketing requiere
     `promociones`. Si Meta pasa una plantilla de utilidad a marketing, el bot la
     bloquea para esa app y avisa a Gero.
+- **La app nunca ve el token de Meta:** lo guarda el bot, cifrado. La app solo tiene
+  su clave del bot, así que no puede hablar con Meta por su cuenta ni saltear estos
+  límites.
 - **Los permisos de Meta no alcanzan solos:** el Embedded Signup le pide al cliente
   los mismos permisos de WhatsApp a todos (`whatsapp_business_management` y
   `whatsapp_business_messaging`), y Meta no deja recortarlos por función. El límite
@@ -279,7 +283,7 @@ clave de administrador. Solo la ve Gero, como el resto del panel.
 - Firma del webhook: válida pasa, inválida o ausente da 401.
 - Ruteo: un phone_number_id desconocido se descarta y se registra.
 - Clave: la app A no puede mandar desde el número de B.
-- Permisos: una app con solo `facturas` recibe 403 en `POST /avisos`,
+- Permisos: una app con solo `facturas` recibe 404 en `POST /avisos`,
   `POST /plantillas` y `POST /mensajes` fuera de una respuesta a factura, y no le
   llegan charlas para atender. Una app con `avisos` no puede crear plantillas de
   marketing. Una plantilla que Meta pasa a marketing queda bloqueada para una app
