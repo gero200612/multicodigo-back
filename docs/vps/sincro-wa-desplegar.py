@@ -151,7 +151,9 @@ def app():
         guardar_estado(e)
         print('base creada')
     # Con builds en cola Coolify no la levanta sola (ver bridge/src/vps.ts).
-    coolify('GET', f'/databases/{e["base"]}/start')
+    status, j = http('POST', f'{COOLIFY}/databases/{e["base"]}/start', None, open('/root/coolify.token').read().strip())
+    if status >= 300 and 'already running' not in json.dumps(j):
+        sys.exit(f'Coolify POST /databases/{e["base"]}/start -> {status}: {tapar(json.dumps(j))[:400]}')
     database_url = f'postgres://sincrowa:{s["SINCRO_WA_DB_PASSWORD"]}@{e["base"]}:5432/sincrowa'
 
     if not e.get('app'):
