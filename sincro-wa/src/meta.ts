@@ -128,9 +128,21 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
         throw new ErrorDeMeta(`no se pudo bajar el archivo: ${e instanceof Error ? e.message : String(e)}`);
       }
       if (!res.ok) throw new ErrorDeMeta(`no se pudo bajar el archivo: ${res.status}`);
-      const datos = Buffer.from(await res.arrayBuffer());
-      if (datos.length > MEDIA_MAXIMO) throw new ErrorDeMeta('el archivo es demasiado grande');
-      return datos;
+      // Se corta mientras baja y no despues: Meta acepta videos de 100 MB, y
+      // juntarlos enteros en memoria antes de mirar el tamaño tumba el proceso.
+      const largo = Number(res.headers.get('content-length') ?? 0);
+      if (largo > MEDIA_MAXIMO || !res.body) {
+        await res.body?.cancel();
+        throw new ErrorDeMeta(res.body ? 'el archivo es demasiado grande' : 'el archivo vino vacio');
+      }
+      const partes: Buffer[] = [];
+      let total = 0;
+      for await (const parte of res.body as unknown as AsyncIterable<Uint8Array>) {
+        total += parte.length;
+        if (total > MEDIA_MAXIMO) throw new ErrorDeMeta('el archivo es demasiado grande');
+        partes.push(Buffer.from(parte));
+      }
+      return Buffer.concat(partes);
     },
     async crearPlantilla(token, wabaId, p) {
       const json = await pedir(token, 'POST', `${wabaId}/message_templates`, {

@@ -126,3 +126,36 @@ describe('firma del webhook', () => {
     expect(firmaValida(cuerpo, 'sha256=zz', 's')).toBe(false);
   });
 });
+
+describe('bajarMedia', () => {
+  it('corta un archivo de mas de 20 MB mientras baja, con o sin content-length', async () => {
+    const { createServer } = await import('node:http');
+    const { clienteMeta, ErrorDeMeta } = await import('../src/meta.js');
+    const srv = createServer((req, res) => {
+      if (req.url === '/chico') return res.end(Buffer.alloc(1000, 1));
+      // Sin content-length (chunked): 25 MB de a 1 MB.
+      if (req.url === '/grande-sin-largo') {
+        let n = 0;
+        const mandar = () => {
+          if (n++ >= 25) return res.end();
+          if (res.write(Buffer.alloc(1024 * 1024))) setImmediate(mandar);
+          else res.once('drain', mandar);
+        };
+        return mandar();
+      }
+      res.setHeader('content-length', String(30 * 1024 * 1024));
+      res.end();
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+    const meta = clienteMeta('v23.0');
+    try {
+      expect((await meta.bajarMedia('t', `${base}/chico`)).length).toBe(1000);
+      await expect(meta.bajarMedia('t', `${base}/grande-sin-largo`)).rejects.toBeInstanceOf(ErrorDeMeta);
+      await expect(meta.bajarMedia('t', `${base}/grande-con-largo`)).rejects.toThrow('demasiado grande');
+    } finally {
+      srv.closeAllConnections();
+      srv.close();
+    }
+  });
+});
