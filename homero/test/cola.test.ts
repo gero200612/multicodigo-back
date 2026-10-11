@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { correrSiguiente, PAUSA_IA, PAUSA_MANUAL } from '../src/cola.js';
+import { correrSiguiente, PAUSA_IA, PAUSA_MANUAL, TIPOS_URGENTES } from '../src/cola.js';
 import { SinLugar } from '../src/gateway.js';
 import { ErrorDeLimite } from '../src/ia.js';
 import type { Recibido } from '../src/store.js';
@@ -44,6 +44,33 @@ describe('la cola frente al limite de Claude', () => {
     // Con la IA en pausa, la segunda tarea ni se toma.
     expect(await correrSiguiente(deps)).toBe(false);
     expect(store.tareas[1]!.estado).toBe('pendiente');
+  });
+
+  it('sin cuenta libre, un WhatsApp reintenta a los 30 s (hay alguien esperando)', async () => {
+    const { store, deps } = armar({ agente: gatewayQueTira(() => new SinLugar()) });
+    await store.encolar({
+      tipo: 'agente_whatsapp',
+      payload: { contacto: '5491155550000', tipo: 'text', texto: 'Hola', mensaje_id: 1 },
+      requiereIa: true,
+    });
+    deps.wa = {
+      eventos: async () => [],
+      ack: async () => {},
+      mandar: async () => ({ id: 1, wamid: 'w' }),
+      charla: async () => ({ mensajes: [] }) as never,
+    } as never;
+
+    await correrSiguiente(deps);
+
+    expect(store.tareas[0]).toMatchObject({ estado: 'pendiente', intentos: 0 });
+    expect(store.tareas[0]!.disponibleDesde.getTime() - deps.ahora().getTime()).toBe(30_000);
+  });
+
+  it('el bucle urgente solo toma WhatsApp, aunque haya algo mas viejo en la cola', async () => {
+    const { store, deps } = armar({ agente: gatewayQueTira(() => new SinLugar()) });
+    await store.encolar({ tipo: 'agente_vender', payload: { leadId: 1 }, requiereIa: true });
+    expect(await correrSiguiente(deps, TIPOS_URGENTES)).toBe(false);
+    expect(store.tareas[0]!.estado).toBe('pendiente');
   });
 
   it('sin cuenta libre (Punchi las esta usando) reintenta en un rato, sin gastar intento, sin pausar la IA ni avisar', async () => {

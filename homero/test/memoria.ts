@@ -104,13 +104,14 @@ export class MemoriaStore implements Store {
       ultimoError: fs.find((f) => f.ultimoError)?.ultimoError,
     }));
   }
-  async tomarSiguiente(ahora: Date, iaDisponible: boolean) {
+  async tomarSiguiente(ahora: Date, iaDisponible: boolean, tipos?: TipoDeTarea[]) {
     const f = this.tareas
       .filter(
         (t) =>
           t.estado === 'pendiente' &&
           t.disponibleDesde.getTime() <= ahora.getTime() &&
-          (iaDisponible || !t.requiereIa),
+          (iaDisponible || !t.requiereIa) &&
+          (!tipos || tipos.includes(t.tipo)),
       )
       .sort((a, b) => a.disponibleDesde.getTime() - b.disponibleDesde.getTime() || a.id - b.id)[0];
     if (!f) return undefined;

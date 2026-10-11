@@ -54,6 +54,8 @@ export interface DepsDeAgentes extends DepsDeHerramientas {
   reportar?: (r: ReporteDeError) => Promise<unknown>;
   /** El numero de Sincro en el bot de WhatsApp (clave de app, solo leads). */
   wa?: ClienteWa;
+  /** Numeros de Gero probando el bot (SINCRO_WA_PRUEBA). */
+  numerosDePrueba?: string[];
 }
 
 /**
@@ -239,6 +241,8 @@ async function correr(
     topes?: Topes;
     /** Otro rol para el mismo agente (atencion por WhatsApp en vez de por mail). */
     rol?: string;
+    /** Alguien espera la respuesta: el gateway le da hasta la ultima cuenta libre. */
+    urgente?: boolean;
   },
   deps: DepsDeAgentes,
 ): Promise<Registro> {
@@ -262,6 +266,7 @@ async function correr(
       web: o.web,
       ...(o.topes ?? TOPES[agente]),
       modelo: deps.modelo,
+      ...(o.urgente ? { urgente: true } : {}),
     });
   } catch (err) {
     // Sin cuenta libre o sin uso no es una corrida: no llego a pensar nada, y
@@ -458,6 +463,19 @@ ${deps.firma}`,
  * atencion (su libreta y su historial), con otro rol y otras herramientas: por
  * WhatsApp todo sale solo y Gero se entera por Telegram.
  */
+const PRUEBA_DE_GERO =
+  '\n\nOJO: este número es de Gero probando el bot. Atendelo EXACTAMENTE como a un cliente real que escribe por primera vez: no le avises a Gero que es él ni lo trates distinto, quiere ver cómo responde el bot.';
+
+/**
+ * Si el contacto es uno de los numeros de prueba. Meta manda los celulares de
+ * Argentina con el 9 (549...) y Gero los puede cargar con o sin: se comparan
+ * las variantes.
+ */
+export function esNumeroDePrueba(contacto: string, numeros: string[]): boolean {
+  const propias = new Set(variantesDeTelefono(contacto));
+  return numeros.some((n) => variantesDeTelefono(n).some((v) => propias.has(v)));
+}
+
 export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Promise<void> {
   if (!deps.wa) throw new Error('falta SINCRO_WA_URL / SINCRO_WA_KEY: no hay WhatsApp');
   const p = PayloadDeWhatsApp.parse(payload);
@@ -466,15 +484,17 @@ export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Pro
   if (yaContestado(await deps.wa.charla(p.contacto), p.mensaje_id)) return;
   const lead = await deps.store.leadPorTelefono(variantesDeTelefono(p.contacto));
   const texto = p.texto ?? `(${p.tipo})`;
+  const prueba = esNumeroDePrueba(p.contacto, deps.numerosDePrueba ?? []);
   await correr(
     'atencion',
-    `Objetivo: llegó un WhatsApp${lead ? ` de ${lead.nombre}` : ''} al número de Sincro. Entendé qué quiere y resolvelo: la mejor respuesta para llevarlo a una charla con Gero, o lo que corresponda.`,
+    `Objetivo: llegó un WhatsApp${lead ? ` de ${lead.nombre}` : ''} al número de Sincro. Entendé qué quiere y resolvelo: la mejor respuesta para llevarlo a una charla con Gero, o lo que corresponda.` +
+      (prueba ? PRUEBA_DE_GERO : ''),
     (reg) =>
       herramientasDeWhatsApp(
         { store: deps.store, wa: deps.wa!, ahora: deps.ahora, avisar: deps.avisar },
         { contacto: p.contacto, nombre: p.nombre ?? '', texto, referral: p.referral ?? null, lead, registro: reg },
       ),
-    { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP },
+    { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP, urgente: true },
     deps,
   );
 }

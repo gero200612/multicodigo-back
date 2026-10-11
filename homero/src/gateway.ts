@@ -24,6 +24,8 @@ export interface PedidoDeCorrida {
   maxTurnos: number;
   maxMinutos: number;
   modelo?: string;
+  /** Alguien espera la respuesta (WhatsApp): puede tomar el ultimo slot libre. */
+  urgente?: boolean;
 }
 
 export interface RespuestaDeCorrida {

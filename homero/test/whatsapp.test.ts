@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
-import { agenteWhatsApp } from '../src/agentes.js';
+import { agenteWhatsApp, esNumeroDePrueba } from '../src/agentes.js';
 import {
   recibirLeads,
   resolverIa,
@@ -85,7 +85,54 @@ describe('whatsapp: recibir leads', () => {
   });
 });
 
+describe('whatsapp: números de prueba', () => {
+  it('reconoce el número con o sin el 9', () => {
+    expect(esNumeroDePrueba('5491150632794', ['5491150632794'])).toBe(true);
+    expect(esNumeroDePrueba('5491150632794', ['541150632794'])).toBe(true);
+    expect(esNumeroDePrueba('5491150632794', ['5491155550000'])).toBe(false);
+    expect(esNumeroDePrueba('5491150632794', [])).toBe(false);
+  });
+});
+
 describe('whatsapp: el agente', () => {
+  it('pide la corrida como urgente (hay alguien esperando)', async () => {
+    const f = waFalso();
+    let urgente: boolean | undefined;
+    let objetivo = '';
+    const h = armar({
+      agente: agenteDe({
+        atencion: async (usar, p) => {
+          urgente = p.urgente;
+          objetivo = p.objetivo;
+          await usar('responder', { texto: 'Hola!', horarios: [] });
+        },
+      }),
+    });
+    h.deps.wa = f.wa;
+    await agenteWhatsApp(payload, h.deps);
+    expect(urgente).toBe(true);
+    expect(objetivo).not.toContain('probando el bot');
+  });
+
+  it('a un número de prueba de Gero lo atiende como a un cliente real', async () => {
+    const f = waFalso();
+    let objetivo = '';
+    const h = armar({
+      agente: agenteDe({
+        atencion: async (usar, p) => {
+          objetivo = p.objetivo;
+          await usar('responder', { texto: 'Hola!', horarios: [] });
+        },
+      }),
+    });
+    h.deps.wa = f.wa;
+    // Cargado sin el 9: Meta lo manda con el 9 igual.
+    h.deps.numerosDePrueba = ['541155550000'];
+    await agenteWhatsApp(payload, h.deps);
+    expect(objetivo).toContain('Gero probando el bot');
+    expect(f.mandados).toHaveLength(1);
+  });
+
   it('responde solo, registra el lead, guarda los horarios ofrecidos y avisa a Gero', async () => {
     const f = waFalso();
     const h = armar({

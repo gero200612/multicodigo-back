@@ -15,7 +15,7 @@ import { crearApi } from './api.js';
 import { crearBuzonGmail, revisarBandejas } from './bandeja.js';
 import { cambiarEnsayo, estadoDeHomero } from './comandos.js';
 import { armarDemo, cancelarDemo, clienteDePunchi, editarPliego, enviarDemo, seguirDemos } from './demos.js';
-import { correrSiguiente, type DepsDeCola } from './cola.js';
+import { correrSiguiente, TIPOS_URGENTES, type DepsDeCola } from './cola.js';
 import { planificarFinanzas } from './finanzas.js';
 import { leerConfig } from './config.js';
 import { correoGmail } from './envio.js';
@@ -49,6 +49,8 @@ const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
 const COLA_VACIA_MS = 15_000;
+/** El de WhatsApp mira mas seguido: hay alguien esperando. */
+const COLA_URGENTE_VACIA_MS = 3_000;
 /** Cada cuanto se fija si toca buscar clientes o mandar el resumen del dia. */
 const PLANIFICADOR_MS = 5 * 60_000;
 /** Cada cuanto le pregunta a Punchi como van las demos. */
@@ -123,6 +125,7 @@ async function main() {
     meta: config.meta ? clienteDeMeta(config.meta) : undefined,
     mandarFoto: (png, pie) => mandarFoto(png, pie).catch((e) => console.error('[homero] no pude mandar la imagen:', e)),
     wa,
+    numerosDePrueba: config.whatsapp?.numerosDePrueba ?? [],
   };
   const acciones: Acciones = {
     aprobarLead: (id) => aprobarLead(id, deps),
@@ -190,6 +193,19 @@ async function main() {
         // Un error aca es de infraestructura (la base, casi siempre): se
         // espera y se reintenta, no se cae el proceso.
         console.error('[homero] cola:', err);
+        await dormir(30_000);
+      }
+    }
+  })();
+
+  // WhatsApp no espera atras de una corrida larga (buscar, publicitar): tiene
+  // su propio bucle, que solo toma esas tareas.
+  const bucleUrgente = (async () => {
+    while (corriendo) {
+      try {
+        if (!(await correrSiguiente(deps, TIPOS_URGENTES))) await dormir(COLA_URGENTE_VACIA_MS);
+      } catch (err) {
+        console.error('[homero] cola urgente:', err);
         await dormir(30_000);
       }
     }
@@ -264,6 +280,7 @@ async function main() {
     await mcp.close();
     await bot.stop();
     await bucleDeCola;
+    await bucleUrgente;
     // Un long-poll tarda hasta 25 s en volver: no se lo espera para apagar.
     void Promise.all(buclesWa);
     await store.cerrar();

@@ -8,7 +8,7 @@ import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
 import { agenteAtender, agenteBuscar, agentePublicitar, agenteRevisar, agenteVender, agenteWhatsApp, type DepsDeAgentes } from './agentes.js';
 import { escribirALeadMeta, leerInsights, publicarAnuncio, resumenDeAnuncios } from './anuncios.js';
 import { SinLugar } from './gateway.js';
-import type { Recibido, Tarea } from './store.js';
+import type { Recibido, Tarea, TipoDeTarea } from './store.js';
 import { enviarSaliente, recordatorio, resumenDiario } from './ventas.js';
 
 export { direccion } from './ventas.js';
@@ -27,6 +27,11 @@ export type DepsDeCola = DepsDeDemos & DepsDeAgentes;
 
 /** Sin cuenta libre (Punchi las esta usando): se reintenta en un rato, sin gastar intento. */
 const ESPERA_SIN_LUGAR_MS = 10 * 60_000;
+/** WhatsApp tiene a alguien esperando: se reintenta enseguida. */
+export const ESPERA_SIN_LUGAR_WA_MS = 30_000;
+
+/** Lo que corre el bucle rapido: no espera atras de las corridas largas. */
+export const TIPOS_URGENTES: TipoDeTarea[] = ['agente_whatsapp'];
 
 /** Despues de tantos fallos que no son de la IA, la tarea se da por perdida. */
 const TOPE_DE_INTENTOS = 5;
@@ -58,11 +63,12 @@ export async function iaDisponible(deps: DepsDeCola): Promise<boolean> {
 
 /**
  * Corre UNA tarea, si hay alguna lista. Devuelve si corrio algo, para que el
- * bucle sepa si seguir de largo o dormir.
+ * bucle sepa si seguir de largo o dormir. Con `tipos`, solo de esos (el bucle
+ * rapido de WhatsApp).
  */
-export async function correrSiguiente(deps: DepsDeCola): Promise<boolean> {
+export async function correrSiguiente(deps: DepsDeCola, tipos?: TipoDeTarea[]): Promise<boolean> {
   if (await deps.store.leerEstado(PAUSA_MANUAL)) return false;
-  const tarea = await deps.store.tomarSiguiente(deps.ahora(), await iaDisponible(deps));
+  const tarea = await deps.store.tomarSiguiente(deps.ahora(), await iaDisponible(deps), tipos);
   if (!tarea) return false;
 
   try {
@@ -80,7 +86,8 @@ export async function correrSiguiente(deps: DepsDeCola): Promise<boolean> {
 
 async function manejarError(tarea: Tarea, err: unknown, deps: DepsDeCola) {
   if (err instanceof SinLugar) {
-    await deps.store.reprogramar(tarea.id, new Date(deps.ahora().getTime() + ESPERA_SIN_LUGAR_MS), {
+    const espera = TIPOS_URGENTES.includes(tarea.tipo) ? ESPERA_SIN_LUGAR_WA_MS : ESPERA_SIN_LUGAR_MS;
+    await deps.store.reprogramar(tarea.id, new Date(deps.ahora().getTime() + espera), {
       contarIntento: false,
       error: 'sin cuenta libre',
     });

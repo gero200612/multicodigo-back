@@ -56,6 +56,9 @@ const Env = z.object({
   SINCRO_WA_URL: opcional(z.string().url()),
   SINCRO_WA_KEY: opcional(z.string().regex(/^swa_\d+_[A-Za-z0-9_-]{20,}$/)),
   SINCRO_WA_ADMIN_KEY: opcional(z.string().min(32)),
+  // Numeros (con codigo de pais, solo digitos, separados por coma) que son de
+  // Gero probando el bot: se atienden como un cliente cualquiera.
+  SINCRO_WA_PRUEBA: opcional(z.string().regex(/^\d{8,15}(,\d{8,15})*$/)),
   HOMERO_GMAIL_1_USER: opcional(z.string().email()),
   HOMERO_GMAIL_1_PASS: opcional(z.string().min(1)),
   HOMERO_GMAIL_2_USER: opcional(z.string().email()),
@@ -82,7 +85,7 @@ export interface Config {
   mcpPuerto: number;
   meta?: ConfigDeMeta;
   /** sincro-wa. Sin URL no hay WhatsApp; cada clave abre su parte. */
-  whatsapp?: { url: string; clave?: string; claveAdmin?: string };
+  whatsapp?: { url: string; clave?: string; claveAdmin?: string; numerosDePrueba: string[] };
   /** Por que no hay Meta, para decirlo una vez al arrancar. */
   sinMeta?: string;
 }
@@ -122,7 +125,12 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
         : undefined,
     mcpPuerto: e.HOMERO_MCP_PUERTO,
     whatsapp: e.SINCRO_WA_URL
-      ? { url: e.SINCRO_WA_URL, clave: e.SINCRO_WA_KEY, claveAdmin: e.SINCRO_WA_ADMIN_KEY }
+      ? {
+          url: e.SINCRO_WA_URL,
+          clave: e.SINCRO_WA_KEY,
+          claveAdmin: e.SINCRO_WA_ADMIN_KEY,
+          numerosDePrueba: e.SINCRO_WA_PRUEBA ? e.SINCRO_WA_PRUEBA.split(',') : [],
+        }
       : undefined,
     ...configDeMeta(e),
   };

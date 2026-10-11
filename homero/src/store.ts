@@ -384,7 +384,7 @@ export interface Store {
    * pausa solo devuelve las que no la necesitan: mandar un mail ya escrito no
    * tiene por que esperar a Claude.
    */
-  tomarSiguiente(ahora: Date, iaDisponible: boolean): Promise<Tarea | undefined>;
+  tomarSiguiente(ahora: Date, iaDisponible: boolean, tipos?: TipoDeTarea[]): Promise<Tarea | undefined>;
   terminar(id: number): Promise<void>;
   reprogramar(id: number, cuando: Date, o: { contarIntento: boolean; error?: string }): Promise<void>;
   fallar(id: number, error: string): Promise<void>;
@@ -584,18 +584,19 @@ export class PgStore implements Store {
     return (r.rowCount ?? 0) > 0;
   }
 
-  async tomarSiguiente(ahora: Date, iaDisponible: boolean) {
-    // SKIP LOCKED por si algun dia corren dos procesos; hoy es uno solo.
+  async tomarSiguiente(ahora: Date, iaDisponible: boolean, tipos?: TipoDeTarea[]) {
+    // SKIP LOCKED: corren dos bucles (el general y el de WhatsApp).
     const r = await this.pool.query(
       `UPDATE homero.tareas SET estado = 'corriendo', actualizada = now()
        WHERE id = (
          SELECT id FROM homero.tareas
          WHERE estado = 'pendiente' AND disponible_desde <= $1 AND ($2 OR NOT requiere_ia)
+           AND ($3::text[] IS NULL OR tipo = ANY($3))
          ORDER BY disponible_desde, id
          LIMIT 1 FOR UPDATE SKIP LOCKED
        )
        RETURNING id, tipo, payload, requiere_ia, intentos`,
-      [ahora, iaDisponible],
+      [ahora, iaDisponible, tipos ?? null],
     );
     const f = r.rows[0];
     if (!f) return undefined;
