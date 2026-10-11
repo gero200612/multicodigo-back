@@ -14,6 +14,7 @@ import { escribirLibreta, ITEMS_POR_LISTA, LARGO_DE_ITEM, leerLibreta, Libreta }
 import { CONFIG_DEL_BUSCADOR, type ConfigDelBuscador } from './agentes.js';
 import type { Actividad } from './mcp.js';
 import { muestraDe, type Boton } from './ventas.js';
+import { rutasDeWhatsApp, type AdminWa } from './whatsapp.js';
 
 /**
  * La API interna de Homero: lo que usa punchi.dev para manejarlo entero desde
@@ -35,6 +36,8 @@ export interface DepsDeApi {
   ahora: () => Date;
   /** Lo que hacen los agentes ahora mismo (las sesiones MCP abiertas). */
   enCurso?: () => Actividad[];
+  /** El bot de WhatsApp con la clave de admin. Sin esto la seccion dice que falta. */
+  whatsapp?: AdminWa;
 }
 
 const DIAS_DE_REUNIONES_PASADAS = 7;
@@ -581,6 +584,15 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
     await store.borrarPago(id.data);
     return { ok: true };
   });
+
+  // ------------------------------------------------------------ whatsapp
+
+  if (d.whatsapp) rutasDeWhatsApp(app, d.whatsapp);
+  else {
+    app.all('/whatsapp/*', async (_request, reply) =>
+      reply.code(503).send({ code: 'sin_whatsapp', message: 'Falta SINCRO_WA_URL / SINCRO_WA_ADMIN_KEY en Homero' }),
+    );
+  }
 
   return app;
 }

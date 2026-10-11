@@ -42,6 +42,7 @@ import {
   procesarRebote,
 } from './ventas.js';
 import { bajarPaginaConDestino, recibeMail } from './web.js';
+import { adminWa, atenderIa, bucle, clienteWa, pedidorWa, recibirLeads, reenviarAlertas } from './whatsapp.js';
 
 const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
@@ -86,6 +87,12 @@ async function main() {
   // Una sola vez y sin el token: sin Meta, Homero sigue como antes.
   if (!config.meta) console.log(`[homero] sin anuncios en Meta: ${config.sinMeta}`);
   const sesiones = new SesionesMcp();
+  // WhatsApp: el bot general vive en el VPS. Cada clave abre solo su parte.
+  const wa = config.whatsapp?.clave ? clienteWa(pedidorWa(config.whatsapp.url, config.whatsapp.clave)) : undefined;
+  const waAdmin = config.whatsapp?.claveAdmin
+    ? adminWa(pedidorWa(config.whatsapp.url, config.whatsapp.claveAdmin))
+    : undefined;
+  if (!config.whatsapp) console.log('[homero] sin WhatsApp: falta SINCRO_WA_URL');
   const deps: DepsDeCola = {
     store,
     correo: correoGmail,
@@ -115,6 +122,7 @@ async function main() {
         : undefined,
     meta: config.meta ? clienteDeMeta(config.meta) : undefined,
     mandarFoto: (png, pie) => mandarFoto(png, pie).catch((e) => console.error('[homero] no pude mandar la imagen:', e)),
+    wa,
   };
   const acciones: Acciones = {
     aprobarLead: (id) => aprobarLead(id, deps),
@@ -156,6 +164,7 @@ async function main() {
         cambiarBotones,
         ahora: deps.ahora,
         enCurso: () => sesiones.enCurso(),
+        whatsapp: waAdmin,
       })
     : undefined;
   if (api) {
@@ -222,6 +231,15 @@ async function main() {
       )
     : undefined;
 
+  // WhatsApp: tres long-polls al bot, por la VPN. Homero pregunta y el bot
+  // contesta; la Toshiba no abre ningun puerto para esto.
+  const sigue = () => corriendo;
+  const buclesWa = [
+    wa ? bucle('leads', () => recibirLeads(wa, store, deps.ahora), sigue) : undefined,
+    waAdmin ? bucle('alertas', () => reenviarAlertas(waAdmin, aviso), sigue) : undefined,
+    waAdmin ? bucle('ia', () => atenderIa({ admin: waAdmin, gateway, sesiones, modelo: config.modelo }), sigue) : undefined,
+  ];
+
   // Polling y no webhook: Homero no necesita entrada publica, y asi no hay
   // host de cloudflared ni secreto que mantener.
   await bot.api.deleteWebhook();
@@ -246,6 +264,8 @@ async function main() {
     await mcp.close();
     await bot.stop();
     await bucleDeCola;
+    // Un long-poll tarda hasta 25 s en volver: no se lo espera para apagar.
+    void Promise.all(buclesWa);
     await store.cerrar();
     process.exit(0);
   };

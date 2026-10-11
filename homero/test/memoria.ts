@@ -209,6 +209,10 @@ export class MemoriaStore implements Store {
   async hayLeadConDominio(d: string) {
     return this.leads.some((l) => dominio(l.web ?? undefined) === d);
   }
+  async leadPorTelefono(variantes: string[]) {
+    const l = [...this.leads].reverse().find((x) => x.telefono && variantes.includes(x.telefono.replace(/\D/g, '')));
+    return l ? { ...l } : undefined;
+  }
   async leadPorEmail(email: string) {
     const l = this.leads.find((x) => x.email === email.toLowerCase());
     return l ? { ...l } : undefined;

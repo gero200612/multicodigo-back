@@ -225,6 +225,25 @@ descarta y a Gero le llega una línea, sin la imagen. Las vueltas quedan en
 
 La fuente de las imágenes es Inter (`assets/fuentes`, licencia OFL en `OFL.txt`).
 
+## WhatsApp (sincro-wa)
+
+El WhatsApp de Sincro (+54 9 11 4187-9467) lo maneja el bot general
+`sincro-wa` (carpeta `sincro-wa/` de este repo, corre en el VPS). Homero le
+pregunta por la VPN (long-poll) y la Toshiba no abre ningún puerto.
+
+- Alguien escribe al número → el bot le pasa el mensaje a Homero → el agente de
+  atención (con el rol de WhatsApp) contesta **solo**, ofrece horarios y agenda.
+  A Gero le llega cada charla por Telegram. Las bajas las maneja el bot.
+- La sección **WhatsApp** de punchi.dev (negocios, gasto contra tope, mensajes,
+  plantillas, bajas, alertas, precios) pasa por `/whatsapp/*` de la API interna.
+- Las alertas del bot (calidad, topes, plantillas, app caída) llegan por Telegram.
+- La IA que piden los otros negocios del bot (leer facturas, atender) corre acá,
+  en el fondo común de cuentas.
+
+Variables en `/root/mc.env` (las imprime `docs/vps/sincro-wa-desplegar.py homero`):
+`SINCRO_WA_URL`, `SINCRO_WA_KEY` (solo leads del número de Sincro) y
+`SINCRO_WA_ADMIN_KEY`.
+
 ## Desarrollo
 
 ```bash

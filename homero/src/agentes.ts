@@ -20,6 +20,14 @@ import type { Agente, Anuncio, Recibido } from './store.js';
 import { RONDAS_DE_REVISION } from './anuncios.js';
 import { catalogo } from './ofrecemos.js';
 import { ensayoActivo, identificarRemitente } from './ventas.js';
+import {
+  herramientasDeWhatsApp,
+  PayloadDeWhatsApp,
+  ROL_WHATSAPP,
+  variantesDeTelefono,
+  yaContestado,
+  type ClienteWa,
+} from './whatsapp.js';
 
 /**
  * Los agentes pensantes de Homero (spec 2026-10-07-homero-agentes-pensantes).
@@ -44,6 +52,8 @@ export interface DepsDeAgentes extends DepsDeHerramientas {
    * reporta nada.
    */
   reportar?: (r: ReporteDeError) => Promise<unknown>;
+  /** El numero de Sincro en el bot de WhatsApp (clave de app, solo leads). */
+  wa?: ClienteWa;
 }
 
 /**
@@ -227,6 +237,8 @@ async function correr(
     debeCerrar: boolean;
     pedido?: { cantidad?: number; rubro?: string; zona?: string };
     topes?: Topes;
+    /** Otro rol para el mismo agente (atencion por WhatsApp en vez de por mail). */
+    rol?: string;
   },
   deps: DepsDeAgentes,
 ): Promise<Registro> {
@@ -244,7 +256,7 @@ async function correr(
     r = await deps.gateway.correr({
       corrida,
       tokenCorrida: token,
-      sistema: sistemaDe(ROLES[agente]),
+      sistema: sistemaDe(o.rol ?? ROLES[agente]),
       objetivo: texto,
       herramientas: lista,
       web: o.web,
@@ -437,6 +449,32 @@ Firma de Gero:
 ${deps.firma}`,
     (reg) => herramientasDeAtencion(deps, { recibido, lead, de, esEnsayo, seguimientosFrenados, registro: reg }),
     { leadId: lead?.id, web: false, debeCerrar: true },
+    deps,
+  );
+}
+
+/**
+ * Alguien escribio al WhatsApp de Sincro. Lo atiende el mismo agente de
+ * atencion (su libreta y su historial), con otro rol y otras herramientas: por
+ * WhatsApp todo sale solo y Gero se entera por Telegram.
+ */
+export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Promise<void> {
+  if (!deps.wa) throw new Error('falta SINCRO_WA_URL / SINCRO_WA_KEY: no hay WhatsApp');
+  const p = PayloadDeWhatsApp.parse(payload);
+  // Si ya salio una respuesta despues de este mensaje, otra corrida lo contesto
+  // junto con los anteriores: no se piensa dos veces.
+  if (yaContestado(await deps.wa.charla(p.contacto), p.mensaje_id)) return;
+  const lead = await deps.store.leadPorTelefono(variantesDeTelefono(p.contacto));
+  const texto = p.texto ?? `(${p.tipo})`;
+  await correr(
+    'atencion',
+    `Objetivo: llegó un WhatsApp${lead ? ` de ${lead.nombre}` : ''} al número de Sincro. Entendé qué quiere y resolvelo: la mejor respuesta para llevarlo a una charla con Gero, o lo que corresponda.`,
+    (reg) =>
+      herramientasDeWhatsApp(
+        { store: deps.store, wa: deps.wa!, ahora: deps.ahora, avisar: deps.avisar },
+        { contacto: p.contacto, nombre: p.nombre ?? '', texto, referral: p.referral ?? null, lead, registro: reg },
+      ),
+    { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP },
     deps,
   );
 }

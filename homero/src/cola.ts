@@ -5,7 +5,7 @@ import { horaArgentina } from './horas.js';
 import { finanzasDelDia } from './finanzas.js';
 import { presupuestar } from './precios.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
-import { agenteAtender, agenteBuscar, agentePublicitar, agenteRevisar, agenteVender, type DepsDeAgentes } from './agentes.js';
+import { agenteAtender, agenteBuscar, agentePublicitar, agenteRevisar, agenteVender, agenteWhatsApp, type DepsDeAgentes } from './agentes.js';
 import { escribirALeadMeta, leerInsights, publicarAnuncio, resumenDeAnuncios } from './anuncios.js';
 import { SinLugar } from './gateway.js';
 import type { Recibido, Tarea } from './store.js';
@@ -141,6 +141,8 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
     case 'agente_atender':
     case 'resumir_respuesta':
       return agenteAtender(tarea.payload as Recibido, deps);
+    case 'agente_whatsapp':
+      return agenteWhatsApp(tarea.payload, deps);
     case 'agente_buscar':
       return agenteBuscar(tarea.payload, deps);
     case 'prospectar':

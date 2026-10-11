@@ -15,6 +15,7 @@ export type TipoDeTarea =
   | 'agente_buscar'
   | 'agente_vender'
   | 'agente_atender'
+  | 'agente_whatsapp'
   | 'agente_publicitar'
   | 'agente_revisar'
   | 'publicar_anuncio'
@@ -412,6 +413,11 @@ export interface Store {
   lead(id: number): Promise<Lead | undefined>;
   leadsEnBorrador(): Promise<number[]>;
   leadPorEmail(email: string): Promise<Lead | undefined>;
+  /**
+   * Por telefono EXACTO (solo digitos, en cualquiera de las variantes que se
+   * pasan). Nunca por los ultimos numeros: chocan entre negocios distintos.
+   */
+  leadPorTelefono(variantes: string[]): Promise<Lead | undefined>;
   /** Si algun lead anterior tiene una web en ese dominio (`megatlon.com`). */
   hayLeadConDominio(dominio: string): Promise<boolean>;
   actualizarLead(
@@ -770,6 +776,15 @@ export class PgStore implements Store {
       `^(https?://)?(www[0-9]*\\.)?${escapado}([/:?#]|$)`,
     ]);
     return (r.rowCount ?? 0) > 0;
+  }
+
+  async leadPorTelefono(variantes: string[]) {
+    if (variantes.length === 0) return undefined;
+    const r = await this.pool.query(
+      `SELECT * FROM homero.leads WHERE regexp_replace(telefono, '[^0-9]', '', 'g') = ANY($1) ORDER BY id DESC LIMIT 1`,
+      [variantes],
+    );
+    return r.rows[0] ? aLead(r.rows[0]) : undefined;
   }
 
   async leadPorEmail(email: string) {
