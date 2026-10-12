@@ -62,6 +62,13 @@ export function credencialesDeHumo(p: {
   contrato?: string;
 }): { email: string; password: string } | undefined {
   if (p.demo) return p.demo;
+  // La linea que el plan tiene que dejar en el contrato (ver `corrida.ts`). Va
+  // antes que el patron suelto: en TallerPro (2026-10-12) la prueba no entro
+  // nunca, y un pliego con varios mails no dice cual es el del login.
+  for (const texto of [p.contrato, p.md]) {
+    const fija = /USUARIO_DE_PRUEBA:\s*([\w.+-]+@[\w-]+(?:\.[\w-]+)+)\s*\/\s*(\S+)/.exec(texto ?? '');
+    if (fija) return { email: fija[1]!, password: fija[2]! };
+  }
   for (const texto of [p.contrato, p.md]) {
     const m = /([\w.+-]+@[\w-]+(?:\.[\w-]+)+)\s*(?:\/|,|\||contrase(?:ñ|n)a:?|password:?)\s*([^\s,;)]+)/i.exec(texto ?? '');
     if (m) return { email: m[1]!, password: m[2]! };

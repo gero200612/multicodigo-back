@@ -854,29 +854,77 @@ export function bloqueDeEncoladas(encoladas: string[]): string[] {
  * dejar pasar una repetida solo cuesta un turno.
  */
 export function sinRepetidas(nuevos: string[], existentes: string[]): string[] {
-  const palabras = (t: string) =>
-    new Set(
-      t
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[̀-ͯ]/g, '')
-        .split(/[^a-z0-9]+/)
-        .filter((w) => w.length > 3),
-    );
-  const parecido = (a: Set<string>, b: Set<string>) => {
-    if (a.size === 0 || b.size === 0) return 0;
-    let comunes = 0;
-    for (const w of a) if (b.has(w)) comunes += 1;
-    return comunes / (a.size + b.size - comunes);
-  };
-  const vistas = existentes.map(palabras);
+  const vistas = existentes.map(palabrasDe);
   const salen: string[] = [];
   for (const t of nuevos) {
-    const p = palabras(t);
+    const p = palabrasDe(t);
     if (vistas.some((v) => parecido(p, v) >= 0.6)) continue;
     salen.push(t);
   }
   return salen;
+}
+
+const palabrasDe = (t: string) =>
+  new Set(
+    t
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 3),
+  );
+
+const parecido = (a: Set<string>, b: Set<string>) => {
+  if (a.size === 0 || b.size === 0) return 0;
+  let comunes = 0;
+  for (const w of a) if (b.has(w)) comunes += 1;
+  return comunes / (a.size + b.size - comunes);
+};
+
+/** Desde cuantos arreglos que no alcanzaron se cambia de enfoque. */
+const INTENTOS_ANTES_DE_INVESTIGAR = 2;
+/** Desde cuantos se deja de insistir y queda para una persona. */
+const INTENTOS_ANTES_DE_DEJARLO = 4;
+
+/**
+ * Un sintoma que vuelve despues de que lo "arreglaron" no se ataca con otro
+ * arreglo igual.
+ *
+ * TallerPro (2026-10-11): unas diez tareas seguidas escribieron migraciones de
+ * "reparacion" para el mismo 42P01 (falta la tabla Ordenes), cada una con su
+ * teoria, y ninguna leyo el log del arranque, que decia exactamente que
+ * migracion reventaba y por que. Cada tarea salia "lista" y el sintoma volvia.
+ *
+ * `previas` son las tareas YA TERMINADAS de la corrida (listas o fallidas).
+ * Con dos que se le parecen, el hueco se reescribe como una investigacion de
+ * la causa; con cuatro, sale de la cola y va a `dejadas` para el informe.
+ */
+export function escalarRepetidas(
+  nuevos: string[],
+  previas: string[],
+  umbral = 0.45,
+): { textos: string[]; dejadas: string[] } {
+  const vistas = previas.map(palabrasDe);
+  const textos: string[] = [];
+  const dejadas: string[] = [];
+  for (const t of nuevos) {
+    const p = palabrasDe(t);
+    const veces = vistas.filter((v) => parecido(p, v) >= umbral).length;
+    if (veces >= INTENTOS_ANTES_DE_DEJARLO) {
+      dejadas.push(`lo intente ${veces} veces y sigue igual, queda para una persona: ${t.split('\n')[0]!.slice(0, 200)}`);
+    } else if (veces >= INTENTOS_ANTES_DE_INVESTIGAR) {
+      textos.push(
+        `INVESTIGAR LA CAUSA, NO OTRO ARREGLO: este mismo problema ya se "arreglo" ${veces} veces en esta corrida ` +
+          'y sigue. Antes de tocar codigo: lee el log del arranque del back publicado y la respuesta exacta de la ' +
+          'ruta que falla, reproducilo, y explica por que los arreglos anteriores no tomaron efecto. Recien ' +
+          'entonces corregi la causa. Si no la encontras, decilo con lo que probaste en vez de agregar otro ' +
+          `parche.\n\nEl problema:\n${t}`,
+      );
+    } else {
+      textos.push(t);
+    }
+  }
+  return { textos, dejadas };
 }
 
 /**
@@ -1012,8 +1060,9 @@ export function promptDeAnalisis(
           // AH (2026-09-27): sin esto las pantallas con guard salian como el
           // login y lo de adentro no lo reviso nadie.
           'Si la app tiene LOGIN, lo de adentro tambien se mira: pasale a mirar el',
-          'parametro login con el usuario de PRUEBA que siembra el propio back (buscalo',
-          'en el seeder) y pedi las pantallas de despues de entrar. Si en el ESTADO REAL',
+          'parametro login con el usuario de la linea USUARIO_DE_PRUEBA del contrato (si',
+          'no esta, buscalo en el seeder, y que falte la linea ya es un hueco) y pedi las',
+          'pantallas de despues de entrar. Si en el ESTADO REAL',
           'figura el front publicado, usa publicado con esa URL: es lo que ve la persona,',
           'con su back y su base de verdad (lo local corre sin base y el login no entra).',
           '',
@@ -1174,6 +1223,16 @@ export function promptDePlan(
     'ruta no esta ahi, cada uno la va a inventar distinta.',
     '',
     'Sin prefijos ambiguos: si las rutas van bajo /api, decilo en cada una.',
+    '',
+    // TallerPro (2026-10-12): sin un usuario conocido, la prueba de humo y el
+    // analista visual no pudieron entrar a la app publicada, todo contestaba
+    // 401 y nadie vio que medio sistema daba 500. El usuario se fija ACA, una
+    // vez, y lo leen la prueba, mirar y probar_api.
+    'Si la app tiene LOGIN, el contrato lleva una linea exacta',
+    '`USUARIO_DE_PRUEBA: <email> / <contraseña>` con un administrador que el back',
+    'siembra al arrancar (en un seed propio, que no dependa de otros), y la ruta de',
+    'login escrita como `POST /api/.../login` que devuelve `token`. La primera tarea',
+    'del back siembra ese usuario tal cual.',
     '',
     // AH (2026-09-27): una tarea lista duraba 3,8 minutos en promedio. El plan
     // troceaba en archivos y nadie escribia que tenia que tener cada cosa para

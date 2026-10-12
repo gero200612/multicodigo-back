@@ -67,6 +67,14 @@ describe('credencialesDeHumo', () => {
     expect(credencialesDeHumo({ md })).toEqual({ email: 'admin@turnero.com', password: 'Admin123!' });
   });
 
+  // Un pliego con varios mails (el de contacto del taller, el del admin) no
+  // dice cual es el del login: la linea fija gana.
+  it('la linea USUARIO_DE_PRUEBA del contrato gana sobre cualquier otro mail', () => {
+    const md = 'Datos del taller: contacto@tallerpro.com, Teléfono 1145556677';
+    const contrato = 'POST /api/auth/login\nUSUARIO_DE_PRUEBA: admin@tallerpro.com / Admin123!\nGET /api/ordenes';
+    expect(credencialesDeHumo({ md, contrato })).toEqual({ email: 'admin@tallerpro.com', password: 'Admin123!' });
+  });
+
   it('sin nada de donde sacarlo, no hay', () => {
     expect(credencialesDeHumo({ md: 'una app sin login' })).toBeUndefined();
   });

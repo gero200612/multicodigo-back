@@ -7,6 +7,7 @@ import {
   estadoDeCoolify,
   estadoEnVps,
   nombreDeVps,
+  problemasEnVps,
   publicarEnVps,
   revisarDemos,
   type VpsDeps,
@@ -388,5 +389,81 @@ describe('demos de Homero', () => {
     expect(avisos[1]).toMatch(/Apagué la demo/);
     expect(pedidos.some((p) => p.metodo === 'DELETE')).toBe(false);
     expect(await store.demosPorVencer(24)).toEqual([]);
+  });
+});
+
+/**
+ * Lo que el VPS sabe que anda mal, como TRABAJO para la corrida.
+ *
+ * TallerPro (2026-10-12): el armado fallo tres veces, la prueba de humo no
+ * pudo entrar y el back arranco con `crit: No se pudo migrar la base de
+ * datos`. Todo eso quedo en "Falta esto" del informe y ninguna tarea lo
+ * ataco: la corrida cerro con medio sistema dando 500.
+ */
+describe('problemas del VPS para la corrida', () => {
+  async function conBack(p: { estado?: 'andando' | 'fallo'; motivo?: string; logs?: string; humo?: VpsDeps['humo'] }) {
+    const a = await armar();
+    await a.store.guardarRecursoVps({ proyecto_id: 'p1', parte: 'back', repo: 'turnos-back', coolify_uuid: 'uback', url: 'https://turnos-api.apps.punchi.dev', secreto: null });
+    await a.store.guardarRecursoVps({ proyecto_id: 'p1', parte: 'front', repo: 'turnos-front', coolify_uuid: 'ufront', url: 'https://turnos.apps.punchi.dev', secreto: null });
+    await a.store.estadoRecursoVps('uback', p.estado ?? 'andando', p.motivo ?? null);
+    await a.store.estadoRecursoVps('ufront', 'andando', null);
+    const base = a.deps.config.coolify.fetchImpl!;
+    a.deps.config.coolify.fetchImpl = (async (url: string, init?: RequestInit) =>
+      /\/logs/.test(String(url)) ? new Response(JSON.stringify({ logs: p.logs ?? 'info: arranco' })) : base(url, init)) as unknown as typeof fetch;
+    return problemasEnVps('p1', { ...a.deps, ...(p.humo ? { humo: p.humo } : {}) });
+  }
+  const sano: VpsDeps['humo'] = async () => ({ probadas: 5, entro: true, fallas: [] });
+
+  it('un back sano no da trabajo', async () => {
+    expect(await conBack({ humo: sano })).toEqual([]);
+  });
+
+  it('un armado fallido es trabajo, con el log del armado', async () => {
+    const r = await conBack({ estado: 'fallo', motivo: 'error CS0246: AppDbContext', humo: sano });
+    expect(r).toHaveLength(1);
+    expect(r[0]!.nombre).toBe('turnos-back');
+    expect(r[0]!.detalle).toContain('CS0246');
+  });
+
+  it('un crit en el arranque es trabajo aunque las rutas contesten', async () => {
+    const logs = [
+      'info: Microsoft.EntityFrameworkCore.Migrations[20402]',
+      "      Applying migration '20261010165000_AddOrdenes'.",
+      'crit: Program[0]',
+      '      No se pudo migrar la base de datos al arrancar.',
+      '         at AddOrdenes.BuildTargetModel(ModelBuilder modelBuilder) in /src/Migrations/X.Designer.cs:line 189',
+      'info: Microsoft.Hosting.Lifetime[14]',
+    ].join('\n');
+    const r = await conBack({ logs, humo: sano });
+    expect(r).toHaveLength(1);
+    expect(r[0]!.resumen).toMatch(/arranc/i);
+    expect(r[0]!.detalle).toContain('No se pudo migrar');
+    expect(r[0]!.detalle).toContain("Applying migration '20261010165000_AddOrdenes'");
+  });
+
+  it('las rutas con 5xx son trabajo, con el log', async () => {
+    const r = await conBack({
+      logs: 'fail: relation "Ordenes" does not exist',
+      humo: async () => ({ probadas: 9, entro: true, fallas: [{ ruta: '/api/ordenes', status: 500, cuerpo: 'x' }] }),
+    });
+    expect(r).toHaveLength(1);
+    expect(r[0]!.detalle).toContain('GET /api/ordenes -> 500');
+  });
+
+  // Sin login las rutas protegidas dan 401 y la prueba no prueba nada: eso no
+  // es un aviso, es un hueco que la corrida tiene que cerrar.
+  it('no poder entrar con el usuario de prueba es trabajo', async () => {
+    const r = await conBack({ humo: async () => ({ probadas: 9, entro: false, fallas: [] }) });
+    expect(r).toHaveLength(1);
+    expect(r[0]!.resumen).toMatch(/no pude entrar/i);
+    expect(r[0]!.detalle).toMatch(/USUARIO_DE_PRUEBA/);
+  });
+
+  it('el front caido tambien', async () => {
+    const a = await armar();
+    await a.store.guardarRecursoVps({ proyecto_id: 'p1', parte: 'front', repo: 'turnos-front', coolify_uuid: 'ufront', url: 'https://turnos.apps.punchi.dev', secreto: null });
+    await a.store.estadoRecursoVps('ufront', 'fallo', 'npm ERR! build');
+    const r = await problemasEnVps('p1', a.deps);
+    expect(r.map((x) => x.nombre)).toEqual(['turnos-front']);
   });
 });

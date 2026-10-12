@@ -57,6 +57,7 @@ import {
   EJES,
   QUE_MIRA,
   type Corrida,
+  escalarRepetidas,
   type Eje,
   type MotivoDeCierre,
   type ResumenDeTareas,
@@ -2862,9 +2863,25 @@ async function rondaDeAnalisis(
     ? await deps.store.idDeProyecto(corrida.proyecto).catch(() => null)
     : null;
   if (deps.verificarApp && proyectoIdParaVerificar) {
-    const problemas = await deps
+    const encontrados = await deps
       .verificarApp(proyectoIdParaVerificar, corrida.proyecto)
       .catch(() => [] as { resumen: string; tarea: string }[]);
+    // Un problema que ya se intento arreglar y vuelve pide otra cosa: ver
+    // `escalarRepetidas`. El texto del sistema es estable (mismo resumen,
+    // mismo log), asi que aca el parecido es alto de verdad.
+    const terminadas = (await deps.store.tareasDeCorrida(corrida.id).catch(() => []))
+      .filter((t) => t.estado !== 'pendiente' && t.estado !== 'corriendo' && t.estado !== 'cancelada')
+      .map((t) => t.texto);
+    const { textos: tareasNuevas, dejadas } = escalarRepetidas(
+      encontrados.map((p) => p.tarea),
+      terminadas,
+    );
+    for (const d of dejadas) {
+      if (!(corrida.pendientes ?? []).includes(d)) await deps.store.anotarPendiente(corrida.id, d).catch(() => undefined);
+    }
+    const problemas = encontrados
+      .map((p) => ({ ...p, tarea: tareasNuevas.find((t) => t === p.tarea || t.endsWith(p.tarea)) }))
+      .filter((p): p is { resumen: string; tarea: string } => p.tarea !== undefined);
     if (problemas.length > 0) {
       const agente = (await deps.store.getActiveAgent(chatId)) ?? deps.defaultAgent;
       await deps.store

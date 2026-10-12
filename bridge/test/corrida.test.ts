@@ -7,6 +7,7 @@ import {
   bloqueDeEstado,
   tareaDeIntegracion,
   sinRepetidas,
+  escalarRepetidas,
   textoDeInforme,
   TECHO_RONDAS_POR_DEFECTO,
   techoPorTamano,
@@ -4592,6 +4593,44 @@ describe('sinRepetidas', () => {
     const a = 'Front: pantalla de Registro con formulario nombre apellido email telefono password';
     const b = 'Front: pantalla de Registro con formulario nombre apellido email telefono password y avisos';
     expect(sinRepetidas([a, b], [])).toEqual([a, b]);
+  });
+});
+
+/**
+ * TallerPro (2026-10-11): unas diez tareas atacaron el mismo 42P01 con
+ * migraciones de "reparacion" y ninguna leyo el log del arranque.
+ */
+describe('escalarRepetidas', () => {
+  const hueco =
+    'Back: GET /api/ordenes devuelve 500 en produccion con 42P01 relation "Ordenes" does not exist; crear la tabla Ordenes que falta';
+  const previa = (n: number) =>
+    `Back: GET /api/ordenes da 500 en produccion (42P01 relation "Ordenes" does not exist): agregar migracion que cree la tabla Ordenes, intento ${n}`;
+
+  it('la primera vez pasa tal cual', () => {
+    expect(escalarRepetidas([hueco], [])).toEqual({ textos: [hueco], dejadas: [] });
+  });
+
+  it('con un arreglo previo todavia pasa tal cual', () => {
+    expect(escalarRepetidas([hueco], [previa(1)]).textos).toEqual([hueco]);
+  });
+
+  it('con dos arreglos que no alcanzaron, se pide investigar la causa leyendo el log', () => {
+    const r = escalarRepetidas([hueco], [previa(1), previa(2)]);
+    expect(r.textos).toHaveLength(1);
+    expect(r.textos[0]).toMatch(/^INVESTIGAR LA CAUSA/);
+    expect(r.textos[0]).toContain('log del arranque');
+    expect(r.textos[0]).toContain(hueco);
+  });
+
+  it('con cuatro, deja de insistir y queda para el informe', () => {
+    const r = escalarRepetidas([hueco], [1, 2, 3, 4].map(previa));
+    expect(r.textos).toEqual([]);
+    expect(r.dejadas[0]).toMatch(/lo intente 4 veces/);
+  });
+
+  it('un problema distinto no cuenta como repetido', () => {
+    const otro = 'Front: el header se parte en dos renglones a 1280px, agrupar el menu en desplegables';
+    expect(escalarRepetidas([otro], [previa(1), previa(2), previa(3)]).textos).toEqual([otro]);
   });
 });
 

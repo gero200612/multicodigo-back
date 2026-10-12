@@ -7,6 +7,7 @@ import { frontYBackDe, type ResultadoDeConfig } from './conectar.js';
 import type { Publicado } from './publicar.js';
 import type { EstadoVps, ParteVps, RecursoVps, RepoDelProyecto, Store } from './store.js';
 import { textoDeFallas, type ResultadoDeHumo } from './humo.js';
+import type { ProblemaDeDespliegue } from './verificar.js';
 
 /**
  * Publicar un proyecto de Punchi en el VPS: base, back y front, conectados.
@@ -115,6 +116,87 @@ async function probarBack(uuid: string, url: string, deps: VpsDeps): Promise<{ f
     };
   }
   return {};
+}
+
+/**
+ * Lo que se le pide al back para que la prueba pueda entrar. La misma linea la
+ * fija el PISO del back (ver `corrida.ts`) y la lee `credencialesDeHumo`.
+ */
+const PEDIDO_DE_USUARIO =
+  'El back tiene que sembrar un usuario administrador al arrancar y declararlo en el contrato con UNA linea ' +
+  'exacta `USUARIO_DE_PRUEBA: <email> / <contraseña>`, con la ruta de login como `POST /...login`. ' +
+  'Revisa tambien que el seed corra aunque otro seed falle.';
+
+/**
+ * Lo que el arranque del back dice que salio mal: un `crit:` o una excepcion
+ * sin atrapar, con las lineas de antes (la migracion que se estaba aplicando)
+ * y el stack que sigue.
+ *
+ * En TallerPro (2026-10-12) el back arrancaba con `crit: No se pudo migrar la
+ * base de datos` y seguia andando: las rutas daban 500 por tablas que faltaban
+ * y diez tareas adivinaron la causa sin haber leido nunca esta linea.
+ */
+export function erroresDeArranque(log: string): string | undefined {
+  const lineas = log.split('\n').map((x) => x.trimEnd());
+  const i = lineas.findIndex((x) => /^crit:|unhandled exception|application startup exception|host terminated/i.test(x));
+  if (i < 0) return undefined;
+  const antes = lineas.slice(Math.max(0, i - 3), i).filter((x) => /applying|migrat|seed/i.test(x));
+  return [...antes, ...lineas.slice(i, i + 15)].join('\n').slice(0, 2000);
+}
+
+/**
+ * Lo que el VPS sabe que anda mal en el proyecto, como trabajo para la corrida.
+ *
+ * Antes cada cosa de estas era un renglon de "Falta esto" en el informe y
+ * nadie la arreglaba: un armado fallido, un back que arranca con errores, un
+ * back con rutas en 5xx, y una prueba que no pudo entrar (que sin login no
+ * prueba nada, porque todo contesta 401 antes de tocar la base).
+ */
+export async function problemasEnVps(proyectoId: string, deps: VpsDeps): Promise<ProblemaDeDespliegue[]> {
+  const problemas: ProblemaDeDespliegue[] = [];
+  const recursos = await deps.store.recursosVps(proyectoId);
+  for (const r of recursos) {
+    if (r.parte === 'proyecto' || r.parte === 'base' || r.estado === 'apagado') continue;
+    if (r.estado === 'fallo') {
+      problemas.push({
+        nombre: r.repo,
+        resumen: `${r.repo} no anda en el VPS (${r.url ?? 'sin URL'})`,
+        detalle: r.motivo ?? 'el armado fallo sin detalle',
+      });
+      continue;
+    }
+    if (r.parte !== 'back' || r.estado !== 'andando' || !r.url) continue;
+
+    const l = await coolify.logsDe(r.coolify_uuid, 400, deps.config.coolify).catch(() => undefined);
+    const arranque = l?.ok ? erroresDeArranque(l.log) : undefined;
+    if (arranque) {
+      problemas.push({
+        nombre: r.repo,
+        resumen: `${r.repo} arranca con errores en el VPS`,
+        detalle: `Lo que dice el log del arranque del back publicado:\n${arranque}`,
+      });
+      continue;
+    }
+
+    const h = deps.humo ? await deps.humo(r.url).catch(() => undefined) : undefined;
+    if (!h) continue;
+    if (h.fallas.length > 0) {
+      problemas.push({
+        nombre: r.repo,
+        resumen: `${r.repo} falla en ${h.fallas.length} de ${h.probadas} rutas del contrato`,
+        detalle: textoDeFallas(h, await ultimasDelLog(r.coolify_uuid, deps)),
+      });
+    } else if (!h.entro) {
+      problemas.push({
+        nombre: r.repo,
+        resumen: `no pude entrar a ${r.repo} con el usuario de prueba`,
+        detalle:
+          'Sin login todas las rutas protegidas contestan 401 y nadie puede probar la app publicada ' +
+          `(${r.url}): ni la prueba de humo ni el analista visual. ${PEDIDO_DE_USUARIO}`,
+      });
+    }
+  }
+  return problemas;
 }
 
 export interface ResultadoVps {

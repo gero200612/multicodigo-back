@@ -17,13 +17,14 @@ import { PgStore, type FilaDeDocumento } from './store.js';
 import { askAgent, listarAgentes, esperarAlGateway } from './agents-client.js';
 import { firmarToken, crearRepo } from './panel-client.js';
 import { publicar } from './publicar.js';
-import { dispararDeploy, setearEnvVar, ultimoDeploy } from './render-api.js';
+import { dispararDeploy, setearEnvVar, tipoDeRepo, ultimoDeploy } from './render-api.js';
 import { reescribirConfig } from './conectar.js';
 import { escribirArchivo, leerArchivo } from './github-contenido.js';
 import { guardarAnalisis, guardarCapturas } from './analisis.js';
 import { asegurarDockerfile } from './dockerfile-back.js';
 import { asegurarOutputPathDeAngular } from './angular-output.js';
 import { verificarDespliegue, tareaDeProblema } from './verificar.js';
+import { problemasDeRecorrida, recorrerPublicado } from './recorrida.js';
 import type { Corrida } from './corrida.js';
 import { mergearEnGateway, guardarEnGateway, inspeccionarRepo, trabajoEnGateway } from './gateway-admin.js';
 import { fetchPending, sendDecision } from './approvals.js';
@@ -40,8 +41,8 @@ import { cifrar, claveDe, descifrar } from './cifrado.js';
 import { verificar } from './proveedores.js';
 import { aDestino, desplegarRepo, publicarCambios, textoDePublicacion } from './publicar-ticket.js';
 import type { Destino } from './store.js';
-import { apagarEnVps, borrarDelVps, estadoEnVps, publicarEnVps, revisarDemos, type VpsDeps } from './vps.js';
-import { probarEnVivo, type ResultadoDeHumo } from './humo.js';
+import { apagarEnVps, borrarDelVps, estadoEnVps, problemasEnVps, publicarEnVps, revisarDemos, type VpsDeps } from './vps.js';
+import { credencialesDeHumo, probarEnVivo, type ResultadoDeHumo } from './humo.js';
 import { usoDelVps } from './vps-uso.js';
 import { asegurarDockerfileDeFront } from './dockerfile-front.js';
 import { partirParaTelegram } from './codigo.js';
@@ -302,6 +303,16 @@ function depsDeVps(githubToken?: string, esperarMs = 0, proyectoId?: string): Vp
   };
 }
 
+/** La ultima corrida del DUEÑO sobre el proyecto que fijo contrato. Ver `humoDe`. */
+async function corridaConContrato(proyectoId: string): Promise<{ contrato?: string; md: string } | undefined> {
+  const [nombre, dueno] = await Promise.all([
+    store.nombreDeProyecto(proyectoId).catch(() => undefined),
+    store.duenoDeProyecto(proyectoId).catch(() => undefined),
+  ]);
+  if (!nombre || !dueno) return undefined;
+  return (await store.corridasDeUsuario(dueno, 30).catch(() => [])).find((c) => c.proyecto === nombre && c.contrato);
+}
+
 /**
  * La prueba de humo del back publicado de un proyecto (ver `humo.ts`): con el
  * contrato y el pliego de la ultima corrida del DUEÑO sobre ese proyecto —la
@@ -309,15 +320,8 @@ function depsDeVps(githubToken?: string, esperarMs = 0, proyectoId?: string): Vp
  * llame igual— y la cuenta de demo si la hay.
  */
 async function humoDe(proyectoId: string, backUrl: string): Promise<ResultadoDeHumo | undefined> {
-  const [nombre, dueno] = await Promise.all([
-    store.nombreDeProyecto(proyectoId).catch(() => undefined),
-    store.duenoDeProyecto(proyectoId).catch(() => undefined),
-  ]);
-  if (!nombre || !dueno) return undefined;
-  const corrida = (await store.corridasDeUsuario(dueno, 30).catch(() => [])).find(
-    (c) => c.proyecto === nombre && c.contrato,
-  );
-  if (!corrida) return undefined;
+  const corrida = await corridaConContrato(proyectoId);
+  if (!corrida?.contrato) return undefined;
   const c = await store.cuentaDemo(proyectoId).catch(() => undefined);
   let demo: { email: string; password: string } | undefined;
   try {
@@ -672,7 +676,7 @@ const pipelineDeps = {
    * publica y, si no responde, lo devuelve como trabajo.
    */
   vpsPorDefecto: Boolean(depsDeVps()),
-  verificarApp: async (proyectoId: string) => {
+  verificarApp: async (proyectoId: string, proyecto?: string) => {
     const repos = await store.reposDeProyecto(proyectoId).catch(() => []);
     const problemas = await verificarDespliegue(
       repos
@@ -692,7 +696,26 @@ const pipelineDeps = {
           }),
       },
     );
-    return problemas.map((p) => ({ resumen: p.resumen, tarea: tareaDeProblema(p) }));
+    // En el VPS la raiz contestando no dice nada: TallerPro (2026-10-12)
+    // contestaba 200 con el armado fallado, el arranque en `crit` y nueve rutas
+    // en 500. Lo que el VPS sabe que anda mal entra como trabajo, no como un
+    // renglon del informe.
+    const vps = depsDeVps(undefined, 0, proyectoId);
+    const delVps = vps ? await problemasEnVps(proyectoId, vps).catch(() => []) : [];
+    const hallados = [...problemas, ...delVps];
+    // Con el despliegue sano, la recorrida de cada front publicado: todas las
+    // pantallas del menu, con el usuario del proyecto. Antes no: con el back
+    // roto todas las pantallas muestran el mismo error, y la tarea que sirve
+    // es la de la causa.
+    if (hallados.length === 0 && proyecto) {
+      for (const r of repos.filter((x) => !x.solo_lectura && tipoDeRepo(x.nombre) === 'front')) {
+        const url = r.destino_url ?? r.render_url;
+        if (!url) continue;
+        const rec = await recorrerPublicado(proyecto, url, gatewayDeps);
+        if (rec) hallados.push(...problemasDeRecorrida(r.nombre, url, rec));
+      }
+    }
+    return hallados.map((p) => ({ resumen: p.resumen, tarea: tareaDeProblema(p) }));
   },
   // Para poder decir POR QUE un slot esta ocupado: un turno frenado esperando
   // un OK se destraba con un toque de la otra persona, y uno trabajando hay que
@@ -947,7 +970,15 @@ function despliegueDelPanel() {
     loginDeDemo: async (proyecto: string) => {
       const id = await store.idDeProyecto(proyecto);
       const c = id ? await store.cuentaDemo(id) : undefined;
-      if (!c) return undefined;
+      // Sin cuenta de demo, el usuario que el plan fijo en el contrato: sin
+      // esto mirar no entraba a la app publicada (TallerPro, 2026-10-12) y lo
+      // de adentro del login no lo veia nadie.
+      if (!c) {
+        // `ruta` es la pantalla del formulario en el front, no la de la API.
+        const corrida = id ? await corridaConContrato(id) : undefined;
+        const cred = corrida ? credencialesDeHumo({ md: corrida.md, ...(corrida.contrato ? { contrato: corrida.contrato } : {}) }) : undefined;
+        return cred ? { ruta: '/login', email: cred.email, password: cred.password } : undefined;
+      }
       try {
         return { ruta: c.ruta, email: c.usuario, password: descifrar(c.passwordCifrada, clave) };
       } catch (err) {

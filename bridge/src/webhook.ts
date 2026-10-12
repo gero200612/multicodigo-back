@@ -23,7 +23,7 @@ import {
 } from './errores.js';
 import type { Store } from './store.js';
 import { FORMATOS_GENERABLES } from './documentos.js';
-import { EJES, sinRepetidas } from './corrida.js';
+import { EJES, escalarRepetidas, sinRepetidas } from './corrida.js';
 import { registrarDrive, type DriveApiDeps } from './drive-api.js';
 import { registrarSupabase, type SupabaseApiDeps } from './supabase-api.js';
 import { registrarAltas, type AltasDeps } from './altas.js';
@@ -1177,10 +1177,20 @@ export function buildWebhookServer(
 
       // Lo que otro analista (o el plan) ya dejo encolado no se vuelve a anotar:
       // en AH los cuatro ejes de la ronda 1 encolaron la misma pantalla tres veces.
-      const yaEncoladas = (await api.store.tareasDeCorrida(corrida.id).catch(() => []))
+      const deLaCorrida = await api.store.tareasDeCorrida(corrida.id).catch(() => []);
+      const yaEncoladas = deLaCorrida
         .filter((t) => t.estado === 'pendiente' || t.estado === 'corriendo')
         .map((t) => t.texto);
-      const textos = sinRepetidas(cuerpo.data.huecos, yaEncoladas);
+      // Y lo que ya se "arreglo" y vuelve no se encola igual: se pide
+      // investigar la causa, y si ya se insistio demasiado, queda para una
+      // persona. Ver `escalarRepetidas` (TallerPro, 2026-10-11).
+      const terminadas = deLaCorrida
+        .filter((t) => t.estado !== 'pendiente' && t.estado !== 'corriendo' && t.estado !== 'cancelada')
+        .map((t) => t.texto);
+      const { textos, dejadas } = escalarRepetidas(sinRepetidas(cuerpo.data.huecos, yaEncoladas), terminadas);
+      for (const d of dejadas) {
+        if (!(corrida.pendientes ?? []).includes(d)) await api.store.anotarPendiente(corrida.id, d).catch(() => undefined);
+      }
       if (textos.length === 0) {
         return reply.code(200).send({
           output: 'anotado: todo lo que reportaste ya estaba en la cola. No repitas tareas.',
