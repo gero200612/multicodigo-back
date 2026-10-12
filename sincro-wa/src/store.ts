@@ -243,6 +243,8 @@ export interface Store {
   cambiarMensaje(id: number, c: CambiosDeMensaje): Promise<void>;
   /** Los ultimos `limite` de la charla, del mas viejo al mas nuevo. */
   charla(negocioId: number, contacto: string, limite: number): Promise<Mensaje[]>;
+  /** Una fila por charla con su ultimo mensaje, de la mas reciente a la mas vieja. */
+  charlas(negocioId: number | undefined, limite: number): Promise<{ ultimo: Mensaje; cantidad: number }[]>;
   /** Contactos distintos a los que salio una plantilla desde ese numero. */
   contactosConPlantilla(numeroId: number, desde: Date): Promise<string[]>;
   costosDelPeriodo(negocioId: number, desde: Date, hasta: Date): Promise<{ metaArs: number; iaUsd: number }>;

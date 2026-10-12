@@ -378,6 +378,19 @@ export class PgStore implements Store {
     ).map(mensaje);
   }
 
+  async charlas(negocioId: number | undefined, limite: number) {
+    const filas = await this.filas(
+      `SELECT * FROM (
+         SELECT DISTINCT ON (negocio_id, contacto) *,
+                count(*) OVER (PARTITION BY negocio_id, contacto) AS cantidad
+         FROM mensajes WHERE ($1::integer IS NULL OR negocio_id = $1)
+         ORDER BY negocio_id, contacto, fecha DESC, id DESC
+       ) u ORDER BY fecha DESC, id DESC LIMIT $2`,
+      [negocioId ?? null, limite],
+    );
+    return filas.map((r) => ({ ultimo: mensaje(r), cantidad: Number(r.cantidad) }));
+  }
+
   async contactosConPlantilla(numeroId: number, desde: Date) {
     return (
       await this.filas(

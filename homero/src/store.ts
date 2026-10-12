@@ -265,6 +265,8 @@ export interface Corrida {
   informe?: string;
   /** Una linea de lo que hizo, armada por el codigo (ver `Registro.resumen`). */
   resumen?: string;
+  /** El telefono de la charla de WhatsApp que atendio, si fue por WhatsApp. */
+  contacto?: string;
   error?: string;
   inicio: Date;
   fin?: Date;
@@ -471,7 +473,9 @@ export interface Store {
   demosPresupuestables(): Promise<Demo[]>;
 
   // ---- Agentes
-  crearCorrida(c: { agente: Agente; objetivo: string; leadId?: number }): Promise<number>;
+  crearCorrida(c: { agente: Agente; objetivo: string; leadId?: number; contacto?: string }): Promise<number>;
+  /** Las corridas de una charla de WhatsApp, de la mas nueva a la mas vieja. */
+  corridasDeContacto(contacto: string, limite: number): Promise<Corrida[]>;
   cerrarCorrida(id: number, c: CierreDeCorrida): Promise<void>;
   /** Para la que nunca llego a correr (sin cuenta libre). */
   borrarCorrida(id: number): Promise<void>;
@@ -1109,12 +1113,17 @@ export class PgStore implements Store {
 
   // ---- Agentes ----
 
-  async crearCorrida(c: { agente: Agente; objetivo: string; leadId?: number }) {
+  async crearCorrida(c: { agente: Agente; objetivo: string; leadId?: number; contacto?: string }) {
     const r = await this.pool.query(
-      'INSERT INTO homero.corridas (agente, objetivo, lead_id) VALUES ($1, $2, $3) RETURNING id',
-      [c.agente, c.objetivo, c.leadId ?? null],
+      'INSERT INTO homero.corridas (agente, objetivo, lead_id, contacto) VALUES ($1, $2, $3, $4) RETURNING id',
+      [c.agente, c.objetivo, c.leadId ?? null, c.contacto ?? null],
     );
     return Number(r.rows[0].id);
+  }
+
+  async corridasDeContacto(contacto: string, limite: number) {
+    const r = await this.pool.query('SELECT * FROM homero.corridas WHERE contacto = $1 ORDER BY id DESC LIMIT $2', [contacto, limite]);
+    return r.rows.map(aCorrida);
   }
 
   async cerrarCorrida(id: number, c: CierreDeCorrida) {
@@ -1681,6 +1690,7 @@ function aCorrida(f: Record<string, unknown>): Corrida {
     pasos: (f.pasos as Paso[] | null) ?? undefined,
     informe: (f.informe as string | null) ?? undefined,
     resumen: (f.resumen as string | null) ?? undefined,
+    contacto: (f.contacto as string | null) ?? undefined,
     error: (f.error as string | null) ?? undefined,
     inicio: new Date(f.inicio as string),
     fin: f.fin ? new Date(f.fin as string) : undefined,

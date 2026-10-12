@@ -243,11 +243,13 @@ async function correr(
     rol?: string;
     /** Alguien espera la respuesta: el gateway le da hasta la ultima cuenta libre. */
     urgente?: boolean;
+    /** La charla de WhatsApp que atiende: la pantalla Charlas junta mensajes y decisiones por esto. */
+    contacto?: string;
   },
   deps: DepsDeAgentes,
 ): Promise<Registro> {
   const texto = await conLibreta(agente, objetivo, deps);
-  const id = await deps.store.crearCorrida({ agente, objetivo: texto, leadId: o.leadId });
+  const id = await deps.store.crearCorrida({ agente, objetivo: texto, leadId: o.leadId, ...(o.contacto ? { contacto: o.contacto } : {}) });
   const corrida = `r${id}`;
   const registro: Registro = { anotados: [], cerro: false, corridaId: id };
   const propias = herramientas(registro);
@@ -494,7 +496,7 @@ export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Pro
         { store: deps.store, wa: deps.wa!, ahora: deps.ahora, avisar: deps.avisar },
         { contacto: p.contacto, nombre: p.nombre ?? '', texto, referral: p.referral ?? null, lead, registro: reg },
       ),
-    { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP, urgente: true },
+    { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP, urgente: true, contacto: p.contacto },
     deps,
   );
 }

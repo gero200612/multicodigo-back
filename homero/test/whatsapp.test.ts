@@ -237,6 +237,21 @@ describe('whatsapp: el agente', () => {
   });
 });
 
+describe('whatsapp: cada corrida sabe de que charla es', () => {
+  // La pantalla Charlas muestra al lado de cada mensaje que decidio Homero:
+  // sin el contacto en la corrida no hay como juntarlos.
+  it('la corrida del agente guarda el contacto', async () => {
+    const f = waFalso();
+    const h = armar({
+      agente: agenteDe({ atencion: async (usar) => void (await usar('responder', { texto: 'Hola!', horarios: [] })) }),
+    });
+    h.deps.wa = f.wa;
+    await agenteWhatsApp(payload, h.deps);
+    const [c] = await h.store.corridasDeContacto(CONTACTO, 10);
+    expect(c).toMatchObject({ agente: 'atencion', contacto: CONTACTO });
+  });
+});
+
 describe('whatsapp: la sección de la web', () => {
   function adminFalso() {
     const pedidos: { metodo: string; ruta: string; cuerpo?: unknown }[] = [];
@@ -267,6 +282,41 @@ describe('whatsapp: la sección de la web', () => {
     expect((await app.inject({ method: 'GET', url: '/whatsapp/ia/pendientes' })).statusCode).toBe(404);
     expect((await app.inject({ method: 'GET', url: '/whatsapp/eventos' })).statusCode).toBe(404);
     expect(pedidos).toHaveLength(2);
+  });
+
+  it('charlas: la lista pasa al bot, y el detalle suma lo que decidio Homero en cada corrida', async () => {
+    const { admin, pedidos } = adminFalso();
+    const h = armar();
+    const id = await h.store.crearCorrida({ agente: 'atencion', objetivo: 'x', contacto: CONTACTO });
+    await h.store.cerrarCorrida(id, {
+      estado: 'lista',
+      resumen: 'WhatsApp: te avisó sobre una duda de precios',
+      pasos: [
+        { tipo: 'pensamiento', texto: 'pregunta por precios' },
+        { tipo: 'herramienta', herramienta: 'avisar_a_gero', texto: 'avisar_a_gero({"texto":"pregunta precios"})' },
+      ],
+    });
+    await h.store.crearCorrida({ agente: 'atencion', objetivo: 'otra', contacto: '5491100000000' });
+    const app = Fastify();
+    rutasDeWhatsApp(app, admin, h.store);
+
+    expect((await app.inject({ method: 'GET', url: '/whatsapp/charlas?negocio=3' })).statusCode).toBe(200);
+    expect(pedidos[0]).toEqual({ metodo: 'GET', ruta: '/admin/charlas?negocio=3', cuerpo: undefined });
+
+    const r = await app.inject({ method: 'GET', url: `/whatsapp/charlas/3/${CONTACTO}` });
+    expect(r.statusCode).toBe(200);
+    expect(pedidos[1]).toEqual({ metodo: 'GET', ruta: `/admin/charlas/3/${CONTACTO}`, cuerpo: undefined });
+    const cuerpo = r.json();
+    expect(cuerpo.ok).toBe(true);
+    expect(cuerpo.decisiones).toHaveLength(1);
+    expect(cuerpo.decisiones[0]).toMatchObject({
+      id,
+      estado: 'lista',
+      resumen: 'WhatsApp: te avisó sobre una duda de precios',
+      herramientas: ['avisar_a_gero'],
+    });
+    // Un contacto que no son digitos no llega al bot.
+    expect((await app.inject({ method: 'GET', url: '/whatsapp/charlas/3/..%2Fnegocios' })).statusCode).toBe(400);
   });
 });
 

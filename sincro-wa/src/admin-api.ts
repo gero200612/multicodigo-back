@@ -9,7 +9,7 @@ import { Rechazo } from './envio.js';
 import { cuerpoDeEvento, esperarEventos } from './eventos.js';
 import { DIA_MS, diaDe, mesDe, rangoDelMes } from './horas.js';
 import { registrarResultado, Resultado, tomarPendientes } from './ia.js';
-import { gastoDelMes, porcentaje, VENTANA_MS } from './reglas.js';
+import { gastoDelMes, porcentaje, VENTANA_MS, ventanaAbierta } from './reglas.js';
 import type { Cambio, CambiosDeNegocio, Negocio, Numero } from './store.js';
 import { refrescarNumero } from './tareas.js';
 import { textoDeError } from './tapar.js';
@@ -251,6 +251,61 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
     return {
       filas: [...filas.values()].sort((a, b) => a.dia.localeCompare(b.dia) || a.negocio_id - b.negocio_id || a.categoria.localeCompare(b.categoria)),
       ventanas_abiertas: await store.ventanasAbiertas(new Date(ahora.getTime() - VENTANA_MS), q.negocio),
+    };
+  });
+
+  // Las charlas, para la pantalla "Charlas" de Homero en punchi.dev: sin
+  // coexistencia el numero no esta en ningun celu, y esto es lo unico que
+  // muestra lo que se hablo. Solo admin: una app ve su charla por /charlas.
+  const estadoDeCharla = async (negocioId: number, contacto: string) => {
+    const cs = await store.contactosDe(negocioId, contacto);
+    const ahora = ctx.ahora();
+    return {
+      nombre: cs.find((c) => c.nombre)?.nombre ?? null,
+      ventana_abierta: cs.some((c) => ventanaAbierta(c, ahora)),
+      baja: cs.some((c) => c.baja),
+      derivada: cs.some((c) => c.derivada),
+    };
+  };
+
+  app.get('/admin/charlas', async (req) => {
+    const q = z.object({ negocio: Id.optional(), limite: z.coerce.number().int().min(1).max(500).default(100) }).parse(req.query);
+    const nombres = new Map((await store.negocios()).map((n) => [n.id, n.nombre]));
+    return Promise.all(
+      (await store.charlas(q.negocio, q.limite)).map(async ({ ultimo, cantidad }) => ({
+        negocio_id: ultimo.negocioId,
+        negocio: nombres.get(ultimo.negocioId) ?? null,
+        contacto: ultimo.contacto,
+        ...(await estadoDeCharla(ultimo.negocioId, ultimo.contacto)),
+        mensajes: cantidad,
+        ultimo: { direccion: ultimo.direccion, tipo: ultimo.tipo, texto: ultimo.texto, fecha: ultimo.fecha.toISOString() },
+      })),
+    );
+  });
+
+  app.get('/admin/charlas/:negocio/:contacto', async (req, reply) => {
+    const p = z
+      .object({ negocio: Id, contacto: z.string().regex(/^\d{8,15}$/) })
+      .parse(req.params);
+    const { limite } = z.object({ limite: z.coerce.number().int().min(1).max(500).default(200) }).parse(req.query);
+    const mensajes = await store.charla(p.negocio, p.contacto, limite);
+    if (mensajes.length === 0) return reply.code(404).send({ code: 'sin_charla', message: 'no hay mensajes con ese contacto' });
+    return {
+      negocio_id: p.negocio,
+      contacto: p.contacto,
+      ...(await estadoDeCharla(p.negocio, p.contacto)),
+      mensajes: mensajes.map((m) => ({
+        id: m.id,
+        direccion: m.direccion,
+        tipo: m.tipo,
+        texto: m.texto,
+        plantilla: m.plantilla,
+        categoria: m.categoria,
+        costo_ars: m.costoReal ?? m.costoEstimado,
+        estado: m.estado,
+        error: m.error,
+        fecha: m.fecha.toISOString(),
+      })),
     };
   });
 

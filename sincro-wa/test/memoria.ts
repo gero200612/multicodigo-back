@@ -185,6 +185,19 @@ export class MemoriaStore implements Store {
       .slice(-limite)
       .map((m) => ({ ...m }));
   }
+  async charlas(negocioId: number | undefined, limite: number) {
+    const porCharla = new Map<string, { ultimo: Mensaje; cantidad: number }>();
+    for (const m of this.mensajesT) {
+      if (negocioId !== undefined && m.negocioId !== negocioId) continue;
+      const k = `${m.negocioId}|${m.contacto}`;
+      const c = porCharla.get(k);
+      const masNuevo = !c || m.fecha.getTime() > c.ultimo.fecha.getTime() || (m.fecha.getTime() === c.ultimo.fecha.getTime() && m.id > c.ultimo.id);
+      porCharla.set(k, { ultimo: masNuevo ? { ...m } : c.ultimo, cantidad: (c?.cantidad ?? 0) + 1 });
+    }
+    return [...porCharla.values()]
+      .sort((a, b) => b.ultimo.fecha.getTime() - a.ultimo.fecha.getTime() || b.ultimo.id - a.ultimo.id)
+      .slice(0, limite);
+  }
   async contactosConPlantilla(numeroId: number, desde: Date) {
     return [
       ...new Set(

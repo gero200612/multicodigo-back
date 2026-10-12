@@ -401,7 +401,13 @@ export class MemoriaStore implements Store {
     p.actualizado = new Date();
   }
 
-  async crearCorrida(c: { agente: Agente; objetivo: string; leadId?: number }) {
+  async corridasDeContacto(contacto: string, limite: number) {
+    return this.corridasGuardadas
+      .filter((c) => c.contacto === contacto)
+      .sort((a, b) => b.id - a.id)
+      .slice(0, limite);
+  }
+  async crearCorrida(c: { agente: Agente; objetivo: string; leadId?: number; contacto?: string }) {
     const id = this.corridasGuardadas.length + 1;
     this.corridasGuardadas.push({ id, ...c, estado: 'corriendo', inicio: this.ahora() });
     return id;

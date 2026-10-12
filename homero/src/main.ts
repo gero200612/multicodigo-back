@@ -44,7 +44,7 @@ import {
 import { bajarPaginaConDestino, recibeMail } from './web.js';
 import { adminWa, atenderIa, bucle, clienteWa, pedidorWa, recibirLeads, reenviarAlertas } from './whatsapp.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */

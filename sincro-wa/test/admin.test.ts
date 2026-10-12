@@ -179,3 +179,70 @@ describe('tareas', () => {
     expect(a[0].texto).toContain('roja');
   });
 });
+
+/**
+ * Las charlas, para que Gero vea en punchi.dev que hace el bot (Homero ->
+ * WhatsApp -> Charlas). Sin coexistencia el numero no esta en ningun celu:
+ * esto es lo unico que muestra lo que escribio la persona y lo que se le
+ * contesto. Solo con la clave de admin.
+ */
+describe('charlas', () => {
+  it('lista las charlas de la mas reciente a la mas vieja, con el ultimo mensaje', async () => {
+    const n = await negocioConNumero(b, ['leads'], { nombre: 'Sincro' });
+    await webhook(b, texto(n.phoneNumberId, '5491100000001', 'Hola, quiero info'));
+    await pedir(b, n.clave, 'POST', '/mensajes', { a: '5491100000001', texto: 'Hola Juan, ¿qué necesitás?' });
+    b.reloj.avanzar(HORA_MS);
+    await webhook(b, texto(n.phoneNumberId, '5491100000002', 'Buenas'));
+
+    const r = await pedir(b, CLAVE_ADMIN, 'GET', '/admin/charlas');
+    expect(r.status).toBe(200);
+    expect(r.json.map((c: { contacto: string }) => c.contacto)).toEqual(['5491100000002', '5491100000001']);
+    expect(r.json[1]).toMatchObject({
+      negocio_id: n.id,
+      negocio: 'Sincro',
+      contacto: '5491100000001',
+      nombre: 'Juan',
+      mensajes: 2,
+      ventana_abierta: true,
+      baja: false,
+      derivada: false,
+      ultimo: { direccion: 'sale', texto: 'Hola Juan, ¿qué necesitás?' },
+    });
+  });
+
+  it('el detalle trae todos los mensajes en orden, con lo que costo cada uno', async () => {
+    const n = await negocioConNumero(b, ['leads']);
+    await webhook(b, texto(n.phoneNumberId, '5491100000001', 'Hola'));
+    await pedir(b, n.clave, 'POST', '/mensajes', { a: '5491100000001', texto: 'Hola, ¿en qué te ayudo?' });
+
+    const r = await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas/${n.id}/5491100000001`);
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ negocio_id: n.id, contacto: '5491100000001', nombre: 'Juan', ventana_abierta: true });
+    expect(r.json.mensajes.map((m: { direccion: string; texto: string }) => [m.direccion, m.texto])).toEqual([
+      ['entra', 'Hola'],
+      ['sale', 'Hola, ¿en qué te ayudo?'],
+    ]);
+    expect(r.json.mensajes[1]).toMatchObject({ categoria: 'service', costo_ars: 0 });
+    expect(typeof r.json.mensajes[0].fecha).toBe('string');
+  });
+
+  it('filtra por negocio', async () => {
+    const a = await negocioConNumero(b, ['leads']);
+    const otro = await negocioConNumero(b, ['leads']);
+    await webhook(b, texto(a.phoneNumberId, '5491100000001', 'a'));
+    await webhook(b, texto(otro.phoneNumberId, '5491100000002', 'b'));
+    const r = await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas?negocio=${otro.id}`);
+    expect(r.json.map((c: { contacto: string }) => c.contacto)).toEqual(['5491100000002']);
+  });
+
+  it('una app no lee charlas de nadie por aca, ni de su propio negocio', async () => {
+    const n = await negocioConNumero(b, ['leads']);
+    expect((await pedir(b, n.clave, 'GET', '/admin/charlas')).status).not.toBe(200);
+    expect((await pedir(b, n.clave, 'GET', `/admin/charlas/${n.id}/5491100000001`)).status).not.toBe(200);
+  });
+
+  it('una charla que no existe es 404', async () => {
+    const n = await negocioConNumero(b, ['leads']);
+    expect((await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas/${n.id}/5491199999999`)).status).toBe(404);
+  });
+});

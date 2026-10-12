@@ -587,7 +587,7 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
 
   // ------------------------------------------------------------ whatsapp
 
-  if (d.whatsapp) rutasDeWhatsApp(app, d.whatsapp);
+  if (d.whatsapp) rutasDeWhatsApp(app, d.whatsapp, store);
   else {
     app.all('/whatsapp/*', async (_request, reply) =>
       reply.code(503).send({ code: 'sin_whatsapp', message: 'Falta SINCRO_WA_URL / SINCRO_WA_ADMIN_KEY en Homero' }),

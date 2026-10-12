@@ -657,7 +657,7 @@ export function yaContestado(charla: Charla, mensajeId: number): boolean {
  * con lista cerrada: solo estas rutas de admin, y lo que cambia algo va firmado
  * como "gero" (el panel ya verifico que quien pide es el dueño).
  */
-export function rutasDeWhatsApp(app: FastifyInstance, admin: AdminWa): void {
+export function rutasDeWhatsApp(app: FastifyInstance, admin: AdminWa, store?: Pick<Store, 'corridasDeContacto'>): void {
   const reenviar = async (
     metodo: string,
     ruta: string,
@@ -683,6 +683,32 @@ export function rutasDeWhatsApp(app: FastifyInstance, admin: AdminWa): void {
       return reply.code(r.status).send(r.json);
     });
   }
+  // Las charlas: la lista sale del bot tal cual; el detalle suma lo que
+  // decidio Homero en cada corrida de esa charla (con que herramientas), que
+  // el bot no sabe. Sin coexistencia, es lo unico que muestra que hace la API.
+  app.get<{ Querystring: Record<string, string | undefined> }>('/whatsapp/charlas', async (request, reply) => {
+    const r = await reenviar('GET', '/charlas', { negocio: request.query.negocio, limite: request.query.limite }, undefined);
+    return reply.code(r.status).send(r.json);
+  });
+  app.get<{ Params: { negocio: string; contacto: string } }>('/whatsapp/charlas/:negocio/:contacto', async (request, reply) => {
+    const { negocio, contacto } = request.params;
+    if (!/^\d{1,9}$/.test(negocio) || !/^\d{8,15}$/.test(contacto)) {
+      return reply.code(400).send({ code: 'invalido', message: 'negocio y contacto son numeros' });
+    }
+    const r = await reenviar('GET', `/charlas/${negocio}/${contacto}`, {}, undefined);
+    if (r.status !== 200 || !store) return reply.code(r.status).send(r.json);
+    const corridas = await store.corridasDeContacto(contacto, 50).catch(() => []);
+    const decisiones = corridas.map((c) => ({
+      id: c.id,
+      estado: c.estado,
+      resumen: c.resumen ?? null,
+      herramientas: (c.pasos ?? []).filter((p) => p.tipo === 'herramienta' && p.herramienta).map((p) => p.herramienta!),
+      error: c.error ?? null,
+      inicio: c.inicio.toISOString(),
+      fin: c.fin ? c.fin.toISOString() : null,
+    }));
+    return reply.code(200).send({ ...(r.json as object), decisiones });
+  });
   app.get<{ Params: { id: string } }>('/whatsapp/negocios/:id', async (request, reply) => {
     const r = await reenviar('GET', `/negocios/${encodeURIComponent(request.params.id)}`, {}, undefined);
     return reply.code(r.status).send(r.json);
