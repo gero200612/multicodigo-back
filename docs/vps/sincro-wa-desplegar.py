@@ -8,6 +8,7 @@ app, negocio) lo reusa, guiándose por /root/env/sincro-wa.estado.json.
     python3 sincro-wa-desplegar.py negocio    # da de alta el negocio Sincro (solo leads) y su número
     python3 sincro-wa-desplegar.py webhook    # apunta el webhook de Meta al bot
     python3 sincro-wa-desplegar.py homero     # imprime las 3 líneas para /root/mc.env de la Toshiba (con secretos)
+    python3 sincro-wa-desplegar.py formulario # el formulario de la web: avisos para Sincro + FORMULARIO_* + redeploy
 
 Nunca imprime un secreto, salvo `homero`, que está hecho para mandarse por un
 pipe directo a la Toshiba (ssh vps ... | ssh toshiba ...), sin pasar por la pantalla.
@@ -43,6 +44,11 @@ APP_META = '1410095257330902'
 PHONE_NUMBER_ID = '1405287685995571'
 WABA_ID = '1786410379074282'
 TOPE_SINCRO_ARS = 20000
+# El formulario de contacto de sincro-web (POST https://wa.apps.punchi.dev/formulario).
+WEB_SINCRO = 'https://sincro.apps.punchi.dev'
+# leads: las charlas y el formulario. avisos: la plantilla UTILITY del primer
+# WhatsApp a quien lo pidió (Gero lo pidió el 2026-10-12). Nada de promociones.
+CAPACIDADES_SINCRO = ['leads', 'avisos']
 CAMPOS_WEBHOOK = 'messages,message_template_status_update,template_category_update,phone_number_quality_update,account_update'
 
 
@@ -180,6 +186,9 @@ def app():
         'PUERTO_PUBLICO': '3000',
         'PUERTO_PRIVADO': '3001',
     }
+    if e.get('negocio_sincro'):
+        variables['FORMULARIO_NEGOCIO'] = str(e['negocio_sincro'])
+        variables['FORMULARIO_ORIGENES'] = WEB_SINCRO
     coolify('PATCH', f'/applications/{e["app"]}/envs/bulk', {
         'data': [{'key': k, 'value': v, 'is_preview': False, 'is_literal': True} for k, v in variables.items()],
     })
@@ -249,6 +258,29 @@ def negocio():
     print('listo')
 
 
+def formulario():
+    """Prende el formulario de la web: el negocio Sincro con `avisos` y el bot
+    sabiendo a que negocio mandarlo. Repetirlo no cambia nada."""
+    e = leer_estado()
+    if not e.get('negocio_sincro') or not e.get('app'):
+        sys.exit('primero: app y negocio')
+    status, j = admin('PATCH', f'/admin/negocios/{e["negocio_sincro"]}', {
+        'capacidades': CAPACIDADES_SINCRO, 'quien': 'gero',
+    })
+    if status >= 300:
+        sys.exit(f'no pude cambiar las capacidades: {status} {tapar(json.dumps(j))[:300]}')
+    print('negocio Sincro:', ', '.join(CAPACIDADES_SINCRO))
+    coolify('PATCH', f'/applications/{e["app"]}/envs/bulk', {
+        'data': [
+            {'key': 'FORMULARIO_NEGOCIO', 'value': str(e['negocio_sincro']), 'is_preview': False, 'is_literal': True},
+            {'key': 'FORMULARIO_ORIGENES', 'value': WEB_SINCRO, 'is_preview': False, 'is_literal': True},
+        ],
+    })
+    print('variables del formulario cargadas')
+    coolify('POST', f'/deploy?uuid={e["app"]}')
+    print('deploy encolado: en un par de minutos POST', f'{DOMINIO}/formulario', 'responde')
+
+
 def webhook():
     s = leer_env(SECRETOS)
     # La WABA ya tiene la app suscripta; repetirlo no cambia nada y lo asegura.
@@ -278,7 +310,7 @@ def homero():
 
 
 if __name__ == '__main__':
-    pasos = {'app': app, 'negocio': negocio, 'webhook': webhook, 'homero': homero}
+    pasos = {'app': app, 'negocio': negocio, 'webhook': webhook, 'homero': homero, 'formulario': formulario}
     if len(sys.argv) != 2 or sys.argv[1] not in pasos:
         sys.exit(__doc__)
     pasos[sys.argv[1]]()

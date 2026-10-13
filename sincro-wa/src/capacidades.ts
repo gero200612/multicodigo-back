@@ -10,7 +10,7 @@
 export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender'] as const;
 export type Capacidad = (typeof CAPACIDADES)[number];
 
-export type TipoDeEvento = 'mensaje' | 'factura' | 'estado' | 'derivar';
+export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar';
 export type CategoriaDePlantilla = 'MARKETING' | 'UTILITY' | 'AUTHENTICATION';
 
 interface Entrada {
@@ -24,7 +24,8 @@ const PLANTILLAS = ['GET /plantillas', 'POST /plantillas'];
 
 const CATALOGO: Record<Capacidad, Entrada> = {
   leads: {
-    eventos: ['mensaje'],
+    // `formulario`: el de contacto de la web del negocio (ver formulario.ts).
+    eventos: ['mensaje', 'formulario'],
     rutas: ['POST /mensajes', 'GET /charlas/:contacto', 'GET /media/:id'],
     plantillas: [],
   },

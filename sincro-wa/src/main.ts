@@ -24,7 +24,7 @@ async function main(): Promise<void> {
     log,
   };
 
-  const publico = crearPublico(ctx, { appSecret: cfg.appSecret, verifyToken: cfg.verifyToken });
+  const publico = crearPublico(ctx, { appSecret: cfg.appSecret, verifyToken: cfg.verifyToken, formulario: cfg.formulario });
   const privado = crearPrivado(ctx, { claveAdmin: cfg.claveAdmin });
   await publico.listen({ host: '0.0.0.0', port: cfg.puertoPublico });
   await privado.listen({ host: '0.0.0.0', port: cfg.puertoPrivado });

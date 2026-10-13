@@ -106,12 +106,27 @@ export interface Charla {
   mensajes: MensajeDeCharla[];
 }
 
-/** Lo que Homero puede hacer como "la app" del numero de Sincro. Nada mas. */
+export interface PlantillaDeWa {
+  nombre: string;
+  idioma: string;
+  categoria: string;
+  estado: string;
+  bloqueada?: boolean;
+}
+
+/**
+ * Lo que Homero puede hacer como "la app" del numero de Sincro. Las plantillas
+ * (avisar, plantillas, crearPlantilla) solo andan si el negocio Sincro tiene la
+ * capacidad `avisos`; sin ella el bot contesta 404.
+ */
 export interface ClienteWa {
   eventos(): Promise<EventoWa[]>;
   ack(ids: number[]): Promise<void>;
   mandar(a: string, texto: string): Promise<{ id: number; wamid: string }>;
   charla(contacto: string): Promise<Charla>;
+  avisar(a: string, plantilla: string, idioma: string, variables: string[]): Promise<{ id: number; wamid: string }>;
+  plantillas(): Promise<PlantillaDeWa[]>;
+  crearPlantilla(p: { nombre: string; idioma: string; categoria: string; componentes: unknown[] }): Promise<PlantillaDeWa>;
 }
 
 export function clienteWa(pedir: Pedir): ClienteWa {
@@ -122,6 +137,9 @@ export function clienteWa(pedir: Pedir): ClienteWa {
     },
     mandar: (a, texto) => pedirOk(pedir, 'POST', '/mensajes', { a, texto }),
     charla: (contacto) => pedirOk<Charla>(pedir, 'GET', `/charlas/${encodeURIComponent(contacto)}?limite=30`),
+    avisar: (a, plantilla, idioma, variables) => pedirOk(pedir, 'POST', '/avisos', { a, plantilla, idioma, variables }),
+    plantillas: () => pedirOk<PlantillaDeWa[]>(pedir, 'GET', '/plantillas'),
+    crearPlantilla: (p) => pedirOk<PlantillaDeWa>(pedir, 'POST', '/plantillas', p),
   };
 }
 
@@ -188,7 +206,10 @@ export function bucle(nombre: string, paso: () => Promise<void>, seguir: () => b
 /** Espera antes de pensar: si escribe tres mensajes seguidos, se contestan juntos. */
 export const JUNTAR_MENSAJES_MS = 15_000;
 
-/** Los mensajes que entran al numero de Sincro: cada uno es una tarea del agente. */
+/**
+ * Lo que llega del numero de Sincro: cada mensaje es una tarea del agente, y
+ * cada envio del formulario de la web, una tarea que guarda el lead y le escribe.
+ */
 export async function recibirLeads(wa: ClienteWa, store: Store, ahora: () => Date): Promise<void> {
   const eventos = await wa.eventos();
   const vistos: number[] = [];
@@ -200,6 +221,13 @@ export async function recibirLeads(wa: ClienteWa, store: Store, ahora: () => Dat
         requiereIa: true,
         clave: `wa:${e.id}`,
         disponibleDesde: new Date(ahora().getTime() + JUNTAR_MENSAJES_MS),
+      });
+    } else if (e.tipo === 'formulario') {
+      await store.encolar({
+        tipo: 'formulario_web',
+        payload: { ...e.datos, evento: e.id },
+        requiereIa: false,
+        clave: `form:${e.id}`,
       });
     }
     // Lo encolado ya esta a salvo en la base: recien ahi se confirma.

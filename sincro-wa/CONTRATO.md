@@ -8,7 +8,7 @@ número con decimales y USD igual.
 
 | Puerto (contenedor) | Quién llega | Qué sirve |
 |---|---|---|
-| `PUERTO_PUBLICO` (3000) | Internet, por Traefik (`wa.apps.punchi.dev`) | `GET /webhook`, `POST /webhook`, `GET /salud`. Cualquier otra ruta: 404 |
+| `PUERTO_PUBLICO` (3000) | Internet, por Traefik (`wa.apps.punchi.dev`) | `GET /webhook`, `POST /webhook`, `GET /salud` y, si está `FORMULARIO_NEGOCIO`, `POST /formulario`. Cualquier otra ruta: 404 |
 | `PUERTO_PRIVADO` (3001) | Solo VPN (Tailscale) y la red de Coolify | Todo lo demás. `/webhook` NO existe acá |
 
 Son dos servidores Fastify distintos en el mismo proceso: así una ruta privada
@@ -27,6 +27,8 @@ Traefik.
 | `SINCRO_WA_ADMIN_KEY` | Clave de administrador (la usa solo Homero). Mínimo 32 caracteres |
 | `SINCRO_WA_CIFRADO` | 32 bytes en base64: AES-256-GCM para tokens de Meta de clientes y secretos de eventos |
 | `PUERTO_PUBLICO` / `PUERTO_PRIVADO` | 3000 / 3001 |
+| `FORMULARIO_NEGOCIO` | Id del negocio que recibe el formulario de su web. Sin esto `POST /formulario` no existe |
+| `FORMULARIO_ORIGENES` | Orígenes permitidos (CORS), separados por coma. Por defecto `https://sincro.apps.punchi.dev` |
 
 Ningún log imprime un token: todo texto de error pasa por `taparTokens()`, que
 reemplaza `/EAA[A-Za-z0-9_-]{10,}/g` por `EAA…` y las claves `swa_…` por `swa_…`.
@@ -47,7 +49,7 @@ reemplaza `/EAA[A-Za-z0-9_-]{10,}/g` por `EAA…` y las claves `swa_…` por `sw
 
 | Capacidad | Eventos que recibe la app | Rutas de app que ve | Plantillas |
 |---|---|---|---|
-| `leads` | `mensaje` | `POST /mensajes`, `GET /charlas/:contacto`, `GET /media/:id` | — |
+| `leads` | `mensaje`, `formulario` | `POST /mensajes`, `GET /charlas/:contacto`, `GET /media/:id` | — |
 | `facturas` | `factura` | `GET /media/:id` | ninguna |
 | `avisos` | `estado` | `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` |
 | `promociones` | `estado` | `POST /avisos`, `GET/POST /plantillas` | `MARKETING` |
@@ -131,6 +133,18 @@ queda para `GET /eventos`.
 - `factura`: `{"contacto","media_id","datos":{"proveedor","cuit","numero","fecha","vencimiento","total","moneda","impuestos":[{"nombre","monto"}]}}`
 - `estado`: `{"mensaje_id","wamid","estado":"sent"|"delivered"|"read"|"failed","error":{"codigo","detalle"}|null}`
 - `derivar`: `{"contacto","motivo"}`
+- `formulario`: `{"nombre","negocio","whatsapp":"549…"|null,"mail"|null,"tema","mensaje","acepta_whatsapp"}`
+
+## El formulario de la web (puerto público)
+
+`POST /formulario` con `Origin` en `FORMULARIO_ORIGENES` (si no, 403 y sin CORS;
+`OPTIONS` contesta el preflight). Cuerpo JSON:
+`{"nombre","negocio?","whatsapp?","mail?","tema?","mensaje?","acepta_whatsapp?","sitio?"}`.
+- Hace falta `nombre` y un `whatsapp` o `mail` válido (400 `formulario_invalido` / `falta_contacto`).
+- `sitio` es un campo trampa: si viene lleno contesta 200 y no hace nada.
+- 5 envíos cada 10 minutos por IP (la primera de `X-Forwarded-For`): después, 429.
+- No guarda nada propio: emite `formulario` al negocio de `FORMULARIO_NEGOCIO`
+  (lo recibe si tiene `leads`). `acepta_whatsapp` solo queda en true con un número válido.
 
 ## Rutas de admin (`/admin/*`, solo `SINCRO_WA_ADMIN_KEY`)
 

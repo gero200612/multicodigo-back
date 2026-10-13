@@ -17,6 +17,9 @@ const Env = z.object({
   SINCRO_WA_CIFRADO: z.string().min(1),
   PUERTO_PUBLICO: z.coerce.number().int().default(3000),
   PUERTO_PRIVADO: z.coerce.number().int().default(3001),
+  // El formulario de la web: sin negocio no existe la ruta.
+  FORMULARIO_NEGOCIO: opcional(z.coerce.number().int().positive()),
+  FORMULARIO_ORIGENES: opcional(z.string()).transform((v) => v ?? 'https://sincro.apps.punchi.dev'),
 });
 
 export interface Config {
@@ -29,6 +32,7 @@ export interface Config {
   claveCifrado: Buffer;
   puertoPublico: number;
   puertoPrivado: number;
+  formulario?: { negocioId: number; origenes: string[] };
 }
 
 export function leerConfig(env: NodeJS.ProcessEnv): Config {
@@ -45,5 +49,11 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
     claveCifrado: claveDeCifrado(e.SINCRO_WA_CIFRADO),
     puertoPublico: e.PUERTO_PUBLICO,
     puertoPrivado: e.PUERTO_PRIVADO,
+    formulario: e.FORMULARIO_NEGOCIO
+      ? {
+          negocioId: e.FORMULARIO_NEGOCIO,
+          origenes: e.FORMULARIO_ORIGENES.split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
+        }
+      : undefined,
   };
 }

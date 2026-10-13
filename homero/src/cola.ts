@@ -10,6 +10,7 @@ import { escribirALeadMeta, leerInsights, publicarAnuncio, resumenDeAnuncios } f
 import { SinLugar } from './gateway.js';
 import type { Recibido, Tarea, TipoDeTarea } from './store.js';
 import { enviarSaliente, recordatorio, resumenDiario } from './ventas.js';
+import { entrarFormularioWeb } from './primer-whatsapp.js';
 
 export { direccion } from './ventas.js';
 
@@ -31,7 +32,8 @@ const ESPERA_SIN_LUGAR_MS = 10 * 60_000;
 export const ESPERA_SIN_LUGAR_WA_MS = 30_000;
 
 /** Lo que corre el bucle rapido: no espera atras de las corridas largas. */
-export const TIPOS_URGENTES: TipoDeTarea[] = ['agente_whatsapp'];
+// `formulario_web` no usa IA, pero hay alguien que acaba de pedir que le escribamos.
+export const TIPOS_URGENTES: TipoDeTarea[] = ['agente_whatsapp', 'formulario_web'];
 
 /** Despues de tantos fallos que no son de la IA, la tarea se da por perdida. */
 const TOPE_DE_INTENTOS = 5;
@@ -177,6 +179,8 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       return leerInsights(deps);
     case 'escribir_a_lead_meta':
       return escribirALeadMeta(tarea.payload, deps);
+    case 'formulario_web':
+      return entrarFormularioWeb(tarea.payload, deps);
     case 'resumen_anuncios':
       return resumenDeAnuncios(deps);
     case 'finanzas_del_dia':

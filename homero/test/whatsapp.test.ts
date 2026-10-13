@@ -38,6 +38,13 @@ function waFalso(charla: Partial<Charla> = {}) {
       mensajes: [{ id: 10, direccion: 'entra', tipo: 'text', texto: 'Hola, vi el anuncio, ¿cómo funciona?', fecha: '2026-09-29T16:59:00Z' }],
       ...charla,
     }),
+    avisar: async () => {
+      throw new ErrorDeWhatsApp(404, 'no_existe');
+    },
+    plantillas: async () => [],
+    crearPlantilla: async () => {
+      throw new ErrorDeWhatsApp(404, 'no_existe');
+    },
   };
   return {
     wa,

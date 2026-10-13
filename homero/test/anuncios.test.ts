@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { agentePublicitar, agenteRevisar, CorridaSinCerrar } from '../src/agentes.js';
 import {
+  aceptaWhatsapp,
   aprobarAnuncio,
   cambiarPresupuesto,
   chequearReparto,
@@ -31,6 +32,7 @@ import { agenteDe, armar, casilla, type Opciones } from './armar.js';
 import { CRITERIOS, type Criterio } from '../src/store.js';
 import { CHAT, PANEL } from './ejemplos.js';
 import { metaFalsa } from './meta-falsa.js';
+import { waConPlantillas } from './wa-plantillas.js';
 
 const PROPUESTA: Propuesta = {
   rubro: 'taller',
@@ -342,14 +344,23 @@ describe('nada se crea en Meta sin aprobación', () => {
       'crearAnuncio',
     ]);
     expect(h.f.de('crearFormulario')[0]!.args[0]).toMatchObject({
-      privacidad: 'https://www.sincroresto.com/privacidad',
-      web: 'https://www.sincroresto.com',
+      privacidad: 'https://sincro.apps.punchi.dev/privacidad.html',
+      web: 'https://sincro.apps.punchi.dev',
       preguntas: [
         { tipo: 'FULL_NAME' },
         { tipo: 'EMAIL' },
         { tipo: 'PHONE' },
         { tipo: 'COMPANY_NAME' },
         { tipo: 'CUSTOM', clave: 'p1', texto: '¿Qué tarea les lleva más tiempo hoy?' },
+        {
+          tipo: 'CUSTOM',
+          clave: 'whatsapp',
+          texto: '¿Te escribimos por WhatsApp?',
+          opciones: [
+            { clave: 'si', texto: 'Sí, escribime por WhatsApp' },
+            { clave: 'no', texto: 'No, prefiero mail' },
+          ],
+        },
       ],
     });
     expect(h.f.de('crearConjunto')[0]!.args[0]).toMatchObject({ diario: 2000 });
@@ -570,6 +581,33 @@ describe('las consultas que entran', () => {
     h.f.datos.leads.set('form1', [lead('L9', { full_name: 'Juan Pérez', email: 'juan@perez.com' })]);
     expect(await leerLeadsDeMeta(h.deps)).toBe(1);
     expect(await h.store.lead(id)).toMatchObject({ estado: 'reunion', anuncioId: 1 });
+  });
+
+  it('si tildó WhatsApp le sale la plantilla ya, además del mail; si no, solo el mail', async () => {
+    const h = conMeta();
+    const bot = waConPlantillas({ estado: 'APPROVED' });
+    h.deps.wa = bot.wa;
+    const a = await activo(h, 2000);
+    const titulo = (await h.store.anuncio(a))!.titulo;
+    h.f.datos.leads.set('form1', [
+      lead('W1', { full_name: 'Ana Gómez', email: 'ana@taller.com', phone_number: '+54 9 11 2233-4455', whatsapp: 'Sí, escribime por WhatsApp' }),
+      lead('W2', { full_name: 'Beto', email: 'beto@taller.com', phone_number: '+54 9 11 2233-9999', whatsapp: 'no' }),
+    ]);
+    expect(await leerLeadsDeMeta(h.deps)).toBe(2);
+    expect(bot.avisos).toEqual([
+      { a: '5491122334455', plantilla: 'consulta_recibida', idioma: 'es_AR', variables: ['Ana', titulo.charAt(0).toLowerCase() + titulo.slice(1)] },
+    ]);
+    expect(h.avisos.find((t) => t.includes('Ana Gómez'))).toContain('✅ Le escribí por WhatsApp');
+    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['escribir_a_lead_meta', 'escribir_a_lead_meta']);
+  });
+
+  it('aceptaWhatsapp: la clave o el texto del sí, nunca el no', () => {
+    expect(aceptaWhatsapp('si')).toBe(true);
+    expect(aceptaWhatsapp('Sí, escribime por WhatsApp')).toBe(true);
+    expect(aceptaWhatsapp('no')).toBe(false);
+    expect(aceptaWhatsapp('No, prefiero mail')).toBe(false);
+    expect(aceptaWhatsapp('sin teléfono')).toBe(false);
+    expect(aceptaWhatsapp(undefined)).toBe(false);
   });
 
   it('el link de WhatsApp sale de como venga el teléfono', () => {

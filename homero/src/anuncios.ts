@@ -6,7 +6,9 @@ import { ErrorDePlantilla, imagenDeAnuncio, PLANTILLAS, type Plantilla } from '.
 import type { Meta, Pregunta } from './meta.js';
 import { neutralizar } from './prompts.js';
 import { CRITERIOS, type Anuncio, type Criterio, type Lead, type Ronda, type Store } from './store.js';
+import { escribirPrimerWhatsapp } from './primer-whatsapp.js';
 import { casillaDeLead, ensayoActivo, type Boton, type DepsDeVentas } from './ventas.js';
+import type { ClienteWa } from './whatsapp.js';
 
 /**
  * Los anuncios en Meta (spec 2026-10-08-homero-anuncios-meta).
@@ -24,6 +26,8 @@ export interface DepsDeAnuncios extends DepsDeVentas {
   meta?: Meta;
   /** Manda la imagen del anuncio por Telegram, antes de su tarjeta. */
   mandarFoto?: (png: Buffer, pie: string) => Promise<void>;
+  /** El numero de Sincro en el bot: el primer WhatsApp a quien lo pidio en el formulario. */
+  wa?: ClienteWa;
 }
 
 /** Clave en homero.estado: el presupuesto del mes en pesos. */
@@ -40,8 +44,25 @@ export const MINIMO_DE_META = 'meta:minimo_diario';
 const MARGEN_DEL_MINIMO = 1.05;
 /** A esta parte del presupuesto del mes se avisa; la pausa es cuando ya no queda para un dia. */
 export const TOPE_DE_ALERTA = 0.9;
-export const WEB = 'https://www.sincroresto.com';
-export const PRIVACIDAD = 'https://www.sincroresto.com/privacidad';
+// La web de Sincro (sincro-web), no la de SincroResto: los anuncios son de Sincro.
+export const WEB = 'https://sincro.apps.punchi.dev';
+export const PRIVACIDAD = 'https://sincro.apps.punchi.dev/privacidad.html';
+/** La pregunta del formulario para poder escribirle por WhatsApp (ver primer-whatsapp.ts). */
+export const PREGUNTA_WHATSAPP = {
+  tipo: 'CUSTOM' as const,
+  clave: 'whatsapp',
+  texto: '¿Te escribimos por WhatsApp?',
+  opciones: [
+    { clave: 'si', texto: 'Sí, escribime por WhatsApp' },
+    { clave: 'no', texto: 'No, prefiero mail' },
+  ],
+};
+
+/** Meta devuelve la clave o el texto de la opcion elegida: los dos empiezan con "si". */
+export function aceptaWhatsapp(respuesta: string | undefined): boolean {
+  return /^s[ií](?=$|[\s,.!])/i.test((respuesta ?? '').trim());
+}
+
 /** La campaña de Homero en Meta: una sola, cada anuncio es un conjunto adentro. */
 const CAMPANA = 'meta:campana';
 /** Desde cuando se leyeron los leads la ultima vez. */
@@ -517,6 +538,7 @@ export function preguntasDelFormulario(propias: string[]): Pregunta[] {
     { tipo: 'PHONE' },
     { tipo: 'COMPANY_NAME' },
     ...propias.map((texto, i) => ({ tipo: 'CUSTOM' as const, clave: `p${i + 1}`, texto })),
+    PREGUNTA_WHATSAPP,
   ];
 }
 
@@ -551,7 +573,7 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
       preguntas: preguntasDelFormulario(a.preguntas),
       privacidad: PRIVACIDAD,
       web: WEB,
-      gracias: 'Te escribimos en minutos por mail con horarios para una llamada corta.',
+      gracias: 'Te escribimos en minutos por WhatsApp o por mail para coordinar una llamada corta.',
     });
     await anotar();
   }
@@ -807,6 +829,17 @@ async function entrarLead(a: Anuncio, leadgenId: string, campos: Record<string, 
   if (!r) return false;
 
   const wa = linkDeWhatsapp(telefono);
+  // Tildo que le escribamos por WhatsApp: la plantilla sale ya, ademas del mail.
+  let porWhatsapp: string | undefined;
+  if (wa && aceptaWhatsapp(campos[PREGUNTA_WHATSAPP.clave])) {
+    if (!deps.wa) porWhatsapp = 'Pidió WhatsApp, pero Homero no tiene el bot configurado: escribile vos.';
+    else {
+      const enviado = await escribirPrimerWhatsapp(deps.wa, { a: wa.slice('https://wa.me/'.length), nombre: persona, tema: a.titulo });
+      porWhatsapp = enviado.ok
+        ? '✅ Le escribí por WhatsApp con la plantilla; si contesta, sigue el agente.'
+        : `⚠️ Pidió WhatsApp pero no le pude escribir: ${enviado.motivo}.`;
+    }
+  }
   await deps.avisar(
     [
       `🔥 Consulta nueva del anuncio #${a.id} (${a.titulo})${r.nuevo ? '' : ' · ya estaba en la base, la marco caliente'}`,
@@ -814,6 +847,7 @@ async function entrarLead(a: Anuncio, leadgenId: string, campos: Record<string, 
       [email ? `✉️ ${email}` : undefined, telefono ? `📞 ${telefono}` : undefined].filter(Boolean).join(' · '),
       ...formulario.map((f) => `${f.pregunta}: ${f.respuesta}`),
       wa ? `WhatsApp: ${wa}` : 'Sin teléfono para WhatsApp.',
+      porWhatsapp,
       email ? 'Le escribo por mail en unos minutos con tres horarios.' : 'No dejó mail: escribile vos.',
     ]
       .filter(Boolean)

@@ -27,7 +27,7 @@ export interface ConfigDeMeta {
 /** Una pregunta del formulario. Las estandar las completa Meta con el perfil. */
 export type Pregunta =
   | { tipo: 'FULL_NAME' | 'EMAIL' | 'PHONE' | 'COMPANY_NAME' | 'CITY' }
-  | { tipo: 'CUSTOM'; clave: string; texto: string };
+  | { tipo: 'CUSTOM'; clave: string; texto: string; opciones?: { clave: string; texto: string }[] };
 
 export interface FormularioNuevo {
   nombre: string;
@@ -139,7 +139,17 @@ type Pedir = typeof fetch;
 
 /** Las preguntas como las pide la API de formularios. */
 function preguntasDeMeta(ps: Pregunta[]) {
-  return ps.map((p) => (p.tipo === 'CUSTOM' ? { type: 'CUSTOM', key: p.clave, label: p.texto } : { type: p.tipo }));
+  return ps.map((p) =>
+    p.tipo === 'CUSTOM'
+      ? {
+          type: 'CUSTOM',
+          key: p.clave,
+          label: p.texto,
+          // Con opciones es de eleccion multiple: Meta muestra los botones.
+          ...(p.opciones ? { options: p.opciones.map((o) => ({ key: o.clave, value: o.texto })) } : {}),
+        }
+      : { type: p.tipo },
+  );
 }
 
 export function consultasDe(acciones: unknown): number {

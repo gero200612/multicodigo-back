@@ -21,6 +21,7 @@ export type TipoDeTarea =
   | 'publicar_anuncio'
   | 'leer_insights'
   | 'escribir_a_lead_meta'
+  | 'formulario_web'
   | 'resumen_anuncios'
   | 'finanzas_del_dia';
 
