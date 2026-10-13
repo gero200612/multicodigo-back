@@ -43,6 +43,7 @@ import {
 } from './ventas.js';
 import { bajarPaginaConDestino, recibeMail } from './web.js';
 import { adminWa, atenderIa, bucle, clienteWa, pedidorWa, recibirLeads, reenviarAlertas } from './whatsapp.js';
+import { VIGILAR_PLANTILLA_MS, vigilarPlantilla } from './primer-whatsapp.js';
 
 const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
@@ -247,6 +248,18 @@ async function main() {
       )
     : undefined;
 
+  // La plantilla del primer WhatsApp: se registra sola y se avisa cuando Meta la aprueba.
+  const plantillaWa = wa
+    ? (() => {
+        const mirar = () =>
+          void vigilarPlantilla({ wa, store, avisar: aviso })
+            .then((e) => console.log(`[homero] plantilla consulta_recibida: ${e}`))
+            .catch((err) => console.error('[homero] plantilla de WhatsApp:', err instanceof Error ? err.message : err));
+        mirar();
+        return setInterval(mirar, VIGILAR_PLANTILLA_MS);
+      })()
+    : undefined;
+
   // WhatsApp: tres long-polls al bot, por la VPN. Homero pregunta y el bot
   // contesta; la Toshiba no abre ningun puerto para esto.
   const sigue = () => corriendo;
@@ -276,6 +289,7 @@ async function main() {
     clearInterval(planificador);
     clearInterval(demos);
     clearInterval(leadsDeMeta);
+    clearInterval(plantillaWa);
     await api?.close();
     await mcp.close();
     await bot.stop();

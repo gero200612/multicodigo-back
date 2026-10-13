@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { entrarFormularioWeb, escribirPrimerWhatsapp, PLANTILLA_CONSULTA, primerNombre, temaDeLaConsulta } from '../src/primer-whatsapp.js';
+import { entrarFormularioWeb, escribirPrimerWhatsapp, PLANTILLA_CONSULTA, primerNombre, temaDeLaConsulta, vigilarPlantilla } from '../src/primer-whatsapp.js';
 import { recibirLeads } from '../src/whatsapp.js';
 import { armar } from './armar.js';
 import { waConPlantillas } from './wa-plantillas.js';
@@ -97,5 +97,28 @@ describe('las variables de la plantilla', () => {
     expect(temaDeLaConsulta('Facturas que se cargan solas')).toBe('facturas que se cargan solas');
     expect(temaDeLaConsulta('Otra cosa')).toBe('lo que necesitás para tu negocio');
     expect(temaDeLaConsulta(undefined)).toBe('lo que necesitás para tu negocio');
+  });
+});
+
+describe('la plantilla se registra sola', () => {
+  it('apenas hay permiso la crea, y a Gero le cuenta cada cambio una sola vez', async () => {
+    const { h, bot } = conBot({});
+    const deps = { wa: bot.wa, store: h.store, avisar: h.deps.avisar };
+    expect(await vigilarPlantilla(deps)).toBe('PENDING');
+    expect(bot.creadas).toHaveLength(1);
+    expect(await vigilarPlantilla(deps)).toBe('PENDING');
+    expect(bot.creadas).toHaveLength(1);
+    expect(h.avisos.filter((t) => t.includes('Está en revisión'))).toHaveLength(1);
+    // Meta la aprueba.
+    (await bot.wa.plantillas())[0]!.estado = 'APPROVED';
+    expect(await vigilarPlantilla(deps)).toBe('APPROVED');
+    expect(h.avisos.at(-1)).toContain('Meta aprobó la plantilla');
+  });
+
+  it('sin la capacidad avisos no crea nada ni avisa (vuelve a mirar en media hora)', async () => {
+    const { h, bot } = conBot({ sinPermiso: true });
+    expect(await vigilarPlantilla({ wa: bot.wa, store: h.store, avisar: h.deps.avisar })).toBe('sin_permiso');
+    expect(bot.creadas).toEqual([]);
+    expect(h.avisos).toEqual([]);
   });
 });

@@ -67,6 +67,35 @@ export async function asegurarPlantilla(wa: ClienteWa): Promise<string> {
   return creada.bloqueada ? 'BLOQUEADA' : creada.estado;
 }
 
+/** Clave en homero.estado: el ultimo estado de la plantilla que se le conto a Gero. */
+export const ESTADO_DE_LA_PLANTILLA = 'wa:plantilla_consulta';
+/** Cada cuanto se mira: es un GET al bot, y Meta tarda de minutos a horas en revisarla. */
+export const VIGILAR_PLANTILLA_MS = 30 * 60_000;
+
+const NOVEDADES: Record<string, string> = {
+  PENDING: '📨 Registré en Meta la plantilla del primer WhatsApp (consulta_recibida). Está en revisión: te aviso cuando la aprueben.',
+  APPROVED: '✅ Meta aprobó la plantilla del primer WhatsApp: desde ahora, a quien tilde WhatsApp en la web o en un anuncio le escribo al toque.',
+  REJECTED: '❌ Meta rechazó la plantilla del primer WhatsApp (consulta_recibida). Hasta arreglarla, a esos leads les escribís vos.',
+  BLOQUEADA: '⚠️ Meta pasó la plantilla del primer WhatsApp a Marketing y el bot la bloqueó (Sincro solo tiene avisos). Decidí si le damos promociones.',
+  PAUSED: '⏸ Meta pausó la plantilla del primer WhatsApp por mala calidad.',
+  DISABLED: '⛔ Meta desactivó la plantilla del primer WhatsApp.',
+};
+
+/**
+ * La deja registrada apenas el negocio Sincro tiene `avisos` (sin esperar al
+ * primer lead) y le cuenta a Gero cada cambio de estado, una sola vez.
+ */
+export async function vigilarPlantilla(deps: { wa: ClienteWa; store: Store; avisar: (t: string) => Promise<void> }): Promise<string> {
+  const estado = await asegurarPlantilla(deps.wa);
+  const antes = await deps.store.leerEstado<string>(ESTADO_DE_LA_PLANTILLA);
+  if (estado !== antes) {
+    await deps.store.guardarEstado(ESTADO_DE_LA_PLANTILLA, estado);
+    const novedad = NOVEDADES[estado];
+    if (novedad) await deps.avisar(novedad);
+  }
+  return estado;
+}
+
 const MOTIVOS: Record<string, string> = {
   plantilla_no_aprobada: 'la plantilla todavía no está aprobada por Meta',
   baja: 'ese número pidió la baja',
