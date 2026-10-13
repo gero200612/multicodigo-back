@@ -961,9 +961,11 @@ export function promptDeAnalisis(
     nuevo?: boolean;
     /** Lo que YA esta en la cola de esta corrida (pendiente o corriendo). */
     encoladas?: string[];
+    /** La corrida trabaja en una rama que la persona aprueba despues: lo publicado es lo viejo. */
+    enRevision?: boolean;
   } = {},
 ): string {
-  const { eje, cierre, contrato, fichas, nuevo = false, encoladas = [], hechos = [] } = opciones;
+  const { eje, cierre, contrato, fichas, nuevo = false, encoladas = [], hechos = [], enRevision = false } = opciones;
   return [
     eje
       ? `Sos el analista de ${eje.toUpperCase()} de esta corrida: mirás ${QUE_MIRA[eje]}. No construis nada: revisas.`
@@ -987,6 +989,17 @@ export function promptDeAnalisis(
           // como una revision mas.
           'Esta es la revision de CIERRE: la corrida termina despues de esto. Lo que',
           'no digas ahora queda sin hacer y se lee a la mañana como terminado.',
+          '',
+        ]
+      : []),
+    ...(enRevision
+      ? [
+          'Esta corrida esta EN REVISION: lo que se construye queda en la rama del agente y',
+          'NO llega a la app publicada hasta que la persona lo apruebe. La app publicada',
+          'muestra la version anterior: no marques como hueco ni encoles nada por lo que solo',
+          'falla alla (errores 500, pantallas viejas, el despliegue). Juzga el worktree: el',
+          'codigo, los tests y lo que se ve corriendolo localmente. Lo que dependa de',
+          'publicar, anotalo una sola vez como algo a revisar despues de aprobar.',
           '',
         ]
       : []),

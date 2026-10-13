@@ -5022,3 +5022,12 @@ describe('el aviso de lo que carga el VPS', () => {
     expect(promptDeTareaDesatendida('armar el login', 1)).not.toContain('Cors__AllowedOrigins__0');
   });
 });
+
+describe('promptDeAnalisis en revision', () => {
+  it('en revision le dice al analista que lo publicado es lo viejo y que juzgue el worktree', () => {
+    const p = promptDeAnalisis('# pliego', 2, { enRevision: true });
+    expect(p).toContain('EN REVISION');
+    expect(p).toContain('Juzga el worktree');
+    expect(promptDeAnalisis('# pliego', 2, {})).not.toContain('EN REVISION');
+  });
+});

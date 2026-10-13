@@ -2905,9 +2905,14 @@ async function rondaDeAnalisis(
   //
   // Va ACA y no al cerrar: al cerrar ya no hay quien lo arregle. Con la cola
   // vacia, lo que encuentre entra como trabajo y la corrida sigue.
-  const proyectoIdParaVerificar = deps.verificarApp
-    ? await deps.store.idDeProyecto(corrida.proyecto).catch(() => null)
-    : null;
+  //
+  // En revision NO: lo construido queda en la rama del agente y la app
+  // publicada sigue con `main` hasta que la persona apruebe. Mirar produccion
+  // ahi solo encuentra lo viejo, encola el mismo arreglo una y otra vez y la
+  // corrida se va al techo de rondas (TallerPro, 2026-10-13: seis rondas sobre
+  // un 500 que ya estaba arreglado en la rama).
+  const proyectoIdParaVerificar =
+    deps.verificarApp && !corrida.enRevision ? await deps.store.idDeProyecto(corrida.proyecto).catch(() => null) : null;
   if (deps.verificarApp && proyectoIdParaVerificar) {
     await avisar('🔍 Revisando la app publicada: el servidor y cada pantalla…', { efimero: true });
     const encontrados = await deps
@@ -3107,6 +3112,7 @@ async function tandaDeAnalisis(
           nuevo: esProyectoNuevo(ctx.repos),
           encoladas: await textosEncolados(corrida.id, deps),
           hechos: await hechosDelProyecto(corrida, ctx.proyectoId, deps),
+          ...(corrida.enRevision ? { enRevision: true } : {}),
         }),
         // El analista no escribe —el prompt se lo prohibe— pero el modo va igual:
         // con `preguntar`, un intento de editar dejaria el turno colgado quince
