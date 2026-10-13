@@ -21,7 +21,8 @@ export const PLANTILLA_LINK = {
   nombre: 'link_reunion',
   idioma: 'es_AR',
   categoria: 'UTILITY' as const,
-  texto: 'Hola! Te paso el link para nuestra reunión de hoy a las {{1}}: {{2}}',
+  // Meta rechaza una plantilla que empieza o termina con una variable.
+  texto: 'Hola! Te paso el link para nuestra reunión de hoy a las {{1}}: {{2}}\n\n¡Nos vemos!',
   ejemplo: ['15:00', 'https://meet.google.com/abc-defg-hij'],
 };
 
