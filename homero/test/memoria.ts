@@ -540,6 +540,9 @@ export class MemoriaStore implements Store {
         return {
           leadId: l.id,
           leadgenId: l.leadgenId!,
+          creado: l.creado,
+          ...(l.email ? { email: l.email } : {}),
+          ...(l.telefono ? { telefono: l.telefono } : {}),
           ...(l.calidad ? { calidad: l.calidad, calidadEn: (l as { calidadEn?: Date }).calidadEn ?? this.ahora() } : {}),
           ...(reunion ? { reunionEn: this.ahora() } : {}),
         };

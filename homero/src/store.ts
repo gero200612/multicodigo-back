@@ -548,7 +548,18 @@ export interface Store {
    * Las consultas de formularios de Meta de los ultimos 90 dias, con lo que se
    * sabe de ellas: para contarle a Meta (conversiones de leads).
    */
-  etapasDeLeadsDeMeta(): Promise<{ leadId: number; leadgenId: string; calidad?: CalidadDeLead; calidadEn?: Date; reunionEn?: Date }[]>;
+  etapasDeLeadsDeMeta(): Promise<
+    {
+      leadId: number;
+      leadgenId: string;
+      creado: Date;
+      email?: string;
+      telefono?: string;
+      calidad?: CalidadDeLead;
+      calidadEn?: Date;
+      reunionEn?: Date;
+    }[]
+  >;
   /** Lo que dijo Gero de una consulta. Devuelve el lead, o nada si no existe. */
   marcarCalidad(leadId: number, calidad: CalidadDeLead): Promise<Lead | undefined>;
 
@@ -1462,7 +1473,7 @@ export class PgStore implements Store {
 
   async etapasDeLeadsDeMeta() {
     const r = await this.pool.query(
-      `SELECT l.id, l.leadgen_id, l.calidad, l.calidad_en,
+      `SELECT l.id, l.leadgen_id, l.creado, l.email, l.telefono, l.calidad, l.calidad_en,
               (SELECT min(r.creada) FROM homero.reuniones r WHERE r.lead_id = l.id AND r.estado = 'confirmada') AS reunion_en
        FROM homero.leads l
        WHERE l.leadgen_id ~ '^[0-9]+$' AND l.creado > now() - interval '90 days'`,
@@ -1470,6 +1481,9 @@ export class PgStore implements Store {
     return r.rows.map((f) => ({
       leadId: Number(f.id),
       leadgenId: String(f.leadgen_id),
+      creado: new Date(f.creado),
+      ...(f.email ? { email: String(f.email) } : {}),
+      ...(f.telefono ? { telefono: String(f.telefono) } : {}),
       ...(f.calidad ? { calidad: f.calidad as CalidadDeLead } : {}),
       ...(f.calidad_en ? { calidadEn: new Date(f.calidad_en) } : {}),
       ...(f.reunion_en ? { reunionEn: new Date(f.reunion_en) } : {}),

@@ -795,7 +795,7 @@ const ETAPAS_ENVIADAS = 'meta:etapas_enviadas';
 
 /**
  * Conversiones de leads: le cuenta a Meta que paso con cada consulta de sus
- * formularios (sirve, no sirve, reunion). Con eso Meta deja de buscar gente que
+ * formularios (la consulta, sirve, no sirve, reunion). Con eso Meta deja de buscar gente que
  * llena formularios y busca gente parecida a la que sirvio. Cada etapa se
  * manda una sola vez. Sin conjunto de datos (META_DATASET_ID) no hace nada.
  */
@@ -804,10 +804,13 @@ export async function contarleAMeta(deps: DepsDeAnuncios): Promise<number> {
   const enviadas = new Set((await deps.store.leerEstado<string[]>(ETAPAS_ENVIADAS)) ?? []);
   const nuevas: (EtapaDeLead & { clave: string })[] = [];
   for (const l of await deps.store.etapasDeLeadsDeMeta()) {
-    const etapas: EtapaDeLead[] = [];
-    if (l.calidad === 'sirve') etapas.push({ leadgenId: l.leadgenId, etapa: 'Calificado', cuando: l.calidadEn ?? deps.ahora() });
-    if (l.calidad === 'no_sirve') etapas.push({ leadgenId: l.leadgenId, etapa: 'Descalificado', cuando: l.calidadEn ?? deps.ahora() });
-    if (l.reunionEn) etapas.push({ leadgenId: l.leadgenId, etapa: 'Reunion', cuando: l.reunionEn });
+    // El telefono como lo pide Meta: solo digitos, con el 549.
+    const telefono = linkDeWhatsapp(l.telefono)?.slice('https://wa.me/'.length);
+    const persona = { leadgenId: l.leadgenId, ...(l.email ? { email: l.email } : {}), ...(telefono ? { telefono } : {}) };
+    const etapas: EtapaDeLead[] = [{ ...persona, etapa: 'Lead', cuando: l.creado }];
+    if (l.calidad === 'sirve') etapas.push({ ...persona, etapa: 'Calificado', cuando: l.calidadEn ?? deps.ahora() });
+    if (l.calidad === 'no_sirve') etapas.push({ ...persona, etapa: 'Descalificado', cuando: l.calidadEn ?? deps.ahora() });
+    if (l.reunionEn) etapas.push({ ...persona, etapa: 'Reunion', cuando: l.reunionEn });
     for (const e of etapas) {
       const clave = `${l.leadId}:${e.etapa}`;
       if (!enviadas.has(clave)) nuevas.push({ ...e, clave });

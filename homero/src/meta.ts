@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /**
  * El cliente de Meta (spec 2026-10-08-homero-anuncios-meta, seccion 1): la API
  * de marketing de Facebook e Instagram, con `fetch` a graph.facebook.com.
@@ -99,8 +100,29 @@ export type EstadoEnMeta = 'ACTIVE' | 'PAUSED';
 export interface EtapaDeLead {
   /** El leadgen_id de Meta. */
   leadgenId: string;
-  etapa: 'Calificado' | 'Descalificado' | 'Reunion';
+  /** `Lead` es la etapa inicial: Meta pide mandar todas, la primera incluida. */
+  etapa: 'Lead' | 'Calificado' | 'Descalificado' | 'Reunion';
   cuando: Date;
+  /** Para que Meta reconozca mejor a la persona. Van cifrados (SHA-256), nunca en claro. */
+  email?: string;
+  /** Solo digitos, con codigo de pais (549...). */
+  telefono?: string;
+}
+
+/** SHA-256 en hex, como pide Meta para los datos de contacto. */
+export function cifrarParaMeta(valor: string): string {
+  return createHash('sha256').update(valor).digest('hex');
+}
+
+/** Lo que identifica a la persona en el evento: el lead_id y, si hay, mail y telefono cifrados. */
+export function datosDeLaPersona(e: EtapaDeLead): Record<string, unknown> {
+  const id = Number(e.leadgenId);
+  return {
+    // Hasta 16 digitos entra exacto como numero; si no, va como texto.
+    lead_id: Number.isSafeInteger(id) ? id : e.leadgenId,
+    ...(e.email ? { em: [cifrarParaMeta(e.email.trim().toLowerCase())] } : {}),
+    ...(e.telefono ? { ph: [cifrarParaMeta(e.telefono.replace(/\D/g, ''))] } : {}),
+  };
 }
 
 export interface ConjuntoEnMeta {
@@ -471,7 +493,7 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
           event_name: e.etapa,
           event_time: Math.floor(e.cuando.getTime() / 1000),
           action_source: 'system_generated',
-          user_data: { lead_id: Number(e.leadgenId) },
+          user_data: datosDeLaPersona(e),
           custom_data: { event_source: 'crm', lead_event_source: 'Homero' },
         })),
       });

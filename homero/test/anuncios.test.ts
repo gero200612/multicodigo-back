@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { datosDeLaPersona } from '../src/meta.js';
 import { describe, expect, it, vi } from 'vitest';
 import { agentePublicitar, agenteRevisar, CorridaSinCerrar } from '../src/agentes.js';
 import {
@@ -954,12 +956,15 @@ describe('conversiones de leads: Meta se entera de qué consultas sirvieron', ()
     const { h, ana, beto } = await conConsultas(true);
     await h.store.marcarCalidad(ana.id, 'sirve');
     await h.store.marcarCalidad(beto.id, 'no_sirve');
-    expect(await contarleAMeta(h.deps)).toBe(2);
-    const enviadas = h.f.de('enviarEtapas')[0]!.args[0] as { leadgenId: string; etapa: string }[];
+    expect(await contarleAMeta(h.deps)).toBe(4);
+    const enviadas = h.f.de('enviarEtapas')[0]!.args[0] as { leadgenId: string; etapa: string; email?: string }[];
     expect(enviadas.map((e) => [e.leadgenId, e.etapa])).toEqual([
+      ['120000000000001', 'Lead'],
       ['120000000000001', 'Calificado'],
+      ['120000000000002', 'Lead'],
       ['120000000000002', 'Descalificado'],
     ]);
+    expect(enviadas[0]!.email).toBe('ana@x.com');
     expect(await contarleAMeta(h.deps)).toBe(0);
 
     await h.store.crearReunion({ leadId: ana.id, inicio: new Date('2026-10-01T18:00:00Z'), fin: new Date('2026-10-01T18:30:00Z'), link: 'x' });
@@ -972,5 +977,13 @@ describe('conversiones de leads: Meta se entera de qué consultas sirvieron', ()
     await h.store.marcarCalidad(ana.id, 'sirve');
     expect(await contarleAMeta(h.deps)).toBe(0);
     expect(h.f.de('enviarEtapas')).toEqual([]);
+  });
+
+  it('el mail y el teléfono van cifrados (SHA-256) y el lead_id como número', () => {
+    const p = datosDeLaPersona({ leadgenId: '120000000000001', etapa: 'Lead', cuando: new Date(), email: ' Ana@X.com ', telefono: '5491122334455' });
+    expect(p.lead_id).toBe(120000000000001);
+    expect(p.em).toEqual([createHash('sha256').update('ana@x.com').digest('hex')]);
+    expect(p.ph).toEqual([createHash('sha256').update('5491122334455').digest('hex')]);
+    expect(JSON.stringify(p)).not.toContain('ana@x.com');
   });
 });
