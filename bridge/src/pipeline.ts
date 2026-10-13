@@ -89,8 +89,53 @@ export interface IncomingMessage {
   modoForzado?: ModoDeTurno;
 }
 
+/**
+ * El aviso de una corrida. Con `efimero`, un mensaje de estado ("Analizando
+ * visual…") que se borra solo cuando llega el siguiente, efimero o no.
+ */
+export type Avisar = (texto: string, opciones?: { efimero?: boolean }) => Promise<void>;
+
+/** Mandar y borrar un mensaje del chat (bot de Telegram). */
+export interface MensajesDelChat {
+  enviar(chatId: number, texto: string): Promise<number | undefined>;
+  borrar(chatId: number, mensajeId: number): Promise<void>;
+}
+
+/**
+ * Envuelve el aviso de la corrida para los mensajes de estado: cada uno borra
+ * al anterior, y el primer aviso normal borra el que quedaba. Sin `mensajes`
+ * (tests, o sin bot) el de estado sale como un aviso comun.
+ */
+export function conEfimeros(chatId: number, avisar: (texto: string) => Promise<void>, mensajes?: MensajesDelChat): Avisar {
+  let anterior: number | undefined;
+  const sacarAnterior = async () => {
+    if (anterior === undefined || !mensajes) return;
+    const id = anterior;
+    anterior = undefined;
+    await mensajes.borrar(chatId, id).catch(() => undefined);
+  };
+  return async (texto, opciones) => {
+    await sacarAnterior();
+    if (opciones?.efimero && mensajes) {
+      anterior = await mensajes.enviar(chatId, texto).catch(() => undefined);
+      return;
+    }
+    await avisar(texto);
+  };
+}
+
+/** Como se nombra cada eje en el mensaje de estado. */
+const EJE_EN_CURSO: Record<Eje, string> = {
+  usuario: 'como usuario',
+  visual: 'visual',
+  funcionamiento: 'funcional',
+  testeos: 'los tests',
+};
+
 export interface PipelineDeps {
   store: Store;
+  /** Para los mensajes de estado que se borran solos. Opcional. */
+  mensajes?: MensajesDelChat;
   /**
    * Lo que los agentes tienen sin mergear en unos repos (gateway `/trabajo`).
    * Opcional: sin el token de admin del gateway no hay aviso, y el turno sigue
@@ -2739,23 +2784,24 @@ async function cerrarConInforme(
       console.error('[bridge] no pude abrir el chat de revision:', err),
     );
   }
-  await avisar(
-    textoDeInforme(
-      corrida,
-      motivo,
-      resumen,
-      rama,
-      [...(ahora?.pendientes ?? corrida.pendientes ?? []), ...pendientesDePublicar].filter(
-        (p) => !prefijosResueltos.some((q) => p.startsWith(q)),
-      ),
-      publicados,
-      // Las firmas salen de la corrida que recibio esta funcion, que es la que
-      // el ciclo releyo DESPUES de los veredictos. `ahora` no sirve para esto:
-      // `corridaAbierta` filtra por estado y arriba ya se cerro, asi que vuelve
-      // vacio siempre.
-      corrida.veredictos,
+  const informe = textoDeInforme(
+    corrida,
+    motivo,
+    resumen,
+    rama,
+    [...(ahora?.pendientes ?? corrida.pendientes ?? []), ...pendientesDePublicar].filter(
+      (p) => !prefijosResueltos.some((q) => p.startsWith(q)),
     ),
+    publicados,
+    // Las firmas salen de la corrida que recibio esta funcion, que es la que
+    // el ciclo releyo DESPUES de los veredictos. `ahora` no sirve para esto:
+    // `corridaAbierta` filtra por estado y arriba ya se cerro, asi que vuelve
+    // vacio siempre.
+    corrida.veredictos,
   );
+  // Siempre con los links: la app publicada y el codigo, aunque esta vez no
+  // se haya publicado nada (una corrida cortada tambien deja algo para mirar).
+  await avisar(informe + (await linksDelProyecto(corrida.proyecto, publicados, deps)));
 }
 
 /**
@@ -2796,7 +2842,7 @@ async function rondaDeAnalisis(
   corrida: Corrida,
   usuarioId: string,
   deps: PipelineDeps,
-  avisar: (texto: string) => Promise<void>,
+  avisar: Avisar,
 ): Promise<boolean> {
   const chatId = corrida.chatId;
 
@@ -2863,6 +2909,7 @@ async function rondaDeAnalisis(
     ? await deps.store.idDeProyecto(corrida.proyecto).catch(() => null)
     : null;
   if (deps.verificarApp && proyectoIdParaVerificar) {
+    await avisar('🔍 Revisando la app publicada: el servidor y cada pantalla…', { efimero: true });
     const encontrados = await deps
       .verificarApp(proyectoIdParaVerificar, corrida.proyecto)
       .catch(() => [] as { resumen: string; tarea: string }[]);
@@ -2928,6 +2975,29 @@ async function rondaDeAnalisis(
   return false;
 }
 
+/**
+ * El bloque de links del informe: la URL de cada repo publicado (salvo las que
+ * el informe ya muestra en "Publicado") y su repo en GitHub. Vacio si no hay.
+ */
+export async function linksDelProyecto(
+  proyecto: string,
+  publicados: readonly { url: string }[],
+  deps: Pick<PipelineDeps, 'store'>,
+): Promise<string> {
+  const proyectoId = await deps.store.idDeProyecto(proyecto).catch(() => null);
+  if (!proyectoId) return '';
+  const repos = (await deps.store.reposDeProyecto(proyectoId).catch(() => [])).filter((r) => !r.solo_lectura);
+  const yaEstan = new Set(publicados.map((p) => p.url));
+  const apps = repos
+    .map((r) => ({ nombre: r.nombre, url: r.destino_url ?? r.render_url }))
+    .filter((r): r is { nombre: string; url: string } => Boolean(r.url) && !yaEstan.has(r.url!));
+  const lineas = [
+    ...apps.map((r) => ` · ${escaparHtml(r.nombre)} → ${escaparHtml(r.url)}`),
+    ...repos.map((r) => ` · código de ${escaparHtml(r.nombre)} → https://github.com/${escaparHtml(r.github_repo)}`),
+  ];
+  return lineas.length ? `\n\n<b>Links:</b>\n${lineas.join('\n')}` : '';
+}
+
 /** Que hacer despues de una tanda de analistas. */
 type ResultadoDeTanda = 'ok' | 'cerrada' | 'reintentar';
 
@@ -2950,7 +3020,7 @@ async function tandaDeAnalisis(
   corrida: Corrida,
   usuarioId: string,
   deps: PipelineDeps,
-  avisar: (texto: string) => Promise<void>,
+  avisar: Avisar,
   ejes: readonly (Eje | undefined)[],
   cierre: boolean,
 ): Promise<ResultadoDeTanda> {
@@ -3020,7 +3090,8 @@ async function tandaDeAnalisis(
       (await deps.store.getActiveAgent(chatId)) ??
       deps.defaultAgent) as AgentId;
 
-    if (eje) await avisar(`   · ${eje} (${QUE_MIRA[eje]}) — ${elegido}`);
+    // Un mensaje de estado por eje, que se borra solo con el siguiente.
+    if (eje) await avisar(`🔍 Analizando ${EJE_EN_CURSO[eje]}… (${elegido})`, { efimero: true });
 
     try {
       await ejecutarTurnoConRelevo(deps, {
@@ -3355,10 +3426,11 @@ async function esperarQueVuelvan(
 export async function correrCola(
   chatId: number,
   deps: PipelineDeps,
-  avisar: (texto: string) => Promise<void>,
+  avisarComun: (texto: string) => Promise<void>,
 ): Promise<void> {
   const usuarioId = await deps.store.usuarioDeChat(chatId);
   if (!usuarioId) return;
+  const avisar = conEfimeros(chatId, avisarComun, deps.mensajes);
 
   // A quien le toco la ultima, para que la proxima le toque a otro. Vive en el
   // bucle y no en la base a proposito: es de ESTA vuelta de la cola, y si el

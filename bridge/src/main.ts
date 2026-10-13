@@ -410,6 +410,13 @@ if (faltanDeDrive.length > 0 && faltanDeDrive.length < 3) {
  * hilo es uno solo— y tenerla en una constante evita que se separen.
  */
 const pipelineDeps = {
+  // Los mensajes de estado de la corrida ("Analizando visual…") se borran
+  // solos: hace falta poder mandar y borrar por el bot. `bot` existe recien
+  // abajo, pero esto se llama con la corrida ya andando.
+  mensajes: {
+    enviar: (chatId: number, texto: string) => bot.api.sendMessage(chatId, texto).then((m) => m.message_id),
+    borrar: (chatId: number, id: number) => bot.api.deleteMessage(chatId, id).then(() => undefined),
+  },
   store,
   defaultAgent: env.DEFAULT_AGENT,
   project: env.DEFAULT_PROJECT,
