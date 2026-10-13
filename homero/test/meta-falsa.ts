@@ -1,4 +1,4 @@
-import type { FilaDeInsights, LeadDeMeta, Meta } from '../src/meta.js';
+import type { ConjuntoEnMeta, FilaDeInsights, LeadDeMeta, Meta } from '../src/meta.js';
 
 /**
  * Una Meta en memoria: anota cada llamada y devuelve ids inventados. Lo que se
@@ -11,6 +11,8 @@ export function metaFalsa() {
   const datos = {
     insights: [] as FilaDeInsights[],
     leads: new Map<string, LeadDeMeta[]>(),
+    /** Lo que Meta dice de los conjuntos (conjuntos()). */
+    conjuntos: [] as ConjuntoEnMeta[],
     /** El limite de gasto de la cuenta, en pesos. */
     limite: 0,
     /** Si esta, la proxima llamada con ese metodo falla. */
@@ -70,6 +72,10 @@ export function metaFalsa() {
     async insights(desde, hasta) {
       anotar('insights', desde, hasta);
       return datos.insights;
+    },
+    async conjuntos(campana) {
+      anotar('conjuntos', campana);
+      return datos.conjuntos;
     },
     async leads(formulario, desde) {
       anotar('leads', formulario, desde);

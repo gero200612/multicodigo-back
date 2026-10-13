@@ -59,6 +59,10 @@ export interface CreativoNuevo {
 /** Una fila de insights: un anuncio en un dia. Gasto en pesos, no en centavos. */
 export interface FilaDeInsights {
   anuncio: string;
+  /** El conjunto del anuncio: con esto se atribuye un anuncio que Homero no creo (duplicado a mano). */
+  conjunto?: string;
+  /** La campaña: lo de otras campañas de la cuenta no es de Homero. */
+  campana?: string;
   dia: string;
   gasto: number;
   impresiones: number;
@@ -89,6 +93,14 @@ export interface CuentaDeMeta {
 
 export type EstadoEnMeta = 'ACTIVE' | 'PAUSED';
 
+export interface ConjuntoEnMeta {
+  id: string;
+  /** Sin diario propio (presupuesto de campaña) viene sin esto. */
+  diario?: number;
+  /** effective_status: ACTIVE, PAUSED, CAMPAIGN_PAUSED, DELETED, ARCHIVED, ... */
+  estado: string;
+}
+
 export interface Meta {
   cuenta(): Promise<CuentaDeMeta>;
   crearCampana(nombre: string): Promise<string>;
@@ -106,6 +118,8 @@ export interface Meta {
   cambiarDiario(conjunto: string, diario: number): Promise<void>;
   /** Por anuncio y por dia, entre dos dias (AAAA-MM-DD) inclusive. */
   insights(desde: string, hasta: string): Promise<FilaDeInsights[]>;
+  /** Los conjuntos de una campaña como estan en Meta: diario (pesos) y estado efectivo. Incluye los borrados. */
+  conjuntos(campana: string): Promise<ConjuntoEnMeta[]>;
   /** Los leads de un formulario desde un instante. */
   leads(formulario: string, desde: Date): Promise<LeadDeMeta[]>;
 }
@@ -339,8 +353,10 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
             age_min: 25,
             age_max: 65,
             ...(c.intereses.length ? { flexible_spec: [{ interests: c.intereses }] } : {}),
-            // Sin Advantage+: el publico es el que se pide, no uno que amplia Meta.
-            targeting_automation: { advantage_audience: 0 },
+            // Publico Advantage+: los intereses quedan como sugerencia y Meta
+            // busca a quien convierte. Con presupuestos chicos rinde mas que un
+            // publico fijo (2026-10-13). Pais y edad minima siguen siendo limites.
+            targeting_automation: { advantage_audience: 1 },
           },
           status: 'ACTIVE',
         }),
@@ -393,18 +409,40 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
     async insights(desde, hasta) {
       const filas = await todo(`${cuenta}/insights`, {
         level: 'ad',
-        fields: 'ad_id,spend,impressions,actions',
+        fields: 'ad_id,adset_id,campaign_id,spend,impressions,actions',
         time_range: { since: desde, until: hasta },
         time_increment: 1,
         limit: 500,
       });
       return filas.map((f) => ({
         anuncio: String(f.ad_id ?? ''),
+        ...(f.adset_id ? { conjunto: String(f.adset_id) } : {}),
+        ...(f.campaign_id ? { campana: String(f.campaign_id) } : {}),
         dia: String(f.date_start ?? ''),
         // El gasto de insights viene en pesos ("1234.56"), no en centavos.
         gasto: Number(f.spend ?? 0),
         impresiones: Number(f.impressions ?? 0),
         consultas: consultasDe(f.actions),
+      }));
+    },
+
+    async conjuntos(campana) {
+      const filas = await todo(`${campana}/adsets`, {
+        fields: 'id,daily_budget,effective_status',
+        // Por defecto Meta no devuelve los borrados: se piden para enterarse.
+        filtering: [
+          {
+            field: 'effective_status',
+            operator: 'IN',
+            value: ['ACTIVE', 'PAUSED', 'CAMPAIGN_PAUSED', 'DELETED', 'ARCHIVED', 'IN_PROCESS', 'WITH_ISSUES'],
+          },
+        ],
+        limit: 100,
+      });
+      return filas.map((f) => ({
+        id: String(f.id ?? ''),
+        ...(f.daily_budget !== undefined ? { diario: Number(f.daily_budget) / CENTAVOS_POR_PESO } : {}),
+        estado: String(f.effective_status ?? ''),
       }));
     },
 

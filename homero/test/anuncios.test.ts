@@ -17,6 +17,7 @@ import {
   numerosDelMes,
   renovarFormulario,
   seguimientoDeLeadMeta,
+  sincronizarConMeta,
   interesesObsoletosDelError,
   minimoDelError,
   minimoDiario,
@@ -837,5 +838,59 @@ describe('paquete 1: contacto rápido, mayor intención y calidad', () => {
     // Por formulario ganaba A ($1.000 c/u); por consulta que sirve gana B.
     expect(n.mejor!.anuncio.id).toBe(b);
     expect(n.mejor!.costoPorUtil).toBe(3000);
+  });
+});
+
+describe('paquete 2: lo que está en Meta manda', () => {
+  async function conCampana() {
+    const h = conMeta();
+    await h.store.guardarEstado('meta:campana', 'camp1');
+    await h.store.guardarEstado('presupuesto_mes', 1_000_000);
+    return h;
+  }
+
+  it('si cambiaron el diario a mano en Meta, Homero se pone al día y avisa', async () => {
+    const h = await conCampana();
+    const a = await activo(h, 1610);
+    h.f.datos.conjuntos = [{ id: 'set1', diario: 3220, estado: 'ACTIVE' }];
+    expect(await sincronizarConMeta(h.deps)).toHaveLength(1);
+    expect((await h.store.anuncio(a))!.diario).toBe(3220);
+    expect(h.avisos.at(-1)).toContain('Cambios hechos a mano en Meta');
+    // La segunda vez ya coincide: no avisa de nuevo.
+    expect(await sincronizarConMeta(h.deps)).toEqual([]);
+  });
+
+  it('pausado o borrado en Meta: lo cuenta así', async () => {
+    const h = await conCampana();
+    const pausado = await activo(h, 2000, 1);
+    const borrado = await activo(h, 2000, 2);
+    h.f.datos.conjuntos = [
+      { id: 'set1', diario: 2000, estado: 'PAUSED' },
+      { id: 'set2', diario: 2000, estado: 'DELETED' },
+    ];
+    await sincronizarConMeta(h.deps);
+    expect((await h.store.anuncio(pausado))!.estado).toBe('pausado');
+    expect(await h.store.anuncio(borrado)).toMatchObject({ estado: 'descartado', motivo: 'lo borraron en Meta' });
+  });
+
+  it('un anuncio duplicado a mano en un conjunto de Homero se cuenta para ese anuncio', async () => {
+    const h = await conCampana();
+    const a = await activo(h, 2000);
+    const hoy = '2026-09-29';
+    h.f.datos.insights = [
+      { anuncio: 'ad1', conjunto: 'set1', campana: 'camp1', dia: hoy, gasto: 1000, impresiones: 100, consultas: 1 },
+      { anuncio: 'ad-a-mano', conjunto: 'set1', campana: 'camp1', dia: hoy, gasto: 500, impresiones: 50, consultas: 1 },
+    ];
+    await leerInsights(h.deps);
+    expect(await h.store.gastos(hoy)).toEqual([expect.objectContaining({ anuncioId: a, gasto: 1500, impresiones: 150, consultas: 2 })]);
+  });
+
+  it('gasto en la campaña de Homero que no se puede atribuir: avisa una vez por día', async () => {
+    const h = await conCampana();
+    await activo(h, 2000);
+    h.f.datos.insights = [{ anuncio: 'otro', conjunto: 'set-desconocido', campana: 'camp1', dia: '2026-09-29', gasto: 800, impresiones: 10, consultas: 0 }];
+    await leerInsights(h.deps);
+    await leerInsights(h.deps);
+    expect(h.avisos.filter((t) => t.includes('no armé yo'))).toHaveLength(1);
   });
 });

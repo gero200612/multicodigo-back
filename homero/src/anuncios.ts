@@ -713,16 +713,96 @@ export async function leerInsights(deps: DepsDeAnuncios): Promise<void> {
   if (!deps.meta) return;
   const mes = mesDe(deps.ahora());
   const filas = await deps.meta.insights(mes.primerDia, mes.hoy);
+  const anuncios = await deps.store.anuncios();
   const porId = new Map<string, number>();
-  for (const a of await deps.store.anuncios()) if (a.metaIds.anuncio) porId.set(a.metaIds.anuncio, a.id);
-  await deps.store.guardarGastos(
-    filas.flatMap((f) => {
-      const anuncioId = porId.get(f.anuncio);
-      return anuncioId ? [{ dia: f.dia, anuncioId, gasto: f.gasto, impresiones: f.impresiones, consultas: f.consultas }] : [];
-    }),
-  );
+  const porConjunto = new Map<string, number>();
+  for (const a of anuncios) {
+    if (a.metaIds.anuncio) porId.set(a.metaIds.anuncio, a.id);
+    if (a.metaIds.conjunto) porConjunto.set(a.metaIds.conjunto, a.id);
+  }
+  const campana = await deps.store.leerEstado<string>(CAMPANA);
+  // Un anuncio que Homero no creo pero esta en uno de sus conjuntos (un
+  // duplicado hecho a mano en Meta) se cuenta para ese anuncio: si no, su
+  // gasto no entraba en el presupuesto. Varios del mismo anuncio y dia se suman.
+  const sumados = new Map<string, { dia: string; anuncioId: number; gasto: number; impresiones: number; consultas: number }>();
+  const ajenos = new Map<string, number>();
+  for (const f of filas) {
+    const anuncioId = porId.get(f.anuncio) ?? (f.conjunto ? porConjunto.get(f.conjunto) : undefined);
+    if (anuncioId === undefined) {
+      // Lo de la campaña de Homero que no se puede atribuir: se avisa.
+      if (campana && f.campana === campana && f.dia === mes.hoy && f.gasto > 0) ajenos.set(f.anuncio, f.gasto);
+      continue;
+    }
+    const clave = `${f.dia}:${anuncioId}`;
+    const s = sumados.get(clave) ?? { dia: f.dia, anuncioId, gasto: 0, impresiones: 0, consultas: 0 };
+    s.gasto += f.gasto;
+    s.impresiones += f.impresiones;
+    s.consultas += f.consultas;
+    sumados.set(clave, s);
+  }
+  await deps.store.guardarGastos([...sumados.values()]);
+  await sincronizarConMeta(deps);
+  if (ajenos.size > 0 && (await deps.store.leerEstado<string>(AJENOS_AVISADO)) !== mes.hoy) {
+    await deps.store.guardarEstado(AJENOS_AVISADO, mes.hoy);
+    const total = [...ajenos.values()].reduce((n, g) => n + g, 0);
+    await deps.avisar(
+      `⚠️ En la campaña de Homero hay ${ajenos.size} anuncio(s) que no armé yo y gastaron ${pesos(total)} hoy, en un conjunto ` +
+        'que no conozco. Ese gasto no lo cuento en el presupuesto. Si lo armaste a mano, pausalo o avisame.',
+    );
+  }
   await controlarTope(deps);
   await controlarEntrega(deps);
+}
+
+/** Clave en homero.estado: el ultimo dia que se aviso de gasto ajeno en la campaña. */
+const AJENOS_AVISADO = 'meta:ajenos_avisado';
+
+/**
+ * Lo que esta en Meta manda: si alguien cambio a mano el diario de un conjunto,
+ * lo pauso, lo prendio o lo borro, Homero se pone al dia y le cuenta a Gero. Sin
+ * esto el control del presupuesto calculaba con montos que ya no eran.
+ */
+export async function sincronizarConMeta(deps: DepsDeAnuncios): Promise<string[]> {
+  const campana = await deps.store.leerEstado<string>(CAMPANA);
+  if (!deps.meta || !campana) return [];
+  let enMeta;
+  try {
+    enMeta = new Map((await deps.meta.conjuntos(campana)).map((c) => [c.id, c]));
+  } catch (err) {
+    console.warn('[homero] no pude leer los conjuntos de Meta:', err instanceof Error ? err.message : err);
+    return [];
+  }
+  const cambios: string[] = [];
+  for (const a of await deps.store.anuncios(APROBADOS)) {
+    const c = a.metaIds.conjunto ? enMeta.get(a.metaIds.conjunto) : undefined;
+    if (!c) continue;
+    if (c.estado === 'DELETED' || c.estado === 'ARCHIVED') {
+      await deps.store.actualizarAnuncio(a.id, { estado: 'descartado', motivo: 'lo borraron en Meta' });
+      cambios.push(`#${a.id} (${a.titulo}) está borrado en Meta: lo saco de mis cuentas.`);
+      continue;
+    }
+    const cambio: Partial<Pick<Anuncio, 'diario' | 'estado' | 'motivo'>> = {};
+    if (c.diario !== undefined && Math.abs(c.diario - a.diario) >= 1) {
+      cambio.diario = c.diario;
+      cambios.push(`#${a.id} (${a.titulo}) tiene ${pesos(c.diario)} por día en Meta y yo tenía ${pesos(a.diario)}: lo actualicé.`);
+    }
+    if (c.estado === 'PAUSED' && a.estado === 'activo') {
+      cambio.estado = 'pausado';
+      cambio.motivo = 'lo pausaron en Meta';
+      cambios.push(`#${a.id} (${a.titulo}) está pausado en Meta: lo cuento como pausado.`);
+    } else if (c.estado === 'ACTIVE' && a.estado === 'pausado') {
+      cambio.estado = 'activo';
+      cambios.push(`#${a.id} (${a.titulo}) está andando en Meta: lo cuento como activo.`);
+    }
+    if (Object.keys(cambio).length) await deps.store.actualizarAnuncio(a.id, cambio);
+  }
+  if (cambios.length) {
+    await deps.avisar(
+      ['🔄 Cambios hechos a mano en Meta, ya los tengo en cuenta:', ...cambios.map((c) => `• ${c}`)].join('\n') +
+        '\nSi el total de los diarios ya no entra en el presupuesto del mes, pauso todo como siempre.',
+    );
+  }
+  return cambios;
 }
 
 /** Clave en homero.estado: cuándo se publicó cada anuncio en Meta (ISO). */
