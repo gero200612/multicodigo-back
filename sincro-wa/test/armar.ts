@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Contexto, Push } from '../src/contexto.js';
 import { Despertador } from '../src/eventos.js';
-import { ErrorDeMeta, type ClienteMeta, type DatosDelNumero } from '../src/meta.js';
+import { ErrorDeMeta, type ClienteMeta, type DatosDelNumero, type Interactivo } from '../src/meta.js';
 import { crearPrivado } from '../src/privado.js';
 import { crearPublico } from '../src/publico.js';
 import { MemoriaStore } from './memoria.js';
@@ -13,7 +13,16 @@ export const CLAVE_ADMIN = 'admin-'.padEnd(40, 'x');
 
 /** Un Meta que anota todo y contesta lo que el test le diga. */
 export class MetaFalsa implements ClienteMeta {
-  enviados: { tipo: 'texto' | 'plantilla'; token: string; desde: string; a: string; texto?: string; plantilla?: string; variables?: string[] }[] = [];
+  enviados: {
+    tipo: 'texto' | 'plantilla' | 'interactivo';
+    token: string;
+    desde: string;
+    a: string;
+    texto?: string;
+    plantilla?: string;
+    variables?: string[];
+    interactivo?: Interactivo;
+  }[] = [];
   creadas: { wabaId: string; nombre: string; categoria: string }[] = [];
   fallar: string | null = null;
   categoriaAlCrear: string | null = null;
@@ -27,6 +36,11 @@ export class MetaFalsa implements ClienteMeta {
   async enviarTexto(token: string, desde: string, a: string, texto: string) {
     this.revisar();
     this.enviados.push({ tipo: 'texto', token, desde, a, texto });
+    return { wamid: `wamid.sale.${++this.n}` };
+  }
+  async enviarInteractivo(token: string, desde: string, a: string, texto: string, interactivo: Interactivo) {
+    this.revisar();
+    this.enviados.push({ tipo: 'interactivo', token, desde, a, texto, interactivo });
     return { wamid: `wamid.sale.${++this.n}` };
   }
   async enviarPlantilla(token: string, desde: string, a: string, p: { nombre: string; idioma: string; variables: string[] }) {

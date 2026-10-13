@@ -24,8 +24,12 @@ export interface NuevaPlantillaEnMeta {
   componentes: unknown[];
 }
 
+/** Botones de respuesta (hasta 3) o un boton con link: Meta no deja los dos en el mismo mensaje. */
+export type Interactivo = { botones: string[] } | { link: { texto: string; url: string } };
+
 export interface ClienteMeta {
   enviarTexto(token: string, phoneNumberId: string, a: string, texto: string): Promise<{ wamid: string }>;
+  enviarInteractivo(token: string, phoneNumberId: string, a: string, texto: string, i: Interactivo): Promise<{ wamid: string }>;
   enviarPlantilla(
     token: string,
     phoneNumberId: string,
@@ -95,6 +99,29 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
           to: a,
           type: 'text',
           text: { body: texto, preview_url: false },
+        }),
+      );
+    },
+    async enviarInteractivo(token, phoneNumberId, a, texto, i) {
+      const interactive =
+        'botones' in i
+          ? {
+              type: 'button',
+              body: { text: texto },
+              action: { buttons: i.botones.map((title, n) => ({ type: 'reply', reply: { id: `b${n + 1}`, title } })) },
+            }
+          : {
+              type: 'cta_url',
+              body: { text: texto },
+              action: { name: 'cta_url', parameters: { display_text: i.link.texto, url: i.link.url } },
+            };
+      return wamidDe(
+        await pedir(token, 'POST', `${phoneNumberId}/messages`, {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: a,
+          type: 'interactive',
+          interactive,
         }),
       );
     },

@@ -41,6 +41,47 @@ describe('ventana de 24 h', () => {
   });
 });
 
+describe('mensajes con botones', () => {
+  it('botones de respuesta o un link: salen como interactivo y quedan con sus renglones', async () => {
+    const n = await negocioConNumero(b, ['leads']);
+    await webhook(b, texto(n.phoneNumberId, CONTACTO, 'hola'));
+
+    const r = await pedir(b, n.clave, 'POST', '/mensajes', { a: CONTACTO, texto: 'Elegí uno', botones: ['Mar 14/10 15:00', 'Mié 15/10 16:00'] });
+    expect(r.status).toBe(200);
+    expect(b.meta.enviados.at(-1)).toMatchObject({ tipo: 'interactivo', texto: 'Elegí uno', interactivo: { botones: ['Mar 14/10 15:00', 'Mié 15/10 16:00'] } });
+    const conLink = await pedir(b, n.clave, 'POST', '/mensajes', {
+      a: CONTACTO,
+      texto: 'La web',
+      link: { texto: 'Ver la web', url: 'https://sincro.apps.punchi.dev' },
+    });
+    expect(conLink.status).toBe(200);
+
+    const charla = (await pedir(b, n.clave, 'GET', `/charlas/${CONTACTO}`)).json;
+    const textos = charla.mensajes.map((m: { texto: string }) => m.texto);
+    expect(textos).toContain('Elegí uno\n[Mar 14/10 15:00]\n[Mié 15/10 16:00]');
+    expect(textos).toContain('La web\n[Ver la web → https://sincro.apps.punchi.dev]');
+  });
+
+  it('valida: hasta 3 botones de 20, sin repetir, sin link a la vez, y respeta la ventana', async () => {
+    const n = await negocioConNumero(b, ['leads']);
+    await webhook(b, texto(n.phoneNumberId, CONTACTO, 'hola'));
+    const mal = [
+      { botones: ['a', 'b', 'c', 'd'] },
+      { botones: ['x'.repeat(21)] },
+      { botones: ['a', 'a'] },
+      { botones: ['a'], link: { texto: 'web', url: 'https://x.com' } },
+      { link: { texto: 'web', url: 'http://x.com' } },
+      { botones: ['a'], texto: 'x'.repeat(1025) },
+    ];
+    for (const extra of mal) {
+      const r = await pedir(b, n.clave, 'POST', '/mensajes', { a: CONTACTO, texto: 'hola', ...extra });
+      expect(r.json.code).toBe('invalido');
+    }
+    b.reloj.avanzar(25 * HORA_MS);
+    expect((await pedir(b, n.clave, 'POST', '/mensajes', { a: CONTACTO, texto: 'hola', botones: ['a'] })).json.code).toBe('fuera_de_ventana');
+  });
+});
+
 describe('avisos', () => {
   it('plantilla inexistente o sin aprobar: 409 plantilla_no_aprobada', async () => {
     const n = await negocioConNumero(b, ['avisos']);

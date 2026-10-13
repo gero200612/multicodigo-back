@@ -18,7 +18,23 @@ import type { Plantilla } from './store.js';
 const Contacto = z.string().regex(/^\d{8,15}$/, 'solo dígitos, de 8 a 15');
 const Id = z.coerce.number().int().positive();
 
-const Mensaje = z.object({ a: Contacto, texto: z.string().trim().min(1).max(4096) });
+const Boton = z.string().trim().min(1).max(20);
+const Mensaje = z
+  .object({
+    a: Contacto,
+    texto: z.string().trim().min(1).max(4096),
+    botones: z
+      .array(Boton)
+      .min(1)
+      .max(3)
+      .refine((b) => new Set(b).size === b.length, 'botones repetidos')
+      .optional(),
+    link: z.object({ texto: Boton, url: z.string().url().startsWith('https://') }).optional(),
+  })
+  // Meta no deja botones de respuesta y de link en el mismo mensaje, y el
+  // cuerpo de un interactivo llega hasta 1024.
+  .refine((m) => !(m.botones && m.link), 'botones o link, no los dos')
+  .refine((m) => !(m.botones || m.link) || m.texto.length <= 1024, 'con botones el texto llega hasta 1024');
 
 const Aviso = z.object({
   a: Contacto,
@@ -52,14 +68,15 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
 
   app.post('/mensajes', async (req) => {
     const negocio = negocioDe(req);
-    const { a, texto } = Mensaje.parse(req.body);
+    const { a, texto, botones, link } = Mensaje.parse(req.body);
     // Con `atender` (y sin `leads`) la app solo contesta charlas que la IA le derivo.
     if (!tiene(negocio.capacidades, 'leads')) {
       const charlas = await store.contactosDe(negocio.id, a);
       if (!charlas.some((c) => c.derivada)) throw new Rechazo(409, 'no_derivada');
     }
     const numero = await numeroPara(ctx, negocio.id, a);
-    const m = await enviarTexto(ctx, negocio, numero, a, texto);
+    const interactivo = botones ? { botones } : link ? { link } : undefined;
+    const m = await enviarTexto(ctx, negocio, numero, a, texto, { interactivo });
     return { id: m.id, wamid: m.wamid };
   });
 

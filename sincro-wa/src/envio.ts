@@ -2,7 +2,7 @@ import { alertar } from './alertas.js';
 import { categoriasPermitidas } from './capacidades.js';
 import { tokenDe, type Contexto } from './contexto.js';
 import { DIA_MS, diaDe } from './horas.js';
-import { ErrorDeMeta } from './meta.js';
+import { ErrorDeMeta, type Interactivo } from './meta.js';
 import { gastoDelMes, precioDe, revisarTopeDeGasto, ventanaAbierta } from './reglas.js';
 import type { CategoriaDeMensaje, Mensaje, Negocio, NuevoMensaje, Numero } from './store.js';
 import { textoDeError } from './tapar.js';
@@ -62,8 +62,9 @@ export async function enviarTexto(
   numero: Numero,
   a: string,
   texto: string,
-  opciones: { saltearBaja?: boolean } = {},
+  opciones: { saltearBaja?: boolean; interactivo?: Interactivo } = {},
 ): Promise<Mensaje> {
+  const { interactivo } = opciones;
   const contacto = await ctx.store.contacto(numero.id, a);
   if (contacto?.baja && !opciones.saltearBaja) throw new Rechazo(409, 'baja');
   if (!ventanaAbierta(contacto, ctx.ahora())) throw new Rechazo(409, 'fuera_de_ventana');
@@ -71,8 +72,9 @@ export async function enviarTexto(
     negocioId: negocio.id,
     numeroId: numero.id,
     contacto: a,
-    tipo: 'text',
-    texto,
+    tipo: interactivo ? 'interactive' : 'text',
+    // Los botones van como renglones para que la pantalla Charlas los muestre.
+    texto: interactivo ? `${texto}\n${renglonesDe(interactivo)}` : texto,
     mediaId: null,
     plantilla: null,
     categoria: 'service' as const,
@@ -83,11 +85,17 @@ export async function enviarTexto(
   };
   let wamid: string;
   try {
-    ({ wamid } = await ctx.meta.enviarTexto(tokenDe(ctx, numero), numero.phoneNumberId, a, texto));
+    ({ wamid } = interactivo
+      ? await ctx.meta.enviarInteractivo(tokenDe(ctx, numero), numero.phoneNumberId, a, texto, interactivo)
+      : await ctx.meta.enviarTexto(tokenDe(ctx, numero), numero.phoneNumberId, a, texto));
   } catch (e) {
     return fallaDeMeta(ctx, e, base);
   }
   return guardarSaliente(ctx, { ...base, wamid, estado: 'aceptado' });
+}
+
+function renglonesDe(i: Interactivo): string {
+  return 'botones' in i ? i.botones.map((b) => `[${b}]`).join('\n') : `[${i.link.texto} → ${i.link.url}]`;
 }
 
 /** Lo que manda el bot por su cuenta (baja, factura cargada, IA). Si no sale, se loguea y sigue. */
