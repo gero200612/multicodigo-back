@@ -19,6 +19,24 @@ export const PLAN_POR_DEFECTO = { plan: 'Pro', precio: 20, esGasto: true } as co
 /** Gratis y sin clave. El dólar tarjeta es el que se paga de verdad por Meta. */
 export const URL_DEL_DOLAR = 'https://dolarapi.com/v1/dolares/tarjeta';
 
+/**
+ * Lo que cobra Meta por cada mensaje de WhatsApp a un numero de Argentina, en
+ * dolares (rate card vigente desde 2025-07-01; Meta la cambia pocas veces al
+ * año: si cambia, se actualiza aca). El bot cobra en pesos: precio = esto x el
+ * dolar tarjeta del dia, que es como lo cobra Meta a una cuenta en pesos.
+ */
+export const TARIFA_META_USD: Record<string, number> = {
+  marketing: 0.0618,
+  utility: 0.026,
+  authentication: 0.026,
+  service: 0,
+};
+
+export interface PreciosDelBot {
+  ponerDolar(arsPorUsd: number): Promise<void>;
+  ponerPrecio(categoria: string, precioArs: number): Promise<void>;
+}
+
 export interface ClienteDeCuentas {
   /** Los slots con una cuenta de Claude cargada, con una huella de la cuenta (no el mail) si se sabe. */
   cuentas(): Promise<{ slot: string; cuenta?: string }[]>;
@@ -53,6 +71,16 @@ export interface DepsDeFinanzas {
   punchi?: ClienteDeCuentas;
   /** El dólar tarjeta de hoy (pesos por dólar). Por defecto, de dolarapi.com. */
   pedirDolar?: () => Promise<number>;
+  /** El bot de WhatsApp (clave de admin): se le pasan el dólar y los precios de Meta. */
+  waAdmin?: PreciosDelBot;
+}
+
+/** Al bot: el dólar del día y los precios de Meta en pesos con ese dólar. */
+export async function pasarPreciosAlBot(bot: PreciosDelBot, dolar: number): Promise<void> {
+  await bot.ponerDolar(dolar);
+  for (const [categoria, usd] of Object.entries(TARIFA_META_USD)) {
+    await bot.ponerPrecio(categoria, Math.round(usd * dolar * 10_000) / 10_000);
+  }
 }
 
 export async function dolarDeDolarApi(pedir: typeof fetch = fetch): Promise<number> {
@@ -75,6 +103,13 @@ export async function finanzasDelDia(deps: DepsDeFinanzas): Promise<{ dolar?: nu
     await deps.store.guardarCotizacion(hoy, r.dolar);
   } catch (err) {
     console.error('[homero] no pude leer el dólar:', err);
+  }
+  if (r.dolar && deps.waAdmin) {
+    try {
+      await pasarPreciosAlBot(deps.waAdmin, r.dolar);
+    } catch (err) {
+      console.error('[homero] no pude pasarle los precios al bot de WhatsApp:', err);
+    }
   }
   if (deps.punchi) {
     try {

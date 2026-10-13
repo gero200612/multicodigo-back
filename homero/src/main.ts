@@ -126,6 +126,7 @@ async function main() {
     meta: config.meta ? clienteDeMeta(config.meta) : undefined,
     mandarFoto: (png, pie) => mandarFoto(png, pie).catch((e) => console.error('[homero] no pude mandar la imagen:', e)),
     wa,
+    waAdmin,
     numerosDePrueba: config.whatsapp?.numerosDePrueba ?? [],
   };
   const acciones: Acciones = {

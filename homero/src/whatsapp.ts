@@ -159,6 +159,9 @@ export interface AdminWa {
   iaPendientes(): Promise<TrabajoDeIa[]>;
   iaArchivo(id: number): Promise<{ datos: Buffer; tipo: string }>;
   iaResultado(id: number, cuerpo: Record<string, unknown>): Promise<void>;
+  /** El dolar y los precios de Meta del bot: los pone Homero cada dia (finanzas.ts). */
+  ponerDolar(arsPorUsd: number): Promise<void>;
+  ponerPrecio(categoria: string, precioArs: number): Promise<void>;
 }
 
 export function adminWa(pedir: Pedir): AdminWa {
@@ -176,6 +179,12 @@ export function adminWa(pedir: Pedir): AdminWa {
     },
     iaResultado: async (id, cuerpo) => {
       await pedirOk(pedir, 'POST', `/admin/ia/${id}/resultado`, cuerpo);
+    },
+    ponerDolar: async (arsPorUsd) => {
+      await pedirOk(pedir, 'PUT', '/admin/dolar', { ars_por_usd: arsPorUsd, quien: 'homero' });
+    },
+    ponerPrecio: async (categoria, precioArs) => {
+      await pedirOk(pedir, 'PUT', '/admin/precios', { categoria, precio_ars: precioArs, quien: 'homero' });
     },
   };
 }

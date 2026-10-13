@@ -223,3 +223,35 @@ describe('la API de finanzas', () => {
     expect((await h.pedir('POST', '/finanzas/pagos', { clienteId: 99, dia: '2026-10-05', monto: 1, moneda: 'USD', concepto: 'abono' })).statusCode).toBe(400);
   });
 });
+
+describe('los precios del bot de WhatsApp', () => {
+  it('cada día le pasa el dólar tarjeta y la tarifa de Meta en pesos con ese dólar', async () => {
+    const puestos: [string, number][] = [];
+    const bot = {
+      ponerDolar: async (v: number) => void puestos.push(['dolar', v]),
+      ponerPrecio: async (c: string, v: number) => void puestos.push([c, v]),
+    };
+    await finanzasDelDia({ store: new MemoriaStore(), ahora: () => new Date('2026-10-09T15:00:00Z'), pedirDolar: async () => 1449.22, waAdmin: bot });
+    expect(puestos).toEqual([
+      ['dolar', 1449.22],
+      ['marketing', 89.5618],
+      ['utility', 37.6797],
+      ['authentication', 37.6797],
+      ['service', 0],
+    ]);
+  });
+
+  it('sin dólar no le pasa nada (mejor el precio de ayer que uno inventado)', async () => {
+    const puestos: unknown[] = [];
+    const bot = { ponerDolar: async () => void puestos.push(1), ponerPrecio: async () => void puestos.push(1) };
+    await finanzasDelDia({
+      store: new MemoriaStore(),
+      ahora: () => new Date('2026-10-09T15:00:00Z'),
+      pedirDolar: async () => {
+        throw new Error('caído');
+      },
+      waAdmin: bot,
+    });
+    expect(puestos).toEqual([]);
+  });
+});

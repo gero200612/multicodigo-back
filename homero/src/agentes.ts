@@ -26,6 +26,7 @@ import {
   ROL_WHATSAPP,
   variantesDeTelefono,
   yaContestado,
+  type AdminWa,
   type ClienteWa,
 } from './whatsapp.js';
 
@@ -54,6 +55,8 @@ export interface DepsDeAgentes extends DepsDeHerramientas {
   reportar?: (r: ReporteDeError) => Promise<unknown>;
   /** El numero de Sincro en el bot de WhatsApp (clave de app, solo leads). */
   wa?: ClienteWa;
+  /** El bot con la clave de admin: hoy solo para pasarle el dolar y los precios de Meta. */
+  waAdmin?: AdminWa;
   /** Numeros de Gero probando el bot (SINCRO_WA_PRUEBA). */
   numerosDePrueba?: string[];
 }
