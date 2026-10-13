@@ -76,6 +76,8 @@ export interface Acciones {
   cambiarAnuncio(id: number, pedido: string): Promise<ResultadoDeAnuncio>;
   /** Lo que dice Gero de una consulta que entro (botones Sirve / No sirve). */
   marcarCalidad(leadId: number, calidad: 'sirve' | 'no_sirve'): Promise<boolean>;
+  /** Gero respondio a un mensaje: si era un pedido de Meet, lo manda y dice que contestarle. */
+  pasarMeet(citado: number, texto: string): Promise<string | undefined>;
   /** El presupuesto de anuncios del mes, en pesos. */
   cambiarPresupuesto(monto: number): Promise<{ presupuesto: number; aviso?: string; pausados: number }>;
   /** Un video que mando Gero para publicar como reel. */
@@ -290,7 +292,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       const demo = await store.demoDeReunion(r.id);
       const texto = [
         `📅 ${horarioEnCastellano(r.inicio)}: ${lead?.nombre ?? '?'}`,
-        `   ${r.link}`,
+        `   ${r.link || '🔗 Meet pendiente (te lo pido 45 min antes)'}`,
         demo ? `   ${textoDeEstadoDeDemo(demo)}` : undefined,
       ]
         .filter((l) => l !== undefined)
@@ -658,6 +660,12 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   // Corregir un borrador: responderle a la tarjeta con el texto nuevo.
   bot.on('message:text', async (ctx) => {
     const citado = ctx.message.reply_to_message?.message_id;
+    // El link de Meet de una reunion: respuesta al mensaje que lo pidio.
+    const meet = citado && acciones ? await acciones.pasarMeet(citado, ctx.message.text) : undefined;
+    if (meet) {
+      await ctx.reply(meet);
+      return;
+    }
     // Lo que cambiar del texto de un reel: igual que con los anuncios (abajo).
     const reel = citado ? await store.reelPorTelegram(citado) : undefined;
     const reelPendiente = citado ? undefined : await store.leerEstado<{ reelId: number }>(CAMBIO_DE_REEL);

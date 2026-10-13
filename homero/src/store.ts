@@ -28,7 +28,8 @@ export type TipoDeTarea =
   | 'finanzas_del_dia'
   | 'agente_reel'
   | 'publicar_reel'
-  | 'leer_reels';
+  | 'leer_reels'
+  | 'pedir_meet';
 
 export type EstadoDeLead =
   | 'nuevo'

@@ -145,6 +145,8 @@ function escaparIcs(t: string): string {
   return t.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
 }
 
+const SIN_LINK = 'Google Meet (el link llega media hora antes)';
+
 /** La invitacion de calendario (RFC 5545) que va adjunta al mail. */
 export function invitacionIcs(r: {
   uid: string;
@@ -167,8 +169,9 @@ export function invitacionIcs(r: {
     `DTSTART:${fechaIcs(r.inicio)}`,
     `DTEND:${fechaIcs(r.fin)}`,
     `SUMMARY:${escaparIcs(r.titulo)}`,
-    `DESCRIPTION:${escaparIcs(`${r.descripcion}\n\nLink: ${r.link}`)}`,
-    `LOCATION:${escaparIcs(r.link)}`,
+    // Sin link todavia: Gero pasa su Meet media hora antes.
+    `DESCRIPTION:${escaparIcs(`${r.descripcion}\n\n${r.link ? `Link: ${r.link}` : SIN_LINK}`)}`,
+    `LOCATION:${escaparIcs(r.link || SIN_LINK)}`,
     `ORGANIZER;CN=Sincro:mailto:${r.organizador}`,
     ...r.invitados.map((i) => `ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE:mailto:${i}`),
     'BEGIN:VALARM',

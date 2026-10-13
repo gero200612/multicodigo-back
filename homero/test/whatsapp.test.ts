@@ -13,6 +13,7 @@ import {
   type Charla,
   type ClienteWa,
   type EventoWa,
+  type ExtraDeMensaje,
   type Pedir,
 } from '../src/whatsapp.js';
 import { agenteDe, armar } from './armar.js';
@@ -20,16 +21,16 @@ import { agenteDe, armar } from './armar.js';
 const CONTACTO = '5491155550000';
 
 function waFalso(charla: Partial<Charla> = {}) {
-  const mandados: { a: string; texto: string }[] = [];
+  const mandados: { a: string; texto: string; extra?: ExtraDeMensaje }[] = [];
   const acks: number[][] = [];
   let eventos: EventoWa[] = [];
   let fallarCon: string | undefined;
   const wa: ClienteWa = {
     eventos: async () => eventos,
     ack: async (ids) => void acks.push(ids),
-    mandar: async (a, texto) => {
+    mandar: async (a, texto, extra) => {
       if (fallarCon) throw new ErrorDeWhatsApp(409, fallarCon);
-      mandados.push({ a, texto });
+      mandados.push({ a, texto, extra });
       return { id: mandados.length, wamid: `wamid.${mandados.length}` };
     },
     charla: async (contacto) => ({
@@ -76,13 +77,17 @@ describe('whatsapp: helpers', () => {
   it('armarRespuesta: horarios uno por renglón, numerados, y la web solo si se pide', () => {
     const h = [new Date('2026-10-14T18:00:00Z'), new Date('2026-10-15T19:00:00Z')];
     const r = armarRespuesta('Hola Ana! 👋 Lo vemos en una reunión.', h, true);
-    const renglones = r.split('\n');
+    const renglones = r.texto.split('\n');
     expect(renglones[0]).toBe('Hola Ana! 👋 Lo vemos en una reunión.');
     expect(renglones.filter((l) => l.startsWith('1️⃣'))).toHaveLength(1);
     expect(renglones.filter((l) => l.startsWith('2️⃣'))).toHaveLength(1);
-    expect(r).toContain('📅');
-    expect(renglones.at(-1)).toBe('🌐 Por cualquier duda, acá tenés nuestra web: https://sincro.apps.punchi.dev');
-    expect(armarRespuesta('Hola!', [], false)).toBe('Hola!');
+    expect(r.texto).toContain('📅');
+    // Un botón por horario, con el título corto que vuelve si lo tocan.
+    expect(r.botones).toEqual(['mié 14/10 15:00', 'jue 15/10 16:00']);
+    expect(r.web).toBe(true);
+    expect(r.texto).not.toContain('http');
+    expect(armarRespuesta('Hola!', [], false)).toEqual({ texto: 'Hola!', web: false });
+    expect(armarRespuesta('Hola!', [], true).texto).toContain('🌐');
   });
 });
 
@@ -205,10 +210,12 @@ describe('whatsapp: el agente', () => {
     });
     h.deps.wa = f.wa;
     await agenteWhatsApp(payload, h.deps);
-    expect(f.mandados).toHaveLength(1);
+    // Meta no mezcla botones de horario y de link: la web sale en un segundo mensaje.
+    expect(f.mandados).toHaveLength(2);
     expect(f.mandados[0]!.texto).toMatch(/^Te cuento en la reunión\./);
     expect(f.mandados[0]!.texto).toContain('1️⃣');
-    expect(f.mandados[0]!.texto).toMatch(/https:\/\/sincro\.apps\.punchi\.dev$/);
+    expect(f.mandados[0]!.extra?.botones).toHaveLength(1);
+    expect(f.mandados[1]!.extra?.link).toEqual({ texto: 'Ver la web', url: 'https://sincro.apps.punchi.dev' });
   });
 
   it('confirmar un horario ofrecido reserva la reunión y manda el link por WhatsApp', async () => {
@@ -234,7 +241,10 @@ describe('whatsapp: el agente', () => {
       },
     };
     await agenteWhatsApp({ ...payload, texto: 'el 1', mensaje_id: 11 }, h2.deps);
-    expect(f.mandados[1]!.texto).toContain('Link para entrar');
+    expect(f.mandados[1]!.texto).toContain('✅');
+    expect(f.mandados[1]!.texto).toContain('link de Google Meet');
+    expect(f.mandados[1]!.texto).not.toContain('http');
+    expect(h.store.tareas.filter((t) => t.tipo === 'pedir_meet')).toHaveLength(2);
     expect(ofrecido).not.toBe('');
     const lead = await h.store.leadPorTelefono(variantesDeTelefono(CONTACTO));
     expect(lead?.estado).toBe('reunion');

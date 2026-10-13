@@ -43,7 +43,8 @@ import {
 } from './ventas.js';
 import { bajarPaginaConDestino, recibeMail } from './web.js';
 import { adminWa, atenderIa, bucle, clienteWa, pedidorWa, recibirLeads, reenviarAlertas } from './whatsapp.js';
-import { VIGILAR_PLANTILLA_MS, vigilarPlantilla } from './primer-whatsapp.js';
+import { asegurarPlantilla, VIGILAR_PLANTILLA_MS, vigilarPlantilla } from './primer-whatsapp.js';
+import { PLANTILLA_LINK, recibirMeet } from './meet.js';
 import { armarBancoDeMusica, buscarEnPixabay, leerBanco } from './medios.js';
 import { aprobarReel, cambiarReel, descartarReel, promocionarReel, recibirVideo, reintentarReel, retomarReels } from './publicar-reel.js';
 import { hojaDeContacto, medirVideo, portadaDe } from './video.js';
@@ -159,6 +160,7 @@ async function main() {
     aprobarAnuncio: (id: number) => aprobarAnuncio(id, deps),
     descartarAnuncio: (id: number) => descartarAnuncio(id, deps),
     marcarCalidad: async (id: number, calidad: 'sirve' | 'no_sirve') => (await store.marcarCalidad(id, calidad)) !== undefined,
+    pasarMeet: (citado: number, texto: string) => recibirMeet(citado, texto, { ...deps, aprobar: (id) => aprobarSaliente(id, deps) }),
     cambiarAnuncio: (id: number, pedido: string) => pedirCambio(id, pedido, deps),
     cambiarPresupuesto: (monto: number) => cambiarPresupuesto(monto, deps),
     recibirVideo: (v) => recibirVideo(v, deps),
@@ -294,6 +296,10 @@ async function main() {
           void vigilarPlantilla({ wa, store, avisar: aviso })
             .then((e) => console.log(`[homero] plantilla consulta_recibida: ${e}`))
             .catch((err) => console.error('[homero] plantilla de WhatsApp:', err instanceof Error ? err.message : err));
+          // La del link de la reunion, para cuando pasaron mas de 24 h: con que quede registrada alcanza.
+          void asegurarPlantilla(wa, PLANTILLA_LINK)
+            .then((e) => console.log(`[homero] plantilla link_reunion: ${e}`))
+            .catch((err) => console.error('[homero] plantilla link_reunion:', err instanceof Error ? err.message : err));
         mirar();
         return setInterval(mirar, VIGILAR_PLANTILLA_MS);
       })()

@@ -7,6 +7,7 @@ import { presupuestar } from './precios.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
 import { agenteAtender, agenteBuscar, agentePublicitar, agenteReel, agenteRevisar, agenteVender, agenteWhatsApp, type DepsDeAgentes } from './agentes.js';
 import { leerReels, publicarReel } from './publicar-reel.js';
+import { pedirMeet } from './meet.js';
 import { escribirALeadMeta, leerInsights, publicarAnuncio, renovarFormulario, resumenDeAnuncios, seguimientoDeLeadMeta } from './anuncios.js';
 import { SinLugar } from './gateway.js';
 import type { Recibido, Tarea, TipoDeTarea } from './store.js';
@@ -221,5 +222,7 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       return publicarReel(tarea.payload, deps);
     case 'leer_reels':
       return leerReels(deps);
+    case 'pedir_meet':
+      return pedirMeet(tarea.payload, deps);
   }
 }

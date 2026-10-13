@@ -50,7 +50,10 @@ const PlantillaWa = z.object({ nombre: z.string(), idioma: z.string(), estado: z
  * APPROVED, PENDING, REJECTED... o `sin_permiso` si el negocio Sincro no
  * tiene la capacidad `avisos` (la da Gero, ver docs/vps/sincro-wa-desplegar.py).
  */
-export async function asegurarPlantilla(wa: ClienteWa): Promise<string> {
+export async function asegurarPlantilla(
+  wa: ClienteWa,
+  plantilla: { nombre: string; idioma: string; categoria: string; texto: string; ejemplo: string[] } = PLANTILLA_CONSULTA,
+): Promise<string> {
   let lista: z.infer<typeof PlantillaWa>[];
   try {
     lista = z.array(PlantillaWa).parse(await wa.plantillas());
@@ -58,13 +61,13 @@ export async function asegurarPlantilla(wa: ClienteWa): Promise<string> {
     if (e instanceof ErrorDeWhatsApp && e.status === 404) return 'sin_permiso';
     throw e;
   }
-  const ya = lista.find((p) => p.nombre === PLANTILLA_CONSULTA.nombre && p.idioma === PLANTILLA_CONSULTA.idioma);
+  const ya = lista.find((p) => p.nombre === plantilla.nombre && p.idioma === plantilla.idioma);
   if (ya) return ya.bloqueada ? 'BLOQUEADA' : ya.estado;
   const creada = await wa.crearPlantilla({
-    nombre: PLANTILLA_CONSULTA.nombre,
-    idioma: PLANTILLA_CONSULTA.idioma,
-    categoria: PLANTILLA_CONSULTA.categoria,
-    componentes: [{ type: 'BODY', text: PLANTILLA_CONSULTA.texto, example: { body_text: [PLANTILLA_CONSULTA.ejemplo] } }],
+    nombre: plantilla.nombre,
+    idioma: plantilla.idioma,
+    categoria: plantilla.categoria,
+    componentes: [{ type: 'BODY', text: plantilla.texto, example: { body_text: [plantilla.ejemplo] } }],
   });
   return creada.bloqueada ? 'BLOQUEADA' : creada.estado;
 }

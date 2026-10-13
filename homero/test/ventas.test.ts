@@ -356,8 +356,15 @@ describe('cuando responden', () => {
     const confirmacion = h.enviados.at(-1)!;
     expect(confirmacion.ics).toContain('DTSTART:20260930T180000Z');
     expect(confirmacion.cc).toBe('gero@personal.com');
-    expect(confirmacion.texto).toContain('meet.jit.si');
-    expect(h.store.tareas.filter((t) => t.tipo === 'recordatorio')).toHaveLength(2);
+    // Sin Jitsi: Gero pasa su Meet media hora antes.
+    expect(confirmacion.texto).not.toContain('jit.si');
+    expect(confirmacion.texto).toContain('link de Google Meet');
+    expect(confirmacion.ics).toContain('Google Meet');
+    expect(h.store.tareas.filter((t) => t.tipo === 'recordatorio')).toHaveLength(1);
+    expect(h.store.tareas.filter((t) => t.tipo === 'pedir_meet').map((t) => t.disponibleDesde?.toISOString())).toEqual([
+      '2026-09-30T17:15:00.000Z',
+      '2026-09-30T17:50:00.000Z',
+    ]);
   });
 
   it('si Gero no manda la confirmacion, el horario se libera', async () => {

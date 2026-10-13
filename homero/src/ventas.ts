@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { diaArgentino, finDe, horarioEnCastellano, invitacionIcs, linkDeReunion } from './agenda.js';
+import { diaArgentino, finDe, horarioEnCastellano, invitacionIcs } from './agenda.js';
+import { encolarPedidosDeMeet } from './meet.js';
 import type { Casilla } from './config.js';
 import { cupoDelDia, enviarMail, type DepsDeEnvio } from './envio.js';
 import type { Fuente } from './fuentes.js';
@@ -508,8 +509,8 @@ export async function reservar(
   deps: DepsDeVentas,
   esEnsayo = false,
 ): Promise<boolean> {
-  const link = linkDeReunion();
-  const reunionId = await deps.store.crearReunion({ leadId: lead.id, inicio, fin: finDe(inicio), link });
+  // Sin link: Gero pasa su Meet media hora antes (meet.ts).
+  const reunionId = await deps.store.crearReunion({ leadId: lead.id, inicio, fin: finDe(inicio), link: '' });
   if (!reunionId) return false;
   if (esEnsayo) {
     // Se cancelan solas con /ensayo off: no pueden quedar tapando la agenda.
@@ -522,7 +523,7 @@ export async function reservar(
   const cuerpo = [
     `¡Genial! Quedamos el ${horarioEnCastellano(inicio)} (hora de Argentina). Te mandé la invitación para que te quede en el calendario.`,
     '',
-    `Link para entrar: ${link}`,
+    'Media hora antes te paso por acá el link de Google Meet.',
     '',
     'Son 30 minutos. Si te surge algo, avisame por acá y lo movemos.',
     deps.firma,
@@ -550,19 +551,13 @@ export async function reservar(
       disponibleDesde: alCliente,
     });
   }
-  await deps.store.encolar({
-    tipo: 'recordatorio',
-    payload: { reunionId, a: 'gero' },
-    requiereIa: false,
-    clave: `recordatorio:gero:${reunionId}`,
-    disponibleDesde: new Date(Math.max(ahora, inicio.getTime() - 30 * 60_000)),
-  });
+  await encolarPedidosDeMeet(deps.store, deps.ahora(), { reunionId, inicio, canal: 'mail' });
 
   const tarjeta = await deps.proponer(
     [
       `${esEnsayo ? '🧪 ENSAYO · ' : ''}📅 ELIGIÓ HORARIO: ${lead.nombre}`,
       `Cuándo: ${horarioEnCastellano(inicio)} (ya lo reservé)`,
-      `Link: ${link}`,
+      '🔗 45 min antes te pido el link de Meet.',
       lead.investigacion ? `Qué hacen: ${lead.investigacion.resumen_empresa}` : undefined,
       lead.investigacion ? `Dolor probable: ${lead.investigacion.dolor}` : undefined,
       lead.investigacion ? `Idea que le propusimos: ${lead.investigacion.idea}` : undefined,
@@ -622,7 +617,7 @@ export async function recordatorio(payload: unknown, deps: DepsDeVentas): Promis
     paso: 0,
     casilla: p.casilla,
     asunto: p.asunto ?? 'Nuestra charla de hoy',
-    cuerpo: `Hola, te recuerdo que hoy a las ${horaArgentina(reunion.inicio)} charlamos.\n\nLink: ${reunion.link}\n\n¡Nos vemos!\n${deps.firma}`,
+    cuerpo: `Hola, te recuerdo que hoy a las ${horaArgentina(reunion.inicio)} charlamos.\n\n${reunion.link ? `Link: ${reunion.link}` : 'Media hora antes te paso el link de Google Meet.'}\n\n¡Nos vemos!\n${deps.firma}`,
     enRespuestaA: confirmacion?.messageId,
     reunionId: reunion.id,
   });
