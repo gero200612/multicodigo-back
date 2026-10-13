@@ -702,3 +702,39 @@ export async function revisarDemos(
 }
 
 export type { RecursoVps };
+
+/**
+ * Espera a que terminen de armarse los despliegues de las apps del proyecto
+ * mandados desde `desde`. Sirve al vigia (vigia.ts): mirar la app antes de que
+ * termine el armado es mirar la version vieja. Si a los pocos minutos no
+ * aparece ningun despliegue nuevo (Coolify no lo encolo), se da por listo.
+ */
+export async function esperarDespliegues(
+  proyectoId: string,
+  desde: Date,
+  deps: VpsDeps,
+  o: { intervaloMs?: number; techoMs?: number; sinNovedadMs?: number; dormir?: (ms: number) => Promise<void>; ahora?: () => number } = {},
+): Promise<{ listo: boolean; fallados: string[] }> {
+  const c = deps.config.coolify;
+  const ahora = o.ahora ?? Date.now;
+  const dormir = o.dormir ?? ((ms: number) => new Promise<void>((ok) => setTimeout(ok, ms)));
+  const apps = (await deps.store.recursosVps(proyectoId)).filter((r) => r.parte !== 'proyecto' && r.parte !== 'base');
+  const inicio = ahora();
+  for (;;) {
+    let pendiente = false;
+    let vistoAlguno = false;
+    const fallados: string[] = [];
+    for (const a of apps) {
+      const d = await coolify.desplieguesDe(a.coolify_uuid, c);
+      if (!d.ok) continue;
+      // Un minuto de margen: el despliegue se encola apenas antes de `desde`.
+      const recientes = d.despliegues.filter((x) => new Date(x.creado).getTime() >= desde.getTime() - 60_000);
+      if (recientes.length > 0) vistoAlguno = true;
+      if (recientes.some((x) => x.estado === 'queued' || x.estado === 'in_progress')) pendiente = true;
+      else if (recientes[0]?.estado === 'failed') fallados.push(a.repo || a.parte);
+    }
+    if (!pendiente && (vistoAlguno || ahora() - inicio >= (o.sinNovedadMs ?? 3 * 60_000))) return { listo: true, fallados };
+    if (ahora() - inicio >= (o.techoMs ?? 20 * 60_000)) return { listo: false, fallados };
+    await dormir(o.intervaloMs ?? 20_000);
+  }
+}

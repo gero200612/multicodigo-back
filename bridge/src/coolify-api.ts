@@ -209,6 +209,26 @@ export async function estadoDeDespliegue(id: string, deps: CoolifyDeps): Promise
   return { ok: true, estado: String(r.json?.status ?? 'desconocido'), ...(log ? { log: sinToken(log, deps.token) } : {}) };
 }
 
+/**
+ * Los ultimos despliegues de una app, el mas nuevo primero. Para saber cuando
+ * termino de armarse lo que se mando a desplegar (el deploy es asincronico).
+ */
+export async function desplieguesDe(
+  uuid: string,
+  deps: CoolifyDeps,
+): Promise<Resultado<{ despliegues: { estado: string; creado: string }[] }>> {
+  const r = await pedir(deps, 'GET', `/deployments/applications/${encodeURIComponent(uuid)}?skip=0&take=5`);
+  if (!r.ok) return r;
+  const lista = (Array.isArray(r.json) ? r.json : r.json?.deployments) ?? [];
+  return {
+    ok: true,
+    despliegues: (lista as { status?: unknown; created_at?: unknown }[]).map((d) => ({
+      estado: String(d.status ?? 'desconocido'),
+      creado: String(d.created_at ?? ''),
+    })),
+  };
+}
+
 /** Las ultimas lineas que escribio una app (su stdout). Para explicar por que falla. */
 export async function logsDe(uuid: string, lineas: number, deps: CoolifyDeps): Promise<Resultado<{ log: string }>> {
   const r = await pedir(deps, 'GET', `/applications/${encodeURIComponent(uuid)}/logs?lines=${lineas}`);

@@ -41,7 +41,8 @@ import { cifrar, claveDe, descifrar } from './cifrado.js';
 import { verificar } from './proveedores.js';
 import { aDestino, desplegarRepo, publicarCambios, textoDePublicacion } from './publicar-ticket.js';
 import type { Destino } from './store.js';
-import { apagarEnVps, borrarDelVps, estadoEnVps, problemasEnVps, publicarEnVps, revisarDemos, type VpsDeps } from './vps.js';
+import { apagarEnVps, borrarDelVps, esperarDespliegues, estadoEnVps, problemasEnVps, publicarEnVps, revisarDemos, type VpsDeps } from './vps.js';
+import { verificarPublicado } from './vigia.js';
 import { credencialesDeHumo, probarEnVivo, type ResultadoDeHumo } from './humo.js';
 import { usoDelVps } from './vps-uso.js';
 import { asegurarDockerfileDeFront } from './dockerfile-front.js';
@@ -730,6 +731,35 @@ const pipelineDeps = {
   pendientesDe: (agent: AgentId) => fetchPending(agent, gatewayDeps),
 };
 
+/** Despues de desplegar en el VPS: esperar, mirar, avisar y, si hace falta, abrir el arreglo. Ver vigia.ts. */
+function vigilarPublicado(usuarioId: string, proyectoId: string, proyecto: string, desde: Date): Promise<unknown> {
+  const vps = depsDeVps(undefined, 0, proyectoId);
+  if (!vps || !pipelineDeps.verificarApp) return Promise.resolve();
+  const verificar = pipelineDeps.verificarApp;
+  return verificarPublicado(
+    { usuarioId, proyectoId, proyecto, desde },
+    {
+      esperarDespliegues: (id, d) => esperarDespliegues(id, d, vps),
+      verificar: (id, nombre) => verificar(id, nombre),
+      avisar: async (usuario, html) => {
+        const [chatId] = await store.chatsDeUsuario(usuario);
+        if (chatId === undefined) return;
+        for (const parte of partirParaTelegram(html)) {
+          await bot.api.sendMessage(chatId, parte, { parse_mode: 'HTML' }).catch(() => undefined);
+        }
+      },
+      abrirArreglo: async (usuario, id, pliego) => {
+        const r = await abrirDesarrollo({ usuarioId: usuario, proyectoId: id, pliego }, botDeps, (chatId) => async (html) => {
+          for (const parte of partirParaTelegram(html)) {
+            await bot.api.sendMessage(chatId, parte, { parse_mode: 'HTML' }).catch(() => undefined);
+          }
+        });
+        return r.ok ? { ok: true } : { ok: false, motivo: r.motivo };
+      },
+    },
+  );
+}
+
 /**
  * Las dependencias del bot, en una constante.
  *
@@ -869,8 +899,12 @@ function despliegueDelPanel() {
       if (fila && vps && (fila.destino === 'vps' || (!fila.destino && !fila.render_service_id))) {
         // En el VPS el proyecto se publica entero: el front necesita al back y
         // el back a su base.
+        const desde = new Date();
         const r = await publicarEnVps(proyectoId, proyecto.nombre, await store.reposDeProyecto(proyectoId), vps);
         const url = r.publicados.find((x) => x.repo === repo)?.url;
+        // El vigia: cuando termine de armarse, revisa lo publicado y, si algo
+        // falla, abre una corrida de arreglo. De fondo: el panel no espera.
+        if (url) void vigilarPublicado(usuarioId, proyectoId, proyecto.nombre, desde);
         return url
           ? { ok: true as const, url, app: 'VPS' }
           : { ok: false as const, motivo: r.pendientes.join('; ') || `${repo} no se publicó en el VPS` };

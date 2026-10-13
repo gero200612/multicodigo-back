@@ -5,6 +5,7 @@ import {
   apagarEnVps,
   borrarDelVps,
   estadoDeCoolify,
+  esperarDespliegues,
   estadoEnVps,
   nombreDeVps,
   problemasEnVps,
@@ -465,5 +466,47 @@ describe('problemas del VPS para la corrida', () => {
     await a.store.estadoRecursoVps('ufront', 'fallo', 'npm ERR! build');
     const r = await problemasEnVps('p1', a.deps);
     expect(r.map((x) => x.nombre)).toEqual(['turnos-front']);
+  });
+});
+
+describe('esperarDespliegues (para el vigía)', () => {
+  async function conDespliegues(porApp: Record<string, { status: string; created_at: string }[][]>) {
+    const store = new InMemoryStore();
+    await store.guardarRecursoVps({ proyecto_id: 'p1', parte: 'back', repo: 'x-back', coolify_uuid: 'appB', url: null, secreto: null });
+    await store.guardarRecursoVps({ proyecto_id: 'p1', parte: 'front', repo: 'x-front', coolify_uuid: 'appF', url: null, secreto: null });
+    const vueltas: Record<string, number> = {};
+    const f = (async (url: string) => {
+      const uuid = /applications\/([^?]+)/.exec(url)![1]!;
+      const lista = porApp[uuid] ?? [[]];
+      const i = Math.min(vueltas[uuid] ?? 0, lista.length - 1);
+      vueltas[uuid] = (vueltas[uuid] ?? 0) + 1;
+      return new Response(JSON.stringify({ deployments: lista[i] }));
+    }) as typeof fetch;
+    const deps = { config: { coolify: { url: 'http://coolify:8000', token: TOKEN, servidor: 'srv', fetchImpl: f }, githubApps: {}, clave: Buffer.alloc(32) }, store } as unknown as VpsDeps;
+    return deps;
+  }
+  const desde = new Date('2026-10-13T11:30:00Z');
+  const nuevo = (status: string) => ({ status, created_at: '2026-10-13T11:30:20.000000Z' });
+  let reloj = 0;
+  const o = { dormir: async () => void (reloj += 20_000), ahora: () => reloj, intervaloMs: 20_000 };
+
+  it('espera mientras alguno se arma, y dice cuál falló', async () => {
+    reloj = 0;
+    const deps = await conDespliegues({ appB: [[nuevo('in_progress')], [nuevo('failed')]], appF: [[nuevo('finished')]] });
+    expect(await esperarDespliegues('p1', desde, deps, o)).toEqual({ listo: true, fallados: ['x-back'] });
+    expect(reloj).toBe(20_000);
+  });
+
+  it('si Coolify no encoló nada nuevo, a los 3 minutos sigue igual', async () => {
+    reloj = 0;
+    const deps = await conDespliegues({ appB: [[{ status: 'finished', created_at: '2026-10-12T00:00:00Z' }]] });
+    expect(await esperarDespliegues('p1', desde, deps, o)).toEqual({ listo: true, fallados: [] });
+    expect(reloj).toBeGreaterThanOrEqual(180_000);
+  });
+
+  it('con un armado eterno, corta a los 20 minutos', async () => {
+    reloj = 0;
+    const deps = await conDespliegues({ appB: [[nuevo('in_progress')]] });
+    expect((await esperarDespliegues('p1', desde, deps, o)).listo).toBe(false);
   });
 });
