@@ -58,6 +58,15 @@ export const PREGUNTA_WHATSAPP = {
   ],
 };
 
+/**
+ * Las preguntas del formulario cambiaron (la de WhatsApp, y "mayor intencion"):
+ * los anuncios con un formulario de una version anterior se renuevan solos.
+ */
+export const FORMULARIO_VERSION = 2;
+const GRACIAS = 'Te escribimos en minutos por WhatsApp o por mail para coordinar una llamada corta.';
+/** Si no contesto el primer contacto, el segundo sale a las 48 h. */
+export const SEGUIMIENTO_META_MS = 48 * 3_600_000;
+
 /** Meta devuelve la clave o el texto de la opcion elegida: los dos empiezan con "si". */
 export function aceptaWhatsapp(respuesta: string | undefined): boolean {
   return /^s[ií](?=$|[\s,.!])/i.test((respuesta ?? '').trim());
@@ -573,8 +582,9 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
       preguntas: preguntasDelFormulario(a.preguntas),
       privacidad: PRIVACIDAD,
       web: WEB,
-      gracias: 'Te escribimos en minutos por WhatsApp o por mail para coordinar una llamada corta.',
+      gracias: GRACIAS,
     });
+    ids.formularioVersion = FORMULARIO_VERSION;
     await anotar();
   }
   if (!ids.conjunto) {
@@ -794,9 +804,12 @@ export async function leerLeadsDeMeta(deps: DepsDeAnuncios): Promise<number> {
   const desde = new Date((ultimo ? new Date(ultimo).getTime() : ahora.getTime() - 24 * 3_600_000) - 10 * 60_000);
   let nuevos = 0;
   for (const a of await deps.store.anuncios(APROBADOS)) {
-    if (!a.metaIds.formulario) continue;
-    for (const l of await deps.meta.leads(a.metaIds.formulario, desde)) {
-      if (await entrarLead(a, l.id, l.campos, deps)) nuevos++;
+    // El actual y los que tuvo antes de renovarse: un lead puede entrar tarde.
+    const formularios = [a.metaIds.formulario, ...(a.metaIds.formulariosViejos ?? [])].filter((f): f is string => Boolean(f));
+    for (const formulario of formularios) {
+      for (const l of await deps.meta.leads(formulario, desde)) {
+        if (await entrarLead(a, l.id, l.campos, deps)) nuevos++;
+      }
     }
   }
   await deps.store.guardarEstado(LEADS_DESDE, ahora.toISOString());
@@ -840,7 +853,7 @@ async function entrarLead(a: Anuncio, leadgenId: string, campos: Record<string, 
         : `⚠️ Pidió WhatsApp pero no le pude escribir: ${enviado.motivo}.`;
     }
   }
-  await deps.avisar(
+  await deps.proponer(
     [
       `🔥 Consulta nueva del anuncio #${a.id} (${a.titulo})${r.nuevo ? '' : ' · ya estaba en la base, la marco caliente'}`,
       [persona, empresa].filter(Boolean).join(' · ') || '(sin nombre)',
@@ -849,9 +862,11 @@ async function entrarLead(a: Anuncio, leadgenId: string, campos: Record<string, 
       wa ? `WhatsApp: ${wa}` : 'Sin teléfono para WhatsApp.',
       porWhatsapp,
       email ? 'Le escribo por mail en unos minutos con tres horarios.' : 'No dejó mail: escribile vos.',
+      '¿Sirve esta consulta? Con tu respuesta el publicista aprende qué anuncios traen gente que vale la pena.',
     ]
       .filter(Boolean)
       .join('\n'),
+    botonesDeCalidad(r.id),
   );
   if (email) {
     await deps.store.encolar({
@@ -860,8 +875,121 @@ async function entrarLead(a: Anuncio, leadgenId: string, campos: Record<string, 
       requiereIa: false,
       clave: `lead_meta:${leadgenId}`,
     });
+    await encolarSeguimiento(r.id, leadgenId, deps);
   }
   return true;
+}
+
+/** Los botones de "¿sirve esta consulta?" (los atiende telegram.ts: ls / ln). */
+export function botonesDeCalidad(leadId: number): Boton[] {
+  return [
+    { texto: '👍 Sirve', datos: `ls:${leadId}` },
+    { texto: '👎 No sirve', datos: `ln:${leadId}` },
+  ];
+}
+
+export async function encolarSeguimiento(leadId: number, clave: string, deps: Pick<DepsDeAnuncios, 'store' | 'ahora'>): Promise<void> {
+  await deps.store.encolar({
+    tipo: 'seguimiento_lead_meta',
+    payload: { leadId },
+    requiereIa: false,
+    clave: `seguimiento_meta:${clave}`,
+    disponibleDesde: new Date(deps.ahora().getTime() + SEGUIMIENTO_META_MS),
+  });
+}
+
+/**
+ * El segundo contacto, a las 48 h, solo si no hubo respuesta: ni por mail (el
+ * lead sigue "caliente") ni por WhatsApp. Si Gero marco que no sirve, no sale.
+ */
+export async function seguimientoDeLeadMeta(payload: unknown, deps: DepsDeAnuncios): Promise<{ reprogramarPara: Date } | void> {
+  const { leadId } = z.object({ leadId: z.number().int() }).parse(payload);
+  const lead = await deps.store.lead(leadId);
+  if (!lead?.email || lead.estado !== 'caliente' || lead.calidad === 'no_sirve') return;
+  const numero = linkDeWhatsapp(lead.telefono)?.slice('https://wa.me/'.length);
+  if (deps.wa && numero) {
+    const charla = await deps.wa.charla(numero).catch(() => undefined);
+    if (charla?.mensajes.some((m) => m.direccion === 'entra')) return;
+  }
+  if (deps.casillas.length === 0) return;
+
+  const ahora = deps.ahora();
+  const tomados = (await deps.store.reunionesDesde(new Date(ahora.getTime() - 3_600_000))).map((r) => r.inicio);
+  const horarios = horariosParaOfrecer(ahora, tomados, await deps.store.diasOcupados());
+  const nombre = lead.investigacion?.contacto?.split(/\s+/)[0];
+  const texto = [
+    `Hola${nombre ? ` ${nombre}` : ''},`,
+    '',
+    'Te escribo de nuevo por tu consulta en Sincro, por si se te pasó el mail anterior.',
+    '',
+    'Si te sirve, lo vemos en una llamada de 15 minutos. Tengo lugar:',
+    ...horarios.map((h) => `- ${horarioEnCastellano(h)}`),
+    '',
+    'Respondeme con el que te quede mejor, o proponeme otro.',
+    '',
+    deps.firma,
+  ].join('\n');
+
+  const ensayo = await ensayoActivo(deps);
+  const casilla = casillaDeLead(deps.casillas, lead.id);
+  const asunto = 'Re: Tu consulta en Sincro';
+  const r = await enviarMail(
+    deps,
+    casilla,
+    { para: ensayo ?? lead.email, asunto: ensayo ? `[ENSAYO] ${asunto}` : asunto, texto },
+    { solicitado: true },
+  );
+  if (r.tipo === 'baja') return;
+  if (r.tipo === 'esperar') return { reprogramarPara: r.hasta };
+  await deps.store.guardarOferta(lead.id, horarios);
+  if (!ensayo) {
+    const s = await deps.store.crearSaliente({ leadId: lead.id, tipo: 'seguimiento', paso: 1, casilla: casilla.email, asunto, cuerpo: texto });
+    await deps.store.marcarEnviado(s, r.messageId);
+  }
+  await deps.avisar(`✉️ ${ensayo ? '🧪 (ensayo) ' : ''}${lead.nombre} no contestó en 48 h: le mandé un segundo mail con horarios nuevos.`);
+}
+
+/**
+ * Le pone al anuncio un formulario con las preguntas de ahora (WhatsApp y
+ * "mayor intencion"): formulario nuevo, creativo nuevo con ese formulario, y
+ * el anuncio pasa a usarlo. Meta lo vuelve a revisar. El viejo se sigue leyendo.
+ */
+export async function renovarFormulario(payload: unknown, deps: DepsDeAnuncios): Promise<void> {
+  const { anuncioId } = z.object({ anuncioId: z.number().int() }).parse(payload);
+  if (!deps.meta) return;
+  const a = await deps.store.anuncio(anuncioId);
+  if (!a || (a.estado !== 'activo' && a.estado !== 'pausado')) return;
+  const ids = { ...a.metaIds };
+  if (!ids.anuncio || !ids.imagen || (ids.formularioVersion ?? 1) >= FORMULARIO_VERSION) return;
+  const formulario = await deps.meta.crearFormulario({
+    nombre: `Sincro · ${a.rubro} · #${a.id} · v${FORMULARIO_VERSION}`,
+    preguntas: preguntasDelFormulario(a.preguntas),
+    privacidad: PRIVACIDAD,
+    web: WEB,
+    gracias: GRACIAS,
+  });
+  const creativo = await deps.meta.crearCreativo({
+    nombre: `#${a.id} · ${a.titulo} · v${FORMULARIO_VERSION}`,
+    imagenHash: ids.imagen,
+    titulo: a.titulo,
+    texto: a.texto,
+    formulario,
+    web: WEB,
+  });
+  await deps.meta.cambiarCreativo(ids.anuncio, creativo);
+  await deps.store.actualizarAnuncio(a.id, {
+    metaIds: {
+      ...ids,
+      formulario,
+      creativo,
+      formularioVersion: FORMULARIO_VERSION,
+      formulariosViejos: [...(ids.formulariosViejos ?? []), ...(ids.formulario ? [ids.formulario] : [])],
+    },
+  });
+  await deps.avisar(
+    `🔁 Renové el formulario del anuncio #${a.id} (${a.titulo}): ahora pregunta si le escribimos por WhatsApp y pide ` +
+      'confirmar los datos antes de enviar (llegan menos consultas basura). Meta lo vuelve a revisar, puede tardar unas horas.',
+  );
 }
 
 function promptDeLeadMeta(lead: Lead, horarios: Date[]): string {
@@ -973,6 +1101,11 @@ export interface FilaDeAnuncio {
   leads: number;
   reuniones: number;
   costoPorConsulta?: number;
+  /** Las que Gero marco: sirven / no sirven. */
+  utiles: number;
+  basura: number;
+  /** Gasto / consultas que sirven: lo que de verdad importa. */
+  costoPorUtil?: number;
 }
 
 export interface NumerosDelMes {
@@ -981,6 +1114,8 @@ export interface NumerosDelMes {
   consultasMes: number;
   reunionesMes: number;
   costoPorConsulta?: number;
+  utilesMes: number;
+  basuraMes: number;
   anuncios: FilaDeAnuncio[];
   mejor?: FilaDeAnuncio;
 }
@@ -1013,6 +1148,9 @@ export async function numerosDelMes(deps: { store: Store; ahora: () => Date }): 
         leads,
         reuniones: r?.reuniones ?? 0,
         costoPorConsulta: leads > 0 ? gasto / leads : undefined,
+        utiles: r?.utiles ?? 0,
+        basura: r?.basura ?? 0,
+        costoPorUtil: (r?.utiles ?? 0) > 0 ? gasto / r!.utiles : undefined,
       };
     })
     .filter((f) => f.anuncio.estado !== 'descartado' || f.gasto > 0);
@@ -1024,8 +1162,13 @@ export async function numerosDelMes(deps: { store: Store; ahora: () => Date }): 
     consultasMes,
     reunionesMes: resultados.reduce((n, r) => n + r.reuniones, 0),
     costoPorConsulta: consultasMes > 0 ? mes.gastado / consultasMes : undefined,
+    utilesMes: resultados.reduce((n, r) => n + r.utiles, 0),
+    basuraMes: resultados.reduce((n, r) => n + r.basura, 0),
     anuncios: filas,
-    mejor: conConsultas.sort((a, b) => a.costoPorConsulta! - b.costoPorConsulta!)[0],
+    // El mejor es el de menor costo por consulta QUE SIRVE; sin marcadas, por consulta.
+    mejor:
+      filas.filter((f) => f.costoPorUtil !== undefined).sort((a, b) => a.costoPorUtil! - b.costoPorUtil!)[0] ??
+      conConsultas.sort((a, b) => a.costoPorConsulta! - b.costoPorConsulta!)[0],
   };
 }
 
@@ -1035,12 +1178,15 @@ export function textoDelResumen(n: NumerosDelMes): string {
     '📣 Anuncios hoy',
     `Gasto hoy: ${pesos(mes.gastadoHoy)} · Mes: ${pesos(mes.gastado)} de ${pesos(mes.presupuesto)} (${Math.round((mes.gastado / mes.presupuesto) * 100)}%)`,
     `Consultas hoy: ${n.consultasHoy} · Mes: ${n.consultasMes}${n.costoPorConsulta !== undefined ? ` · ${pesos(n.costoPorConsulta)} cada una` : ''}`,
+    `Que sirven: ${n.utilesMes} · no sirven: ${n.basuraMes} · sin marcar: ${Math.max(0, n.consultasMes - n.utilesMes - n.basuraMes)}`,
     `Reuniones que salieron de anuncios este mes: ${n.reunionesMes}`,
     `Diarios andando: ${pesos(mes.diarios)} por día · el mes cerraría en ${pesos(mes.comprometido)}`,
   ];
   if (n.mejor) {
     lineas.push(
-      `Mejor anuncio: #${n.mejor.anuncio.id} ${n.mejor.anuncio.titulo} (${n.mejor.leads} consultas, ${pesos(n.mejor.costoPorConsulta!)} cada una)`,
+      n.mejor.costoPorUtil !== undefined
+        ? `Mejor anuncio: #${n.mejor.anuncio.id} ${n.mejor.anuncio.titulo} (${n.mejor.utiles} que sirven, ${pesos(n.mejor.costoPorUtil)} cada una)`
+        : `Mejor anuncio: #${n.mejor.anuncio.id} ${n.mejor.anuncio.titulo} (${n.mejor.leads} consultas, ${pesos(n.mejor.costoPorConsulta!)} cada una)`,
     );
   }
   return lineas.join('\n');
@@ -1063,6 +1209,15 @@ export async function planificarAnuncios(deps: DepsDeAnuncios): Promise<void> {
   const dia = diaArgentino(ahora);
   const { hora } = relojArgentino(ahora);
   await deps.store.encolar({ tipo: 'leer_insights', payload: {}, requiereIa: false, clave: `insights:${dia}:${hora}` });
+  for (const a of await deps.store.anuncios(['activo', 'pausado'])) {
+    if (!a.metaIds.anuncio || (a.metaIds.formularioVersion ?? 1) >= FORMULARIO_VERSION) continue;
+    await deps.store.encolar({
+      tipo: 'renovar_formulario',
+      payload: { anuncioId: a.id },
+      requiereIa: false,
+      clave: `renovar_formulario:${a.id}:v${FORMULARIO_VERSION}`,
+    });
+  }
   if (hora >= 10) {
     await deps.store.encolar({ tipo: 'agente_publicitar', payload: {}, requiereIa: true, clave: `publicitar:${dia}` });
   }

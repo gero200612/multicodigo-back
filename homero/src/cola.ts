@@ -6,7 +6,7 @@ import { finanzasDelDia } from './finanzas.js';
 import { presupuestar } from './precios.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
 import { agenteAtender, agenteBuscar, agentePublicitar, agenteRevisar, agenteVender, agenteWhatsApp, type DepsDeAgentes } from './agentes.js';
-import { escribirALeadMeta, leerInsights, publicarAnuncio, resumenDeAnuncios } from './anuncios.js';
+import { escribirALeadMeta, leerInsights, publicarAnuncio, renovarFormulario, resumenDeAnuncios, seguimientoDeLeadMeta } from './anuncios.js';
 import { SinLugar } from './gateway.js';
 import type { Recibido, Tarea, TipoDeTarea } from './store.js';
 import { enviarSaliente, recordatorio, resumenDiario } from './ventas.js';
@@ -181,6 +181,10 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       return escribirALeadMeta(tarea.payload, deps);
     case 'formulario_web':
       return entrarFormularioWeb(tarea.payload, deps);
+    case 'seguimiento_lead_meta':
+      return seguimientoDeLeadMeta(tarea.payload, deps);
+    case 'renovar_formulario':
+      return renovarFormulario(tarea.payload, deps);
     case 'resumen_anuncios':
       return resumenDeAnuncios(deps);
     case 'finanzas_del_dia':

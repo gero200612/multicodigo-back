@@ -22,6 +22,8 @@ export type TipoDeTarea =
   | 'leer_insights'
   | 'escribir_a_lead_meta'
   | 'formulario_web'
+  | 'seguimiento_lead_meta'
+  | 'renovar_formulario'
   | 'resumen_anuncios'
   | 'finanzas_del_dia';
 
@@ -80,7 +82,11 @@ export interface Lead {
   externo?: string;
   /** El anuncio del que vino, si lleno un formulario. */
   anuncioId?: number;
+  /** Lo que dijo Gero de la consulta (botones del aviso). */
+  calidad?: CalidadDeLead;
 }
+
+export type CalidadDeLead = 'sirve' | 'no_sirve';
 
 export type NuevoLead = Omit<Lead, 'id' | 'estado' | 'investigacion' | 'casilla'>;
 
@@ -194,6 +200,10 @@ export interface IdsEnMeta {
   conjunto?: string;
   creativo?: string;
   anuncio?: string;
+  /** Version de las preguntas del formulario (ver FORMULARIO_VERSION en anuncios.ts). */
+  formularioVersion?: number;
+  /** Los formularios que tuvo antes: se siguen leyendo, por si entra un lead tarde. */
+  formulariosViejos?: string[];
 }
 
 export interface Anuncio {
@@ -245,6 +255,9 @@ export interface ResultadoDeAnuncio {
   anuncioId: number;
   leads: number;
   reuniones: number;
+  /** Las que Gero marco como que sirven / que no. Las sin marcar no cuentan en ninguna. */
+  utiles: number;
+  basura: number;
 }
 
 /** Un paso de una corrida: lo que penso o la herramienta que uso. */
@@ -521,6 +534,8 @@ export interface Store {
   >;
   /** Por anuncio: cuantos leads trajo y cuantos llegaron a reunion, de los creados desde `desde`. */
   resultadosDeAnuncios(desde?: Date): Promise<ResultadoDeAnuncio[]>;
+  /** Lo que dijo Gero de una consulta. Devuelve el lead, o nada si no existe. */
+  marcarCalidad(leadId: number, calidad: CalidadDeLead): Promise<Lead | undefined>;
 
   // ---- finanzas (el Administrador)
   fijos(): Promise<Fijo[]>;
@@ -1411,13 +1426,29 @@ export class PgStore implements Store {
     const r = await this.pool.query(
       `SELECT l.anuncio_id, count(*) AS leads,
               count(*) FILTER (WHERE EXISTS (
-                SELECT 1 FROM homero.reuniones r WHERE r.lead_id = l.id AND r.estado = 'confirmada')) AS reuniones
+                SELECT 1 FROM homero.reuniones r WHERE r.lead_id = l.id AND r.estado = 'confirmada')) AS reuniones,
+              count(*) FILTER (WHERE l.calidad = 'sirve') AS utiles,
+              count(*) FILTER (WHERE l.calidad = 'no_sirve') AS basura
        FROM homero.leads l
        WHERE l.anuncio_id IS NOT NULL AND ($1::timestamptz IS NULL OR l.creado >= $1)
        GROUP BY l.anuncio_id`,
       [desde ?? null],
     );
-    return r.rows.map((f) => ({ anuncioId: Number(f.anuncio_id), leads: Number(f.leads), reuniones: Number(f.reuniones) }));
+    return r.rows.map((f) => ({
+      anuncioId: Number(f.anuncio_id),
+      leads: Number(f.leads),
+      reuniones: Number(f.reuniones),
+      utiles: Number(f.utiles),
+      basura: Number(f.basura),
+    }));
+  }
+
+  async marcarCalidad(leadId: number, calidad: CalidadDeLead) {
+    const r = await this.pool.query(
+      'UPDATE homero.leads SET calidad = $2, calidad_en = now(), actualizado = now() WHERE id = $1 RETURNING *',
+      [leadId, calidad],
+    );
+    return r.rows[0] ? aLead(r.rows[0]) : undefined;
   }
 
   // ---------------------------------------------------------------- finanzas
@@ -1598,6 +1629,7 @@ function aLead(f: Fila): Lead {
     casilla: opc(f.casilla),
     externo: opc(f.externo),
     anuncioId: num(f.anuncio_id),
+    calidad: opc(f.calidad) as CalidadDeLead | undefined,
   };
 }
 

@@ -61,6 +61,9 @@ export function metaFalsa() {
     async cambiarEstado(objeto, estado) {
       anotar('cambiarEstado', objeto, estado);
     },
+    async cambiarCreativo(anuncio, creativo) {
+      anotar('cambiarCreativo', anuncio, creativo);
+    },
     async cambiarDiario(conjunto, diario) {
       anotar('cambiarDiario', conjunto, diario);
     },

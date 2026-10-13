@@ -45,7 +45,7 @@ import { bajarPaginaConDestino, recibeMail } from './web.js';
 import { adminWa, atenderIa, bucle, clienteWa, pedidorWa, recibirLeads, reenviarAlertas } from './whatsapp.js';
 import { VIGILAR_PLANTILLA_MS, vigilarPlantilla } from './primer-whatsapp.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql', '013_calidad_de_leads.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
@@ -149,6 +149,7 @@ async function main() {
     probarIa: () => pedirTexto('Presentate en una sola oración.', { sistema: SISTEMA, modelo: config.modelo, gateway }),
     aprobarAnuncio: (id: number) => aprobarAnuncio(id, deps),
     descartarAnuncio: (id: number) => descartarAnuncio(id, deps),
+    marcarCalidad: async (id: number, calidad: 'sirve' | 'no_sirve') => (await store.marcarCalidad(id, calidad)) !== undefined,
     cambiarAnuncio: (id: number, pedido: string) => pedirCambio(id, pedido, deps),
     cambiarPresupuesto: (monto: number) => cambiarPresupuesto(monto, deps),
   };

@@ -71,6 +71,8 @@ export interface Acciones {
   descartarAnuncio(id: number): Promise<ResultadoDeAnuncio>;
   /** ✏️ Cambiar: lo que pidio Gero, para que el publicista lo rehaga. */
   cambiarAnuncio(id: number, pedido: string): Promise<ResultadoDeAnuncio>;
+  /** Lo que dice Gero de una consulta que entro (botones Sirve / No sirve). */
+  marcarCalidad(leadId: number, calidad: 'sirve' | 'no_sirve'): Promise<boolean>;
   /** El presupuesto de anuncios del mes, en pesos. */
   cambiarPresupuesto(monto: number): Promise<{ presupuesto: number; aviso?: string; pausados: number }>;
 }
@@ -330,7 +332,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     await ctx.reply(
       [
         `💰 Presupuesto de anuncios: $${r.presupuesto.toLocaleString('es-AR')} por mes.`,
-        r.pausados > 0 ? `Pausé ${r.pausados} anuncio(s): con este presupuesto ya se gastó más del 90%.` : undefined,
+        r.pausados > 0 ? `Pausé ${r.pausados} anuncio(s): con este presupuesto ya no alcanza para otro día de anuncios este mes.` : undefined,
         r.aviso,
       ]
         .filter(Boolean)
@@ -530,6 +532,12 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       case 'ad': {
         const r = await acciones.descartarAnuncio(id);
         resultado = r.ok ? '🗑 Anuncio descartado.' : `No pude: ${r.motivo}`;
+        break;
+      }
+      case 'ls':
+      case 'ln': {
+        const ok = await acciones.marcarCalidad(id, accion === 'ls' ? 'sirve' : 'no_sirve');
+        resultado = !ok ? 'No encontré esa consulta.' : accion === 'ls' ? '👍 Anotado: sirve.' : '👎 Anotado: no sirve. No le mando el segundo mail.';
         break;
       }
       default:

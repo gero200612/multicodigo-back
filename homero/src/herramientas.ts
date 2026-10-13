@@ -790,14 +790,16 @@ export function herramientasDelPublicista(
         `Diarios andando: ${pesos(mes.diarios)} por día. Se gasta hasta agotar el presupuesto y ahí se pausa todo hasta el mes que viene.`,
         `Lo que queda del mes: ${pesos(mes.diarioQueEntra)} · mínimo por anuncio que pide Meta: ${pesos(await minimoDiario(deps))}`,
         `Consultas del mes: ${n.consultasMes}${n.costoPorConsulta !== undefined ? ` (${pesos(n.costoPorConsulta)} cada una)` : ''} · reuniones: ${n.reunionesMes}`,
+        `Marcadas por Gero: ${n.utilesMes} sirven, ${n.basuraMes} no sirven, ${Math.max(0, n.consultasMes - n.utilesMes - n.basuraMes)} sin marcar.`,
         '',
-        'Anuncios (id · estado · rubro · título · diario · gasto del mes · impresiones · consultas Meta / en la base · reuniones):',
+        'Anuncios (id · estado · rubro · título · diario · gasto del mes · impresiones · consultas Meta / en la base · sirven / no sirven · reuniones):',
         ...(n.anuncios.length
           ? n.anuncios.map(
               (f) =>
                 `- #${f.anuncio.id} · ${f.anuncio.estado} · ${f.anuncio.rubro} · "${f.anuncio.titulo}" · ${pesos(f.anuncio.diario)}/día · ` +
                 `${pesos(f.gasto)} · ${f.impresiones} · ${f.consultas}/${f.leads}` +
-                `${f.costoPorConsulta !== undefined ? ` (${pesos(f.costoPorConsulta)} c/u)` : ''} · ${f.reuniones}` +
+                `${f.costoPorConsulta !== undefined ? ` (${pesos(f.costoPorConsulta)} c/u)` : ''} · ${f.utiles}/${f.basura}` +
+                `${f.costoPorUtil !== undefined ? ` (${pesos(f.costoPorUtil)} por la que sirve)` : ''} · ${f.reuniones}` +
                 `${f.anuncio.motivo ? ` · ${f.anuncio.motivo}` : ''}`,
             )
           : ['- todavía no hay anuncios aprobados']),

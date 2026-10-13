@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { Store } from './store.js';
+import { botonesDeCalidad, encolarSeguimiento } from './anuncios.js';
+import type { Boton } from './ventas.js';
 import { ErrorDeWhatsApp, type ClienteWa } from './whatsapp.js';
 
 /**
@@ -142,7 +144,9 @@ export const FormularioWeb = z.object({
 export interface DepsDelFormulario {
   store: Store;
   wa?: ClienteWa;
-  avisar: (texto: string) => Promise<void>;
+  ahora: () => Date;
+  /** El aviso a Gero, con los botones de "¿sirve?". */
+  proponer: (texto: string, botones: Boton[]) => Promise<number | undefined>;
 }
 
 /**
@@ -180,15 +184,19 @@ export async function entrarFormularioWeb(payload: unknown, deps: DepsDelFormula
         : `⚠️ Tildó WhatsApp pero no le pude escribir: ${enviado.motivo}. Escribile vos: https://wa.me/${f.whatsapp}`;
     }
   }
-  await deps.avisar(
+  await deps.proponer(
     [
       `🌐 Consulta nueva desde la web${r.nuevo ? '' : ' · ya estaba en la base, la marco caliente'}`,
       [corta(f.nombre, 80), corta(f.negocio, 120)].filter(Boolean).join(' · '),
       [f.mail ? `✉️ ${f.mail}` : undefined, f.whatsapp ? `📞 +${f.whatsapp}` : undefined].filter(Boolean).join(' · '),
       ...formulario.map((x) => `${x.pregunta}: ${x.respuesta}`),
       whatsapp,
+      '¿Sirve esta consulta?',
     ]
       .filter(Boolean)
       .join('\n'),
+    botonesDeCalidad(r.id),
   );
+  // El segundo contacto por mail a las 48 h, si no contesta (ver anuncios.ts).
+  if (f.mail) await encolarSeguimiento(r.id, `web:${f.evento}`, deps);
 }

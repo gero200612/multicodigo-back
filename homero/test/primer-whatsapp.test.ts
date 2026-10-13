@@ -18,7 +18,7 @@ const LAURA = {
 function conBot(o: Parameters<typeof waConPlantillas>[0] = { estado: 'APPROVED' }) {
   const h = armar();
   const bot = waConPlantillas(o);
-  return { h, bot, deps: { store: h.store, wa: bot.wa, avisar: h.deps.avisar } };
+  return { h, bot, deps: { store: h.store, wa: bot.wa, ahora: h.deps.ahora, proponer: h.deps.proponer } };
 }
 
 describe('el formulario de la web llega por el bot', () => {
@@ -43,15 +43,19 @@ describe('el formulario de la web llega por el bot', () => {
       investigacion: { contacto: 'Laura Pérez' },
     });
     expect(bot.avisos).toEqual([{ a: '5491123456789', plantilla: 'consulta_recibida', idioma: 'es_AR', variables: ['Laura', 'stock que avisa'] }]);
-    expect(h.avisos.at(-1)).toContain('Consulta nueva desde la web');
-    expect(h.avisos.at(-1)).toContain('✅ Le escribí por WhatsApp');
+    const aviso = h.tarjetas.at(-1)!;
+    expect(aviso.texto).toContain('Consulta nueva desde la web');
+    expect(aviso.texto).toContain('✅ Le escribí por WhatsApp');
+    expect(aviso.datos).toEqual([`ls:${h.store.leads[0]!.id}`, `ln:${h.store.leads[0]!.id}`]);
+    // Dejó mail: el segundo contacto queda encolado para dentro de 48 h.
+    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['seguimiento_lead_meta']);
   });
 
   it('sin el tilde de WhatsApp no se le escribe; Gero se entera igual', async () => {
     const { h, bot, deps } = conBot();
     await entrarFormularioWeb({ ...LAURA, acepta_whatsapp: false }, deps);
     expect(bot.avisos).toEqual([]);
-    expect(h.avisos.at(-1)).toContain('No tildó');
+    expect(h.tarjetas.at(-1)!.texto).toContain('No tildó');
   });
 
   it('el mismo envío dos veces (el bot lo reentregó) no escribe ni avisa de nuevo', async () => {
@@ -59,7 +63,7 @@ describe('el formulario de la web llega por el bot', () => {
     await entrarFormularioWeb(LAURA, deps);
     await entrarFormularioWeb(LAURA, deps);
     expect(bot.avisos).toHaveLength(1);
-    expect(h.avisos.filter((t) => t.includes('Consulta nueva desde la web'))).toHaveLength(1);
+    expect(h.tarjetas.filter((t) => t.texto.includes('Consulta nueva desde la web'))).toHaveLength(1);
   });
 
   it('si la plantilla no existe la crea (UTILIDAD) y le avisa a Gero que todavía no salió', async () => {
@@ -74,8 +78,8 @@ describe('el formulario de la web llega por el bot', () => {
         componentes: [{ type: 'BODY', text: PLANTILLA_CONSULTA.texto, example: { body_text: [['Laura', 'stock que avisa']] } }],
       },
     ]);
-    expect(h.avisos.at(-1)).toContain('todavía no está aprobada');
-    expect(h.avisos.at(-1)).toContain('https://wa.me/5491123456789');
+    expect(h.tarjetas.at(-1)!.texto).toContain('todavía no está aprobada');
+    expect(h.tarjetas.at(-1)!.texto).toContain('https://wa.me/5491123456789');
   });
 
   it('sin la capacidad avisos lo dice claro', async () => {

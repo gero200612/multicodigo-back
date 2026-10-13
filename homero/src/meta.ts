@@ -100,6 +100,8 @@ export interface Meta {
   crearAnuncio(a: { nombre: string; conjunto: string; creativo: string }): Promise<string>;
   /** Campaña, conjunto o anuncio. */
   cambiarEstado(id: string, estado: EstadoEnMeta): Promise<void>;
+  /** Le pone otro creativo a un anuncio que ya existe (Meta lo vuelve a revisar). */
+  cambiarCreativo(anuncio: string, creativo: string): Promise<void>;
   /** El diario de un conjunto, en pesos. */
   cambiarDiario(conjunto: string, diario: number): Promise<void>;
   /** Por anuncio y por dia, entre dos dias (AAAA-MM-DD) inclusive. */
@@ -297,6 +299,9 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
             locale: 'es_LA',
             questions: preguntasDeMeta(f.preguntas),
             privacy_policy: { url: f.privacidad, link_text: 'Política de privacidad' },
+            // "Mayor intencion": una pantalla para revisar los datos antes de
+            // enviar. Llegan menos consultas, pero de gente que de verdad quiere.
+            is_optimized_for_quality: true,
             follow_up_action_url: f.web,
             thank_you_page: {
               title: '¡Gracias!',
@@ -375,6 +380,10 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
 
     async cambiarEstado(objeto, estado) {
       await llamar('POST', objeto, { status: estado });
+    },
+
+    async cambiarCreativo(anuncio, creativo) {
+      await llamar('POST', anuncio, { creative: { creative_id: creativo } });
     },
 
     async cambiarDiario(conjunto, diario) {

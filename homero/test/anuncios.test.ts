@@ -14,6 +14,9 @@ import {
   PUBLICADO_EN,
   linkDeWhatsapp,
   mesDe,
+  numerosDelMes,
+  renovarFormulario,
+  seguimientoDeLeadMeta,
   interesesObsoletosDelError,
   minimoDelError,
   minimoDiario,
@@ -545,13 +548,18 @@ describe('las consultas que entran', () => {
       anuncioId: a,
       investigacion: { contacto: 'Ana Gómez', formulario: [{ pregunta: '¿Qué tarea les lleva más tiempo hoy?', respuesta: 'Los turnos' }] },
     });
-    expect(h.avisos.at(-1)).toContain('https://wa.me/5491122334455');
-    expect(h.avisos.at(-1)).toContain('Los turnos');
-    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['escribir_a_lead_meta']);
+    const aviso = h.tarjetas.at(-1)!;
+    expect(aviso.texto).toContain('https://wa.me/5491122334455');
+    expect(aviso.texto).toContain('Los turnos');
+    // Gero dice si sirve: con eso aprende el publicista.
+    expect(aviso.datos).toEqual([`ls:${h.store.leads[0]!.id}`, `ln:${h.store.leads[0]!.id}`]);
+    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['escribir_a_lead_meta', 'seguimiento_lead_meta']);
+    // El segundo contacto queda para dentro de 48 h.
+    expect(h.store.tareas[1]!.disponibleDesde!.getTime() - h.deps.ahora().getTime()).toBe(48 * 3_600_000);
 
     expect(await leerLeadsDeMeta(h.deps)).toBe(0);
     expect(h.store.leads).toHaveLength(1);
-    expect(h.store.tareas).toHaveLength(1);
+    expect(h.store.tareas).toHaveLength(2);
   });
 
   it('si ya estaba en la base por mail no se duplica; por teléfono no se junta con otro', async () => {
@@ -569,8 +577,8 @@ describe('las consultas que entran', () => {
     expect(h.store.leads).toHaveLength(3);
     expect(await h.store.lead(porMail)).toMatchObject({ estado: 'caliente', anuncioId: 1 });
     expect(await h.store.lead(porTel)).toMatchObject({ estado: 'nuevo', email: 'sol@ferreteria.com' });
-    expect(h.avisos.filter((t) => t.includes('ya estaba en la base'))).toHaveLength(1);
-    expect(h.store.tareas.map((t) => t.payload)).toEqual([{ leadId: porMail }, { leadId: 3 }]);
+    expect(h.tarjetas.filter((t) => t.texto.includes('ya estaba en la base'))).toHaveLength(1);
+    expect(h.store.tareas.filter((t) => t.tipo === 'escribir_a_lead_meta').map((t) => t.payload)).toEqual([{ leadId: porMail }, { leadId: 3 }]);
   });
 
   it('un formulario no hace volver atrás a un lead que ya respondió o pidió la baja', async () => {
@@ -597,8 +605,8 @@ describe('las consultas que entran', () => {
     expect(bot.avisos).toEqual([
       { a: '5491122334455', plantilla: 'consulta_recibida', idioma: 'es_AR', variables: ['Ana', titulo.charAt(0).toLowerCase() + titulo.slice(1)] },
     ]);
-    expect(h.avisos.find((t) => t.includes('Ana Gómez'))).toContain('✅ Le escribí por WhatsApp');
-    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['escribir_a_lead_meta', 'escribir_a_lead_meta']);
+    expect(h.tarjetas.find((t) => t.texto.includes('Ana Gómez'))!.texto).toContain('✅ Le escribí por WhatsApp');
+    expect(h.store.tareas.filter((t) => t.tipo === 'escribir_a_lead_meta')).toHaveLength(2);
   });
 
   it('aceptaWhatsapp: la clave o el texto del sí, nunca el no', () => {
@@ -697,6 +705,7 @@ describe('resumen y planificador', () => {
         '📣 Anuncios hoy',
         'Gasto hoy: $3.000 · Mes: $8.000 de $50.000 (16%)',
         'Consultas hoy: 2 · Mes: 2 · $4.000 cada una',
+        'Que sirven: 0 · no sirven: 0 · sin marcar: 2',
         'Reuniones que salieron de anuncios este mes: 1',
         'Diarios andando: $3.000 por día · el mes cerraría en $14.000',
         'Mejor anuncio: #1 Turnos sin perder ninguno (2 consultas, $3.000 cada una)',
@@ -729,5 +738,104 @@ describe('resumen y planificador', () => {
       'leer_insights',
       'resumen_anuncios',
     ]);
+  });
+});
+
+describe('paquete 1: contacto rápido, mayor intención y calidad', () => {
+  const lead = (id: string, formulario: string, campos: Record<string, string>) => ({ id, creado: new Date(), formulario, anuncio: 'ad1', campos });
+
+  async function conConsulta() {
+    const h = conMeta();
+    await activo(h, 2000);
+    h.f.datos.leads.set('form1', [lead('S1', 'form1', { full_name: 'Ana Gómez', email: 'ana@taller.com', phone_number: '+54 9 11 2233-4455' })]);
+    await leerLeadsDeMeta(h.deps);
+    return { h, id: h.store.leads[0]!.id };
+  }
+
+  it('si no contestó en 48 h sale un segundo mail con horarios nuevos', async () => {
+    const { h, id } = await conConsulta();
+    await seguimientoDeLeadMeta({ leadId: id }, h.deps);
+    expect(h.enviados.at(-1)).toMatchObject({ para: 'ana@taller.com', asunto: 'Re: Tu consulta en Sincro' });
+    expect(h.enviados.at(-1)!.texto).toContain('Hola Ana');
+    expect(h.avisos.at(-1)).toContain('segundo mail');
+  });
+
+  it('no sale si contestó, si Gero marcó que no sirve, o si escribió por WhatsApp', async () => {
+    const contestó = await conConsulta();
+    await contestó.h.store.actualizarLead(contestó.id, { estado: 'respondio' });
+    await seguimientoDeLeadMeta({ leadId: contestó.id }, contestó.h.deps);
+    expect(contestó.h.enviados).toEqual([]);
+
+    const noSirve = await conConsulta();
+    await noSirve.h.store.marcarCalidad(noSirve.id, 'no_sirve');
+    await seguimientoDeLeadMeta({ leadId: noSirve.id }, noSirve.h.deps);
+    expect(noSirve.h.enviados).toEqual([]);
+
+    const porWhatsapp = await conConsulta();
+    const bot = waConPlantillas({ estado: 'APPROVED' });
+    porWhatsapp.h.deps.wa = {
+      ...bot.wa,
+      charla: async (contacto) => ({
+        contacto,
+        ventana_abierta: true,
+        baja: false,
+        mensajes: [{ id: 1, direccion: 'entra', tipo: 'text', texto: 'Hola, me interesa', fecha: '2026-09-29T18:00:00Z' }],
+      }),
+    };
+    await seguimientoDeLeadMeta({ leadId: porWhatsapp.id }, porWhatsapp.h.deps);
+    expect(porWhatsapp.h.enviados).toEqual([]);
+  });
+
+  it('el formulario nuevo pide confirmar los datos (mayor intención) y pregunta por WhatsApp', async () => {
+    const h = conMeta();
+    const id = await h.store.crearAnuncio({ ...PROPUESTA, frase: PANEL.titulo, diario: 2000, imagen: Buffer.from('png') });
+    await h.store.actualizarAnuncio(id, { estado: 'aprobado' });
+    await publicarAnuncio({ anuncioId: id }, h.deps);
+    expect((await h.store.anuncio(id))!.metaIds.formularioVersion).toBe(2);
+  });
+
+  it('un anuncio con el formulario viejo se renueva solo: formulario y creativo nuevos, y el viejo se sigue leyendo', async () => {
+    const h = conMeta();
+    const a = await activo(h, 2000);
+    await planificarAnuncios(h.deps);
+    expect(h.store.tareas.filter((t) => t.tipo === 'renovar_formulario').map((t) => t.payload)).toEqual([{ anuncioId: a }]);
+
+    // Los ids de la Meta falsa arrancan en 1: se gasta uno para que el nuevo no se llame "form1" como el viejo.
+    await h.f.meta.buscarIntereses('x');
+    await renovarFormulario({ anuncioId: a }, h.deps);
+    const ids = (await h.store.anuncio(a))!.metaIds;
+    expect(h.f.de('crearFormulario').at(-1)!.args[0]).toMatchObject({ preguntas: expect.arrayContaining([expect.objectContaining({ clave: 'whatsapp' })]) });
+    expect(h.f.de('cambiarCreativo').at(-1)!.args).toEqual(['ad1', ids.creativo]);
+    expect(ids).toMatchObject({ formularioVersion: 2, formulariosViejos: ['form1'] });
+    expect(ids.formulario).not.toBe('form1');
+    expect(h.avisos.at(-1)).toContain('Renové el formulario del anuncio');
+
+    // Otra vez no hace nada: ya está en la versión nueva.
+    await renovarFormulario({ anuncioId: a }, h.deps);
+    expect(h.f.de('crearFormulario')).toHaveLength(1);
+
+    // Un lead que cae tarde en el formulario viejo igual entra.
+    h.f.datos.leads.set('form1', [lead('TARDE', 'form1', { full_name: 'Beto', email: 'beto@x.com' })]);
+    expect(await leerLeadsDeMeta(h.deps)).toBe(1);
+  });
+
+  it('el mejor anuncio es el de menor costo por consulta QUE SIRVE, no por formulario', async () => {
+    const h = conMeta();
+    const a = await activo(h, 2000, 1);
+    const b = await activo(h, 2000, 2);
+    await h.store.guardarGastos([gasto('2026-09-29', a, 2000), gasto('2026-09-29', b, 3000)]);
+    h.f.datos.leads.set('form1', [lead('A1', 'form1', { full_name: 'Uno', email: 'uno@x.com' }), lead('A2', 'form1', { full_name: 'Dos', email: 'dos@x.com' })]);
+    h.f.datos.leads.set('form2', [lead('B1', 'form2', { full_name: 'Tres', email: 'tres@x.com' })]);
+    await leerLeadsDeMeta(h.deps);
+    const deA = h.store.leads.filter((l) => l.anuncioId === a);
+    const deB = h.store.leads.find((l) => l.anuncioId === b)!;
+    for (const l of deA) await h.store.marcarCalidad(l.id, 'no_sirve');
+    await h.store.marcarCalidad(deB.id, 'sirve');
+
+    const n = await numerosDelMes(h.deps);
+    expect(n).toMatchObject({ utilesMes: 1, basuraMes: 2 });
+    // Por formulario ganaba A ($1.000 c/u); por consulta que sirve gana B.
+    expect(n.mejor!.anuncio.id).toBe(b);
+    expect(n.mejor!.costoPorUtil).toBe(3000);
   });
 });
