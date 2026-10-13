@@ -177,7 +177,7 @@ async function main() {
   const retomados = await retomarPublicaciones(deps);
   if (retomados > 0) console.log(`[homero] vuelvo a publicar ${retomados} anuncio(s) aprobado(s)`);
   const reelsRetomados = await retomarReels(deps);
-  if (reelsRetomados > 0) console.log(`[homero] sigo subiendo ${reelsRetomados} reel(s)`);
+  if (reelsRetomados > 0) console.log(`[homero] retomo ${reelsRetomados} reel(s): subidas a medias o tarjetas que no salieron`);
 
   const api = config.apiToken
     ? crearApi({

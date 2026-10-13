@@ -497,3 +497,24 @@ describe('el planificador', () => {
     expect(h.store.tareas.filter((t) => t.tipo === 'leer_reels')).toHaveLength(2);
   });
 });
+
+describe('cortes a mitad', () => {
+  it('Homero se reinició antes de mandar la tarjeta: al arrancar la manda, sin volver a escribir', async () => {
+    const h = armarReels();
+    const r = await recibirVideo({ peso: VIDEO.length, bajar: async () => VIDEO }, h.deps);
+    if (!r.ok) throw new Error(r.motivo);
+    // Lo que quedó en la base: texto escrito, propuesto, pero sin tarjeta.
+    await h.store.actualizarReel(r.id, { caption: 'Texto ya escrito', porQue: 'escrito antes del corte', estado: 'propuesto' });
+
+    await retomarReels(h.deps);
+
+    expect(h.videos).toHaveLength(1);
+    expect(h.tarjetas.at(-1)!.texto).toContain('Texto ya escrito');
+    expect(h.tarjetas.at(-1)!.datos).toEqual([`rp:${r.id}`, `rq:${r.id}`, `rc:${r.id}`, `rd:${r.id}`]);
+    expect((await h.store.reel(r.id))!.telegramMsg).toBe(1001);
+
+    // Y no la repite si ya tiene.
+    await retomarReels(h.deps);
+    expect(h.tarjetas).toHaveLength(1);
+  });
+});

@@ -141,11 +141,20 @@ export async function proponerPublicacion(id: number, p: { caption: string; porQ
   const r = await deps.store.reel(id);
   if (r?.estado !== 'escribiendo') throw new ErrorDeTexto(`el reel #${id} ya no espera texto`);
   await deps.store.actualizarReel(id, { caption, porQue: p.porQue.trim(), estado: 'propuesto' });
+  await presentarReel((await deps.store.reel(id))!, deps);
+}
+
+/**
+ * El video y la tarjeta a Gero. Va aparte porque un corte entre que el reel
+ * queda `propuesto` y que sale la tarjeta (un deploy mientras sube el video)
+ * lo dejaba trabado: `retomarReels` la vuelve a mandar.
+ */
+async function presentarReel(r: Reel, deps: DepsDeReels): Promise<void> {
   if (r.archivo) {
-    await deps.mandarVideo?.(r.archivo, `#${id}`).catch((e) => console.error('[homero] no pude mandar el video:', e));
+    await deps.mandarVideo?.(r.archivo, `#${r.id}`).catch((e) => console.error('[homero] no pude mandar el video:', e));
   }
-  const msg = await deps.proponer(tarjetaDeReel({ ...r, caption, porQue: p.porQue.trim() }), botonesDeReel(id));
-  if (msg) await deps.store.actualizarReel(id, { telegramMsg: msg });
+  const msg = await deps.proponer(tarjetaDeReel(r), botonesDeReel(r.id));
+  if (msg) await deps.store.actualizarReel(r.id, { telegramMsg: msg });
 }
 
 async function encolarPublicacion(id: number, deps: DepsDeReels): Promise<void> {
@@ -206,11 +215,19 @@ export async function descartarReel(id: number, deps: DepsDeReels): Promise<Resu
   return { ok: true, reel: (await deps.store.reel(id))! };
 }
 
-/** Al arrancar: los que quedaron subiendo siguen desde lo que ya se hizo en Meta. */
+/**
+ * Al arrancar: los que quedaron subiendo siguen desde lo que ya se hizo en
+ * Meta, y a los propuestos cuya tarjeta no llego a salir se les manda.
+ */
 export async function retomarReels(deps: DepsDeReels): Promise<number> {
   let n = 0;
   for (const r of await deps.store.reels(['subiendo'])) {
     await encolarPublicacion(r.id, deps);
+    n++;
+  }
+  for (const r of await deps.store.reels(['propuesto'])) {
+    if (r.telegramMsg !== undefined) continue;
+    await presentarReel(r, deps);
     n++;
   }
   return n;
