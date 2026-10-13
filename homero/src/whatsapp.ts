@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { finDe, horarioEnCastellano, horariosLibres, linkDeReunion, sigueLibre } from './agenda.js';
+import { WEB } from './anuncios.js';
 import type { ClienteDeGateway } from './gateway.js';
 import type { Registro } from './herramientas.js';
 import { pedirTexto } from './ia.js';
@@ -553,7 +554,7 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
 
   const verLibres: Herramienta<Record<string, never>> = {
     nombre: 'horarios_libres',
-    descripcion: 'Los horarios libres de la agenda de Gero para una charla de 30 minutos (hora de Argentina), numerados.',
+    descripcion: 'Los horarios libres de la agenda de Gero para una reunión de 30 minutos (hora de Argentina), numerados.',
     esquema: objeto({}),
     validar: z.object({}).strict() as z.ZodType<Record<string, never>>,
     async correr() {
@@ -563,26 +564,36 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
     },
   };
 
-  const responder: Herramienta<{ texto: string; horarios: number[] }> = {
+  const responder: Herramienta<{ texto: string; horarios: number[]; con_web?: boolean }> = {
     nombre: 'responder',
     descripcion:
-      'Le contesta por WhatsApp, YA (sale sin aprobación). Si ofrecés horarios, pasá sus números de horarios_libres y ' +
-      'escribilos en el texto tal cual. Una sola por corrida.',
+      'Le contesta por WhatsApp, YA (sale sin aprobación). Si ofrecés horarios, pasá sus números de horarios_libres: ' +
+      'la lista sale sola abajo de tu texto, uno por renglón; NO los escribas en el texto. con_web suma al final el link ' +
+      'de la web de Sincro. Una sola por corrida.',
     esquema: objeto(
       {
-        texto: { type: 'string', description: 'El mensaje de WhatsApp, corto' },
+        texto: { type: 'string', description: 'El mensaje de WhatsApp, corto, sin los horarios' },
         horarios: { type: 'array', items: { type: 'integer' }, description: 'Números de horarios_libres que ofrecés' },
+        con_web: {
+          type: 'boolean',
+          description: 'true si tu respuesta no alcanza para lo que preguntó y le sirve mirar la web',
+        },
       },
       ['texto', 'horarios'],
     ),
-    validar: z.object({ texto: z.string().min(2).max(700), horarios: z.array(z.number().int().min(1)).max(4) }),
-    async correr({ texto, horarios }) {
-      if (/https?:\/\/|www\./i.test(texto)) throw new ErrorParaElAgente('Sin links en la respuesta.');
+    validar: z.object({
+      texto: z.string().min(2).max(700),
+      horarios: z.array(z.number().int().min(1)).max(4),
+      con_web: z.boolean().optional(),
+    }),
+    async correr({ texto, horarios, con_web }) {
+      if (/https?:\/\/|www\./i.test(texto)) throw new ErrorParaElAgente('Sin links en la respuesta: para la web usá con_web.');
       const { lista } = await libres();
       const elegidos = horarios.map((n) => lista[n - 1]);
       if (elegidos.some((h) => !h)) throw new ErrorParaElAgente('Algún número de horario no existe: volvé a mirar horarios_libres.');
       if (ctx.registro.cerro) throw new ErrorParaElAgente('Ya resolviste esta charla. Terminá la corrida.');
       const lead = await leadParaResponder();
+      texto = armarRespuesta(texto, elegidos as Date[], con_web === true);
       await mandar(texto);
       if (elegidos.length) await deps.store.guardarOferta(lead.id, elegidos as Date[]);
       cerrar(`WhatsApp: le contestó a ${lead.nombre}${elegidos.length ? ` (ofreció ${elegidos.length} horarios)` : ''}`);
@@ -657,14 +668,40 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
   return [verCharla, verLibres, responder, confirmar, avisar, sinResponder];
 }
 
-export const ROL_WHATSAPP = `Tu rol: sos la ATENCION por WhatsApp de Sincro. Alguien le escribió al WhatsApp de Sincro (muchas veces desde un anuncio). Entendé qué quiere y llevalo a una charla de 30 minutos con Gero.
+export const ROL_WHATSAPP = `Tu rol: sos la ATENCION por WhatsApp de Sincro. Alguien le escribió al WhatsApp de Sincro (muchas veces desde un anuncio). Entendé qué quiere y llevalo a una reunión de 30 minutos por videollamada.
 - Empezá con ver_charla. Lo que respondas sale SOLO, al toque, sin que Gero lo apruebe: pensalo bien.
-- Si quiere saber más o pregunta algo, contestá corto y ofrecé 3 horarios de horarios_libres en días distintos, con responder.
+- Si quiere saber más o pregunta algo, contestá corto y ofrecé 3 horarios de horarios_libres en días distintos, con responder. Los horarios NO van en tu texto: pasá sus números y la lista sale sola abajo, uno por renglón.
 - Si eligió uno de los horarios que YA le ofrecimos, confirmar_horario.
-- Si pregunta algo que no podés contestar sin inventar (precios, plazos, casos), no inventes: el precio depende de lo que necesiten y se ve en la llamada. Si hace falta, avisar_a_gero.
-- Estilo WhatsApp: hasta 3 renglones, de vos, cálido y directo, en primera persona como Gero. Sin links, sin firma, sin "Estimado". Un emoji como mucho.
+- Si pregunta algo que no podés contestar sin inventar (precios, plazos, casos), no inventes: el precio depende de lo que necesiten y se ve en la reunión. Si sentís que tu respuesta no le alcanza, con_web: true y le suma el link de la web. Si hace falta, avisar_a_gero.
+- Decí siempre "reunión", nunca "charla" ni "una charla con Gero": tiene que sonar profesional.
+- Estilo WhatsApp: hasta 3 renglones, de vos, cálido y directo, en primera persona como Gero. Sin links (la web va con con_web), sin firma, sin "Estimado". Uno o dos emojis que sumen (👋 ✅ 🚀 📊), no más.
 - Si pide que no le escriban más, el bot ya lo dio de baja: cerrar_sin_responder.
 - Terminá SIEMPRE con una de: responder, confirmar_horario, avisar_a_gero o cerrar_sin_responder.`;
+
+const NUMEROS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
+
+/**
+ * El mensaje que sale: el texto del agente, los horarios uno por renglón y, si
+ * la respuesta no alcanza, la web (pedido de Gero, 2026-10-13: "más limpio").
+ * Los horarios los arma el código para que el formato no dependa del agente;
+ * el número de cada uno es el que el cliente contesta y lee confirmar_horario.
+ */
+export function armarRespuesta(texto: string, horarios: Date[], conWeb: boolean): string {
+  const partes = [texto.trim()];
+  if (horarios.length) {
+    partes.push(
+      [
+        '📅 Opciones para la reunión (30 min, hora de Argentina):',
+        '',
+        ...horarios.map((h, i) => `${NUMEROS[i]} ${horarioEnCastellano(h)}`),
+        '',
+        'Respondeme con el número que te quede mejor.',
+      ].join('\n'),
+    );
+  }
+  if (conWeb) partes.push(`🌐 Por cualquier duda, acá tenés nuestra web: ${WEB}`);
+  return partes.join('\n\n');
+}
 
 /** Lo que llega en el evento `mensaje` del bot. */
 export const PayloadDeWhatsApp = z.object({

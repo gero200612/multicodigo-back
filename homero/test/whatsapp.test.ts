@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { agenteWhatsApp, esNumeroDePrueba } from '../src/agentes.js';
 import {
+  armarRespuesta,
   recibirLeads,
   resolverIa,
   rutasDeWhatsApp,
@@ -70,6 +71,18 @@ describe('whatsapp: helpers', () => {
     expect(yaContestado(c([entra(1), entra(2)]), 1)).toBe(false);
     expect(yaContestado(c([entra(1), entra(2), sale(3)]), 1)).toBe(true);
     expect(yaContestado(c([sale(0), entra(1)]), 1)).toBe(false);
+  });
+
+  it('armarRespuesta: horarios uno por renglón, numerados, y la web solo si se pide', () => {
+    const h = [new Date('2026-10-14T18:00:00Z'), new Date('2026-10-15T19:00:00Z')];
+    const r = armarRespuesta('Hola Ana! 👋 Lo vemos en una reunión.', h, true);
+    const renglones = r.split('\n');
+    expect(renglones[0]).toBe('Hola Ana! 👋 Lo vemos en una reunión.');
+    expect(renglones.filter((l) => l.startsWith('1️⃣'))).toHaveLength(1);
+    expect(renglones.filter((l) => l.startsWith('2️⃣'))).toHaveLength(1);
+    expect(r).toContain('📅');
+    expect(renglones.at(-1)).toBe('🌐 Por cualquier duda, acá tenés nuestra web: https://sincro.apps.punchi.dev');
+    expect(armarRespuesta('Hola!', [], false)).toBe('Hola!');
   });
 });
 
@@ -179,6 +192,23 @@ describe('whatsapp: el agente', () => {
     h.deps.wa = f.wa;
     await agenteWhatsApp(payload, h.deps);
     expect(f.mandados.map((m) => m.texto)).toEqual(['Hola!']);
+  });
+
+  it('con_web suma el link de la web al final aunque el texto no pueda tener links', async () => {
+    const f = waFalso();
+    const h = armar({
+      agente: agenteDe({
+        atencion: async (usar) => {
+          expect((await usar('responder', { texto: 'Te cuento en la reunión.', horarios: [1], con_web: true })).error).toBe(false);
+        },
+      }),
+    });
+    h.deps.wa = f.wa;
+    await agenteWhatsApp(payload, h.deps);
+    expect(f.mandados).toHaveLength(1);
+    expect(f.mandados[0]!.texto).toMatch(/^Te cuento en la reunión\./);
+    expect(f.mandados[0]!.texto).toContain('1️⃣');
+    expect(f.mandados[0]!.texto).toMatch(/https:\/\/sincro\.apps\.punchi\.dev$/);
   });
 
   it('confirmar un horario ofrecido reserva la reunión y manda el link por WhatsApp', async () => {
