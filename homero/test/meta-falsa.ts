@@ -1,4 +1,4 @@
-import type { ConjuntoEnMeta, FilaDeInsights, LeadDeMeta, Meta } from '../src/meta.js';
+import type { ConjuntoEnMeta, FilaDeInsights, LeadDeMeta, Meta, MetricasDeReel } from '../src/meta.js';
 
 /**
  * Una Meta en memoria: anota cada llamada y devuelve ids inventados. Lo que se
@@ -21,6 +21,12 @@ export function metaFalsa() {
     fallar: undefined as string | undefined,
     /** El mensaje de esa falla; si no, uno generico. */
     mensaje: undefined as string | undefined,
+    /** Lo que va contestando estadoDelContenedor, en orden; vacio = FINISHED. */
+    estadosDelContenedor: [] as { estado: string; detalle?: string }[],
+    /** Las metricas de cada media de IG. */
+    metricas: new Map<string, MetricasDeReel>(),
+    /** Los media que Meta no deja promocionar, con el motivo. */
+    noPromocionables: new Map<string, string>(),
   };
   const anotar = (metodo: string, ...args: unknown[]) => {
     llamadas.push({ metodo, args });
@@ -87,6 +93,35 @@ export function metaFalsa() {
     async leads(formulario, desde) {
       anotar('leads', formulario, desde);
       return datos.leads.get(formulario) ?? [];
+    },
+    async subirReelInstagram(video, o) {
+      anotar('subirReelInstagram', video.length, o);
+      return id('cont');
+    },
+    async estadoDelContenedor(contenedor) {
+      anotar('estadoDelContenedor', contenedor);
+      return datos.estadosDelContenedor.shift() ?? { estado: 'FINISHED' };
+    },
+    async publicarEnInstagram(contenedor) {
+      anotar('publicarEnInstagram', contenedor);
+      return id('media');
+    },
+    async subirReelFacebook(video, descripcion) {
+      anotar('subirReelFacebook', video.length, descripcion);
+      return id('fbv');
+    },
+    async metricasDeReel(media) {
+      anotar('metricasDeReel', media);
+      return datos.metricas.get(media) ?? { alcance: 0, vistas: 0, guardados: 0, compartidos: 0, likes: 0, comentarios: 0, promedioMs: 0 };
+    },
+    async promocionable(media) {
+      anotar('promocionable', media);
+      const motivo = datos.noPromocionables.get(media);
+      return motivo ? { ok: false, motivo } : { ok: true };
+    },
+    async crearCreativoDeReel(c) {
+      anotar('crearCreativoDeReel', c);
+      return id('cre');
     },
   };
   const de = (metodo: string) => llamadas.filter((l) => l.metodo === metodo);

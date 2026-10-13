@@ -13,6 +13,7 @@ import type { Resultado as ResultadoDeDemo } from './demos.js';
 import type { Demo, Store } from './store.js';
 import { modoActual, tablaDeRubros, type Boton } from './ventas.js';
 import { armarReel, GUION_DE_PRUEBA } from './reel.js';
+import type { ResultadoDeReel } from './publicar-reel.js';
 
 export const NOMBRE = 'Homero';
 
@@ -77,6 +78,36 @@ export interface Acciones {
   marcarCalidad(leadId: number, calidad: 'sirve' | 'no_sirve'): Promise<boolean>;
   /** El presupuesto de anuncios del mes, en pesos. */
   cambiarPresupuesto(monto: number): Promise<{ presupuesto: number; aviso?: string; pausados: number }>;
+  /** Un video que mando Gero para publicar como reel. */
+  recibirVideo(v: { peso: number; bajar: () => Promise<Buffer> }): Promise<{ ok: true; id: number } | { ok: false; motivo: string }>;
+  aprobarReel(id: number, promocionar: boolean): Promise<ResultadoDeReel>;
+  reintentarReel(id: number): Promise<ResultadoDeReel>;
+  descartarReel(id: number): Promise<ResultadoDeReel>;
+  /** ✏️ Cambiar: lo que pidio Gero, para que el publicista rehaga el texto. */
+  cambiarReel(id: number, pedido: string): Promise<ResultadoDeReel>;
+  promocionarReel(id: number): Promise<{ ok: true; anuncioId: number } | { ok: false; motivo: string }>;
+}
+
+/** Clave en homero.estado: el reel al que se le esta pidiendo un cambio (despues de ✏️). */
+export const CAMBIO_DE_REEL = 'reel:cambio_pendiente';
+
+/** Lo que Telegram dice de un video o archivo, lo justo para reconocerlo. */
+interface ArchivoDeTelegram {
+  file_id: string;
+  file_size?: number;
+  mime_type?: string;
+  file_name?: string;
+}
+
+/**
+ * El video de un mensaje: como video, o como archivo (Telegram no lo
+ * comprime). Otro archivo no es un video.
+ */
+export function videoDelMensaje(m: { video?: ArchivoDeTelegram; document?: ArchivoDeTelegram }): { fileId: string; peso: number } | undefined {
+  const a = m.video ?? m.document;
+  if (!a) return undefined;
+  const esVideo = Boolean(m.video) || /^video\//.test(a.mime_type ?? '') || /\.(mp4|mov|m4v)$/i.test(a.file_name ?? '');
+  return esVideo ? { fileId: a.file_id, peso: a.file_size ?? 0 } : undefined;
 }
 
 /** `80000`, `80.000`, `$80.000` -> 80000. */
@@ -199,6 +230,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         '/buscar [rubro] [ciudad] · salgo a buscar ya',
         '/rubros · cómo responde cada rubro',
         '/presupuesto [monto] · anuncios: cómo va el mes, o cambiar el presupuesto',
+        'Mandame un video vertical (hasta 20 MB) y lo publico como reel, con tu OK',
         '/ocupado 30/9 · /libre 30/9 · días sin reuniones',
         '/prioridad [n] · los borradores con más factibilidad',
         '/cortar · cancela las búsquedas pendientes',
@@ -567,6 +599,47 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         resultado = r.ok ? '🗑 Anuncio descartado.' : `No pude: ${r.motivo}`;
         break;
       }
+      case 'rp':
+      case 'rq':
+      case 'rn': {
+        const reel = await store.reel(id);
+        // Publicar normal (despues de que Instagram no dejo el de prueba) mantiene el 📣 que ya tenia.
+        const r = await acciones.aprobarReel(id, accion === 'rq' || (accion === 'rn' && Boolean(reel?.promocionar)));
+        resultado = r.ok
+          ? `✅ Lo subo a Instagram${r.reel.prueba ? ' como reel de prueba' : ''} y a Facebook. Te aviso cuando esté.${
+              r.reel.promocionar ? ' 📣 Cuando rinda, lo promociono.' : ''
+            }`
+          : `No pude: ${r.motivo}`;
+        break;
+      }
+      case 'rr': {
+        const r = await acciones.reintentarReel(id);
+        resultado = r.ok ? '🔁 Lo vuelvo a intentar y te aviso.' : `No pude: ${r.motivo}`;
+        break;
+      }
+      case 'rc': {
+        const reel = await store.reel(id);
+        if (reel?.estado !== 'propuesto') {
+          resultado = 'Ese reel ya estaba decidido.';
+          break;
+        }
+        await store.guardarEstado(CAMBIO_DE_REEL, { reelId: id });
+        resultado = `✏️ Escribime qué cambiar del texto del reel #${id} y lo rehago.`;
+        break;
+      }
+      case 'rd': {
+        const r = await acciones.descartarReel(id);
+        resultado = r.ok ? '🗑 Reel descartado (borré el video).' : `No pude: ${r.motivo}`;
+        break;
+      }
+      case 'rs': {
+        const r = await acciones.promocionarReel(id);
+        resultado = r.ok ? `📣 Armo el anuncio #${r.anuncioId} con el reel y te aviso cuando esté en Meta.` : `No pude: ${r.motivo}`;
+        break;
+      }
+      case 'rx':
+        resultado = 'Listo, ese no lo promociono.';
+        break;
       case 'ls':
       case 'ln': {
         const ok = await acciones.marcarCalidad(id, accion === 'ls' ? 'sirve' : 'no_sirve');
@@ -585,6 +658,16 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   // Corregir un borrador: responderle a la tarjeta con el texto nuevo.
   bot.on('message:text', async (ctx) => {
     const citado = ctx.message.reply_to_message?.message_id;
+    // Lo que cambiar del texto de un reel: igual que con los anuncios (abajo).
+    const reel = citado ? await store.reelPorTelegram(citado) : undefined;
+    const reelPendiente = citado ? undefined : await store.leerEstado<{ reelId: number }>(CAMBIO_DE_REEL);
+    if (acciones && (reel?.estado === 'propuesto' || reelPendiente)) {
+      const id = reel?.id ?? reelPendiente!.reelId;
+      if (reelPendiente) await store.guardarEstado(CAMBIO_DE_REEL, null);
+      const r = await acciones.cambiarReel(id, ctx.message.text);
+      await ctx.reply(r.ok ? `✏️ Anotado. Rehago el texto del reel #${id} y te paso la tarjeta nueva.` : `No pude: ${r.motivo}`);
+      return;
+    }
     // Lo que cambiar de un anuncio: el mensaje que sigue a ✏️ Cambiar, o una
     // respuesta a su tarjeta.
     const anuncio = citado ? await store.anuncioPorTelegram(citado) : undefined;
@@ -614,6 +697,28 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     await ctx.reply('✏️ Listo, lo cambié. Tocá el botón de la tarjeta para mandarlo.');
   });
 
+  // Un video para publicar como reel: el publicista escribe el texto y llega la tarjeta.
+  bot.on(['message:video', 'message:document'], async (ctx) => {
+    const v = videoDelMensaje(ctx.message);
+    if (!v || !acciones) return;
+    const r = await acciones.recibirVideo({
+      peso: v.peso,
+      bajar: async () => {
+        const f = await ctx.api.getFile(v.fileId);
+        if (!f.file_path) throw new Error('Telegram no dio el archivo');
+        const res = await fetch(`https://api.telegram.org/file/bot${config.telegramToken}/${f.file_path}`, { signal: AbortSignal.timeout(120_000) });
+        if (!res.ok) throw new Error(`Telegram contestó ${res.status} al bajar el video`);
+        return Buffer.from(await res.arrayBuffer());
+      },
+    }).catch((err: unknown) => ({ ok: false as const, motivo: err instanceof Error ? err.message.replace(config.telegramToken, '[token]') : String(err) }));
+    await ctx.reply(
+      r.ok
+        ? `🎬 Recibido (reel #${r.id}). El publicista escribe el texto y te paso la tarjeta para aprobar.`
+        : `No lo puedo publicar como reel: ${r.motivo}.`,
+      { reply_parameters: { message_id: ctx.message.message_id } },
+    );
+  });
+
   bot.catch((err) => console.error('[homero] error del bot:', err.error));
 
   /**
@@ -633,11 +738,18 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     await bot.api.sendPhoto(config.chatId, new InputFile(png, 'anuncio.png'), { caption: pie.slice(0, 1000) });
   };
 
+  /** El video de un reel, antes de su tarjeta. */
+  const mandarVideo = async (archivo: string, pie: string) => {
+    if (config.chatId === undefined) return;
+    await bot.api.sendVideo(config.chatId, new InputFile(archivo), { caption: pie.slice(0, 1000), supports_streaming: true });
+  };
+
   return {
     bot,
     avisar,
     proponer,
     mandarFoto,
+    mandarVideo,
     cambiarBotones,
     conectar: (a: Acciones) => {
       acciones = a;

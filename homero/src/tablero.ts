@@ -41,7 +41,7 @@ const TIPOS: Record<Agente, TipoDeTarea[]> = {
   buscador: ['agente_buscar', 'prospectar'],
   vendedor: ['agente_vender', 'investigar'],
   atencion: ['agente_atender', 'resumir_respuesta'],
-  publicista: ['agente_publicitar'],
+  publicista: ['agente_publicitar', 'agente_reel'],
   revisor: ['agente_revisar'],
 };
 
@@ -68,6 +68,8 @@ const VERBOS: Record<string, string> = {
   escribir_libreta: 'Anotando lo que aprendió',
   ver_resultados: 'Mirando cómo rinden los anuncios',
   proponer_anuncio: 'Te pasó un anuncio para aprobar:',
+  ver_reel: 'Mirando el reel',
+  proponer_publicacion_de_reel: 'Te pasó el texto de un reel para aprobar',
   repartir_presupuesto: 'Repartiendo el presupuesto',
   pausar_anuncio: 'Pausó un anuncio:',
   ver_anuncio: 'Mirando el anuncio',

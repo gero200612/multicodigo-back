@@ -81,7 +81,7 @@ export const CAMBIO_PENDIENTE = 'anuncio:cambio_pendiente';
 /** Propuestas esperando a Gero: mas que esto no se llega a mirar. */
 export const TOPE_DE_PROPUESTOS = 3;
 
-const pesos = (n: number) => `$${Math.round(n).toLocaleString('es-AR')}`;
+export const pesos = (n: number) => `$${Math.round(n).toLocaleString('es-AR')}`;
 
 // ------------------------------------------------------------ el mes
 
@@ -187,7 +187,7 @@ async function diariosActuales(store: Store): Promise<Map<number, number>> {
 }
 
 /** Para un anuncio solo: el diario mas alto que entra con los otros como estan. */
-async function diarioQueEntraPara(anuncioId: number, deps: DepsDeAnuncios): Promise<number> {
+export async function diarioQueEntraPara(anuncioId: number, deps: DepsDeAnuncios): Promise<number> {
   const m = await estadoDelMes(deps);
   const otros = [...(await diariosActuales(deps.store)).entries()]
     .filter(([id]) => id !== anuncioId)
@@ -575,13 +575,16 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
   if (!a || a.estado !== 'aprobado') return;
   const ids = { ...a.metaIds };
   const anotar = () => deps.store.actualizarAnuncio(a.id, { metaIds: ids });
+  // Hecho con un reel publicado: el creativo es el reel tal cual, sin imagen.
+  const reel = a.reelId !== undefined ? await deps.store.reel(a.reelId) : undefined;
+  if (a.reelId !== undefined && !reel?.igMedia) throw new Error(`el reel #${a.reelId} del anuncio ${a.id} no está publicado en Instagram`);
 
   let campana = await deps.store.leerEstado<string>(CAMPANA);
   if (!campana) {
     campana = await meta.crearCampana('Sincro · consultas (Homero)');
     await deps.store.guardarEstado(CAMPANA, campana);
   }
-  if (!ids.imagen) {
+  if (!ids.imagen && !reel) {
     const png = await deps.store.imagenDelAnuncio(a.id);
     if (!png) throw new Error(`el anuncio ${a.id} no tiene imagen`);
     ids.imagen = await meta.subirImagen(png, `sincro-anuncio-${a.id}.png`);
@@ -637,14 +640,16 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
     await deps.store.actualizarAnuncio(a.id, { metaIds: ids, diario });
   }
   if (!ids.creativo) {
-    ids.creativo = await meta.crearCreativo({
-      nombre: `#${a.id} · ${a.titulo}`,
-      imagenHash: ids.imagen,
-      titulo: a.titulo,
-      texto: a.texto,
-      formulario: ids.formulario,
-      web: WEB,
-    });
+    ids.creativo = reel
+      ? await meta.crearCreativoDeReel({ nombre: `#${a.id} · reel #${reel.id}`, media: reel.igMedia!, formulario: ids.formulario })
+      : await meta.crearCreativo({
+          nombre: `#${a.id} · ${a.titulo}`,
+          imagenHash: ids.imagen!,
+          titulo: a.titulo,
+          texto: a.texto,
+          formulario: ids.formulario,
+          web: WEB,
+        });
     await anotar();
   }
   if (!ids.anuncio) {
@@ -653,12 +658,13 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
   }
   // Las variantes: otro creativo con el mismo formulario e imagen, y otro
   // anuncio en el mismo conjunto. Cada pieza se anota, como lo de arriba.
-  for (const [i, v] of (a.variantes ?? []).entries()) {
+  // Un anuncio de reel no tiene variantes: el texto es el del reel.
+  for (const [i, v] of (reel ? [] : (a.variantes ?? [])).entries()) {
     const hecha = { ...(ids.variantes?.[i] ?? {}) };
     if (!hecha.creativo) {
       hecha.creativo = await meta.crearCreativo({
         nombre: `#${a.id} · variante ${i + 2} · ${v.titulo}`,
-        imagenHash: ids.imagen,
+        imagenHash: ids.imagen!,
         titulo: v.titulo,
         texto: v.texto,
         formulario: ids.formulario,
@@ -1357,6 +1363,8 @@ export async function planificarAnuncios(deps: DepsDeAnuncios): Promise<void> {
   const dia = diaArgentino(ahora);
   const { hora } = relojArgentino(ahora);
   await deps.store.encolar({ tipo: 'leer_insights', payload: {}, requiereIa: false, clave: `insights:${dia}:${hora}` });
+  // Los numeros de los reels publicados, cada 6 horas (publicar-reel.ts).
+  await deps.store.encolar({ tipo: 'leer_reels', payload: {}, requiereIa: false, clave: `reels:${dia}:${Math.floor(hora / 6)}` });
   for (const a of await deps.store.anuncios(['activo', 'pausado'])) {
     if (!a.metaIds.anuncio || (a.metaIds.formularioVersion ?? 1) >= FORMULARIO_VERSION) continue;
     await deps.store.encolar({

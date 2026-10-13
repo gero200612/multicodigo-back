@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { DepsDeCola } from '../src/cola.js';
 import type { Correo, MailSaliente } from '../src/envio.js';
 import type { Hallazgo } from '../src/fuentes.js';
@@ -68,6 +70,11 @@ export function armar(o: Opciones = {}) {
     azar: () => 0,
     sesiones,
     meta: o.meta,
+    // Los reels: cada test que los usa pone su carpeta y sus mediciones.
+    medios: join(tmpdir(), 'homero-test-medios'),
+    medir: async () => ({ ancho: 1080, alto: 1920, duracion: 30 }),
+    hoja: async () => Buffer.from('hoja'),
+    portada: async () => Buffer.from('portada'),
     mandarFoto: async (png, pie) => {
       fotos.push({ png, pie });
     },
@@ -95,12 +102,16 @@ export interface Guion {
   atencion?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
   publicista?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
   revisor?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
+  /** El publicista escribiendo el texto de un reel. */
+  reel?: (usar: Usar, p: PedidoDeCorrida) => Promise<void>;
 }
 
 export function agenteDe(g: Guion) {
   return async (p: PedidoDeCorrida, sesiones: SesionesMcp): Promise<Partial<RespuestaDeCorrida>> => {
     const usar: Usar = (nombre, args) => sesiones.usar(p.corrida, p.tokenCorrida, nombre, args);
-    const quien = p.herramientas.includes('anotar_negocio')
+    const quien = p.herramientas.includes('proponer_publicacion_de_reel')
+      ? g.reel
+      : p.herramientas.includes('anotar_negocio')
       ? g.buscador
       : p.herramientas.includes('dejar_mail_listo')
         ? g.vendedor

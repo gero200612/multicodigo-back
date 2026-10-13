@@ -25,7 +25,10 @@ export type TipoDeTarea =
   | 'seguimiento_lead_meta'
   | 'renovar_formulario'
   | 'resumen_anuncios'
-  | 'finanzas_del_dia';
+  | 'finanzas_del_dia'
+  | 'agente_reel'
+  | 'publicar_reel'
+  | 'leer_reels';
 
 export type EstadoDeLead =
   | 'nuevo'
@@ -240,6 +243,8 @@ export interface Anuncio {
   telegramMsg?: number;
   creadoEn: Date;
   aprobadoEn?: Date;
+  /** Hecho con un reel publicado: el creativo usa ese reel en vez de la imagen. */
+  reelId?: number;
 }
 
 export type NuevoAnuncio = Pick<Anuncio, 'rubro' | 'titulo' | 'texto' | 'frase' | 'preguntas' | 'porQue' | 'diario'> & {
@@ -247,6 +252,58 @@ export type NuevoAnuncio = Pick<Anuncio, 'rubro' | 'titulo' | 'texto' | 'frase' 
   imagen: Buffer;
   plantilla?: string;
   contenido?: unknown;
+  reelId?: number;
+};
+
+// ---- Reels (spec 2026-10-13-homero-subir-reels)
+
+/** `escribiendo`: el publicista arma el texto; Gero todavia no lo vio. */
+export type EstadoDeReel = 'escribiendo' | 'propuesto' | 'subiendo' | 'publicado' | 'fallido' | 'descartado';
+
+/** Una lectura de los numeros de un reel (de Meta), con cuando se leyo. */
+export interface LecturaDeReel {
+  alcance: number;
+  vistas: number;
+  guardados: number;
+  compartidos: number;
+  likes: number;
+  comentarios: number;
+  promedioMs: number;
+  leido: string;
+}
+
+export interface Reel {
+  id: number;
+  origen: 'gero' | 'homero';
+  /** El video en el volumen de medios; no hay al publicarlo o descartarlo. */
+  archivo?: string;
+  duracion: number;
+  peso: number;
+  caption: string;
+  porQue: string;
+  telegramMsg?: number;
+  estado: EstadoDeReel;
+  /** Como reel de prueba: Instagram lo pasa a los seguidores si rinde. */
+  prueba: boolean;
+  /** Gero toco 📣: el anuncio se crea solo cuando rinde. */
+  promocionar: boolean;
+  igContenedor?: string;
+  igMedia?: string;
+  fbVideo?: string;
+  anuncioId?: number;
+  metricas?: LecturaDeReel;
+  propuestaPromoEn?: Date;
+  motivo?: string;
+  creadoEn: Date;
+  aprobadoEn?: Date;
+  publicadoEn?: Date;
+}
+
+export type NuevoReel = Pick<Reel, 'origen' | 'duracion' | 'peso'> & { archivo: string };
+
+/** `null` borra el campo (el archivo despues de publicar, el contenedor para volver a subir). */
+export type CambiosDeReel = {
+  [K in Exclude<keyof Reel, 'id' | 'origen' | 'creadoEn'>]?: Reel[K] | null;
 };
 
 export type CambiosDeAnuncio = Partial<Pick<Anuncio, 'estado' | 'diario' | 'motivo' | 'metaIds' | 'telegramMsg' | 'aprobadoEn' | 'revision'>>;
@@ -562,6 +619,15 @@ export interface Store {
   >;
   /** Lo que dijo Gero de una consulta. Devuelve el lead, o nada si no existe. */
   marcarCalidad(leadId: number, calidad: CalidadDeLead): Promise<Lead | undefined>;
+
+  // ---- Reels
+  /** Nace `escribiendo`. */
+  crearReel(r: NuevoReel): Promise<number>;
+  reel(id: number): Promise<Reel | undefined>;
+  /** Los mas nuevos primero. Sin `estados`, todos. */
+  reels(estados?: EstadoDeReel[]): Promise<Reel[]>;
+  reelPorTelegram(msg: number): Promise<Reel | undefined>;
+  actualizarReel(id: number, c: CambiosDeReel): Promise<void>;
 
   // ---- finanzas (el Administrador)
   fijos(): Promise<Fijo[]>;
@@ -1289,8 +1355,8 @@ export class PgStore implements Store {
 
   async crearAnuncio(a: NuevoAnuncio) {
     const r = await this.pool.query(
-      `INSERT INTO homero.anuncios (rubro, titulo, texto, frase, preguntas, por_que, diario, imagen, plantilla, contenido, variantes, estado)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'revisando') RETURNING id`,
+      `INSERT INTO homero.anuncios (rubro, titulo, texto, frase, preguntas, por_que, diario, imagen, plantilla, contenido, variantes, reel_id, estado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'revisando') RETURNING id`,
       [
         a.rubro,
         a.titulo,
@@ -1303,6 +1369,7 @@ export class PgStore implements Store {
         a.plantilla ?? null,
         a.contenido === undefined ? null : JSON.stringify(a.contenido),
         JSON.stringify(a.variantes ?? []),
+        a.reelId ?? null,
       ],
     );
     return Number(r.rows[0].id);
@@ -1498,6 +1565,49 @@ export class PgStore implements Store {
     return r.rows[0] ? aLead(r.rows[0]) : undefined;
   }
 
+  // ---------------------------------------------------------------- reels
+
+  async crearReel(r: NuevoReel) {
+    const res = await this.pool.query(
+      `INSERT INTO homero.reels (origen, archivo, duracion, peso) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [r.origen, r.archivo, r.duracion, r.peso],
+    );
+    return Number(res.rows[0].id);
+  }
+
+  async reel(id: number) {
+    const r = await this.pool.query(`SELECT ${COLUMNAS_DE_REEL} FROM homero.reels WHERE id = $1`, [id]);
+    return r.rows[0] ? aReel(r.rows[0]) : undefined;
+  }
+
+  async reels(estados?: EstadoDeReel[]) {
+    const r = await this.pool.query(
+      `SELECT ${COLUMNAS_DE_REEL} FROM homero.reels WHERE ($1::text[] IS NULL OR estado = ANY($1)) ORDER BY id DESC`,
+      [estados ?? null],
+    );
+    return r.rows.map(aReel);
+  }
+
+  async reelPorTelegram(msg: number) {
+    const r = await this.pool.query(`SELECT ${COLUMNAS_DE_REEL} FROM homero.reels WHERE telegram_msg = $1 LIMIT 1`, [msg]);
+    return r.rows[0] ? aReel(r.rows[0]) : undefined;
+  }
+
+  async actualizarReel(id: number, c: CambiosDeReel) {
+    // Solo las columnas que vienen; `null` borra. Los nombres salen de una
+    // tabla fija, nunca del objeto: no hay SQL armado con texto de afuera.
+    const sets: string[] = [];
+    const valores: unknown[] = [id];
+    for (const [campo, columna] of Object.entries(COLUMNA_DE_CAMBIO) as [keyof CambiosDeReel, string][]) {
+      const v = c[campo];
+      if (v === undefined) continue;
+      valores.push(campo === 'metricas' && v !== null ? JSON.stringify(v) : v);
+      sets.push(`${columna} = $${valores.length}`);
+    }
+    if (sets.length === 0) return;
+    await this.pool.query(`UPDATE homero.reels SET ${sets.join(', ')} WHERE id = $1`, valores);
+  }
+
   // ---------------------------------------------------------------- finanzas
 
   async fijos() {
@@ -1653,9 +1763,63 @@ export class PgStore implements Store {
 }
 
 /** Todo menos la imagen, que pesa: se pide aparte. */
+// `variantes` faltaba aca (2026-10-13): se guardaban pero volvian siempre vacias.
 const COLUMNAS_DE_ANUNCIO =
   'id, rubro, titulo, texto, frase, preguntas, por_que, estado, diario, motivo, meta_ids, telegram_msg, creado_en, aprobado_en, ' +
-  'plantilla, contenido, revision';
+  'plantilla, contenido, revision, variantes, reel_id';
+
+const COLUMNAS_DE_REEL =
+  'id, origen, archivo, duracion, peso, caption, por_que, telegram_msg, estado, prueba, promocionar, ig_contenedor, ' +
+  'ig_media_id, fb_video_id, anuncio_id, metricas, propuesta_promo_en, motivo, creado_en, aprobado_en, publicado_en';
+
+/** Cada campo de `CambiosDeReel` y su columna. */
+const COLUMNA_DE_CAMBIO: Record<keyof CambiosDeReel, string> = {
+  archivo: 'archivo',
+  duracion: 'duracion',
+  peso: 'peso',
+  caption: 'caption',
+  porQue: 'por_que',
+  telegramMsg: 'telegram_msg',
+  estado: 'estado',
+  prueba: 'prueba',
+  promocionar: 'promocionar',
+  igContenedor: 'ig_contenedor',
+  igMedia: 'ig_media_id',
+  fbVideo: 'fb_video_id',
+  anuncioId: 'anuncio_id',
+  metricas: 'metricas',
+  propuestaPromoEn: 'propuesta_promo_en',
+  motivo: 'motivo',
+  aprobadoEn: 'aprobado_en',
+  publicadoEn: 'publicado_en',
+};
+
+function aReel(f: Record<string, unknown>): Reel {
+  const opcional = <T>(v: unknown) => (v === null || v === undefined ? undefined : (v as T));
+  return {
+    id: Number(f.id),
+    origen: f.origen as Reel['origen'],
+    archivo: opcional(f.archivo),
+    duracion: Number(f.duracion),
+    peso: Number(f.peso),
+    caption: f.caption as string,
+    porQue: f.por_que as string,
+    telegramMsg: f.telegram_msg == null ? undefined : Number(f.telegram_msg),
+    estado: f.estado as EstadoDeReel,
+    prueba: Boolean(f.prueba),
+    promocionar: Boolean(f.promocionar),
+    igContenedor: opcional(f.ig_contenedor),
+    igMedia: opcional(f.ig_media_id),
+    fbVideo: opcional(f.fb_video_id),
+    anuncioId: f.anuncio_id == null ? undefined : Number(f.anuncio_id),
+    metricas: opcional(f.metricas),
+    propuestaPromoEn: opcional(f.propuesta_promo_en),
+    motivo: opcional(f.motivo),
+    creadoEn: f.creado_en as Date,
+    aprobadoEn: opcional(f.aprobado_en),
+    publicadoEn: opcional(f.publicado_en),
+  };
+}
 
 type Fila = Record<string, unknown>;
 const opc = <T>(v: unknown) => (v === null || v === undefined ? undefined : (v as T));
@@ -1700,6 +1864,7 @@ function aAnuncio(f: Fila): Anuncio {
     plantilla: opc(f.plantilla),
     contenido: opc(f.contenido),
     revision: (f.revision as Ronda[] | null) ?? [],
+    reelId: num(f.reel_id),
   };
 }
 

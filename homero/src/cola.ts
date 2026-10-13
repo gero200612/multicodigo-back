@@ -5,7 +5,8 @@ import { horaArgentina } from './horas.js';
 import { finanzasDelDia } from './finanzas.js';
 import { presupuestar } from './precios.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
-import { agenteAtender, agenteBuscar, agentePublicitar, agenteRevisar, agenteVender, agenteWhatsApp, type DepsDeAgentes } from './agentes.js';
+import { agenteAtender, agenteBuscar, agentePublicitar, agenteReel, agenteRevisar, agenteVender, agenteWhatsApp, type DepsDeAgentes } from './agentes.js';
+import { leerReels, publicarReel } from './publicar-reel.js';
 import { escribirALeadMeta, leerInsights, publicarAnuncio, renovarFormulario, resumenDeAnuncios, seguimientoDeLeadMeta } from './anuncios.js';
 import { SinLugar } from './gateway.js';
 import type { Recibido, Tarea, TipoDeTarea } from './store.js';
@@ -190,5 +191,11 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
     case 'finanzas_del_dia':
       await finanzasDelDia(deps);
       return;
+    case 'agente_reel':
+      return agenteReel(tarea.payload, deps);
+    case 'publicar_reel':
+      return publicarReel(tarea.payload, deps);
+    case 'leer_reels':
+      return leerReels(deps);
   }
 }

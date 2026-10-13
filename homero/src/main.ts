@@ -45,8 +45,10 @@ import { bajarPaginaConDestino, recibeMail } from './web.js';
 import { adminWa, atenderIa, bucle, clienteWa, pedidorWa, recibirLeads, reenviarAlertas } from './whatsapp.js';
 import { VIGILAR_PLANTILLA_MS, vigilarPlantilla } from './primer-whatsapp.js';
 import { armarBancoDeMusica, buscarEnPixabay, leerBanco } from './medios.js';
+import { aprobarReel, cambiarReel, descartarReel, promocionarReel, recibirVideo, reintentarReel, retomarReels } from './publicar-reel.js';
+import { hojaDeContacto, medirVideo, portadaDe } from './video.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql', '013_calidad_de_leads.sql', '014_variantes.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql', '013_calidad_de_leads.sql', '014_variantes.sql', '015_reels.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
@@ -74,7 +76,7 @@ async function main() {
   for (const c of config.casillas) await store.registrarCuenta(c.email);
 
   const rescatadas = await store.rescatarColgadas();
-  const { bot, avisar, proponer, mandarFoto, conectar, cambiarBotones } = crearBot(config, store);
+  const { bot, avisar, proponer, mandarFoto, mandarVideo, conectar, cambiarBotones } = crearBot(config, store);
 
   const aviso = (t: string) => avisar(t).catch((e) => console.error('[homero] no pude avisar:', e));
   // Las cuentas de Claude son un fondo comun que maneja el gateway: Homero no
@@ -126,6 +128,12 @@ async function main() {
         : undefined,
     meta: config.meta ? clienteDeMeta(config.meta) : undefined,
     mandarFoto: (png, pie) => mandarFoto(png, pie).catch((e) => console.error('[homero] no pude mandar la imagen:', e)),
+    // Los reels que manda Gero: el video vive en el volumen de medios hasta publicarlo.
+    medios: config.medios.dir,
+    medir: medirVideo,
+    hoja: hojaDeContacto,
+    portada: portadaDe,
+    mandarVideo: (archivo, pie) => mandarVideo(archivo, pie).catch((e) => console.error('[homero] no pude mandar el video:', e)),
     wa,
     waAdmin,
     numerosDePrueba: config.whatsapp?.numerosDePrueba ?? [],
@@ -153,6 +161,12 @@ async function main() {
     marcarCalidad: async (id: number, calidad: 'sirve' | 'no_sirve') => (await store.marcarCalidad(id, calidad)) !== undefined,
     cambiarAnuncio: (id: number, pedido: string) => pedirCambio(id, pedido, deps),
     cambiarPresupuesto: (monto: number) => cambiarPresupuesto(monto, deps),
+    recibirVideo: (v) => recibirVideo(v, deps),
+    aprobarReel: (id, promocionar) => aprobarReel(id, { promocionar }, deps),
+    reintentarReel: (id) => reintentarReel(id, deps),
+    descartarReel: (id) => descartarReel(id, deps),
+    cambiarReel: (id, pedido) => cambiarReel(id, pedido, deps),
+    promocionarReel: (id) => promocionarReel(id, deps),
   };
   conectar(acciones);
 
@@ -162,6 +176,8 @@ async function main() {
   if (viejos > 0) console.log(`[homero] descarté ${viejos} anuncio(s) con la plantilla vieja`);
   const retomados = await retomarPublicaciones(deps);
   if (retomados > 0) console.log(`[homero] vuelvo a publicar ${retomados} anuncio(s) aprobado(s)`);
+  const reelsRetomados = await retomarReels(deps);
+  if (reelsRetomados > 0) console.log(`[homero] sigo subiendo ${reelsRetomados} reel(s)`);
 
   const api = config.apiToken
     ? crearApi({

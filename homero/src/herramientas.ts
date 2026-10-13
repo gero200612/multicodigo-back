@@ -11,8 +11,8 @@ import {
   proponerAnuncio,
   repartirPresupuesto,
   TOPE_DE_PROPUESTOS,
-  type DepsDeAnuncios,
 } from './anuncios.js';
+import { ErrorDeTexto, proponerPublicacion, type DepsDeReels } from './publicar-reel.js';
 import { horarioEnCastellano, horariosLibres, sigueLibre } from './agenda.js';
 import { dominio } from './cadenas.js';
 import { ErrorParaElAgente, type Herramienta } from './mcp.js';
@@ -40,7 +40,7 @@ import {
  * que escriben cuentan cuantas veces se usaron en la corrida.
  */
 
-export interface DepsDeHerramientas extends DepsDeAnuncios {
+export interface DepsDeHerramientas extends DepsDeReels {
   /** Baja una pagina con validacion de host y dice donde termino (ver web.ts). */
   bajarPagina: (url: string) => Promise<{ html: string; url: string } | undefined>;
 }
@@ -1061,4 +1061,61 @@ export function herramientasDelRevisor(
   };
 
   return [ver, veredicto, escribirLibreta('revisor', deps)];
+}
+
+/**
+ * El publicista escribiendo el texto de un reel que mando Gero: ve la hoja de
+ * cuadros del video y deja el caption. Lo que no se puede publicar (links,
+ * mas de 5 hashtags) vuelve como error para que lo corrija.
+ */
+export function herramientasDelReel(
+  deps: DepsDeHerramientas,
+  ctx: { reelId: number; registro: Registro },
+): Herramienta<any>[] {
+  const ver: Herramienta<Record<string, never>> = {
+    nombre: 'ver_reel',
+    descripcion:
+      'El video del reel como hoja de contacto (un cuadro por segundo, de izquierda a derecha y de arriba abajo) y ' +
+      'cuanto dura. Usala primero: el texto tiene que contar lo mismo que el video.',
+    esquema: objeto({}),
+    validar: z.object({}).strict() as z.ZodType<Record<string, never>>,
+    async correr() {
+      const r = await deps.store.reel(ctx.reelId);
+      if (!r?.archivo || r.estado !== 'escribiendo') throw new ErrorParaElAgente('Ese reel ya no espera texto.');
+      const hoja = await deps.hoja(r.archivo);
+      return [
+        { type: 'image', data: hoja.toString('base64'), mimeType: 'image/png' },
+        { type: 'text', text: `Reel #${r.id}: ${Math.round(r.duracion)} s, vertical. Lo hizo Gero; vos escribís el texto de la publicación.` },
+      ];
+    },
+  };
+
+  const proponer: Herramienta<{ caption: string; por_que: string }> = {
+    nombre: 'proponer_publicacion_de_reel',
+    descripcion:
+      'Deja el texto de la publicacion (caption) y le llega a Gero con el video para aprobar. Hasta 2.200 ' +
+      'caracteres, como mucho 5 hashtags al final, sin links. Una sola vez, salvo que te devuelva un error.',
+    esquema: objeto(
+      {
+        caption: texto('El texto tal cual se publica: gancho en el primer renglon, 2 a 4 renglones cortos, llamado a la accion y hashtags'),
+        por_que: texto('Por que lo escribiste asi, en una o dos oraciones: lo lee Gero'),
+      },
+      ['caption', 'por_que'],
+    ),
+    validar: z.object({ caption: z.string().trim().min(10).max(2_200), por_que: z.string().trim().min(10).max(600) }),
+    async correr(a) {
+      if (ctx.registro.cerro) throw new ErrorParaElAgente('Ya dejaste el texto. Terminá la corrida.');
+      try {
+        await proponerPublicacion(ctx.reelId, { caption: a.caption, porQue: a.por_que }, deps);
+      } catch (err) {
+        if (err instanceof ErrorDeTexto) throw new ErrorParaElAgente(`No se puede publicar así: ${err.message}. Corregilo y volvé a llamar.`);
+        throw err;
+      }
+      ctx.registro.cerro = true;
+      ctx.registro.resumen = `Escribió el texto del reel #${ctx.reelId}: le llegó a Gero`;
+      return 'Listo: le llegó a Gero con el video.';
+    },
+  };
+
+  return [ver, proponer, escribirLibreta('publicista', deps)];
 }

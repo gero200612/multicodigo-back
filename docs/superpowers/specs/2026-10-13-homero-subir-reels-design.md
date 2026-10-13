@@ -1,6 +1,6 @@
 # Homero: subir un video de Gero como reel (de prueba), y promocionarlo
 
-Fecha: 2026-10-13. Estado: diseño aprobado en charla, falta revisión del spec.
+Fecha: 2026-10-13. Estado: aprobado e implementado (ver "Al implementar" al final).
 Implementa la sección 4 (publicación) y parte de la 3 y la 5 del spec
 `2026-10-08-homero-reels-design.md`, con un video que manda Gero en vez de uno
 armado por Homero. El armado con Remotion (secciones 1 y 2 de ese spec) es el
@@ -165,3 +165,17 @@ El armado de reels con Remotion (spec siguiente). Videos de más de 20 MB
 (necesitaría un servidor propio de la API de bots). Programar la hora de
 publicación. Historias. Responder comentarios. El panel `/homero/contenido`
 (después; la tabla ya queda lista).
+
+## Al implementar (2026-10-13)
+
+- Estado nuevo `escribiendo` antes de `propuesto`: el publicista todavía arma el texto.
+- Reinicio con un reel en `subiendo`: se vuelve a encolar siempre; si ya había
+  contenedor, sigue desde ahí (no vuelve a `propuesto`).
+- Al publicar se guarda una portada (`<medios>/portadas/reel-<id>.png`) antes de
+  borrar el video: es la imagen de la fila del anuncio si se promociona.
+- La pausa a los 5 días la hace la misma lectura de cada 6 horas (`leerReels`).
+- Código: `homero/src/publicar-reel.ts` (reglas), `video.ts` (ffprobe/ffmpeg),
+  `meta.ts` (subida resumable, métricas, creativo de reel), `telegram.ts`
+  (botones `rp rq rn rc rd rr rs rx`).
+- De paso: `COLUMNAS_DE_ANUNCIO` no leía `variantes`, así que las variantes de
+  texto de los anuncios nunca se creaban en Meta. Arreglado.

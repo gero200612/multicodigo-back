@@ -158,7 +158,48 @@ export interface Meta {
   conConversiones(): boolean;
   /** Las etapas de las consultas (conversiones de leads). Devuelve cuantas recibio Meta. */
   enviarEtapas(etapas: EtapaDeLead[]): Promise<number>;
+
+  // ---- Reels (spec 2026-10-13-homero-subir-reels)
+  /**
+   * Crea el contenedor de un reel de IG y le sube el video directo (resumable):
+   * sin URL publica. Con `prueba`, es un reel de prueba que Instagram pasa a
+   * los seguidores solo si rinde. Devuelve el id del contenedor.
+   */
+  subirReelInstagram(video: Buffer, o: { caption: string; prueba: boolean }): Promise<string>;
+  /** `IN_PROGRESS`, `FINISHED`, `ERROR`, `EXPIRED` o `PUBLISHED`, y el detalle que da Meta. */
+  estadoDelContenedor(contenedor: string): Promise<{ estado: string; detalle?: string }>;
+  /** Publica un contenedor ya `FINISHED`. Devuelve el id del media. */
+  publicarEnInstagram(contenedor: string): Promise<string>;
+  /** Sube y publica el reel en la pagina de Facebook. Devuelve el id del video. */
+  subirReelFacebook(video: Buffer, descripcion: string): Promise<string>;
+  metricasDeReel(media: string): Promise<MetricasDeReel>;
+  /** Si Meta deja promocionar ese media (p. ej. no, con musica con derechos). */
+  promocionable(media: string): Promise<{ ok: true } | { ok: false; motivo: string }>;
+  /** Un creativo que usa el reel publicado tal cual, con el boton al formulario. */
+  crearCreativoDeReel(c: { nombre: string; media: string; formulario: string }): Promise<string>;
 }
+
+/** Lo que se lee de un reel de IG. El promedio de reproduccion, en milisegundos. */
+export interface MetricasDeReel {
+  alcance: number;
+  vistas: number;
+  guardados: number;
+  compartidos: number;
+  likes: number;
+  comentarios: number;
+  promedioMs: number;
+}
+
+/** Los nombres de las metricas de Meta, en el orden en que se piden. */
+const METRICAS_DE_REEL: Record<string, keyof MetricasDeReel> = {
+  reach: 'alcance',
+  views: 'vistas',
+  saved: 'guardados',
+  shares: 'compartidos',
+  likes: 'likes',
+  comments: 'comentarios',
+  ig_reels_avg_watch_time: 'promedioMs',
+};
 
 /**
  * Meta cuenta los presupuestos en la unidad minima de la moneda: para ARS,
@@ -302,6 +343,33 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
     if (typeof r.id !== 'string') throw new ErrorDeMeta('Meta no devolvio un id');
     return r.id;
   };
+
+  async function instagramONada(): Promise<string> {
+    const ig = await cuentaDeInstagram();
+    if (!ig) throw new ErrorDeMeta('la página no tiene una cuenta de Instagram conectada');
+    return ig;
+  }
+
+  /**
+   * Los bytes de un video a rupload.facebook.com (la subida resumable de IG y
+   * de los reels de la pagina). Ahi el token va como `OAuth`, no `Bearer`.
+   */
+  async function subirBytes(url: string, video: Buffer, token: string): Promise<void> {
+    let r: Response;
+    try {
+      r = await pedir(url, {
+        method: 'POST',
+        headers: { authorization: `OAuth ${token}`, offset: '0', file_size: String(video.length) },
+        body: new Uint8Array(video),
+        signal: AbortSignal.timeout(300_000),
+      });
+    } catch (err) {
+      throw new ErrorDeMeta(ocultar(ocultar(`no pude subir el video: ${err instanceof Error ? err.message : String(err)}`, cfg.token), token));
+    }
+    if (r.ok) return;
+    const texto = await r.text().catch(() => '');
+    throw new ErrorDeMeta(ocultar(ocultar(`Meta rechazó la subida del video (HTTP ${r.status}): ${texto.slice(0, 300)}`, cfg.token), token));
+  }
 
   return {
     async cuenta() {
@@ -480,6 +548,73 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
         ...(f.daily_budget !== undefined ? { diario: Number(f.daily_budget) / CENTAVOS_POR_PESO } : {}),
         estado: String(f.effective_status ?? ''),
       }));
+    },
+
+    async subirReelInstagram(video, o) {
+      const ig = await instagramONada();
+      const contenedor = id(
+        await llamar('POST', `${ig}/media`, {
+          media_type: 'REELS',
+          upload_type: 'resumable',
+          caption: o.caption,
+          share_to_feed: 'true',
+          trial_params: o.prueba ? { graduation_strategy: 'SS_PERFORMANCE' } : undefined,
+        }),
+      );
+      await subirBytes(`https://rupload.facebook.com/ig-api-upload/${cfg.version}/${contenedor}`, video, cfg.token);
+      return contenedor;
+    },
+
+    async estadoDelContenedor(contenedor) {
+      const r = await llamar('GET', contenedor, { fields: 'status_code,status' });
+      return { estado: String(r.status_code ?? ''), ...(r.status ? { detalle: String(r.status) } : {}) };
+    },
+
+    async publicarEnInstagram(contenedor) {
+      return id(await llamar('POST', `${await instagramONada()}/media_publish`, { creation_id: contenedor }));
+    },
+
+    async subirReelFacebook(video, descripcion) {
+      const token = await deLaPagina();
+      const inicio = await llamar('POST', `${cfg.pagina}/video_reels`, { upload_phase: 'start' }, token);
+      const videoId = typeof inicio.video_id === 'string' ? inicio.video_id : undefined;
+      if (!videoId) throw new ErrorDeMeta('Meta no devolvio el id del video');
+      await subirBytes(`https://rupload.facebook.com/video-upload/${cfg.version}/${videoId}`, video, token);
+      await llamar(
+        'POST',
+        `${cfg.pagina}/video_reels`,
+        { upload_phase: 'finish', video_id: videoId, video_state: 'PUBLISHED', description: descripcion },
+        token,
+      );
+      return videoId;
+    },
+
+    async metricasDeReel(media) {
+      const r = await llamar('GET', `${media}/insights`, { metric: Object.keys(METRICAS_DE_REEL).join(',') });
+      const m: MetricasDeReel = { alcance: 0, vistas: 0, guardados: 0, compartidos: 0, likes: 0, comentarios: 0, promedioMs: 0 };
+      for (const fila of (r.data as { name?: string; values?: { value?: unknown }[] }[] | undefined) ?? []) {
+        const clave = fila.name ? METRICAS_DE_REEL[fila.name] : undefined;
+        if (clave) m[clave] = Number(fila.values?.[0]?.value ?? 0) || 0;
+      }
+      return m;
+    },
+
+    async promocionable(media) {
+      const r = await llamar('GET', media, { fields: 'boost_eligibility_info' });
+      const info = (r.boost_eligibility_info ?? {}) as { eligible_to_boost?: boolean; boost_ineligible_reason?: string };
+      return info.eligible_to_boost ? { ok: true } : { ok: false, motivo: info.boost_ineligible_reason ?? 'Meta no lo deja promocionar' };
+    },
+
+    async crearCreativoDeReel(c) {
+      return id(
+        await llamar('POST', `${cuenta}/adcreatives`, {
+          name: c.nombre,
+          object_id: cfg.pagina,
+          instagram_user_id: await instagramONada(),
+          source_instagram_media_id: c.media,
+          call_to_action: { type: 'SIGN_UP', value: { lead_gen_form_id: c.formulario } },
+        }),
+      );
     },
 
     conConversiones: () => Boolean(cfg.dataset),

@@ -727,16 +727,18 @@ describe('resumen y planificador', () => {
 
   it('insights cada hora, el publicista a las 10 y el resumen a las 20, una vez cada uno', async () => {
     const h = conMeta({ ahora: new Date('2026-09-29T12:30:00Z') }); // 9:30
+    // Los reels tienen su propio test (publicar-reel.test.ts).
+    const tipos = () => h.store.tareas.map((t) => t.tipo).filter((t) => t !== 'leer_reels');
     await planificarAnuncios(h.deps);
     await planificarAnuncios(h.deps);
-    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['leer_insights']);
+    expect(tipos()).toEqual(['leer_insights']);
     h.mover(new Date('2026-09-29T13:05:00Z')); // 10:05
     await planificarAnuncios(h.deps);
-    expect(h.store.tareas.map((t) => t.tipo)).toEqual(['leer_insights', 'leer_insights', 'agente_publicitar']);
+    expect(tipos()).toEqual(['leer_insights', 'leer_insights', 'agente_publicitar']);
     h.mover(new Date('2026-09-29T23:10:00Z')); // 20:10
     await planificarAnuncios(h.deps);
     await planificarAnuncios(h.deps);
-    expect(h.store.tareas.map((t) => t.tipo)).toEqual([
+    expect(tipos()).toEqual([
       'leer_insights',
       'leer_insights',
       'agente_publicitar',

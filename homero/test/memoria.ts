@@ -3,7 +3,11 @@ import type {
   Agente,
   Anuncio,
   CambiosDeAnuncio,
+  CambiosDeReel,
   EstadoDeAnuncio,
+  EstadoDeReel,
+  NuevoReel,
+  Reel,
   Gasto,
   Investigacion,
   NuevoAnuncio,
@@ -64,6 +68,7 @@ export class MemoriaStore implements Store {
   corridasGuardadas: Corrida[] = [];
   libretas = new Map<Agente, string>();
   anunciosGuardados: (Anuncio & { imagen: Buffer })[] = [];
+  reelsGuardados: Reel[] = [];
   gastosGuardados: Gasto[] = [];
   /** Lo que devuelve `mailsQueFuncionaron`: se carga a mano en cada test. */
   funcionaron: MailQueFunciono[] = [];
@@ -555,6 +560,45 @@ export class MemoriaStore implements Store {
     l.calidad = calidad;
     (l as { calidadEn?: Date }).calidadEn = this.ahora();
     return { ...l };
+  }
+
+  // ---------------------------------------------------------------- reels
+
+  async crearReel(r: NuevoReel) {
+    const id = this.reelsGuardados.length + 1;
+    this.reelsGuardados.push({
+      ...r,
+      id,
+      caption: '',
+      porQue: '',
+      estado: 'escribiendo',
+      prueba: true,
+      promocionar: false,
+      creadoEn: this.ahora(),
+    });
+    return id;
+  }
+  async reel(id: number) {
+    const r = this.reelsGuardados.find((x) => x.id === id);
+    return r ? { ...r } : undefined;
+  }
+  async reels(estados?: EstadoDeReel[]) {
+    return this.reelsGuardados
+      .filter((r) => !estados || estados.includes(r.estado))
+      .sort((a, b) => b.id - a.id)
+      .map((r) => ({ ...r }));
+  }
+  async reelPorTelegram(msg: number) {
+    const r = this.reelsGuardados.find((x) => x.telegramMsg === msg);
+    return r ? { ...r } : undefined;
+  }
+  async actualizarReel(id: number, c: CambiosDeReel) {
+    const r = this.reelsGuardados.find((x) => x.id === id)!;
+    for (const [k, v] of Object.entries(c)) {
+      if (v === undefined) continue;
+      if (v === null) delete (r as unknown as Record<string, unknown>)[k];
+      else (r as unknown as Record<string, unknown>)[k] = v;
+    }
   }
 
   // ---------------------------------------------------------------- finanzas
