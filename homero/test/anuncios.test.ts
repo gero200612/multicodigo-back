@@ -18,6 +18,7 @@ import {
   renovarFormulario,
   seguimientoDeLeadMeta,
   sincronizarConMeta,
+  tarjetaDeAnuncio,
   interesesObsoletosDelError,
   minimoDelError,
   minimoDiario,
@@ -892,5 +893,46 @@ describe('paquete 2: lo que está en Meta manda', () => {
     await leerInsights(h.deps);
     await leerInsights(h.deps);
     expect(h.avisos.filter((t) => t.includes('no armé yo'))).toHaveLength(1);
+  });
+});
+
+describe('paquete 2: variantes del mismo anuncio', () => {
+  const VARIANTES = [
+    { titulo: 'Chau planillas de facturas', texto: 'Las facturas llegan por WhatsApp y quedan cargadas solas, sin tipear.' },
+    { titulo: '¿Cuántas horas cargando facturas?', texto: 'Recuperá esas horas: las facturas se cargan solas y quedan ordenadas.' },
+  ];
+
+  it('cada variante es otro anuncio de Meta en el mismo conjunto, con la misma imagen y formulario', async () => {
+    const h = conMeta();
+    const id = await h.store.crearAnuncio({ ...PROPUESTA, frase: PANEL.titulo, diario: 2000, imagen: Buffer.from('png'), variantes: VARIANTES });
+    await h.store.actualizarAnuncio(id, { estado: 'aprobado' });
+    await publicarAnuncio({ anuncioId: id }, h.deps);
+    const ids = (await h.store.anuncio(id))!.metaIds;
+    const creativos = h.f.de('crearCreativo').map((l) => l.args[0] as { titulo: string; imagenHash: string; formulario: string });
+    expect(creativos.map((c) => c.titulo)).toEqual([PROPUESTA.titulo, ...VARIANTES.map((v) => v.titulo)]);
+    expect(new Set(creativos.map((c) => c.imagenHash)).size).toBe(1);
+    expect(new Set(creativos.map((c) => c.formulario))).toEqual(new Set([ids.formulario]));
+    const anuncios = h.f.de('crearAnuncio').map((l) => l.args[0] as { conjunto: string });
+    expect(anuncios).toHaveLength(3);
+    expect(new Set(anuncios.map((x) => x.conjunto))).toEqual(new Set([ids.conjunto]));
+    expect(h.f.de('crearConjunto')).toHaveLength(1);
+    expect(ids.variantes).toHaveLength(2);
+
+    // Otra vez no duplica nada.
+    await publicarAnuncio({ anuncioId: id }, h.deps);
+    expect(h.f.de('crearAnuncio')).toHaveLength(3);
+  });
+
+  it('la tarjeta para Gero muestra las variantes', () => {
+    const t = tarjetaDeAnuncio({ id: 1, rubro: 'contable', titulo: 'Principal', texto: 'Texto principal del anuncio.', preguntas: [], diario: 2000, porQue: 'porque sí', variantes: VARIANTES });
+    expect(t).toContain('Variante 2: Chau planillas de facturas');
+    expect(t).toContain('Variante 3: ¿Cuántas horas cargando facturas?');
+  });
+
+  it('una variante con link no pasa', async () => {
+    const h = conMeta();
+    await expect(
+      proponerAnuncio({ ...PROPUESTA, variantes: [{ titulo: 'Mirá la web', texto: 'Entrá a www.sincro.com y enterate de todo lo que hacemos.' }] }, h.deps),
+    ).rejects.toThrow(/sin links/);
   });
 });

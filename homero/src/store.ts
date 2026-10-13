@@ -193,6 +193,11 @@ export interface Ronda {
   en: string;
 }
 
+export interface VarianteDeAnuncio {
+  titulo: string;
+  texto: string;
+}
+
 /** Lo que se creo en Meta para un anuncio. Se va llenando al publicar: un corte a mitad retoma. */
 export interface IdsEnMeta {
   imagen?: string;
@@ -204,6 +209,8 @@ export interface IdsEnMeta {
   formularioVersion?: number;
   /** Los formularios que tuvo antes: se siguen leyendo, por si entra un lead tarde. */
   formulariosViejos?: string[];
+  /** Lo creado en Meta para cada variante, en el mismo orden. */
+  variantes?: { creativo?: string; anuncio?: string }[];
 }
 
 export interface Anuncio {
@@ -220,6 +227,8 @@ export interface Anuncio {
   revision: Ronda[];
   /** Las preguntas propias del formulario (nombre, mail, telefono y empresa van siempre). */
   preguntas: string[];
+  /** Otros titulos y textos con la misma imagen: Meta reparte entre todos y le da mas al que rinde. */
+  variantes: VarianteDeAnuncio[];
   /** Por que lo propone el publicista: lo lee Gero en la tarjeta. */
   porQue: string;
   estado: EstadoDeAnuncio;
@@ -234,6 +243,7 @@ export interface Anuncio {
 }
 
 export type NuevoAnuncio = Pick<Anuncio, 'rubro' | 'titulo' | 'texto' | 'frase' | 'preguntas' | 'porQue' | 'diario'> & {
+  variantes?: VarianteDeAnuncio[];
   imagen: Buffer;
   plantilla?: string;
   contenido?: unknown;
@@ -1263,8 +1273,8 @@ export class PgStore implements Store {
 
   async crearAnuncio(a: NuevoAnuncio) {
     const r = await this.pool.query(
-      `INSERT INTO homero.anuncios (rubro, titulo, texto, frase, preguntas, por_que, diario, imagen, plantilla, contenido, estado)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'revisando') RETURNING id`,
+      `INSERT INTO homero.anuncios (rubro, titulo, texto, frase, preguntas, por_que, diario, imagen, plantilla, contenido, variantes, estado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'revisando') RETURNING id`,
       [
         a.rubro,
         a.titulo,
@@ -1276,6 +1286,7 @@ export class PgStore implements Store {
         a.imagen,
         a.plantilla ?? null,
         a.contenido === undefined ? null : JSON.stringify(a.contenido),
+        JSON.stringify(a.variantes ?? []),
       ],
     );
     return Number(r.rows[0].id);
@@ -1284,7 +1295,7 @@ export class PgStore implements Store {
   async rehacerAnuncio(id: number, a: NuevoAnuncio) {
     await this.pool.query(
       `UPDATE homero.anuncios SET rubro = $2, titulo = $3, texto = $4, frase = $5, preguntas = $6, por_que = $7,
-         diario = $8, imagen = $9, plantilla = $10, contenido = $11, estado = 'revisando'
+         diario = $8, imagen = $9, plantilla = $10, contenido = $11, variantes = $12, estado = 'revisando'
        WHERE id = $1`,
       [
         id,
@@ -1298,6 +1309,7 @@ export class PgStore implements Store {
         a.imagen,
         a.plantilla ?? null,
         a.contenido === undefined ? null : JSON.stringify(a.contenido),
+        JSON.stringify(a.variantes ?? []),
       ],
     );
   }
@@ -1641,6 +1653,7 @@ function aAnuncio(f: Fila): Anuncio {
     texto: f.texto as string,
     frase: f.frase as string,
     preguntas: (f.preguntas as string[] | null) ?? [],
+    variantes: (f.variantes as VarianteDeAnuncio[] | null) ?? [],
     porQue: (f.por_que as string | null) ?? '',
     estado: f.estado as EstadoDeAnuncio,
     diario: Number(f.diario),

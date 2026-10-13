@@ -830,6 +830,7 @@ export function herramientasDelPublicista(
     plantilla: Plantilla;
     contenido: Record<string, unknown>;
     preguntas: string[];
+    variantes?: { titulo: string; texto: string }[];
     diario: number;
     por_que: string;
   }> = {
@@ -853,6 +854,14 @@ export function herramientasDelPublicista(
           maxItems: 2,
           description: 'Preguntas propias del formulario (nombre, mail, telefono y empresa ya van). Hasta 2, o ninguna.',
         },
+        variantes: {
+          type: 'array',
+          maxItems: 2,
+          items: objeto({ titulo: texto('Otro titulo, hasta 40 letras'), texto: texto('Otro texto, 2 o 3 renglones cortos') }, ['titulo', 'texto']),
+          description:
+            'Hasta 2 versiones mas de titulo y texto para la MISMA imagen, con otro gancho (por ejemplo una sobre el dolor y otra ' +
+            'sobre el resultado). Meta las muestra y le da mas a la que trae consultas. Mismas reglas que el principal.',
+        },
         diario: { type: 'number', description: `Presupuesto diario en pesos. Si es menos que el mínimo de Meta (ver_resultados), sale con el mínimo` },
         por_que: texto('Por que este anuncio ahora: lo lee Gero en la tarjeta'),
       },
@@ -865,6 +874,7 @@ export function herramientasDelPublicista(
       plantilla: z.enum(PLANTILLAS as [Plantilla, ...Plantilla[]]),
       contenido: z.record(z.unknown()),
       preguntas: z.array(z.string()),
+      variantes: z.array(z.object({ titulo: z.string(), texto: z.string() })).optional(),
       diario: z.number(),
       por_que: z.string(),
     }),
@@ -883,6 +893,7 @@ export function herramientasDelPublicista(
         plantilla: a.plantilla,
         contenido: a.contenido,
         preguntas: a.preguntas,
+        variantes: a.variantes ?? [],
         diario: a.diario,
         porQue: a.por_que,
       });
@@ -972,6 +983,7 @@ function fichaDeAnuncio(a: Anuncio): string {
     `Anuncio #${a.id} · rubro ${a.rubro} · plantilla ${a.plantilla ?? '?'}`,
     `Titulo de la publicacion: ${a.titulo}`,
     `Texto de la publicacion: ${a.texto}`,
+    ...a.variantes.map((v, i) => `Variante ${i + 2} (misma imagen, se revisa igual): ${v.titulo} / ${v.texto}`),
     `Preguntas propias del formulario: ${a.preguntas.length ? a.preguntas.join(' | ') : 'ninguna'}`,
     `Diario propuesto: ${pesos(a.diario)}`,
     `Por que lo propone el publicista: ${a.porQue}`,

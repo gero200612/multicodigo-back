@@ -299,6 +299,11 @@ export const Propuesta = z.object({
   /** Los textos de la imagen; cada plantilla tiene su esquema (imagen.ts). */
   contenido: z.record(z.unknown()),
   preguntas: z.array(z.string().trim().min(5).max(80)).max(2),
+  /** Otros titulos y textos para la misma imagen: Meta prueba y le da mas al que rinde. */
+  variantes: z
+    .array(z.object({ titulo: z.string().trim().min(5).max(40), texto: z.string().trim().min(20).max(400) }))
+    .max(2)
+    .default([]),
   diario: z.number().min(DIARIO_MINIMO).max(1_000_000),
   porQue: z.string().trim().min(10).max(600),
 });
@@ -321,15 +326,21 @@ export function lineaDePuntajes(r: Ronda): string {
 }
 
 export function tarjetaDeAnuncio(
-  a: Pick<Anuncio, 'id' | 'rubro' | 'titulo' | 'texto' | 'preguntas' | 'diario' | 'porQue'> & { revision?: Ronda[] },
+  a: Pick<Anuncio, 'id' | 'rubro' | 'titulo' | 'texto' | 'preguntas' | 'diario' | 'porQue'> & {
+    revision?: Ronda[];
+    variantes?: Anuncio['variantes'];
+  },
 ): string {
   const ultima = a.revision?.at(-1);
+  const variantes = a.variantes ?? [];
   return [
     `📣 Anuncio nuevo para aprobar (#${a.id}, ${a.rubro})`,
     '',
     `Título: ${a.titulo}`,
     'Texto:',
     a.texto,
+    ...variantes.flatMap((v, i) => ['', `Variante ${i + 2}: ${v.titulo}`, v.texto]),
+    ...(variantes.length ? ['', 'Misma imagen en todas: Meta las muestra y le da más a la que trae consultas.'] : []),
     '',
     `Formulario: nombre, mail, teléfono y empresa${a.preguntas.length ? `, y:\n${a.preguntas.map((p) => `• ${p}`).join('\n')}` : ''}`,
     `Diario propuesto: ${pesos(a.diario)}`,
@@ -351,7 +362,7 @@ export function tarjetaDeAnuncio(
  */
 export async function proponerAnuncio(p: Propuesta, deps: DepsDeAnuncios, rehacer?: number): Promise<number> {
   const textos = JSON.stringify(p.contenido);
-  if (/https?:\/\/|www\./i.test(`${p.titulo} ${p.texto} ${textos}`)) {
+  if (/https?:\/\/|www\./i.test(`${p.titulo} ${p.texto} ${textos} ${JSON.stringify(p.variantes)}`)) {
     throw new ErrorDePlantilla('sin links en el anuncio: el formulario ya lleva a la web');
   }
   const imagen = imagenDeAnuncio(p.plantilla, p.contenido);
@@ -638,6 +649,28 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
   }
   if (!ids.anuncio) {
     ids.anuncio = await meta.crearAnuncio({ nombre: `#${a.id} · ${a.titulo}`, conjunto: ids.conjunto, creativo: ids.creativo });
+    await anotar();
+  }
+  // Las variantes: otro creativo con el mismo formulario e imagen, y otro
+  // anuncio en el mismo conjunto. Cada pieza se anota, como lo de arriba.
+  for (const [i, v] of (a.variantes ?? []).entries()) {
+    const hecha = { ...(ids.variantes?.[i] ?? {}) };
+    if (!hecha.creativo) {
+      hecha.creativo = await meta.crearCreativo({
+        nombre: `#${a.id} · variante ${i + 2} · ${v.titulo}`,
+        imagenHash: ids.imagen,
+        titulo: v.titulo,
+        texto: v.texto,
+        formulario: ids.formulario,
+        web: WEB,
+      });
+    }
+    if (!hecha.anuncio) {
+      hecha.anuncio = await meta.crearAnuncio({ nombre: `#${a.id} · variante ${i + 2}`, conjunto: ids.conjunto, creativo: hecha.creativo });
+    }
+    ids.variantes = [...(ids.variantes ?? [])];
+    ids.variantes[i] = hecha;
+    await anotar();
   }
   await deps.store.actualizarAnuncio(a.id, { metaIds: ids, estado: 'activo' });
   await deps.store.guardarEstado(PUBLICADO_EN(a.id), deps.ahora().toISOString());

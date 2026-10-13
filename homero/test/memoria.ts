@@ -450,6 +450,7 @@ export class MemoriaStore implements Store {
     const id = this.anunciosGuardados.length + 1;
     this.anunciosGuardados.push({
       ...copia({ ...a, imagen: undefined }),
+      variantes: copia(a.variantes ?? []),
       imagen: a.imagen,
       id,
       estado: 'revisando',
@@ -461,7 +462,7 @@ export class MemoriaStore implements Store {
   }
   async rehacerAnuncio(id: number, a: NuevoAnuncio) {
     const f = this.anunciosGuardados.find((x) => x.id === id)!;
-    Object.assign(f, copia({ ...a, imagen: undefined }), { imagen: a.imagen, estado: 'revisando' });
+    Object.assign(f, copia({ ...a, imagen: undefined }), { variantes: copia(a.variantes ?? []), imagen: a.imagen, estado: 'revisando' });
   }
   private sinImagen(a: Anuncio & { imagen: Buffer }): Anuncio {
     const { imagen: _, ...resto } = a;
