@@ -7,6 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # el servicio de login con modo 0600 en /srv/homes/<slot>, y este proceso la
 # monta como su HOME. Con otro uid no la puede leer y parece un error de auth.
 RUN useradd -m -u 1001 homero
+# Los medios de los reels (musica, fotos): un volumen con nombre que hereda
+# este dueño, asi Homero puede escribir.
+RUN mkdir -p /srv/medios && chown homero:homero /srv/medios
 WORKDIR /app
 
 # Manifiestos primero: el install se reusa mientras el lockfile no cambie.

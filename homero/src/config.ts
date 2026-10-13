@@ -51,6 +51,10 @@ const Env = z.object({
   // El conjunto de datos (Administrador de eventos) para las conversiones de
   // leads: con esto Homero le cuenta a Meta que consultas sirvieron.
   META_DATASET_ID: opcional(z.string().regex(/^\d+$/)),
+  // Los medios de los reels: fotos y videos de Pixabay (clave gratis) y el
+  // banco de musica, en el volumen del contenedor.
+  PIXABAY_API_KEY: opcional(z.string().min(10)),
+  HOMERO_MEDIOS_DIR: opcional(z.string()).transform((v) => v ?? '/srv/medios'),
   // Fija a proposito: un cambio de version se prueba antes con scripts/meta-humo.ts.
   META_API_VERSION: opcional(z.string().regex(/^v\d+\.\d+$/)).transform((v) => v ?? 'v23.0'),
   // El bot general de WhatsApp (sincro-wa, en el VPS), por la VPN. La clave de
@@ -71,6 +75,8 @@ const Env = z.object({
 });
 
 export interface Config {
+  /** Los medios de los reels: donde viven y la clave de Pixabay. */
+  medios: { dir: string; pixabay?: string };
   telegramToken: string;
   chatId?: number;
   databaseUrl: string;
@@ -135,6 +141,7 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
           numerosDePrueba: e.SINCRO_WA_PRUEBA ? e.SINCRO_WA_PRUEBA.split(',') : [],
         }
       : undefined,
+    medios: { dir: e.HOMERO_MEDIOS_DIR, ...(e.PIXABAY_API_KEY ? { pixabay: e.PIXABAY_API_KEY } : {}) },
     ...configDeMeta(e),
   };
 }

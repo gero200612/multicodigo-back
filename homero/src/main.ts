@@ -44,6 +44,7 @@ import {
 import { bajarPaginaConDestino, recibeMail } from './web.js';
 import { adminWa, atenderIa, bucle, clienteWa, pedidorWa, recibirLeads, reenviarAlertas } from './whatsapp.js';
 import { VIGILAR_PLANTILLA_MS, vigilarPlantilla } from './primer-whatsapp.js';
+import { armarBancoDeMusica, buscarEnPixabay, leerBanco } from './medios.js';
 
 const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql', '013_calidad_de_leads.sql', '014_variantes.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
@@ -240,6 +241,26 @@ async function main() {
     DEMOS_MS,
   );
 
+  // El banco de musica de los reels: se completa de a poco, una vuelta por dia
+  // (Openverse sin cuenta frena si se le pide mucho). Y un control de la clave
+  // de Pixabay al arrancar, para enterarse ya si esta mal cargada.
+  const bancoDeMusica = () =>
+    void armarBancoDeMusica({ dir: config.medios.dir, ahora: () => new Date() })
+      .then(async (n) => {
+        const banco = await leerBanco(config.medios.dir);
+        console.log(`[homero] musica: ${n} tema(s) nuevo(s), ${banco.length} en el banco`);
+      })
+      .catch((err) => console.error('[homero] musica:', err instanceof Error ? err.message : err));
+  setTimeout(bancoDeMusica, 60_000);
+  const musica = setInterval(bancoDeMusica, 24 * 3_600_000);
+  if (config.medios.pixabay) {
+    void buscarEnPixabay('office', 'foto', { clave: config.medios.pixabay, cantidad: 3 })
+      .then((f) => console.log(`[homero] pixabay: la clave anda (${f.length} fotos de prueba)`))
+      .catch((err) => console.error('[homero] pixabay:', err instanceof Error ? err.message : err));
+  } else {
+    console.log('[homero] sin PIXABAY_API_KEY: los reels no van a tener fotos de Pixabay');
+  }
+
   const leadsDeMeta = config.meta
     ? setInterval(
         () =>
@@ -291,6 +312,7 @@ async function main() {
     clearInterval(planificador);
     clearInterval(demos);
     clearInterval(leadsDeMeta);
+    clearInterval(musica);
     clearInterval(plantillaWa);
     await api?.close();
     await mcp.close();
