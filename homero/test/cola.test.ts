@@ -26,8 +26,8 @@ const gatewayQueTira = (err: () => Error) => async () => {
 };
 
 describe('la cola frente al limite de Claude', () => {
-  it('no corta: pausa la IA hasta el reset, reprograma sin gastar intento y avisa una vez', async () => {
-    // Sin uso en todas las cuentas: el gateway lo traduce a ErrorDeLimite con la hora.
+  it('no corta: avisa una vez con la hora de vuelta, pero vuelve a probar cada 15 minutos', async () => {
+    // Sin uso en las cuentas que pudo tomar: el gateway lo traduce a ErrorDeLimite con la hora.
     const { store, deps, avisos } = armar({ agente: gatewayQueTira(() => new ErrorDeLimite('10:50pm (UTC)')) });
     await store.encolar({ tipo: 'agente_atender', payload: mail, requiereIa: true });
     await store.encolar({ tipo: 'agente_atender', payload: { ...mail, messageId: '<c@d>' }, requiereIa: true });
@@ -37,13 +37,39 @@ describe('la cola frente al limite de Claude', () => {
     const t = store.tareas[0]!;
     expect(t.estado).toBe('pendiente');
     expect(t.intentos).toBe(0);
-    expect(t.disponibleDesde.toISOString()).toBe('2026-09-29T22:51:00.000Z');
-    expect(await store.leerEstado(PAUSA_IA)).toMatchObject({ motivo: 'limite' });
-    expect(avisos.filter((a) => a.includes('Me quedé sin uso'))).toHaveLength(1);
+    // Otra cuenta se puede liberar antes (la estaba usando Punchi): no espera al reset de esta.
+    expect(t.disponibleDesde.toISOString()).toBe('2026-09-29T17:15:00.000Z');
+    expect(await store.leerEstado(PAUSA_IA)).toMatchObject({ motivo: 'limite', hasta: '2026-09-29T17:15:00.000Z' });
+    const sinUso = () => avisos.filter((a) => a.includes('Me quedé sin uso'));
+    expect(sinUso()).toHaveLength(1);
+    expect(sinUso()[0]).toContain('19:51');
 
     // Con la IA en pausa, la segunda tarea ni se toma.
     expect(await correrSiguiente(deps)).toBe(false);
     expect(store.tareas[1]!.estado).toBe('pendiente');
+  });
+
+  it('a los 15 minutos vuelve a probar; si sigue sin uso no repite el aviso', async () => {
+    const { store, deps, avisos, mover } = armar({ agente: gatewayQueTira(() => new ErrorDeLimite('10:50pm (UTC)')) });
+    await store.encolar({ tipo: 'agente_atender', payload: mail, requiereIa: true });
+    await correrSiguiente(deps);
+    mover(new Date('2026-09-29T17:16:00Z'));
+    expect(await correrSiguiente(deps)).toBe(true);
+    expect(store.tareas[0]!.disponibleDesde.toISOString()).toBe('2026-09-29T17:31:00.000Z');
+    expect(avisos.filter((a) => a.includes('Me quedé sin uso'))).toHaveLength(1);
+    expect(avisos.filter((a) => a.includes('Vuelvo a usar Claude'))).toEqual([]);
+  });
+
+  it('si el gateway dice que otra cuenta vuelve antes, usa esa hora', async () => {
+    const { store, deps, avisos } = armar({ agente: gatewayQueTira(() => new ErrorDeLimite('10:50pm (UTC)', Date.parse('2026-09-29T17:05:00Z'))) });
+    await store.encolar({ tipo: 'agente_atender', payload: mail, requiereIa: true });
+    await correrSiguiente(deps);
+    expect(store.tareas[0]!.disponibleDesde.toISOString()).toBe('2026-09-29T17:05:00.000Z');
+    expect(avisos[0]).toContain('14:05');
+  });
+
+  it('el texto de un reel va por el bucle rápido: Gero está esperando la tarjeta', () => {
+    expect(TIPOS_URGENTES).toContain('agente_reel');
   });
 
   it('sin cuenta libre, un WhatsApp reintenta a los 30 s (hay alguien esperando)', async () => {
@@ -115,7 +141,7 @@ describe('la cola frente al limite de Claude', () => {
         },
       }),
     });
-    await store.guardarEstado(PAUSA_IA, { hasta: '2026-09-29T22:51:00.000Z', motivo: 'limite' });
+    await store.guardarEstado(PAUSA_IA, { hasta: '2026-09-29T22:51:00.000Z', motivo: 'limite', avisada: true });
     await store.encolar({
       tipo: 'agente_atender',
       payload: mail,

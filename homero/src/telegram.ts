@@ -258,7 +258,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     lineas.push(`Modo: ${e.modo === 'auto' ? 'automático' : 'te pido aprobación'}`);
     lineas.push(
       e.pausaIa
-        ? `🧠 Claude en pausa (${e.pausaIa.motivo}) hasta ${horaArgentina(new Date(e.pausaIa.hasta))}.`
+        ? `🧠 Claude en pausa (${e.pausaIa.motivo}): vuelve ${horaArgentina(new Date(e.pausaIa.vuelve ?? e.pausaIa.hasta))}, pruebo de nuevo ${horaArgentina(new Date(e.pausaIa.hasta))}.`
         : '🧠 Claude disponible.',
     );
     lineas.push(`📋 Tareas: ${e.tareas.pendientes} pendientes, ${e.tareas.fallidas} fallidas.`);

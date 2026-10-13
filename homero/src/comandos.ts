@@ -23,7 +23,7 @@ import {
 
 export interface EstadoDeHomero {
   pausaManual: boolean;
-  pausaIa?: { hasta: string; motivo: string };
+  pausaIa?: { hasta: string; motivo: string; vuelve?: string };
   /** A donde van las muestras; ausente = ensayo apagado, lo aprobado sale a clientes. */
   ensayo?: string;
   modo: Modo;
@@ -55,7 +55,7 @@ export async function estadoDeHomero(deps: DepsDeDemos & { placesKey?: string })
     }),
   );
   const [pausaIa, ensayo, pausaManual, modo, tareas, pipeline, lugares] = await Promise.all([
-    deps.store.leerEstado<{ hasta: string; motivo: string }>(PAUSA_IA),
+    deps.store.leerEstado<{ hasta: string; motivo: string; vuelve?: string }>(PAUSA_IA),
     ensayoActivo(deps),
     deps.store.leerEstado(PAUSA_MANUAL),
     modoActual(deps.store),

@@ -6,9 +6,14 @@ import { instanteDeReset } from './horas.js';
  * La cuenta de Claude se quedo sin uso. Se espera al reset, nunca se corta.
  *
  * `resets` es el texto crudo del cartel ("10:50pm (UTC)"), o nada si no lo dijo.
+ * `vuelveMs` es cuando vuelve la PRIMERA cuenta del fondo (lo dice el gateway):
+ * puede ser antes que el reset de la que se probo.
  */
 export class ErrorDeLimite extends Error {
-  constructor(readonly resets?: string) {
+  constructor(
+    readonly resets?: string,
+    readonly vuelveMs?: number,
+  ) {
     super('usage_limit');
     this.name = 'ErrorDeLimite';
   }
@@ -35,6 +40,10 @@ export const REINTENTO_SIN_HORA_MS = 30 * 60_000;
  * vuelva la cuenta es mejor que dejar mails sin contestar.
  */
 export function cuandoReintentar(err: ErrorDeLimite | ErrorDeCuenta, ahora: Date): Date {
+  if (err instanceof ErrorDeLimite && err.vuelveMs !== undefined && err.vuelveMs > ahora.getTime()) {
+    const delReset = err.resets ? instanteDeReset(err.resets, ahora) : undefined;
+    return new Date(Math.min(err.vuelveMs, delReset ? delReset.getTime() + MARGEN_MS : Infinity));
+  }
   if (err instanceof ErrorDeLimite && err.resets) {
     const reset = instanteDeReset(err.resets, ahora);
     if (reset) return new Date(reset.getTime() + MARGEN_MS);

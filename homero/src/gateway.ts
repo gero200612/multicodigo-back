@@ -121,7 +121,10 @@ export function clienteDeGateway(
       if (json.code === 'sin_lugar') throw new SinLugar();
       if (json.code === 'sin_uso') {
         const resets = Array.isArray(json.resets) ? (json.resets as unknown[]) : [];
-        throw new ErrorDeLimite(typeof resets[0] === 'string' ? resets[0] : undefined);
+        throw new ErrorDeLimite(
+          typeof resets[0] === 'string' ? resets[0] : undefined,
+          typeof json.vuelve === 'number' ? json.vuelve : undefined,
+        );
       }
       throw new Error(`el gateway devolvio ${status}: ${String(json.code ?? '')} ${String(json.message ?? '')}`.trim());
     },

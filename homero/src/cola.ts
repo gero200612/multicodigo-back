@@ -21,9 +21,22 @@ export const PAUSA_IA = 'ia_pausada';
 export const PAUSA_MANUAL = 'pausa_manual';
 
 interface PausaDeIa {
+  /** Hasta cuando no se toma nada de IA: el proximo intento, no el reset. */
   hasta: string;
   motivo: 'limite' | 'cuenta';
+  /** Cuando vuelve una cuenta segun el gateway (lo que se le dijo a Gero). */
+  vuelve?: string;
+  /** Ya se le aviso a Gero: no se repite hasta que la IA vuelva a andar. */
+  avisada?: boolean;
 }
+
+/**
+ * Sin uso en las cuentas que pudo tomar NO es sin uso en todas: las que usaba
+ * Punchi se liberan antes del reset. Se vuelve a probar cada tanto; el gateway
+ * ya sabe cuales estan agotadas, asi que probar no gasta nada (2026-10-13: una
+ * cuenta agotada frenaba toda la IA 24 h con otras libres).
+ */
+export const REPROBAR_IA_MS = 15 * 60_000;
 
 export type DepsDeCola = DepsDeDemos & DepsDeAgentes;
 
@@ -34,7 +47,8 @@ export const ESPERA_SIN_LUGAR_WA_MS = 30_000;
 
 /** Lo que corre el bucle rapido: no espera atras de las corridas largas. */
 // `formulario_web` no usa IA, pero hay alguien que acaba de pedir que le escribamos.
-export const TIPOS_URGENTES: TipoDeTarea[] = ['agente_whatsapp', 'formulario_web'];
+// `agente_reel`: Gero mando un video y espera la tarjeta; no hace fila atras de una busqueda.
+export const TIPOS_URGENTES: TipoDeTarea[] = ['agente_whatsapp', 'formulario_web', 'agente_reel'];
 
 /** Despues de tantos fallos que no son de la IA, la tarea se da por perdida. */
 const TOPE_DE_INTENTOS = 5;
@@ -57,11 +71,17 @@ const PayloadDeEnvio = z.object({
  */
 export async function iaDisponible(deps: DepsDeCola): Promise<boolean> {
   const pausa = await deps.store.leerEstado<PausaDeIa>(PAUSA_IA);
-  if (!pausa) return true;
-  if (new Date(pausa.hasta).getTime() > deps.ahora().getTime()) return false;
+  // Vencida la espera se vuelve a probar; la pausa se levanta recien cuando
+  // una tarea de IA anda (`iaVolvio`), asi un nuevo "sin uso" no repite el aviso.
+  return !pausa || new Date(pausa.hasta).getTime() <= deps.ahora().getTime();
+}
+
+/** Una tarea de IA anduvo: si estaba en pausa, se levanta y se avisa (si se habia avisado). */
+async function iaVolvio(deps: DepsDeCola): Promise<void> {
+  const pausa = await deps.store.leerEstado<PausaDeIa>(PAUSA_IA);
+  if (!pausa) return;
   await deps.store.guardarEstado(PAUSA_IA, null);
-  await deps.avisar('▶️ Vuelvo a usar Claude. Sigo donde quedé.');
-  return true;
+  if (pausa.avisada) await deps.avisar('▶️ Vuelvo a usar Claude. Sigo donde quedé.');
 }
 
 /**
@@ -81,6 +101,7 @@ export async function correrSiguiente(deps: DepsDeCola, tipos?: TipoDeTarea[]): 
     } else {
       await deps.store.terminar(tarea.id);
     }
+    if (tarea.requiereIa) await iaVolvio(deps);
   } catch (err) {
     await manejarError(tarea, err, deps);
   }
@@ -99,16 +120,19 @@ async function manejarError(tarea: Tarea, err: unknown, deps: DepsDeCola) {
   if (err instanceof ErrorDeLimite || err instanceof ErrorDeCuenta) {
     // Nunca se corta: la tarea vuelve a la cola para cuando vuelva la cuenta,
     // sin gastar un intento. El limite no es culpa de la tarea.
-    const hasta = cuandoReintentar(err, deps.ahora());
+    const ahora = deps.ahora();
+    const vuelve = cuandoReintentar(err, ahora);
+    const hasta = new Date(Math.min(vuelve.getTime(), ahora.getTime() + REPROBAR_IA_MS));
     const motivo = err instanceof ErrorDeLimite ? 'limite' : 'cuenta';
     await deps.store.reprogramar(tarea.id, hasta, { contarIntento: false, error: err.message });
-    // Un solo aviso por pausa: si ya estaba pausada, no se repite.
-    const yaPausada = await deps.store.leerEstado<PausaDeIa>(PAUSA_IA);
-    await deps.store.guardarEstado(PAUSA_IA, { hasta: hasta.toISOString(), motivo });
-    if (!yaPausada) {
+    // Un solo aviso por pausa: si ya se aviso, los reintentos no lo repiten.
+    const yaAvisada = (await deps.store.leerEstado<PausaDeIa>(PAUSA_IA))?.avisada === true;
+    await deps.store.guardarEstado(PAUSA_IA, { hasta: hasta.toISOString(), motivo, vuelve: vuelve.toISOString(), avisada: true });
+    if (!yaAvisada) {
+      const reprueba = vuelve.getTime() > hasta.getTime() ? ', pero pruebo cada 15 minutos por si se libera otra cuenta' : '';
       await deps.avisar(
         motivo === 'limite'
-          ? `⏸ Me quedé sin uso de Claude. Vuelvo ${horaArgentina(hasta)} y sigo donde quedé. Mientras tanto sigo mandando lo que ya estaba escrito.`
+          ? `⏸ Me quedé sin uso de Claude. La cuenta vuelve ${horaArgentina(vuelve)}${reprueba}. Mientras tanto sigo mandando lo que ya estaba escrito.`
           : `⚠️ La cuenta de Claude de Homero se desconectó. Cargala de nuevo desde el panel. Reintento solo a las ${horaArgentina(hasta)}.`,
       );
     }
