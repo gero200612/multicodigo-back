@@ -1,7 +1,8 @@
 # Homero, el agente comercial. Misma receta que el bridge.
 FROM node:22-slim
 # git es para el install: `@multicodigo/shared` es una dependencia de git.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
+# ffmpeg es para los reels: anima las escenas, las une y normaliza la musica.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 # uid 1001, EL MISMO que el login y los slots: la sesion de Claude la deposita
 # el servicio de login con modo 0600 en /srv/homes/<slot>, y este proceso la

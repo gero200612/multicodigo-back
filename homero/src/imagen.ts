@@ -21,7 +21,7 @@ const LADO = 1080;
 const FUENTES = ['Inter-Bold.ttf', 'Inter-Regular.ttf'].map((f) =>
   fileURLToPath(new URL(`../assets/fuentes/${f}`, import.meta.url)),
 );
-const OPCIONES_DE_FUENTE = { fontFiles: FUENTES, loadSystemFonts: false, defaultFontFamily: 'Inter' };
+export const OPCIONES_DE_FUENTE = { fontFiles: FUENTES, loadSystemFonts: false, defaultFontFamily: 'Inter' };
 
 const AZUL = '#0166FE';
 const AZUL_OSC = '#0047C2';
@@ -101,7 +101,7 @@ function enRenglones(campo: string, texto: string, tamanio: number, max: number,
 
 // ------------------------------------------------------------ dibujo
 
-function escapar(t: string): string {
+export function escapar(t: string): string {
   return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 

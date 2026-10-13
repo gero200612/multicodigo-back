@@ -12,12 +12,14 @@ import { cortarBusquedas, pausar, pedirBusqueda, ponerModo, seguir } from './com
 import type { Resultado as ResultadoDeDemo } from './demos.js';
 import type { Demo, Store } from './store.js';
 import { modoActual, tablaDeRubros, type Boton } from './ventas.js';
+import { armarReel, GUION_DE_PRUEBA } from './reel.js';
 
 export const NOMBRE = 'Homero';
 
 /** Lo que aparece en el boton de menu de Telegram, al lado del campo de texto. */
 export const COMANDOS = [
   { command: 'estado', description: 'Cómo vengo: pausas, cupo y borradores' },
+  { command: 'reel_prueba', description: 'Arma un reel de muestra y te lo manda (no publica nada)' },
   { command: 'hoy', description: 'Números del día' },
   { command: 'buscar', description: 'Salir a buscar ya: /buscar [rubro] [zona]' },
   { command: 'prioridad', description: 'Los 5 borradores con más factibilidad' },
@@ -341,6 +343,37 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   });
 
   // El publicista corre solo a las 10; esto es para no esperar al otro dia.
+  // Un reel de muestra, para ver como sale el armado (parte 2 de los reels).
+  // No publica nada: lo manda aca. Corre de fondo, el bot sigue contestando.
+  let armandoReel = false;
+  bot.command('reel_prueba', async (ctx) => {
+    if (armandoReel) {
+      await ctx.reply('Ya estoy armando uno, esperá que termine.');
+      return;
+    }
+    armandoReel = true;
+    await ctx.reply('🎬 Armo un reel de muestra (facturas que se cargan solas). Tarda uno o dos minutos.');
+    const inicio = Date.now();
+    void armarReel(GUION_DE_PRUEBA, `prueba-${inicio}`, { dir: config.medios.dir, pixabay: config.medios.pixabay })
+      .then(async (r) => {
+        const segundos = Math.round((Date.now() - inicio) / 1000);
+        const musica = r.tema ? `🎵 ${r.tema.titulo}${r.tema.autor ? ` · ${r.tema.autor}` : ''} (CC0)` : '🔇 Sin música todavía: el banco se completa de a poco.';
+        const fotos = r.medios.length ? `📷 ${r.medios.length} de Pixabay` : '📷 Sin fotos de Pixabay (falta la clave o no hubo resultados).';
+        await ctx.replyWithVideo(new InputFile(r.archivo), {
+          caption: [`Reel de muestra · ${r.duracion.toFixed(1)} s · armado en ${segundos} s`, musica, fotos].join('\n').slice(0, 1000),
+          width: 1080,
+          height: 1920,
+          supports_streaming: true,
+        });
+      })
+      .catch(async (err) => {
+        await ctx.reply(`No pude armar el reel: ${err instanceof Error ? err.message.slice(0, 500) : String(err)}`).catch(() => undefined);
+      })
+      .finally(() => {
+        armandoReel = false;
+      });
+  });
+
   bot.command('anunciar', async (ctx) => {
     if (await store.leerEstado(PAUSA_MANUAL)) {
       await ctx.reply('Estoy en /pausa: mandá /seguir y después /anunciar.');
