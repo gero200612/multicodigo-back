@@ -623,7 +623,15 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
       const reunionId = await deps.store.crearReunion({ leadId: ctx.lead.id, inicio: elegido, fin: finDe(elegido), link });
       if (!reunionId) throw new ErrorParaElAgente('Lo tomó otra reunión recién: ofrecele otros con responder.');
       await deps.store.actualizarLead(ctx.lead.id, { estado: 'reunion' });
-      const texto = `¡Genial! Quedamos el ${horarioEnCastellano(elegido)} (hora de Argentina). Son 30 minutos por videollamada.\n\nLink para entrar: ${link}\n\nSi te surge algo, avisame por acá y lo movemos.`;
+      const texto = [
+        '✅ ¡Listo! Quedó agendada la reunión.',
+        '',
+        `📅 ${horarioEnCastellano(elegido)} (hora de Argentina)`,
+        '⏱️ 30 minutos por videollamada',
+        `🔗 Link para entrar: ${link}`,
+        '',
+        'Si te surge algo, avisame por acá y lo movemos.',
+      ].join('\n');
       await mandar(texto);
       const ahora = deps.ahora().getTime();
       await deps.store.encolar({
