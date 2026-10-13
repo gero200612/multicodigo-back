@@ -48,6 +48,9 @@ const Env = z.object({
   META_AD_ACCOUNT_ID: opcional(z.string().regex(/^(act_)?\d+$/)),
   META_PAGE_ID: opcional(z.string().regex(/^\d+$/)),
   META_APP_ID: opcional(z.string().regex(/^\d+$/)),
+  // El conjunto de datos (Administrador de eventos) para las conversiones de
+  // leads: con esto Homero le cuenta a Meta que consultas sirvieron.
+  META_DATASET_ID: opcional(z.string().regex(/^\d+$/)),
   // Fija a proposito: un cambio de version se prueba antes con scripts/meta-humo.ts.
   META_API_VERSION: opcional(z.string().regex(/^v\d+\.\d+$/)).transform((v) => v ?? 'v23.0'),
   // El bot general de WhatsApp (sincro-wa, en el VPS), por la VPN. La clave de
@@ -145,6 +148,7 @@ function configDeMeta(e: z.infer<typeof Env>): { meta?: ConfigDeMeta; sinMeta?: 
       cuenta: e.META_AD_ACCOUNT_ID,
       pagina: e.META_PAGE_ID,
       app: e.META_APP_ID,
+      dataset: e.META_DATASET_ID,
       version: e.META_API_VERSION,
     },
   };

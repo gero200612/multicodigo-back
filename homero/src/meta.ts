@@ -20,6 +20,8 @@ export interface ConfigDeMeta {
   cuenta: string;
   pagina: string;
   app?: string;
+  /** El conjunto de datos de conversiones de leads. Sin esto no se le cuenta nada a Meta. */
+  dataset?: string;
   /** `v23.0`. Fija: un cambio de version de la API se prueba antes con meta-humo. */
   version: string;
 }
@@ -93,6 +95,14 @@ export interface CuentaDeMeta {
 
 export type EstadoEnMeta = 'ACTIVE' | 'PAUSED';
 
+/** Lo que paso con una consulta de un formulario, para que Meta aprenda a quien mostrarle. */
+export interface EtapaDeLead {
+  /** El leadgen_id de Meta. */
+  leadgenId: string;
+  etapa: 'Calificado' | 'Descalificado' | 'Reunion';
+  cuando: Date;
+}
+
 export interface ConjuntoEnMeta {
   id: string;
   /** Sin diario propio (presupuesto de campaña) viene sin esto. */
@@ -122,6 +132,10 @@ export interface Meta {
   conjuntos(campana: string): Promise<ConjuntoEnMeta[]>;
   /** Los leads de un formulario desde un instante. */
   leads(formulario: string, desde: Date): Promise<LeadDeMeta[]>;
+  /** Hay conjunto de datos para contarle a Meta que paso con las consultas. */
+  conConversiones(): boolean;
+  /** Las etapas de las consultas (conversiones de leads). Devuelve cuantas recibio Meta. */
+  enviarEtapas(etapas: EtapaDeLead[]): Promise<number>;
 }
 
 /**
@@ -444,6 +458,24 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
         ...(f.daily_budget !== undefined ? { diario: Number(f.daily_budget) / CENTAVOS_POR_PESO } : {}),
         estado: String(f.effective_status ?? ''),
       }));
+    },
+
+    conConversiones: () => Boolean(cfg.dataset),
+
+    async enviarEtapas(etapas) {
+      if (!cfg.dataset || etapas.length === 0) return 0;
+      // Conversiones de leads (integracion con CRM): el lead se identifica con
+      // su leadgen_id y la etapa va como nombre del evento.
+      const r = await llamar('POST', `${cfg.dataset}/events`, {
+        data: etapas.map((e) => ({
+          event_name: e.etapa,
+          event_time: Math.floor(e.cuando.getTime() / 1000),
+          action_source: 'system_generated',
+          user_data: { lead_id: Number(e.leadgenId) },
+          custom_data: { event_source: 'crm', lead_event_source: 'Homero' },
+        })),
+      });
+      return Number(r.events_received ?? 0);
     },
 
     async leads(formulario, desde) {

@@ -532,10 +532,25 @@ export class MemoriaStore implements Store {
     return [...porAnuncio.entries()].map(([anuncioId, r]) => ({ anuncioId, ...r }));
   }
 
+  async etapasDeLeadsDeMeta() {
+    return this.leads
+      .filter((l) => l.leadgenId && /^\d+$/.test(l.leadgenId))
+      .map((l) => {
+        const reunion = this.reuniones.find((r) => r.leadId === l.id && !r.cancelada);
+        return {
+          leadId: l.id,
+          leadgenId: l.leadgenId!,
+          ...(l.calidad ? { calidad: l.calidad, calidadEn: (l as { calidadEn?: Date }).calidadEn ?? this.ahora() } : {}),
+          ...(reunion ? { reunionEn: this.ahora() } : {}),
+        };
+      });
+  }
+
   async marcarCalidad(leadId: number, calidad: 'sirve' | 'no_sirve') {
     const l = this.leads.find((x) => x.id === leadId);
     if (!l) return undefined;
     l.calidad = calidad;
+    (l as { calidadEn?: Date }).calidadEn = this.ahora();
     return { ...l };
   }
 

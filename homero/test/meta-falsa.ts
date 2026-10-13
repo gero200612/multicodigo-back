@@ -11,6 +11,8 @@ export function metaFalsa() {
   const datos = {
     insights: [] as FilaDeInsights[],
     leads: new Map<string, LeadDeMeta[]>(),
+    /** Con conjunto de datos de conversiones (conConversiones()). */
+    conversiones: false,
     /** Lo que Meta dice de los conjuntos (conjuntos()). */
     conjuntos: [] as ConjuntoEnMeta[],
     /** El limite de gasto de la cuenta, en pesos. */
@@ -72,6 +74,11 @@ export function metaFalsa() {
     async insights(desde, hasta) {
       anotar('insights', desde, hasta);
       return datos.insights;
+    },
+    conConversiones: () => datos.conversiones,
+    async enviarEtapas(etapas) {
+      anotar('enviarEtapas', etapas);
+      return etapas.length;
     },
     async conjuntos(campana) {
       anotar('conjuntos', campana);

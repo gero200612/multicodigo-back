@@ -3,7 +3,7 @@ import { diaArgentino, horarioEnCastellano, horariosParaOfrecer } from './agenda
 import { enviarMail } from './envio.js';
 import { relojArgentino } from './horas.js';
 import { ErrorDePlantilla, imagenDeAnuncio, PLANTILLAS, type Plantilla } from './imagen.js';
-import type { Meta, Pregunta } from './meta.js';
+import type { EtapaDeLead, Meta, Pregunta } from './meta.js';
 import { neutralizar } from './prompts.js';
 import { CRITERIOS, type Anuncio, type Criterio, type Lead, type Ronda, type Store } from './store.js';
 import { escribirPrimerWhatsapp } from './primer-whatsapp.js';
@@ -775,6 +775,9 @@ export async function leerInsights(deps: DepsDeAnuncios): Promise<void> {
   }
   await deps.store.guardarGastos([...sumados.values()]);
   await sincronizarConMeta(deps);
+  await contarleAMeta(deps).catch((err) =>
+    console.warn('[homero] no pude mandarle las etapas de los leads a Meta:', err instanceof Error ? err.message : err),
+  );
   if (ajenos.size > 0 && (await deps.store.leerEstado<string>(AJENOS_AVISADO)) !== mes.hoy) {
     await deps.store.guardarEstado(AJENOS_AVISADO, mes.hoy);
     const total = [...ajenos.values()].reduce((n, g) => n + g, 0);
@@ -785,6 +788,35 @@ export async function leerInsights(deps: DepsDeAnuncios): Promise<void> {
   }
   await controlarTope(deps);
   await controlarEntrega(deps);
+}
+
+/** Clave en homero.estado: las etapas ya contadas a Meta, `leadId:etapa`. */
+const ETAPAS_ENVIADAS = 'meta:etapas_enviadas';
+
+/**
+ * Conversiones de leads: le cuenta a Meta que paso con cada consulta de sus
+ * formularios (sirve, no sirve, reunion). Con eso Meta deja de buscar gente que
+ * llena formularios y busca gente parecida a la que sirvio. Cada etapa se
+ * manda una sola vez. Sin conjunto de datos (META_DATASET_ID) no hace nada.
+ */
+export async function contarleAMeta(deps: DepsDeAnuncios): Promise<number> {
+  if (!deps.meta?.conConversiones()) return 0;
+  const enviadas = new Set((await deps.store.leerEstado<string[]>(ETAPAS_ENVIADAS)) ?? []);
+  const nuevas: (EtapaDeLead & { clave: string })[] = [];
+  for (const l of await deps.store.etapasDeLeadsDeMeta()) {
+    const etapas: EtapaDeLead[] = [];
+    if (l.calidad === 'sirve') etapas.push({ leadgenId: l.leadgenId, etapa: 'Calificado', cuando: l.calidadEn ?? deps.ahora() });
+    if (l.calidad === 'no_sirve') etapas.push({ leadgenId: l.leadgenId, etapa: 'Descalificado', cuando: l.calidadEn ?? deps.ahora() });
+    if (l.reunionEn) etapas.push({ leadgenId: l.leadgenId, etapa: 'Reunion', cuando: l.reunionEn });
+    for (const e of etapas) {
+      const clave = `${l.leadId}:${e.etapa}`;
+      if (!enviadas.has(clave)) nuevas.push({ ...e, clave });
+    }
+  }
+  if (nuevas.length === 0) return 0;
+  await deps.meta.enviarEtapas(nuevas.map(({ clave: _c, ...e }) => e));
+  await deps.store.guardarEstado(ETAPAS_ENVIADAS, [...enviadas, ...nuevas.map((n) => n.clave)]);
+  return nuevas.length;
 }
 
 /** Clave en homero.estado: el ultimo dia que se aviso de gasto ajeno en la campaña. */

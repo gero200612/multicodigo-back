@@ -16,6 +16,7 @@ import {
   mesDe,
   numerosDelMes,
   renovarFormulario,
+  contarleAMeta,
   seguimientoDeLeadMeta,
   sincronizarConMeta,
   tarjetaDeAnuncio,
@@ -934,5 +935,42 @@ describe('paquete 2: variantes del mismo anuncio', () => {
     await expect(
       proponerAnuncio({ ...PROPUESTA, variantes: [{ titulo: 'Mirá la web', texto: 'Entrá a www.sincro.com y enterate de todo lo que hacemos.' }] }, h.deps),
     ).rejects.toThrow(/sin links/);
+  });
+});
+
+describe('conversiones de leads: Meta se entera de qué consultas sirvieron', () => {
+  async function conConsultas(conversiones: boolean) {
+    const h = conMeta();
+    h.f.datos.conversiones = conversiones;
+    await activo(h, 2000);
+    const lead = (id: string, nombre: string) => ({ id, creado: new Date(), formulario: 'form1', anuncio: 'ad1', campos: { full_name: nombre, email: `${nombre}@x.com` } });
+    h.f.datos.leads.set('form1', [lead('120000000000001', 'ana'), lead('120000000000002', 'beto')]);
+    await leerLeadsDeMeta(h.deps);
+    const [ana, beto] = h.store.leads;
+    return { h, ana: ana!, beto: beto! };
+  }
+
+  it('sirve → Calificado, no sirve → Descalificado, reunión → Reunion; cada etapa una sola vez', async () => {
+    const { h, ana, beto } = await conConsultas(true);
+    await h.store.marcarCalidad(ana.id, 'sirve');
+    await h.store.marcarCalidad(beto.id, 'no_sirve');
+    expect(await contarleAMeta(h.deps)).toBe(2);
+    const enviadas = h.f.de('enviarEtapas')[0]!.args[0] as { leadgenId: string; etapa: string }[];
+    expect(enviadas.map((e) => [e.leadgenId, e.etapa])).toEqual([
+      ['120000000000001', 'Calificado'],
+      ['120000000000002', 'Descalificado'],
+    ]);
+    expect(await contarleAMeta(h.deps)).toBe(0);
+
+    await h.store.crearReunion({ leadId: ana.id, inicio: new Date('2026-10-01T18:00:00Z'), fin: new Date('2026-10-01T18:30:00Z'), link: 'x' });
+    expect(await contarleAMeta(h.deps)).toBe(1);
+    expect((h.f.de('enviarEtapas')[1]!.args[0] as { etapa: string }[])[0]!.etapa).toBe('Reunion');
+  });
+
+  it('sin conjunto de datos (META_DATASET_ID) no manda nada', async () => {
+    const { h, ana } = await conConsultas(false);
+    await h.store.marcarCalidad(ana.id, 'sirve');
+    expect(await contarleAMeta(h.deps)).toBe(0);
+    expect(h.f.de('enviarEtapas')).toEqual([]);
   });
 });
