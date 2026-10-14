@@ -55,7 +55,7 @@ const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '
 /** Cuanto duerme la cola cuando no hay nada listo. */
 const COLA_VACIA_MS = 15_000;
 /** El de WhatsApp mira mas seguido: hay alguien esperando. */
-const COLA_URGENTE_VACIA_MS = 3_000;
+const COLA_URGENTE_VACIA_MS = 1_000;
 /** Cada cuanto se fija si toca buscar clientes o mandar el resumen del dia. */
 const PLANIFICADOR_MS = 5 * 60_000;
 /** Cada cuanto le pregunta a Punchi como van las demos. */

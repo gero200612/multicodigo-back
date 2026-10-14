@@ -225,8 +225,12 @@ export function bucle(nombre: string, paso: () => Promise<void>, seguir: () => b
   })();
 }
 
-/** Espera antes de pensar: si escribe tres mensajes seguidos, se contestan juntos. */
-export const JUNTAR_MENSAJES_MS = 15_000;
+/**
+ * Espera antes de pensar: si escribe tres mensajes seguidos, se contestan
+ * juntos. Era 15 s y con el agente la respuesta tardaba ~38 s (Gero, 2026-10-14:
+ * "que sean 15/20"); 6 s alcanza para mensajes cortados al medio.
+ */
+export const JUNTAR_MENSAJES_MS = 6_000;
 
 /**
  * Lo que llega del numero de Sincro: cada mensaje es una tarea del agente, y
@@ -471,14 +475,15 @@ export interface Escribiendo {
 }
 
 /**
- * "Escribiendo..." mientras el agente piensa. Se prende recien cuando el agente
- * arranca de verdad (su primera herramienta), no al encolar: si espera una
- * cuenta libre, no queda un "visto" colgado. Es cosmetico: si falla, nada.
+ * "Escribiendo..." mientras el agente piensa. Se prende al pedir la corrida,
+ * no al encolar; si no hay cuenta libre, agenteWhatsApp no lo repite en cada
+ * reintento. Es cosmetico: si falla, nada.
  */
 export function mantenerEscribiendo(wa: ClienteWa, contacto: string): Escribiendo {
   let timer: ReturnType<typeof setInterval> | undefined;
   let apagado = false;
-  const una = () => void wa.escribiendo(contacto).catch(() => undefined);
+  // Ni un throw sincronico de los tres puntos puede tumbar la respuesta.
+  const una = () => void Promise.resolve().then(() => wa.escribiendo(contacto)).catch(() => undefined);
   return {
     prender() {
       if (timer || apagado) return;
@@ -572,7 +577,6 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
     esquema: objeto({}),
     validar: z.object({}).strict() as z.ZodType<Record<string, never>>,
     async correr() {
-      ctx.escribiendo?.prender();
       const charla = await deps.wa.charla(ctx.contacto);
       const ofrecidos = ctx.lead ? await deps.store.oferta(ctx.lead.id) : undefined;
       const anuncio = ctx.referral
@@ -725,7 +729,7 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
 }
 
 export const ROL_WHATSAPP = `Tu rol: sos la ATENCION por WhatsApp de Sincro. Alguien le escribió al WhatsApp de Sincro (muchas veces desde un anuncio o el formulario de la web). Entendé qué quiere, sacale las dudas, y cuando quiera, agendá una reunión de 30 minutos por videollamada.
-- Empezá con ver_charla. Lo que respondas sale SOLO, al toque, sin que Gero lo apruebe: pensalo bien.
+- La charla y los horarios libres ya vienen en el objetivo: contestá directo, sin llamar a ver_charla ni horarios_libres (son solo para refrescar si algo no cierra). Hay alguien esperando: cuanto antes respondas, mejor. Lo que respondas sale SOLO, al toque, sin que Gero lo apruebe: pensalo bien.
 - NO te mandes de cabeza a la reunión. Si pregunta algo o quiere saber más, contestá corto lo que preguntó y cerrá preguntando, con tus palabras, si tiene alguna otra duda o si quiere que agendemos una reunión (ej.: "¿Tenés alguna otra duda o querés que agendemos una reunión?"). Ahí va SIN horarios.
 - Ofrecé horarios SOLO cuando dice que sí a la reunión, la pide él, o tocó "Agendar reunión": 3 de horarios_libres en días distintos, con responder. Los horarios NO van en tu texto: pasá sus números y la lista sale sola abajo, uno por renglón y con un botón cada uno.
 - Si tocó "Tengo una duda" (o dice que tiene una pregunta), pedile que te la cuente, sin horarios.

@@ -499,6 +499,10 @@ export function esNumeroDePrueba(contacto: string, numeros: string[]): boolean {
   return numeros.some((n) => variantesDeTelefono(n).some((v) => propias.has(v)));
 }
 
+/** Contactos cuya respuesta espera una cuenta libre, desde cuando (los tres puntos no se repiten). */
+const esperandoLugar = new Map<string, number>();
+const ESPERA_SIN_PUNTOS_MS = 10 * 60_000;
+
 export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Promise<void> {
   if (!deps.wa) throw new Error('falta SINCRO_WA_URL / SINCRO_WA_KEY: no hay WhatsApp');
   const p = PayloadDeWhatsApp.parse(payload);
@@ -509,18 +513,43 @@ export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Pro
   const texto = p.texto ?? `(${p.tipo})`;
   const prueba = esNumeroDePrueba(p.contacto, deps.numerosDePrueba ?? []);
   const escribiendo = mantenerEscribiendo(deps.wa, p.contacto);
-  await correr(
-    'atencion',
-    `Objetivo: llegó un WhatsApp${lead ? ` de ${lead.nombre}` : ''} al número de Sincro. Entendé qué quiere y resolvelo: sacale las dudas y, si quiere, agendá una reunión, o lo que corresponda.` +
-      (prueba ? PRUEBA_DE_GERO : ''),
-    (reg) =>
-      herramientasDeWhatsApp(
-        { store: deps.store, wa: deps.wa!, ahora: deps.ahora, avisar: deps.avisar },
-        { contacto: p.contacto, nombre: p.nombre ?? '', texto, referral: p.referral ?? null, lead, registro: reg, escribiendo },
-      ),
-    { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP, urgente: true, contacto: p.contacto },
-    deps,
-  ).finally(() => escribiendo.apagar());
+  const depsWa = { store: deps.store, wa: deps.wa, ahora: deps.ahora, avisar: deps.avisar };
+  const ctx = (reg: Registro) => ({ contacto: p.contacto, nombre: p.nombre ?? '', texto, referral: p.referral ?? null, lead, registro: reg, escribiendo });
+  // La charla y los horarios van en el objetivo: cada herramienta de lectura es
+  // una vuelta mas con el modelo (~5 s) antes de que salga la respuesta.
+  const [verCharla, verLibres] = herramientasDeWhatsApp(depsWa, ctx({ anotados: [], cerro: false }));
+  const charla = String(await verCharla!.correr({}));
+  const libres = String(await verLibres!.correr({}));
+  // Los tres puntos desde que arranca a pensar. Si no hay cuenta libre, una
+  // sola vez cada tanto: que no quede prendiendo y apagando mientras espera.
+  const ultimaEspera = esperandoLugar.get(p.contacto);
+  const conPuntos = ultimaEspera === undefined || Date.now() - ultimaEspera > ESPERA_SIN_PUNTOS_MS;
+  if (conPuntos) escribiendo.prender();
+  try {
+    await correr(
+      'atencion',
+      `Objetivo: llegó un WhatsApp${lead ? ` de ${lead.nombre}` : ''} al número de Sincro. Entendé qué quiere y resolvelo: sacale las dudas y, si quiere, agendá una reunión, o lo que corresponda.` +
+        (prueba ? PRUEBA_DE_GERO : '') +
+        `
+
+Lo que devolvería ver_charla:
+${charla}
+
+Lo que devolvería horarios_libres:
+${libres}`,
+      (reg) => herramientasDeWhatsApp(depsWa, ctx(reg)),
+      { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP, urgente: true, contacto: p.contacto },
+      deps,
+    );
+    esperandoLugar.delete(p.contacto);
+  } catch (err) {
+    if (err instanceof SinLugar || err instanceof ErrorDeLimite) {
+      if (conPuntos) esperandoLugar.set(p.contacto, Date.now());
+    }
+    throw err;
+  } finally {
+    escribiendo.apagar();
+  }
 }
 
 const PayloadDePublicidad = z.object({

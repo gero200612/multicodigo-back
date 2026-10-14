@@ -18,6 +18,7 @@ import {
   type Pedir,
 } from '../src/whatsapp.js';
 import { agenteDe, armar } from './armar.js';
+import { SinLugar } from '../src/gateway.js';
 
 const CONTACTO = '5491155550000';
 
@@ -187,22 +188,34 @@ describe('whatsapp: el agente', () => {
     expect(h.avisos.some((a) => a.includes('Le contesté'))).toBe(true);
   });
 
-  it('muestra los tres puntos recién cuando el agente arranca, y se apagan al contestar', async () => {
+  it('los tres puntos salen al arrancar a pensar, una vez, y antes de la respuesta', async () => {
     const f = waFalso();
+    let objetivo = '';
     const h = armar({
       agente: agenteDe({
-        atencion: async (usar) => {
-          expect(f.escribiendos).toHaveLength(0);
-          await usar('ver_charla');
-          await usar('ver_charla');
+        atencion: async (usar, p) => {
+          objetivo = p.objetivo;
           await usar('responder', { texto: 'Hola Ana! 👋 ¿Tenés alguna otra duda o querés que agendemos una reunión?', horarios: [] });
         },
       }),
     });
     h.deps.wa = f.wa;
     await agenteWhatsApp(payload, h.deps);
-    // Una sola vez (la segunda mirada no lo repite) y antes de que saliera la respuesta.
     expect(f.escribiendos).toEqual([{ a: CONTACTO, antesDe: 0 }]);
+    // La charla y los horarios ya vienen: responde en su primera vuelta.
+    expect(objetivo).toContain('vi el anuncio');
+    expect(objetivo).toContain('horarios_libres:');
+  });
+
+  it('sin cuenta libre no repite los tres puntos en cada reintento', async () => {
+    const f = waFalso();
+    const h = armar({ agente: agenteDe({}) });
+    h.deps.gateway = { correr: async () => { throw new SinLugar(); } } as any;
+    h.deps.wa = f.wa;
+    const otro = { ...payload, contacto: '5491166660000' };
+    await expect(agenteWhatsApp(otro, h.deps)).rejects.toThrow();
+    await expect(agenteWhatsApp(otro, h.deps)).rejects.toThrow();
+    expect(f.escribiendos).toHaveLength(1);
   });
 
   it('el rol no se manda de cabeza a la reunión: primero pregunta si hay otra duda', () => {
