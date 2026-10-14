@@ -317,6 +317,40 @@ describe('whatsapp: el agente', () => {
     expect(h.avisos.some((a) => a.includes('Reunión por WhatsApp'))).toBe(true);
   });
 
+  it('cancelar_reunion la saca de la agenda de verdad, le confirma y avisa; sin reunión no inventa', async () => {
+    const f = waFalso();
+    const h = armar({
+      agente: agenteDe({
+        atencion: async (usar) => {
+          await usar('responder', { texto: '¿Te sirve este?', horarios: [1] });
+        },
+      }),
+    });
+    h.deps.wa = f.wa;
+    await agenteWhatsApp(payload, h.deps);
+    const corrida = (herramienta: string) => async (p: { corrida: string; tokenCorrida: string }) => {
+      const r = await h.sesiones.usar(p.corrida, p.tokenCorrida, herramienta, herramienta === 'confirmar_horario' ? { horario: 1 } : {});
+      return { texto: r.error ? `error: ${r.texto}` : '', turnos: 1, pasos: [] };
+    };
+    h.deps.gateway = { correr: corrida('confirmar_horario') } as any;
+    await agenteWhatsApp({ ...payload, texto: 'el 1', mensaje_id: 11 }, h.deps);
+    expect(await h.store.reunionesDesde(new Date(0))).toHaveLength(1);
+
+    let resultado = '';
+    h.deps.gateway = { correr: async (p: any) => ({ ...(await corrida('cancelar_reunion')(p)), texto: (resultado = (await corrida('ver_charla')(p)).texto) }) } as any;
+    await agenteWhatsApp({ ...payload, texto: 'cancelame la reunión', mensaje_id: 12 }, h.deps);
+    expect(await h.store.reunionesDesde(new Date(0))).toHaveLength(0);
+    expect(f.mandados.at(-1)!.texto).toContain('cancelamos la reunión');
+    expect(h.avisos.some((a) => a.includes('canceló por WhatsApp'))).toBe(true);
+    expect(resultado).toBe('');
+
+    // Sin reunión agendada, la herramienta no hace como que canceló.
+    h.deps.gateway = { correr: corrida('cancelar_reunion') } as any;
+    const antes = f.mandados.length;
+    await agenteWhatsApp({ ...payload, texto: 'cancelá', mensaje_id: 13 }, h.deps).catch(() => undefined);
+    expect(f.mandados.length).toBe(antes);
+  });
+
   it('si ya salió una respuesta después de ese mensaje, no piensa de nuevo', async () => {
     const f = waFalso({
       mensajes: [
