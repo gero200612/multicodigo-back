@@ -48,6 +48,11 @@ export class MetaFalsa implements ClienteMeta {
     this.enviados.push({ tipo: 'plantilla', token, desde, a, plantilla: p.nombre, variables: p.variables });
     return { wamid: `wamid.sale.${++this.n}` };
   }
+  escribiendos: { desde: string; wamid: string }[] = [];
+  async escribiendo(_token: string, desde: string, wamid: string) {
+    this.revisar();
+    this.escribiendos.push({ desde, wamid });
+  }
   async urlDeMedia(_token: string, mediaId: string) {
     const a = this.archivos.get(mediaId);
     if (!a) throw new ErrorDeMeta('no existe');

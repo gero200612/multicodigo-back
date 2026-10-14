@@ -26,7 +26,7 @@ const CATALOGO: Record<Capacidad, Entrada> = {
   leads: {
     // `formulario`: el de contacto de la web del negocio (ver formulario.ts).
     eventos: ['mensaje', 'formulario'],
-    rutas: ['POST /mensajes', 'GET /charlas/:contacto', 'GET /media/:id'],
+    rutas: ['POST /mensajes', 'POST /escribiendo', 'GET /charlas/:contacto', 'GET /media/:id'],
     plantillas: [],
   },
   facturas: { eventos: ['factura'], rutas: ['GET /media/:id'], plantillas: [] },
@@ -37,6 +37,7 @@ const CATALOGO: Record<Capacidad, Entrada> = {
     eventos: ['mensaje', 'derivar'],
     rutas: [
       'POST /mensajes',
+      'POST /escribiendo',
       'GET /charlas/:contacto',
       'PUT /atender/contexto',
       'POST /charlas/:contacto/liberar',

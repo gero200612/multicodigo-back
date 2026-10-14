@@ -80,6 +80,28 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
     return { id: m.id, wamid: m.wamid };
   });
 
+  // "Escribiendo..." mientras la app piensa la respuesta. Es cosmetico: si no
+  // hay a que mensaje engancharlo o Meta no lo toma, no sale y no es error.
+  app.post('/escribiendo', async (req) => {
+    const negocio = negocioDe(req);
+    const { a } = z.object({ a: Contacto }).parse(req.body);
+    // Igual que /mensajes: con `atender` solo en las charlas que le derivaron.
+    if (!tiene(negocio.capacidades, 'leads') && !(await store.contactosDe(negocio.id, a)).some((c) => c.derivada)) {
+      throw new Rechazo(409, 'no_derivada');
+    }
+    const ultimo = (await store.charla(negocio.id, a, 10)).filter((m) => m.direccion === 'entra' && m.wamid).at(-1);
+    const numero = ultimo ? await store.numero(ultimo.numeroId) : undefined;
+    if (!ultimo || !numero || numero.negocioId !== negocio.id) return { ok: false };
+    if (!ventanaAbierta(await store.contacto(numero.id, a), ctx.ahora())) return { ok: false };
+    try {
+      await ctx.meta.escribiendo(tokenDe(ctx, numero), numero.phoneNumberId, ultimo.wamid!);
+      return { ok: true };
+    } catch (e) {
+      if (e instanceof ErrorDeMeta) return { ok: false };
+      throw e;
+    }
+  });
+
   app.get('/charlas/:contacto', async (req) => {
     const negocio = negocioDe(req);
     const contacto = Contacto.parse((req.params as { contacto: string }).contacto);

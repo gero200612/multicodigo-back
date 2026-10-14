@@ -36,6 +36,11 @@ export interface ClienteMeta {
     a: string,
     p: { nombre: string; idioma: string; variables: string[] },
   ): Promise<{ wamid: string }>;
+  /**
+   * Marca leido su mensaje y le muestra "escribiendo..." hasta que salga la
+   * respuesta (o 25 s, lo que pase primero). Va contra el mensaje que entro.
+   */
+  escribiendo(token: string, phoneNumberId: string, wamid: string): Promise<void>;
   /** Donde bajar un media que llego por webhook (la URL vence en minutos). */
   urlDeMedia(token: string, mediaId: string): Promise<{ url: string; mime: string }>;
   bajarMedia(token: string, url: string): Promise<Buffer>;
@@ -141,6 +146,14 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
           },
         }),
       );
+    },
+    async escribiendo(token, phoneNumberId, wamid) {
+      await pedir(token, 'POST', `${phoneNumberId}/messages`, {
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: wamid,
+        typing_indicator: { type: 'text' },
+      });
     },
     async urlDeMedia(token, mediaId) {
       const json = await pedir(token, 'GET', encodeURIComponent(mediaId));

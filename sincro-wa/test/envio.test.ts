@@ -82,6 +82,34 @@ describe('mensajes con botones', () => {
   });
 });
 
+describe('escribiendo', () => {
+  it('marca leído el último mensaje que entró y muestra escribiendo; sin mensaje o fuera de ventana no sale', async () => {
+    const n = await negocioConNumero(b, ['leads']);
+    expect((await pedir(b, n.clave, 'POST', '/escribiendo', { a: CONTACTO })).json).toEqual({ ok: false });
+
+    await webhook(b, texto(n.phoneNumberId, CONTACTO, 'hola'));
+    await webhook(b, texto(n.phoneNumberId, CONTACTO, '¿cuánto sale?'));
+    const r = await pedir(b, n.clave, 'POST', '/escribiendo', { a: CONTACTO });
+    expect(r).toMatchObject({ status: 200, json: { ok: true } });
+    const ultimo = (await pedir(b, n.clave, 'GET', `/charlas/${CONTACTO}`)).json.mensajes.at(-1);
+    expect(ultimo.texto).toBe('¿cuánto sale?');
+    expect(b.meta.escribiendos).toHaveLength(1);
+    expect(b.meta.escribiendos[0]!.desde).toBe(n.phoneNumberId);
+
+    b.meta.fallar = '400 meta caida';
+    expect((await pedir(b, n.clave, 'POST', '/escribiendo', { a: CONTACTO })).json).toEqual({ ok: false });
+    b.meta.fallar = null;
+    b.reloj.avanzar(25 * HORA_MS);
+    expect((await pedir(b, n.clave, 'POST', '/escribiendo', { a: CONTACTO })).json).toEqual({ ok: false });
+    expect(b.meta.escribiendos).toHaveLength(1);
+  });
+
+  it('una app sin leads ni atender no la ve', async () => {
+    const n = await negocioConNumero(b, ['facturas']);
+    expect((await pedir(b, n.clave, 'POST', '/escribiendo', { a: CONTACTO })).status).toBe(404);
+  });
+});
+
 describe('avisos', () => {
   it('plantilla inexistente o sin aprobar: 409 plantilla_no_aprobada', async () => {
     const n = await negocioConNumero(b, ['avisos']);
