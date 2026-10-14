@@ -2,7 +2,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { diarioQueEntraPara, minimoDiario, pausarAnuncio, pesos, type DepsDeAnuncios } from './anuncios.js';
-import type { Reel } from './store.js';
+import type { Reel, Store } from './store.js';
 import type { Boton } from './ventas.js';
 
 /**
@@ -437,6 +437,22 @@ export async function leerReels(deps: DepsDeReels): Promise<void> {
       await deps.avisar(`⏹ Terminó la promoción del reel #${r.id} (${DIAS_DE_PROMOCION} días): pausé el anuncio #${a.id}.`);
     }
   }
+}
+
+/**
+ * El reel de `/promocionar [n]`: el que nombra, o el ultimo publicado que
+ * todavia no se promociona (Gero, 2026-10-14: "que promocione el reel subido").
+ */
+export async function reelParaPromocionar(
+  store: Pick<Store, 'reels'>,
+  id?: number,
+): Promise<{ ok: true; id: number } | { ok: false; motivo: string }> {
+  if (id !== undefined) return { ok: true, id };
+  const libres = (await store.reels(['publicado']))
+    .filter((r) => r.anuncioId === undefined && r.publicadoEn)
+    .sort((a, b) => b.publicadoEn!.getTime() - a.publicadoEn!.getTime());
+  if (!libres[0]) return { ok: false, motivo: 'no hay ningún reel publicado sin promocionar' };
+  return { ok: true, id: libres[0].id };
 }
 
 /**

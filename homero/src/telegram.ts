@@ -13,7 +13,7 @@ import type { Resultado as ResultadoDeDemo } from './demos.js';
 import type { Demo, Store } from './store.js';
 import { modoActual, tablaDeRubros, type Boton } from './ventas.js';
 import { armarReel, GUION_DE_PRUEBA } from './reel.js';
-import type { ResultadoDeReel } from './publicar-reel.js';
+import { DIAS_DE_PROMOCION, reelParaPromocionar, type ResultadoDeReel } from './publicar-reel.js';
 
 export const NOMBRE = 'Homero';
 
@@ -33,6 +33,7 @@ export const COMANDOS = [
   { command: 'rubros', description: 'Cómo responde cada rubro' },
   { command: 'presupuesto', description: 'Anuncios: /presupuesto [monto del mes]' },
   { command: 'anunciar', description: 'Anuncios: que el publicista proponga ya' },
+  { command: 'promocionar', description: 'Promocionar ya el último reel publicado: /promocionar [n]' },
   { command: 'ensayo', description: 'Modo ensayo: /ensayo [mail] | off' },
   { command: 'modo', description: 'Pedir OK o automático: /modo aprobar | auto' },
   { command: 'probar_ia', description: 'Probar que Claude responde' },
@@ -233,6 +234,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         '/rubros · cómo responde cada rubro',
         '/presupuesto [monto] · anuncios: cómo va el mes, o cambiar el presupuesto',
         'Mandame un video vertical (hasta 20 MB) y lo publico como reel, con tu OK',
+        '/promocionar [n] · promociono ya el último reel publicado (o el #n)',
         '/ocupado 30/9 · /libre 30/9 · días sin reuniones',
         '/prioridad [n] · los borradores con más factibilidad',
         '/cortar · cancela las búsquedas pendientes',
@@ -277,6 +279,29 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     const m = await store.metricasDesde(inicioDelDia(ahora()));
     await ctx.reply(
       `Hoy: ${m.leads} leads nuevos, ${m.enviados} mails enviados, ${m.respuestas} respuestas, ${m.reuniones} reuniones agendadas.`,
+    );
+  });
+
+  bot.command('promocionar', async (ctx) => {
+    if (!acciones) {
+      await ctx.reply('Los reels no están configurados.');
+      return;
+    }
+    const arg = ctx.match.trim().replace(/^#/, '');
+    if (arg && !/^\d+$/.test(arg)) {
+      await ctx.reply('Usá /promocionar o /promocionar 3 (el número del reel).');
+      return;
+    }
+    const elegido = await reelParaPromocionar(store, arg ? Number(arg) : undefined);
+    if (!elegido.ok) {
+      await ctx.reply(`No pude: ${elegido.motivo}.`);
+      return;
+    }
+    const r = await acciones.promocionarReel(elegido.id);
+    await ctx.reply(
+      r.ok
+        ? `📣 Promociono el reel #${elegido.id}: armo el anuncio #${r.anuncioId} y te aviso cuando esté en Meta. Se pausa solo a los ${DIAS_DE_PROMOCION} días.`
+        : `No pude promocionar el reel #${elegido.id}: ${r.motivo}.`,
     );
   });
 

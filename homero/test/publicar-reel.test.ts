@@ -518,3 +518,15 @@ describe('cortes a mitad', () => {
     expect(h.tarjetas).toHaveLength(1);
   });
 });
+
+describe('/promocionar', () => {
+  it('sin número elige el último publicado que no se promociona; con número, ese', async () => {
+    const { reelParaPromocionar } = await import('../src/publicar-reel.js');
+    const reel = (id: number, dia: number, anuncioId?: number) =>
+      ({ id, estado: 'publicado', publicadoEn: new Date(`2026-10-${dia}T12:00:00Z`), anuncioId }) as never;
+    const store = { reels: async () => [reel(1, 10), reel(2, 12, 7), reel(3, 11)] };
+    expect(await reelParaPromocionar(store)).toEqual({ ok: true, id: 3 });
+    expect(await reelParaPromocionar(store, 1)).toEqual({ ok: true, id: 1 });
+    expect(await reelParaPromocionar({ reels: async () => [] })).toMatchObject({ ok: false });
+  });
+});
