@@ -131,6 +131,8 @@ export interface ClienteWa {
   ack(ids: number[]): Promise<void>;
   /** Con `botones` (hasta 3) o `link` sale como interactivo: no los dos juntos. */
   mandar(a: string, texto: string, extra?: ExtraDeMensaje): Promise<{ id: number; wamid: string }>;
+  /** Le marca leido su ultimo mensaje y le muestra "escribiendo..." (dura 25 s o hasta que sale algo). */
+  escribiendo(a: string): Promise<void>;
   charla(contacto: string): Promise<Charla>;
   avisar(a: string, plantilla: string, idioma: string, variables: string[]): Promise<{ id: number; wamid: string }>;
   plantillas(): Promise<PlantillaDeWa[]>;
@@ -144,6 +146,9 @@ export function clienteWa(pedir: Pedir): ClienteWa {
       if (ids.length) await pedirOk(pedir, 'POST', '/eventos/ack', { ids });
     },
     mandar: (a, texto, extra) => pedirOk(pedir, 'POST', '/mensajes', { a, texto, ...extra }),
+    escribiendo: async (a) => {
+      await pedirOk(pedir, 'POST', '/escribiendo', { a });
+    },
     charla: (contacto) => pedirOk<Charla>(pedir, 'GET', `/charlas/${encodeURIComponent(contacto)}?limite=30`),
     avisar: (a, plantilla, idioma, variables) => pedirOk(pedir, 'POST', '/avisos', { a, plantilla, idioma, variables }),
     plantillas: () => pedirOk<PlantillaDeWa[]>(pedir, 'GET', '/plantillas'),
@@ -456,6 +461,38 @@ export interface DepsDeWhatsAppLeads {
   avisar: (t: string) => Promise<void>;
 }
 
+/** Meta lo apaga a los 25 s: se renueva un poco antes mientras el agente sigue pensando. */
+export const RENOVAR_ESCRIBIENDO_MS = 20_000;
+
+export interface Escribiendo {
+  prender(): void;
+  apagar(): void;
+}
+
+/**
+ * "Escribiendo..." mientras el agente piensa. Se prende recien cuando el agente
+ * arranca de verdad (su primera herramienta), no al encolar: si espera una
+ * cuenta libre, no queda un "visto" colgado. Es cosmetico: si falla, nada.
+ */
+export function mantenerEscribiendo(wa: ClienteWa, contacto: string): Escribiendo {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let apagado = false;
+  const una = () => void wa.escribiendo(contacto).catch(() => undefined);
+  return {
+    prender() {
+      if (timer || apagado) return;
+      una();
+      timer = setInterval(una, RENOVAR_ESCRIBIENDO_MS);
+      timer.unref?.();
+    },
+    apagar() {
+      apagado = true;
+      if (timer) clearInterval(timer);
+      timer = undefined;
+    },
+  };
+}
+
 export interface ContextoDeWhatsApp {
   contacto: string;
   nombre: string;
@@ -464,6 +501,7 @@ export interface ContextoDeWhatsApp {
   referral?: Record<string, unknown> | null;
   lead?: Lead;
   registro: Registro;
+  escribiendo?: Escribiendo;
 }
 
 const objeto = (props: Record<string, unknown>, requeridos: string[] = []) => ({
@@ -486,6 +524,7 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
     if (ctx.registro.cerro) throw new ErrorParaElAgente('Ya resolviste esta charla. Terminá la corrida.');
     ctx.registro.cerro = true;
     ctx.registro.resumen = resumen;
+    ctx.escribiendo?.apagar();
   };
   const libres = async () => {
     const ahora = deps.ahora();
@@ -511,6 +550,8 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
     return lead;
   };
   const mandar = async (texto: string, extra?: ExtraDeMensaje) => {
+    // Lo que sale ya corta el "escribiendo..." en Meta: que no se vuelva a prender.
+    ctx.escribiendo?.apagar();
     try {
       await deps.wa.mandar(ctx.contacto, texto, extra);
     } catch (err) {
@@ -530,6 +571,7 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
     esquema: objeto({}),
     validar: z.object({}).strict() as z.ZodType<Record<string, never>>,
     async correr() {
+      ctx.escribiendo?.prender();
       const charla = await deps.wa.charla(ctx.contacto);
       const ofrecidos = ctx.lead ? await deps.store.oferta(ctx.lead.id) : undefined;
       const anuncio = ctx.referral
@@ -681,13 +723,15 @@ export function herramientasDeWhatsApp(deps: DepsDeWhatsAppLeads, ctx: ContextoD
   return [verCharla, verLibres, responder, confirmar, avisar, sinResponder];
 }
 
-export const ROL_WHATSAPP = `Tu rol: sos la ATENCION por WhatsApp de Sincro. Alguien le escribió al WhatsApp de Sincro (muchas veces desde un anuncio). Entendé qué quiere y llevalo a una reunión de 30 minutos por videollamada.
+export const ROL_WHATSAPP = `Tu rol: sos la ATENCION por WhatsApp de Sincro. Alguien le escribió al WhatsApp de Sincro (muchas veces desde un anuncio o el formulario de la web). Entendé qué quiere, sacale las dudas, y cuando quiera, agendá una reunión de 30 minutos por videollamada.
 - Empezá con ver_charla. Lo que respondas sale SOLO, al toque, sin que Gero lo apruebe: pensalo bien.
-- Si quiere saber más o pregunta algo, contestá corto y ofrecé 3 horarios de horarios_libres en días distintos, con responder. Los horarios NO van en tu texto: pasá sus números y la lista sale sola abajo, uno por renglón y con un botón cada uno.
-- Si tocó un botón, su mensaje es el título del botón ("mar 14/10 15:00"): buscalo entre los ya ofrecidos de ver_charla y confirmar_horario con su número.
+- NO te mandes de cabeza a la reunión. Si pregunta algo o quiere saber más, contestá corto lo que preguntó y cerrá preguntando, con tus palabras, si tiene alguna otra duda o si quiere que agendemos una reunión (ej.: "¿Tenés alguna otra duda o querés que agendemos una reunión?"). Ahí va SIN horarios.
+- Ofrecé horarios SOLO cuando dice que sí a la reunión, la pide él, o tocó "Agendar reunión": 3 de horarios_libres en días distintos, con responder. Los horarios NO van en tu texto: pasá sus números y la lista sale sola abajo, uno por renglón y con un botón cada uno.
+- Si tocó "Tengo una duda" (o dice que tiene una pregunta), pedile que te la cuente, sin horarios.
+- Si tocó un botón de horario, su mensaje es el título del botón ("mar 14/10 15:00"): buscalo entre los ya ofrecidos de ver_charla y confirmar_horario con su número.
 - Si eligió uno de los horarios que YA le ofrecimos, confirmar_horario.
 - Si pregunta algo que no podés contestar sin inventar (precios, plazos, casos), no inventes: el precio depende de lo que necesiten y se ve en la reunión. Si sentís que tu respuesta no le alcanza, con_web: true y le suma un botón a la web. Si hace falta, avisar_a_gero.
-- Decí siempre "reunión", nunca "charla": tiene que sonar profesional.
+- Decí siempre "reunión", nunca "charla" ni "llamada": tiene que sonar profesional.
 - Al cliente NUNCA le nombres a Gero ni a ninguna persona: hablás como Sincro ("nosotros", "el equipo de Sincro"). Es "una reunión" o "una reunión con el equipo de Sincro", nunca "con Gero".
 - Estilo WhatsApp: hasta 3 renglones, de vos, cálido y directo, en nombre de Sincro (primera persona del plural). Sin links (la web va con con_web), sin firma, sin "Estimado". Uno o dos emojis que sumen (👋 ✅ 🚀 📊), no más.
 - Si pide que no le escriban más, el bot ya lo dio de baja: cerrar_sin_responder.

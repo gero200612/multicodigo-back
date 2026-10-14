@@ -42,7 +42,7 @@ describe('el formulario de la web llega por el bot', () => {
       telefono: '5491123456789',
       investigacion: { contacto: 'Laura Pérez' },
     });
-    expect(bot.avisos).toEqual([{ a: '5491123456789', plantilla: 'consulta_recibida', idioma: 'es_AR', variables: ['Laura', 'stock que avisa'] }]);
+    expect(bot.avisos).toEqual([{ a: '5491123456789', plantilla: 'consulta_web', idioma: 'es_AR', variables: ['Laura', 'stock que avisa'] }]);
     const aviso = h.tarjetas.at(-1)!;
     expect(aviso.texto).toContain('Consulta nueva desde la web');
     expect(aviso.texto).toContain('✅ Le escribí por WhatsApp');
@@ -72,14 +72,33 @@ describe('el formulario de la web llega por el bot', () => {
     expect(bot.avisos).toEqual([]);
     expect(bot.creadas).toEqual([
       {
-        nombre: 'consulta_recibida',
+        nombre: 'consulta_web',
         idioma: 'es_AR',
         categoria: 'UTILITY',
-        componentes: [{ type: 'BODY', text: PLANTILLA_CONSULTA.texto, example: { body_text: [['Laura', 'stock que avisa']] } }],
+        componentes: [
+          { type: 'BODY', text: PLANTILLA_CONSULTA.texto, example: { body_text: [['Laura', 'stock que avisa']] } },
+          { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Tengo una duda' }, { type: 'QUICK_REPLY', text: 'Agendar reunión' }] },
+        ],
       },
     ]);
     expect(h.tarjetas.at(-1)!.texto).toContain('todavía no está aprobada');
     expect(h.tarjetas.at(-1)!.texto).toContain('https://wa.me/5491123456789');
+  });
+
+  it('mientras Meta revisa la nueva, sale la vieja ya aprobada (y la nueva queda creada)', async () => {
+    const { h, bot, deps } = conBot({ vieja: true });
+    await entrarFormularioWeb(LAURA, deps);
+    expect(bot.avisos.map((a) => a.plantilla)).toEqual(['consulta_recibida']);
+    expect(bot.creadas.map((c) => c.nombre)).toEqual(['consulta_web']);
+    expect(h.tarjetas.at(-1)!.texto).toContain('✅ Le escribí por WhatsApp');
+  });
+
+  it('la nueva tiene la cara de los mensajes del agente: reunión, emojis, sin "llamada"', () => {
+    expect(PLANTILLA_CONSULTA.texto).toContain('reunión');
+    expect(PLANTILLA_CONSULTA.texto).toContain('👋');
+    expect(PLANTILLA_CONSULTA.texto).not.toMatch(/llamada de|15 minutos/);
+    // Meta rechaza una plantilla que empieza o termina con una variable.
+    expect(PLANTILLA_CONSULTA.texto).not.toMatch(/^\{\{|\}\}$/);
   });
 
   it('sin la capacidad avisos lo dice claro', async () => {

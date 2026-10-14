@@ -9,6 +9,7 @@ import {
   variantesDeTelefono,
   yaContestado,
   ErrorDeWhatsApp,
+  ROL_WHATSAPP,
   type AdminWa,
   type Charla,
   type ClienteWa,
@@ -23,6 +24,7 @@ const CONTACTO = '5491155550000';
 function waFalso(charla: Partial<Charla> = {}) {
   const mandados: { a: string; texto: string; extra?: ExtraDeMensaje }[] = [];
   const acks: number[][] = [];
+  const escribiendos: { a: string; antesDe: number }[] = [];
   let eventos: EventoWa[] = [];
   let fallarCon: string | undefined;
   const wa: ClienteWa = {
@@ -33,6 +35,7 @@ function waFalso(charla: Partial<Charla> = {}) {
       mandados.push({ a, texto, extra });
       return { id: mandados.length, wamid: `wamid.${mandados.length}` };
     },
+    escribiendo: async (a) => void escribiendos.push({ a, antesDe: mandados.length }),
     charla: async (contacto) => ({
       contacto,
       ventana_abierta: true,
@@ -52,6 +55,7 @@ function waFalso(charla: Partial<Charla> = {}) {
     wa,
     mandados,
     acks,
+    escribiendos,
     ponerEventos: (e: EventoWa[]) => (eventos = e),
     fallar: (c: string) => (fallarCon = c),
   };
@@ -181,6 +185,30 @@ describe('whatsapp: el agente', () => {
     expect(lead?.fuente).toBe('whatsapp');
     expect((await h.store.oferta(lead!.id))?.length).toBe(2);
     expect(h.avisos.some((a) => a.includes('Le contesté'))).toBe(true);
+  });
+
+  it('muestra los tres puntos recién cuando el agente arranca, y se apagan al contestar', async () => {
+    const f = waFalso();
+    const h = armar({
+      agente: agenteDe({
+        atencion: async (usar) => {
+          expect(f.escribiendos).toHaveLength(0);
+          await usar('ver_charla');
+          await usar('ver_charla');
+          await usar('responder', { texto: 'Hola Ana! 👋 ¿Tenés alguna otra duda o querés que agendemos una reunión?', horarios: [] });
+        },
+      }),
+    });
+    h.deps.wa = f.wa;
+    await agenteWhatsApp(payload, h.deps);
+    // Una sola vez (la segunda mirada no lo repite) y antes de que saliera la respuesta.
+    expect(f.escribiendos).toEqual([{ a: CONTACTO, antesDe: 0 }]);
+  });
+
+  it('el rol no se manda de cabeza a la reunión: primero pregunta si hay otra duda', () => {
+    expect(ROL_WHATSAPP).toContain('NO te mandes de cabeza a la reunión');
+    expect(ROL_WHATSAPP).toContain('alguna otra duda o si quiere que agendemos una reunión');
+    expect(ROL_WHATSAPP).toContain('Agendar reunión');
   });
 
   it('no manda links y no contesta dos veces en la misma corrida', async () => {

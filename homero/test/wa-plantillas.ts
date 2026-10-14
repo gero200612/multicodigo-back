@@ -4,18 +4,21 @@ import { ErrorDeWhatsApp, type ClienteWa, type EventoWa, type PlantillaDeWa } fr
  * Un bot falso con plantillas: anota lo que se manda y deja simular que la
  * plantilla no esta aprobada o que el negocio no tiene `avisos`.
  */
-export function waConPlantillas(o: { estado?: string; sinPermiso?: boolean } = {}) {
+export function waConPlantillas(o: { estado?: string; sinPermiso?: boolean; vieja?: boolean } = {}) {
   const avisos: { a: string; plantilla: string; idioma: string; variables: string[] }[] = [];
   const creadas: { nombre: string; idioma: string; categoria: string; componentes: unknown[] }[] = [];
   const acks: number[][] = [];
   let eventos: EventoWa[] = [];
-  const lista: PlantillaDeWa[] = o.estado
-    ? [{ nombre: 'consulta_recibida', idioma: 'es_AR', categoria: 'UTILITY', estado: o.estado }]
-    : [];
+  const lista: PlantillaDeWa[] = [
+    ...(o.estado ? [{ nombre: 'consulta_web', idioma: 'es_AR', categoria: 'UTILITY', estado: o.estado }] : []),
+    // La de antes, ya aprobada: sale mientras la nueva espera a Meta.
+    ...(o.vieja ? [{ nombre: 'consulta_recibida', idioma: 'es_AR', categoria: 'UTILITY', estado: 'APPROVED' }] : []),
+  ];
   const wa: ClienteWa = {
     eventos: async () => eventos,
     ack: async (ids) => void acks.push(ids),
     mandar: async () => ({ id: 1, wamid: 'wamid.1' }),
+    escribiendo: async () => undefined,
     charla: async (contacto) => ({ contacto, ventana_abierta: false, baja: false, mensajes: [] }),
     async avisar(a, plantilla, idioma, variables) {
       if (o.sinPermiso) throw new ErrorDeWhatsApp(404, 'no_existe');

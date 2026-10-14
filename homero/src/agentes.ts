@@ -25,6 +25,7 @@ import { ensayoActivo, identificarRemitente } from './ventas.js';
 import {
   herramientasDeWhatsApp,
   PayloadDeWhatsApp,
+  mantenerEscribiendo,
   ROL_WHATSAPP,
   variantesDeTelefono,
   yaContestado,
@@ -507,18 +508,19 @@ export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Pro
   const lead = await deps.store.leadPorTelefono(variantesDeTelefono(p.contacto));
   const texto = p.texto ?? `(${p.tipo})`;
   const prueba = esNumeroDePrueba(p.contacto, deps.numerosDePrueba ?? []);
+  const escribiendo = mantenerEscribiendo(deps.wa, p.contacto);
   await correr(
     'atencion',
-    `Objetivo: llegó un WhatsApp${lead ? ` de ${lead.nombre}` : ''} al número de Sincro. Entendé qué quiere y resolvelo: la mejor respuesta para llevarlo a una charla con Gero, o lo que corresponda.` +
+    `Objetivo: llegó un WhatsApp${lead ? ` de ${lead.nombre}` : ''} al número de Sincro. Entendé qué quiere y resolvelo: sacale las dudas y, si quiere, agendá una reunión, o lo que corresponda.` +
       (prueba ? PRUEBA_DE_GERO : ''),
     (reg) =>
       herramientasDeWhatsApp(
         { store: deps.store, wa: deps.wa!, ahora: deps.ahora, avisar: deps.avisar },
-        { contacto: p.contacto, nombre: p.nombre ?? '', texto, referral: p.referral ?? null, lead, registro: reg },
+        { contacto: p.contacto, nombre: p.nombre ?? '', texto, referral: p.referral ?? null, lead, registro: reg, escribiendo },
       ),
     { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP, urgente: true, contacto: p.contacto },
     deps,
-  );
+  ).finally(() => escribiendo.apagar());
 }
 
 const PayloadDePublicidad = z.object({

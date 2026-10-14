@@ -294,7 +294,7 @@ async function main() {
     ? (() => {
         const mirar = () =>
           void vigilarPlantilla({ wa, store, avisar: aviso })
-            .then((e) => console.log(`[homero] plantilla consulta_recibida: ${e}`))
+            .then((e) => console.log(`[homero] plantilla consulta_web: ${e}`))
             .catch((err) => console.error('[homero] plantilla de WhatsApp:', err instanceof Error ? err.message : err));
           // La del link de la reunion, para cuando pasaron mas de 24 h: con que quede registrada alcanza.
           void asegurarPlantilla(wa, PLANTILLA_LINK)

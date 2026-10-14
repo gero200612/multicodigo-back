@@ -14,14 +14,34 @@ import { ErrorDeWhatsApp, type ClienteWa } from './whatsapp.js';
  * persona contesta se abre la ventana y sigue el agente de WhatsApp de siempre.
  */
 
-export const PLANTILLA_CONSULTA = {
-  nombre: 'consulta_recibida',
+export interface PlantillaDeTexto {
+  nombre: string;
+  idioma: string;
+  categoria: string;
+  texto: string;
+  ejemplo: string[];
+  /** Botones de respuesta rapida: lo que tocan vuelve como su mensaje. */
+  botones?: string[];
+}
+
+/**
+ * Con la misma cara que lo que manda el agente (pedido de Gero, 2026-10-14):
+ * emojis, "reunión" y sin mandarse de cabeza a agendar; los dos botones
+ * llevan al agente por un camino o el otro. Meta no deja editar el texto de
+ * una aprobada sin pasar otra revision, por eso es una plantilla nueva.
+ */
+export const PLANTILLA_CONSULTA: PlantillaDeTexto = {
+  nombre: 'consulta_web',
   idioma: 'es_AR',
-  categoria: 'UTILITY' as const,
+  categoria: 'UTILITY',
   texto:
-    'Hola {{1}}, soy de Sincro. Recibimos tu consulta sobre {{2}}. ¿Cuándo te queda cómodo una llamada de 15 minutos? Respondé este mensaje y lo coordinamos.',
+    'Hola {{1}}! 👋 Somos Sincro.\n\n✅ Recibimos tu consulta sobre {{2}}.\n\n¿Tenés alguna duda que te podamos responder por acá, o preferís que agendemos una reunión de 30 minutos por videollamada?',
   ejemplo: ['Laura', 'stock que avisa'],
+  botones: ['Tengo una duda', 'Agendar reunión'],
 };
+
+/** La de antes: sale solo mientras Meta no aprobó la nueva, para no dejar a nadie sin respuesta. */
+export const PLANTILLA_CONSULTA_VIEJA = { nombre: 'consulta_recibida', idioma: 'es_AR' };
 
 /** Lo que dice la plantilla si no se sabe el tema. */
 const TEMA_GENERAL = 'lo que necesitás para tu negocio';
@@ -52,7 +72,7 @@ const PlantillaWa = z.object({ nombre: z.string(), idioma: z.string(), estado: z
  */
 export async function asegurarPlantilla(
   wa: ClienteWa,
-  plantilla: { nombre: string; idioma: string; categoria: string; texto: string; ejemplo: string[] } = PLANTILLA_CONSULTA,
+  plantilla: PlantillaDeTexto = PLANTILLA_CONSULTA,
 ): Promise<string> {
   let lista: z.infer<typeof PlantillaWa>[];
   try {
@@ -67,20 +87,25 @@ export async function asegurarPlantilla(
     nombre: plantilla.nombre,
     idioma: plantilla.idioma,
     categoria: plantilla.categoria,
-    componentes: [{ type: 'BODY', text: plantilla.texto, example: { body_text: [plantilla.ejemplo] } }],
+    componentes: [
+      { type: 'BODY', text: plantilla.texto, example: { body_text: [plantilla.ejemplo] } },
+      ...(plantilla.botones?.length
+        ? [{ type: 'BUTTONS', buttons: plantilla.botones.map((text) => ({ type: 'QUICK_REPLY', text })) }]
+        : []),
+    ],
   });
   return creada.bloqueada ? 'BLOQUEADA' : creada.estado;
 }
 
 /** Clave en homero.estado: el ultimo estado de la plantilla que se le conto a Gero. */
-export const ESTADO_DE_LA_PLANTILLA = 'wa:plantilla_consulta';
+export const ESTADO_DE_LA_PLANTILLA = 'wa:plantilla_consulta_web';
 /** Cada cuanto se mira: es un GET al bot, y Meta tarda de minutos a horas en revisarla. */
 export const VIGILAR_PLANTILLA_MS = 30 * 60_000;
 
 const NOVEDADES: Record<string, string> = {
-  PENDING: '📨 Registré en Meta la plantilla del primer WhatsApp (consulta_recibida). Está en revisión: te aviso cuando la aprueben.',
-  APPROVED: '✅ Meta aprobó la plantilla del primer WhatsApp: desde ahora, a quien tilde WhatsApp en la web o en un anuncio le escribo al toque.',
-  REJECTED: '❌ Meta rechazó la plantilla del primer WhatsApp (consulta_recibida). Hasta arreglarla, a esos leads les escribís vos.',
+  PENDING: '📨 Registré en Meta la plantilla nueva del primer WhatsApp (consulta_web). Está en revisión: te aviso cuando la aprueben.',
+  APPROVED: '✅ Meta aprobó la plantilla nueva del primer WhatsApp (consulta_web): desde ahora sale esa, con los botones "Tengo una duda" y "Agendar reunión".',
+  REJECTED: '❌ Meta rechazó la plantilla nueva del primer WhatsApp (consulta_web). Mientras tanto sigue saliendo la vieja (consulta_recibida).',
   BLOQUEADA: '⚠️ Meta pasó la plantilla del primer WhatsApp a Marketing y el bot la bloqueó (Sincro solo tiene avisos). Decidí si le damos promociones.',
   PAUSED: '⏸ Meta pausó la plantilla del primer WhatsApp por mala calidad.',
   DISABLED: '⛔ Meta desactivó la plantilla del primer WhatsApp.',
@@ -114,11 +139,22 @@ export async function escribirPrimerWhatsapp(
   wa: ClienteWa,
   p: { a: string; nombre?: string; tema?: string },
 ): Promise<ResultadoDelPrimero> {
+  const variables = [primerNombre(p.nombre), temaDeLaConsulta(p.tema)];
   try {
-    await wa.avisar(p.a, PLANTILLA_CONSULTA.nombre, PLANTILLA_CONSULTA.idioma, [primerNombre(p.nombre), temaDeLaConsulta(p.tema)]);
+    await wa.avisar(p.a, PLANTILLA_CONSULTA.nombre, PLANTILLA_CONSULTA.idioma, variables);
     return { ok: true };
   } catch (e) {
     if (e instanceof ErrorDeWhatsApp) {
+      if (e.codigo === 'plantilla_no_aprobada') {
+        // La nueva todavia en revision: que se cree si falta, y sale la vieja.
+        await asegurarPlantilla(wa).catch(() => undefined);
+        try {
+          await wa.avisar(p.a, PLANTILLA_CONSULTA_VIEJA.nombre, PLANTILLA_CONSULTA_VIEJA.idioma, variables);
+          return { ok: true };
+        } catch {
+          // Tampoco la vieja: sigue abajo con el motivo de la nueva.
+        }
+      }
       if (e.codigo === 'plantilla_no_aprobada' || e.codigo === 'no_existe') {
         // Si nunca se creo, se crea ahora; Meta la revisa en minutos u horas.
         const estado = await asegurarPlantilla(wa).catch(() => 'desconocido');

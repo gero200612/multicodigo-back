@@ -608,7 +608,7 @@ describe('las consultas que entran', () => {
     ]);
     expect(await leerLeadsDeMeta(h.deps)).toBe(2);
     expect(bot.avisos).toEqual([
-      { a: '5491122334455', plantilla: 'consulta_recibida', idioma: 'es_AR', variables: ['Ana', titulo.charAt(0).toLowerCase() + titulo.slice(1)] },
+      { a: '5491122334455', plantilla: 'consulta_web', idioma: 'es_AR', variables: ['Ana', titulo.charAt(0).toLowerCase() + titulo.slice(1)] },
     ]);
     expect(h.tarjetas.find((t) => t.texto.includes('Ana Gómez'))!.texto).toContain('✅ Le escribí por WhatsApp');
     expect(h.store.tareas.filter((t) => t.tipo === 'escribir_a_lead_meta')).toHaveLength(2);
