@@ -260,13 +260,13 @@ describe('cliente de Meta: reels', () => {
 
   it('el creativo de un reel apunta al media de IG y lleva al formulario', async () => {
     const f = fetchFalso([IG, { json: { id: 'cre1' } }]);
-    const id = await clienteDeMeta(cfg, f.pedir).crearCreativoDeReel({ nombre: '#7 · reel', media: 'media1', formulario: 'form1' });
+    const id = await clienteDeMeta(cfg, f.pedir).crearCreativoDeReel({ nombre: '#7 · reel', media: 'media1', formulario: 'form1', web: 'https://sincro.apps.punchi.dev' });
     expect(id).toBe('cre1');
     const p = f.pedidos[1]!;
     expect(p.url).toBe('https://graph.facebook.com/v23.0/act_980029277705534/adcreatives');
     expect(p.cuerpo.get('object_id')).toBe('61595291607526');
     expect(p.cuerpo.get('instagram_user_id')).toBe('ig1');
     expect(p.cuerpo.get('source_instagram_media_id')).toBe('media1');
-    expect(JSON.parse(p.cuerpo.get('call_to_action')!)).toEqual({ type: 'SIGN_UP', value: { lead_gen_form_id: 'form1' } });
+    expect(JSON.parse(p.cuerpo.get('call_to_action')!)).toEqual({ type: 'SIGN_UP', value: { lead_gen_form_id: 'form1', link: 'https://sincro.apps.punchi.dev' } });
   });
 });

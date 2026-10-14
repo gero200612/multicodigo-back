@@ -641,7 +641,7 @@ export async function publicarAnuncio(payload: unknown, deps: DepsDeAnuncios): P
   }
   if (!ids.creativo) {
     ids.creativo = reel
-      ? await meta.crearCreativoDeReel({ nombre: `#${a.id} · reel #${reel.id}`, media: reel.igMedia!, formulario: ids.formulario })
+      ? await meta.crearCreativoDeReel({ nombre: `#${a.id} · reel #${reel.id}`, media: reel.igMedia!, formulario: ids.formulario, web: WEB })
       : await meta.crearCreativo({
           nombre: `#${a.id} · ${a.titulo}`,
           imagenHash: ids.imagen!,

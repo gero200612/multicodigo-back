@@ -176,7 +176,7 @@ export interface Meta {
   /** Si Meta deja promocionar ese media (p. ej. no, con musica con derechos). */
   promocionable(media: string): Promise<{ ok: true } | { ok: false; motivo: string }>;
   /** Un creativo que usa el reel publicado tal cual, con el boton al formulario. */
-  crearCreativoDeReel(c: { nombre: string; media: string; formulario: string }): Promise<string>;
+  crearCreativoDeReel(c: { nombre: string; media: string; formulario: string; web: string }): Promise<string>;
 }
 
 /** Lo que se lee de un reel de IG. El promedio de reproduccion, en milisegundos. */
@@ -612,7 +612,9 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
           object_id: cfg.pagina,
           instagram_user_id: await instagramONada(),
           source_instagram_media_id: c.media,
-          call_to_action: { type: 'SIGN_UP', value: { lead_gen_form_id: c.formulario } },
+          // Meta pide `link` aunque el boton abra el formulario: sin el, "The
+          // link field is required" (anuncio #5, 2026-10-14).
+          call_to_action: { type: 'SIGN_UP', value: { lead_gen_form_id: c.formulario, link: c.web } },
         }),
       );
     },
