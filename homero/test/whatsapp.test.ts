@@ -211,6 +211,11 @@ describe('whatsapp: el agente', () => {
     expect(ROL_WHATSAPP).toContain('Agendar reunión');
   });
 
+  it('lo que está muy lejos de Sincro no se contesta: dice que por acá no lo resolvemos', () => {
+    expect(ROL_WHATSAPP).toContain('muy lejos de Sincro');
+    expect(ROL_WHATSAPP).toContain('NO lo contestes');
+  });
+
   it('no manda links y no contesta dos veces en la misma corrida', async () => {
     const f = waFalso();
     const h = armar({
