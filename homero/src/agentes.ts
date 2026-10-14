@@ -518,8 +518,8 @@ export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Pro
   // La charla y los horarios van en el objetivo: cada herramienta de lectura es
   // una vuelta mas con el modelo (~5 s) antes de que salga la respuesta.
   const [verCharla, verLibres] = herramientasDeWhatsApp(depsWa, ctx({ anotados: [], cerro: false }));
-  const charla = String(await verCharla!.correr({}));
-  const libres = String(await verLibres!.correr({}));
+  // En paralelo: son dos idas al bot y a la base, y medido tardaban ~2,6 s seguidas.
+  const [charla, libres] = (await Promise.all([verCharla!.correr({}), verLibres!.correr({})])).map(String);
   // Los tres puntos desde que arranca a pensar. Si no hay cuenta libre, una
   // sola vez cada tanto: que no quede prendiendo y apagando mientras espera.
   const ultimaEspera = esperandoLugar.get(p.contacto);
