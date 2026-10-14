@@ -266,6 +266,8 @@ async function correr(
     urgente?: boolean;
     /** La charla de WhatsApp que atiende: la pantalla Charlas junta mensajes y decisiones por esto. */
     contacto?: string;
+    /** Otro modelo que el de Homero (WhatsApp puede ir con uno mas rapido). */
+    modelo?: string;
   },
   deps: DepsDeAgentes,
 ): Promise<Registro> {
@@ -288,7 +290,7 @@ async function correr(
       herramientas: lista,
       web: o.web,
       ...(o.topes ?? TOPES[agente]),
-      modelo: deps.modelo,
+      modelo: o.modelo ?? deps.modelo,
       ...(o.urgente ? { urgente: true } : {}),
     });
   } catch (err) {
@@ -499,6 +501,14 @@ export function esNumeroDePrueba(contacto: string, numeros: string[]): boolean {
   return numeros.some((n) => variantesDeTelefono(n).some((v) => propias.has(v)));
 }
 
+/**
+ * El modelo del agente de WhatsApp, si no es el de Homero. Vive en
+ * homero.estado y no en mc.env: se prueba Haiku contra Sonnet (2026-10-14)
+ * cambiandolo sin reiniciar nada. Solo valores conocidos.
+ */
+export const MODELO_DE_WHATSAPP = 'wa:modelo';
+const MODELOS_DE_WHATSAPP = new Set(['sonnet', 'haiku', 'opus']);
+
 /** Contactos cuya respuesta espera una cuenta libre, desde cuando (los tres puntos no se repiten). */
 const esperandoLugar = new Map<string, number>();
 const ESPERA_SIN_PUNTOS_MS = 10 * 60_000;
@@ -518,6 +528,8 @@ export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Pro
   // La charla y los horarios van en el objetivo: cada herramienta de lectura es
   // una vuelta mas con el modelo (~5 s) antes de que salga la respuesta.
   const [verCharla, verLibres] = herramientasDeWhatsApp(depsWa, ctx({ anotados: [], cerro: false }));
+  const elegido = await deps.store.leerEstado<string>(MODELO_DE_WHATSAPP).catch(() => undefined);
+  const modelo = elegido && MODELOS_DE_WHATSAPP.has(elegido) ? elegido : undefined;
   // En paralelo: son dos idas al bot y a la base, y medido tardaban ~2,6 s seguidas.
   const [charla, libres] = (await Promise.all([verCharla!.correr({}), verLibres!.correr({})])).map(String);
   // Los tres puntos desde que arranca a pensar. Si no hay cuenta libre, una
@@ -538,7 +550,7 @@ ${charla}
 Lo que devolvería horarios_libres:
 ${libres}`,
       (reg) => herramientasDeWhatsApp(depsWa, ctx(reg)),
-      { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP, urgente: true, contacto: p.contacto },
+      { leadId: lead?.id, web: false, debeCerrar: true, rol: ROL_WHATSAPP, urgente: true, contacto: p.contacto, modelo },
       deps,
     );
     esperandoLugar.delete(p.contacto);

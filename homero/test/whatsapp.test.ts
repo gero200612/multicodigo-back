@@ -207,6 +207,26 @@ describe('whatsapp: el agente', () => {
     expect(objetivo).toContain('horarios_libres:');
   });
 
+  it('el modelo de WhatsApp sale de homero.estado (y solo uno conocido)', async () => {
+    const f = waFalso();
+    const modelos: (string | undefined)[] = [];
+    const h = armar({
+      agente: agenteDe({
+        atencion: async (usar, p) => {
+          modelos.push(p.modelo);
+          await usar('responder', { texto: 'Hola!', horarios: [] });
+        },
+      }),
+    });
+    h.deps.wa = f.wa;
+    await h.store.guardarEstado('wa:modelo', 'haiku');
+    await agenteWhatsApp(payload, h.deps);
+    await h.store.guardarEstado('wa:modelo', 'cualquiera');
+    await agenteWhatsApp({ ...payload, mensaje_id: 11 }, h.deps);
+    expect(modelos[0]).toBe('haiku');
+    expect(modelos[1]).not.toBe('cualquiera');
+  });
+
   it('sin cuenta libre no repite los tres puntos en cada reintento', async () => {
     const f = waFalso();
     const h = armar({ agente: agenteDe({}) });
