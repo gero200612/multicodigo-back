@@ -467,7 +467,19 @@ export async function promocionarReel(
   if (!deps.meta) return { ok: false, motivo: 'Meta no está configurado (falta META_TOKEN)' };
   const r = await deps.store.reel(id);
   if (!r?.igMedia || r.estado !== 'publicado') return { ok: false, motivo: 'ese reel no está publicado' };
-  if (r.anuncioId !== undefined) return { ok: false, motivo: `ya se promociona (anuncio #${r.anuncioId})` };
+  if (r.anuncioId !== undefined) {
+    // Aprobado pero nunca llego a Meta (la tarea fallo): se vuelve a publicar
+    // el mismo anuncio, que reusa lo que ya se creo alla.
+    const a = await deps.store.anuncio(r.anuncioId);
+    if (a?.estado !== 'aprobado') return { ok: false, motivo: `ya se promociona (anuncio #${r.anuncioId})` };
+    await deps.store.encolar({
+      tipo: 'publicar_anuncio',
+      payload: { anuncioId: a.id },
+      requiereIa: false,
+      clave: `publicar:${a.id}:${deps.ahora().getTime()}`,
+    });
+    return { ok: true, anuncioId: a.id };
+  }
   const elegible = await deps.meta.promocionable(r.igMedia);
   if (!elegible.ok) return { ok: false, motivo: `Meta no deja promocionarlo: ${elegible.motivo}` };
   const diario = await minimoDiario(deps);

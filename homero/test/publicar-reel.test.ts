@@ -408,6 +408,18 @@ describe('números y promoción', () => {
     expect((await h.store.anuncio(p.anuncioId))!.estado).toBe('activo');
   });
 
+  it('si el anuncio del reel nunca llegó a Meta, promocionar lo reintenta; si ya está activo, no', async () => {
+    const h = armarReels();
+    const r = await publicado(h);
+    const p = await promocionarReel(r.id, h.deps);
+    if (!p.ok) throw new Error(p.motivo);
+    const antes = h.store.tareas.filter((t) => t.tipo === 'publicar_anuncio').length;
+    expect(await promocionarReel(r.id, h.deps)).toEqual({ ok: true, anuncioId: p.anuncioId });
+    expect(h.store.tareas.filter((t) => t.tipo === 'publicar_anuncio').length).toBe(antes + 1);
+    await publicarAnuncio({ anuncioId: p.anuncioId }, h.deps);
+    expect(await promocionarReel(r.id, h.deps)).toMatchObject({ ok: false, motivo: expect.stringMatching(/ya se promociona/) });
+  });
+
   it('a los 5 días el anuncio del reel se pausa', async () => {
     const h = armarReels();
     const r = await publicado(h);
