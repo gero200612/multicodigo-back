@@ -6,7 +6,7 @@ import { emitir } from './eventos.js';
 import { responder } from './envio.js';
 import { encolar, MENSAJES_DE_CONTEXTO, TEXTO_FACTURA_ILEGIBLE, TEXTO_FACTURA_PDF } from './ia.js';
 import { esAlta, esBaja, precioDe, revisarTopeDeGasto, TEXTO_DE_ALTA, TEXTO_DE_BAJA } from './reglas.js';
-import type { Negocio, Numero } from './store.js';
+import type { ContenidoDeMensaje, Negocio, Numero } from './store.js';
 import { refrescarNumero } from './tareas.js';
 import { taparTokens, textoDeError } from './tapar.js';
 
@@ -85,6 +85,20 @@ function textoDe(m: Json): string | null {
   return typeof t === 'string' ? t : null;
 }
 
+/** Lo que el texto plano no dice: el boton que toco, la reaccion, la ubicacion. */
+function contenidoDe(m: Json): ContenidoDeMensaje | null {
+  const toco = m.interactive?.button_reply?.title ?? m.interactive?.list_reply?.title ?? m.button?.text;
+  if (typeof toco === 'string') return { toco };
+  if (m.type === 'reaction' && m.reaction) {
+    return { reaccion: { emoji: String(m.reaction.emoji ?? ''), a: m.reaction.message_id ? String(m.reaction.message_id) : null } };
+  }
+  if (m.type === 'location' && m.location) {
+    const { latitude, longitude, name } = m.location;
+    return { ubicacion: { latitud: Number(latitude), longitud: Number(longitude), ...(typeof name === 'string' ? { nombre: name } : {}) } };
+  }
+  return null;
+}
+
 async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json, nombre: string | null): Promise<void> {
   const contacto = String(m.from ?? '');
   const tipo = String(m.type ?? 'unknown');
@@ -101,6 +115,7 @@ async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json
     mediaId: null,
     referral: m.referral && typeof m.referral === 'object' ? m.referral : null,
     plantilla: null,
+    contenido: contenidoDe(m),
     wamid: String(m.id),
     categoria: null,
     costoEstimado: 0,

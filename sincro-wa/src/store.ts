@@ -88,7 +88,24 @@ export interface Mensaje {
   costoReal: number | null;
   estado: string | null;
   error: { codigo: number | string; detalle: string } | null;
+  /** Lo que se ve en el celu y el texto plano no guarda; nulo en los viejos. */
+  contenido?: ContenidoDeMensaje | null;
   fecha: Date;
+}
+
+/** Lo que muestra la pantalla Charlas: el mensaje como lo vio la persona. */
+export interface ContenidoDeMensaje {
+  /** El texto ya armado, sin los botones (en una plantilla, con las variables puestas). */
+  cuerpo?: string;
+  encabezado?: string;
+  pie?: string;
+  botones?: string[];
+  link?: { texto: string; url: string };
+  /** El titulo del boton o de la fila de lista que toco la persona. */
+  toco?: string;
+  /** El emoji de una reaccion y el wamid del mensaje al que reacciona. */
+  reaccion?: { emoji: string; a: string | null };
+  ubicacion?: { latitud: number; longitud: number; nombre?: string };
 }
 
 export type NuevoMensaje = Omit<Mensaje, 'id'>;

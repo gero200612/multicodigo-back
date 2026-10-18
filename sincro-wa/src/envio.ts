@@ -4,7 +4,7 @@ import { tokenDe, type Contexto } from './contexto.js';
 import { DIA_MS, diaDe } from './horas.js';
 import { ErrorDeMeta, type Interactivo } from './meta.js';
 import { gastoDelMes, precioDe, revisarTopeDeGasto, ventanaAbierta } from './reglas.js';
-import type { CategoriaDeMensaje, Mensaje, Negocio, NuevoMensaje, Numero } from './store.js';
+import type { CategoriaDeMensaje, ContenidoDeMensaje, Mensaje, Negocio, NuevoMensaje, Numero } from './store.js';
 import { textoDeError } from './tapar.js';
 
 /**
@@ -82,6 +82,7 @@ export async function enviarTexto(
     costoReal: null,
     estado: null,
     error: null,
+    contenido: { cuerpo: texto, ...(interactivo ?? {}) } satisfies ContenidoDeMensaje,
   };
   let wamid: string;
   try {
@@ -154,6 +155,7 @@ export async function enviarAviso(ctx: Contexto, negocio: Negocio, p: PedidoDeAv
     contacto: p.a,
     tipo: 'template',
     texto: p.variables.length ? p.variables.join(' | ') : null,
+    contenido: contenidoDePlantilla(plantilla.componentes, p.variables),
     mediaId: null,
     plantilla: plantilla.nombre,
     categoria,
@@ -184,6 +186,29 @@ export async function enviarAviso(ctx: Contexto, negocio: Negocio, p: PedidoDeAv
     });
   }
   return { mensaje, costoEstimado };
+}
+
+/** Reemplaza {{1}}, {{2}}... por las variables; una que falta queda como esta. */
+const conVariables = (t: string, vars: string[]) => t.replace(/\{\{(\d+)\}\}/g, (m, n) => vars[Number(n) - 1] ?? m);
+
+/** La plantilla como la ve la persona: encabezado, cuerpo con las variables puestas, pie y botones. */
+export function contenidoDePlantilla(componentes: unknown[], variables: string[]): ContenidoDeMensaje | null {
+  const cs = componentes.filter((c): c is Record<string, unknown> => !!c && typeof c === 'object');
+  const de = (tipo: string) => cs.find((c) => String(c.type).toUpperCase() === tipo);
+  const texto = (c?: Record<string, unknown>) => (typeof c?.text === 'string' ? c.text : undefined);
+  const cuerpo = texto(de('BODY'));
+  const encabezado = String(de('HEADER')?.format ?? 'TEXT').toUpperCase() === 'TEXT' ? texto(de('HEADER')) : undefined;
+  const pie = texto(de('FOOTER'));
+  const botones = (Array.isArray(de('BUTTONS')?.buttons) ? (de('BUTTONS')!.buttons as Record<string, unknown>[]) : [])
+    .map((b) => (typeof b.text === 'string' ? b.text : undefined))
+    .filter((t): t is string => !!t);
+  if (!cuerpo) return null;
+  return {
+    cuerpo: conVariables(cuerpo, variables),
+    ...(encabezado ? { encabezado } : {}),
+    ...(pie ? { pie } : {}),
+    ...(botones.length ? { botones } : {}),
+  };
 }
 
 /** Contactos distintos con plantilla en las ultimas 24 h, contando a este. */

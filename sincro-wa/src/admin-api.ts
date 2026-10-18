@@ -278,7 +278,7 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
         contacto: ultimo.contacto,
         ...(await estadoDeCharla(ultimo.negocioId, ultimo.contacto)),
         mensajes: cantidad,
-        ultimo: { direccion: ultimo.direccion, tipo: ultimo.tipo, texto: ultimo.texto, fecha: ultimo.fecha.toISOString() },
+        ultimo: { direccion: ultimo.direccion, tipo: ultimo.tipo, texto: ultimo.contenido?.cuerpo ?? ultimo.contenido?.toco ?? ultimo.texto, estado: ultimo.estado, fecha: ultimo.fecha.toISOString() },
       })),
     );
   });
@@ -298,7 +298,10 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
         id: m.id,
         direccion: m.direccion,
         tipo: m.tipo,
-        texto: m.texto,
+        texto: m.contenido?.cuerpo ?? m.texto,
+        contenido: m.contenido ?? null,
+        media_id: m.mediaId,
+        wamid: m.wamid,
         plantilla: m.plantilla,
         categoria: m.categoria,
         costo_ars: m.costoReal ?? m.costoEstimado,

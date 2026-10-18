@@ -99,6 +99,7 @@ const mensaje = (r: Fila): Mensaje => ({
   costoReal: r.costo_real,
   estado: r.estado,
   error: r.error,
+  contenido: r.contenido ?? null,
   fecha: r.fecha,
 });
 
@@ -162,7 +163,7 @@ const cambio = (r: Fila): Cambio => ({
 });
 
 /** Las columnas jsonb: se mandan como texto, si no pg convierte los arrays a arrays de Postgres. */
-const JSONB = new Set(['referral', 'error', 'componentes', 'datos', 'entrada', 'resultado']);
+const JSONB = new Set(['referral', 'error', 'contenido', 'componentes', 'datos', 'entrada', 'resultado']);
 
 const snake = (s: string) => s.replace(/[A-Z]/g, (l) => `_${l.toLowerCase()}`);
 
@@ -334,8 +335,8 @@ export class PgStore implements Store {
   async guardarMensaje(m: NuevoMensaje) {
     const [r] = await this.filas(
       `INSERT INTO mensajes (negocio_id, numero_id, contacto, direccion, tipo, texto, media_id, referral, plantilla, wamid,
-                             categoria, costo_estimado, costo_real, estado, error, fecha)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                             categoria, costo_estimado, costo_real, estado, error, fecha, contenido)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        ON CONFLICT (wamid) DO NOTHING RETURNING *`,
       [
         m.negocioId,
@@ -354,6 +355,7 @@ export class PgStore implements Store {
         m.estado,
         json(m.error),
         m.fecha,
+        json(m.contenido),
       ],
     );
     return r ? mensaje(r) : undefined;

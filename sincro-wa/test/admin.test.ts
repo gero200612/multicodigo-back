@@ -226,6 +226,28 @@ describe('charlas', () => {
     expect(typeof r.json.mensajes[0].fecha).toBe('string');
   });
 
+  it('el detalle muestra los botones, la plantilla armada y el boton que toco la persona', async () => {
+    const n = await negocioConNumero(b, ['leads', 'avisos']);
+    await plantillaAprobada(b, n.id, n.wabaId, 'turno', 'UTILITY');
+    await webhook(b, texto(n.phoneNumberId, '5491100000001', 'Hola'));
+    await pedir(b, n.clave, 'POST', '/mensajes', { a: '5491100000001', texto: 'Elegí uno', botones: ['Mar 15:00', 'Mié 16:00'] });
+    await pedir(b, n.clave, 'POST', '/avisos', { a: '5491100000001', plantilla: 'turno', idioma: 'es_AR', variables: ['Juan'] });
+    await webhook(b, {
+      object: 'whatsapp_business_account',
+      entry: [{ id: n.wabaId, changes: [{ field: 'messages', value: {
+        messaging_product: 'whatsapp',
+        metadata: { phone_number_id: n.phoneNumberId },
+        contacts: [{ wa_id: '5491100000001', profile: { name: 'Juan' } }],
+        messages: [{ from: '5491100000001', id: 'wamid.tocado', timestamp: '1760108400', type: 'interactive', interactive: { type: 'button_reply', button_reply: { id: 'b1', title: 'Mar 15:00' } } }],
+      } }] }],
+    });
+
+    const { mensajes } = (await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas/${n.id}/5491100000001`)).json;
+    expect(mensajes[1]).toMatchObject({ texto: 'Elegí uno', contenido: { cuerpo: 'Elegí uno', botones: ['Mar 15:00', 'Mié 16:00'] } });
+    expect(mensajes[2]).toMatchObject({ plantilla: 'turno', texto: 'Hola Juan', contenido: { cuerpo: 'Hola Juan' } });
+    expect(mensajes[3]).toMatchObject({ direccion: 'entra', texto: 'Mar 15:00', contenido: { toco: 'Mar 15:00' } });
+  });
+
   it('filtra por negocio', async () => {
     const a = await negocioConNumero(b, ['leads']);
     const otro = await negocioConNumero(b, ['leads']);
