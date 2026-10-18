@@ -5,12 +5,12 @@ import { CAPACIDADES, categoriasPermitidas } from './capacidades.js';
 import { cifrar } from './cifrado.js';
 import { generarClave, generarSecreto, hashDeClave } from './claves.js';
 import type { Contexto } from './contexto.js';
-import { Rechazo } from './envio.js';
+import { contenidoDePlantilla, Rechazo } from './envio.js';
 import { cuerpoDeEvento, esperarEventos } from './eventos.js';
 import { DIA_MS, diaDe, mesDe, rangoDelMes } from './horas.js';
 import { registrarResultado, Resultado, tomarPendientes } from './ia.js';
 import { gastoDelMes, porcentaje, VENTANA_MS, ventanaAbierta } from './reglas.js';
-import type { Cambio, CambiosDeNegocio, Negocio, Numero } from './store.js';
+import type { Cambio, CambiosDeNegocio, ContenidoDeMensaje, Mensaje, Negocio, Numero } from './store.js';
 import { refrescarNumero } from './tareas.js';
 import { textoDeError } from './tapar.js';
 
@@ -268,18 +268,40 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
     };
   };
 
+  // Las plantillas de antes de guardar el texto armado: se arman con la plantilla
+  // del negocio (o, si ya no esta, con una de las conocidas) y las variables.
+  const PLANTILLAS_CONOCIDAS: Record<string, unknown[]> = {
+    consulta_web: [
+      {
+        type: 'BODY',
+        text: 'Hola {{1}}! 👋 Somos Sincro.\n\n✅ Recibimos tu consulta sobre {{2}}.\n\n¿Tenés alguna duda que te podamos responder por acá, o preferís que agendemos una reunión de 30 minutos por videollamada?',
+      },
+      { type: 'BUTTONS', buttons: [{ text: 'Tengo una duda' }, { text: 'Agendar reunión' }] },
+    ],
+    link_reunion: [{ type: 'BODY', text: 'Hola! Te paso el link para nuestra reunión de hoy a las {{1}}: {{2}}\n\n¡Nos vemos!' }],
+  };
+  const contenidoDe = async (m: Mensaje): Promise<ContenidoDeMensaje | null> => {
+    if (m.contenido || !m.plantilla) return m.contenido ?? null;
+    const propias = (await store.plantillas(m.negocioId)).find((p) => p.nombre === m.plantilla)?.componentes;
+    const componentes = propias ?? PLANTILLAS_CONOCIDAS[m.plantilla];
+    return componentes ? contenidoDePlantilla(componentes, m.texto ? m.texto.split(' | ') : []) : null;
+  };
+
   app.get('/admin/charlas', async (req) => {
     const q = z.object({ negocio: Id.optional(), limite: z.coerce.number().int().min(1).max(500).default(100) }).parse(req.query);
     const nombres = new Map((await store.negocios()).map((n) => [n.id, n.nombre]));
     return Promise.all(
-      (await store.charlas(q.negocio, q.limite)).map(async ({ ultimo, cantidad }) => ({
+      (await store.charlas(q.negocio, q.limite)).map(async ({ ultimo, cantidad }) => {
+        const contenidoUltimo = await contenidoDe(ultimo);
+        return {
         negocio_id: ultimo.negocioId,
         negocio: nombres.get(ultimo.negocioId) ?? null,
         contacto: ultimo.contacto,
         ...(await estadoDeCharla(ultimo.negocioId, ultimo.contacto)),
         mensajes: cantidad,
-        ultimo: { direccion: ultimo.direccion, tipo: ultimo.tipo, texto: ultimo.contenido?.cuerpo ?? ultimo.contenido?.toco ?? ultimo.texto, estado: ultimo.estado, fecha: ultimo.fecha.toISOString() },
-      })),
+        ultimo: { direccion: ultimo.direccion, tipo: ultimo.tipo, texto: contenidoUltimo?.cuerpo ?? contenidoUltimo?.toco ?? ultimo.texto, estado: ultimo.estado, fecha: ultimo.fecha.toISOString() },
+        };
+      }),
     );
   });
 
@@ -290,11 +312,12 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
     const { limite } = z.object({ limite: z.coerce.number().int().min(1).max(500).default(200) }).parse(req.query);
     const mensajes = await store.charla(p.negocio, p.contacto, limite);
     if (mensajes.length === 0) return reply.code(404).send({ code: 'sin_charla', message: 'no hay mensajes con ese contacto' });
+    const completos = await Promise.all(mensajes.map(async (m) => ({ ...m, contenido: await contenidoDe(m) })));
     return {
       negocio_id: p.negocio,
       contacto: p.contacto,
       ...(await estadoDeCharla(p.negocio, p.contacto)),
-      mensajes: mensajes.map((m) => ({
+      mensajes: completos.map((m) => ({
         id: m.id,
         direccion: m.direccion,
         tipo: m.tipo,

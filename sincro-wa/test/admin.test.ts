@@ -248,6 +248,23 @@ describe('charlas', () => {
     expect(mensajes[3]).toMatchObject({ direccion: 'entra', texto: 'Mar 15:00', contenido: { toco: 'Mar 15:00' } });
   });
 
+  it('una plantilla guardada antes del texto armado se arma con la del negocio o con una conocida', async () => {
+    const n = await negocioConNumero(b, ['leads']);
+    await plantillaAprobada(b, n.id, n.wabaId, 'turno', 'UTILITY');
+    const vieja = (plantilla: string, texto: string, wamid: string) =>
+      b.store.guardarMensaje({ negocioId: n.id, numeroId: n.numeroId, contacto: '5491100000001', direccion: 'sale', tipo: 'template', texto, mediaId: null, referral: null, plantilla, wamid, categoria: 'utility', costoEstimado: 0, costoReal: null, estado: 'read', error: null, fecha: new Date(b.reloj.ahora) });
+    await webhook(b, texto(n.phoneNumberId, '5491100000001', 'Hola'));
+    await vieja('turno', 'Juan', 'w1');
+    await vieja('consulta_web', 'Antonio | stock de repuestos', 'w2');
+    await vieja('desconocida', 'x | y', 'w3');
+    const { mensajes } = (await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas/${n.id}/5491100000001`)).json;
+    expect(mensajes[1]).toMatchObject({ texto: 'Hola Juan' });
+    expect(mensajes[2].texto).toContain('Hola Antonio! 👋 Somos Sincro.');
+    expect(mensajes[2].texto).toContain('consulta sobre stock de repuestos');
+    expect(mensajes[2].contenido.botones).toEqual(['Tengo una duda', 'Agendar reunión']);
+    expect(mensajes[3]).toMatchObject({ texto: 'x | y', contenido: null });
+  });
+
   it('filtra por negocio', async () => {
     const a = await negocioConNumero(b, ['leads']);
     const otro = await negocioConNumero(b, ['leads']);
