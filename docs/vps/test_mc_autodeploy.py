@@ -39,3 +39,14 @@ class Reglas(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_vigila_tambien_las_apps_de_github_app():
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location('ad', pathlib.Path(__file__).with_name('mc-autodeploy.py'))
+    ad = importlib.util.module_from_spec(spec); spec.loader.exec_module(ad)
+    assert ad.vigilable({'git_repository': 'Sincro-arg/efaysto-crm', 'source_id': 4})
+    assert not ad.vigilable({'git_repository': None})
+    assert ad.source_de_app({'git_repository': 'x/y', 'source_id': 4}) == 4
+    assert ad.source_de_app({'git_repository': 'x/y', 'source_id': 0}) is None
+    assert ad.tapar_token('fatal: https://x-access-token:ghs_abc@github.com', 'ghs_abc') == 'fatal: https://x-access-token:***@github.com'
