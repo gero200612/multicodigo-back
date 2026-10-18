@@ -12,7 +12,6 @@ import { cortarBusquedas, pausar, pedirBusqueda, ponerModo, seguir } from './com
 import type { Resultado as ResultadoDeDemo } from './demos.js';
 import type { Demo, Store } from './store.js';
 import { modoActual, tablaDeRubros, type Boton } from './ventas.js';
-import { armarReel, GUION_DE_PRUEBA } from './reel.js';
 import { DIAS_DE_PROMOCION, reelParaPromocionar, type ResultadoDeReel } from './publicar-reel.js';
 
 export const NOMBRE = 'Homero';
@@ -21,6 +20,8 @@ export const NOMBRE = 'Homero';
 export const COMANDOS = [
   { command: 'estado', description: 'Cómo vengo: pausas, cupo y borradores' },
   { command: 'reel_prueba', description: 'Arma un reel de muestra y te lo manda (no publica nada)' },
+  { command: 'experimento', description: 'Experimento de 5 reels: /experimento [total] [diario] (no gasta hasta /experimento_iniciar)' },
+  { command: 'experimento_estado', description: 'Cómo va el experimento de reels' },
   { command: 'hoy', description: 'Números del día' },
   { command: 'buscar', description: 'Salir a buscar ya: /buscar [rubro] [zona]' },
   { command: 'prioridad', description: 'Los 5 borradores con más factibilidad' },
@@ -100,6 +101,16 @@ export interface Acciones {
     rechazar(n: number, motivo: string): Promise<string>;
     arrancar(tope: number): Promise<string>;
     estado(): Promise<string>;
+  };
+  /** Un reel de muestra con el estudio (o con ffmpeg si el estudio no esta, diciendolo en el `pie`). */
+  reelDePrueba(): Promise<{ archivo: string; duracion: number; pie: string }>;
+  /** El experimento de los 5 reels y su campaña (experimento.ts). */
+  experimento: {
+    empezar(total?: number, diario?: number): Promise<{ ok: true; texto: string } | { ok: false; motivo: string }>;
+    sumarReel(): Promise<{ ok: true; texto: string } | { ok: false; motivo: string }>;
+    iniciar(): Promise<{ ok: true; texto: string } | { ok: false; motivo: string }>;
+    estado(): Promise<string>;
+    cancelar(): Promise<{ ok: true; texto: string } | { ok: false; motivo: string }>;
   };
 }
 
@@ -436,24 +447,17 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
   // No publica nada: lo manda aca. Corre de fondo, el bot sigue contestando.
   let armandoReel = false;
   bot.command('reel_prueba', async (ctx) => {
+    if (!acciones) return;
     if (armandoReel) {
       await ctx.reply('Ya estoy armando uno, esperá que termine.');
       return;
     }
     armandoReel = true;
-    await ctx.reply('🎬 Armo un reel de muestra (facturas que se cargan solas). Tarda uno o dos minutos.');
-    const inicio = Date.now();
-    void armarReel(GUION_DE_PRUEBA, `prueba-${inicio}`, { dir: config.medios.dir, pixabay: config.medios.pixabay })
+    await ctx.reply('🎬 Armo un reel de muestra con el estudio (facturas que se cargan solas). Tarda un par de minutos.');
+    void acciones
+      .reelDePrueba()
       .then(async (r) => {
-        const segundos = Math.round((Date.now() - inicio) / 1000);
-        const musica = r.tema ? `🎵 ${r.tema.titulo}${r.tema.autor ? ` · ${r.tema.autor}` : ''} (CC0)` : '🔇 Sin música todavía: el banco se completa de a poco.';
-        const fotos = r.medios.length ? `📷 ${r.medios.length} de Pixabay` : '📷 Sin fotos de Pixabay (falta la clave o no hubo resultados).';
-        await ctx.replyWithVideo(new InputFile(r.archivo), {
-          caption: [`Reel de muestra · ${r.duracion.toFixed(1)} s · armado en ${segundos} s`, musica, fotos].join('\n').slice(0, 1000),
-          width: 1080,
-          height: 1920,
-          supports_streaming: true,
-        });
+        await ctx.replyWithVideo(new InputFile(r.archivo), { caption: r.pie.slice(0, 1000), width: 1080, height: 1920, supports_streaming: true });
       })
       .catch(async (err) => {
         await ctx.reply(`No pude armar el reel: ${err instanceof Error ? err.message.slice(0, 500) : String(err)}`).catch(() => undefined);
@@ -461,6 +465,36 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       .finally(() => {
         armandoReel = false;
       });
+  });
+
+  // El experimento de los 5 reels (experimento.ts). Nada gasta hasta /experimento_iniciar.
+  const responder = async (ctx: { reply: (t: string) => Promise<unknown> }, r: { ok: true; texto: string } | { ok: false; motivo: string }) =>
+    ctx.reply(r.ok ? r.texto : `No pude: ${r.motivo}`);
+  bot.command('experimento', async (ctx) => {
+    if (!acciones) return;
+    const palabras = (ctx.match ?? '').trim().split(/\s+/).filter(Boolean);
+    const [total, diario] = palabras.map(leerMonto);
+    if (palabras.length > 2 || (palabras.length >= 1 && !total) || (palabras.length === 2 && !diario)) {
+      await ctx.reply('Uso: /experimento, o /experimento 80000 8000 (total y diario en pesos).');
+      return;
+    }
+    const r = await acciones.experimento.empezar(total, diario);
+    await responder(ctx, r);
+  });
+  bot.command('experimento_estado', async (ctx) => {
+    if (acciones) await ctx.reply(await acciones.experimento.estado());
+  });
+  bot.command('experimento_reel', async (ctx) => {
+    if (acciones) await responder(ctx, await acciones.experimento.sumarReel());
+  });
+  bot.command('experimento_iniciar', async (ctx) => {
+    // Si arranca, iniciarExperimento ya avisa; aca solo se cuenta el rechazo.
+    if (!acciones) return;
+    const r = await acciones.experimento.iniciar();
+    if (!r.ok) await ctx.reply(`No arranqué: ${r.motivo}`);
+  });
+  bot.command('experimento_cancelar', async (ctx) => {
+    if (acciones) await responder(ctx, await acciones.experimento.cancelar());
   });
 
   bot.command('anunciar', async (ctx) => {

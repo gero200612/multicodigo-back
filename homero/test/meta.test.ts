@@ -98,8 +98,8 @@ describe('cliente de Meta', () => {
     ]);
     const filas = await clienteDeMeta(cfg, f.pedir).insights('2026-10-01', '2026-10-08');
     expect(filas).toEqual([
-      { anuncio: 'ad1', dia: '2026-10-07', gasto: 1234.56, impresiones: 900, consultas: 3 },
-      { anuncio: 'ad2', dia: '2026-10-07', gasto: 10, impresiones: 5, consultas: 0 },
+      { anuncio: 'ad1', dia: '2026-10-07', gasto: 1234.56, impresiones: 900, consultas: 3, clics: 0 },
+      { anuncio: 'ad2', dia: '2026-10-07', gasto: 10, impresiones: 5, consultas: 0, clics: 0 },
     ]);
     expect(f.pedidos[0]!.url).toContain('level=ad');
     expect(f.pedidos[0]!.url).toContain('time_increment=1');
@@ -143,8 +143,9 @@ describe('cliente de Meta', () => {
     expect(decodeURIComponent(f.pedidos[1]!.url)).toContain('"operator":"GREATER_THAN"');
   });
 
-  it('consultasDe toma la mayor de las acciones de lead, no la suma', () => {
-    expect(consultasDe([{ action_type: 'lead', value: '2' }, { action_type: 'leadgen_grouped', value: '2' }])).toBe(2);
+  it('consultasDe cuenta solo action_type "lead": Meta repite el mismo lead con otros nombres', () => {
+    expect(consultasDe([{ action_type: 'lead', value: '2' }, { action_type: 'leadgen_grouped', value: '2' }, { action_type: 'onsite_conversion.lead_grouped', value: '2' }])).toBe(2);
+    expect(consultasDe([{ action_type: 'leadgen_grouped', value: '4' }])).toBe(0);
     expect(consultasDe(undefined)).toBe(0);
   });
 });

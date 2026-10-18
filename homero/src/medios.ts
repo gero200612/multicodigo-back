@@ -57,6 +57,8 @@ export interface TemaDelBanco {
   duracionMs: number;
   archivo: string;
   bajado: string;
+  /** El archivo de audio en su origen: lo usa el estudio de reels, que lo baja solo. Los temas viejos no lo tienen (`urlDelTema`). */
+  url?: string;
   /** Instagram lo marco por derechos: no se usa mas. */
   vetado?: boolean;
 }
@@ -184,6 +186,7 @@ export async function armarBancoDeMusica(deps: DepsDeMedios): Promise<number> {
             duracionMs: r.duration!,
             archivo,
             bajado: deps.ahora().toISOString(),
+            url: r.url,
           });
           tiene++;
           nuevos++;
@@ -203,6 +206,26 @@ export async function armarBancoDeMusica(deps: DepsDeMedios): Promise<number> {
 export function elegirTema(banco: TemaDelBanco[], estilo: Estilo, recientes: string[]): TemaDelBanco | undefined {
   const delEstilo = banco.filter((t) => t.estilo === estilo && !t.vetado);
   return delEstilo.find((t) => !recientes.includes(t.id)) ?? delEstilo[0];
+}
+
+/**
+ * La direccion publica del audio de un tema, para pasarsela al estudio (que lo
+ * baja por su cuenta: no comparte volumen con Homero). Los temas bajados antes
+ * de guardar la direccion la piden a Openverse por su id.
+ */
+export async function urlDelTema(tema: TemaDelBanco, pedir: Pedir = fetch): Promise<string | undefined> {
+  if (tema.url) return tema.url;
+  try {
+    const r = await pedir(`${OPENVERSE}${encodeURIComponent(tema.id)}/`, {
+      headers: { accept: 'application/json', 'user-agent': QUIEN_SOY },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!r.ok || !(r.headers.get('content-type') ?? '').includes('json')) return undefined;
+    const url = ((await r.json()) as { url?: unknown }).url;
+    return typeof url === 'string' && /^https?:\/\//.test(url) ? url : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ------------------------------------------------------------ Pixabay

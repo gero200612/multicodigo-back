@@ -2,6 +2,8 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { diarioQueEntraPara, minimoDiario, pausarAnuncio, pesos, type DepsDeAnuncios } from './anuncios.js';
+import type { Estudio } from './estudio.js';
+import { leerExperimento } from './experimento-estado.js';
 import type { Reel, Store } from './store.js';
 import type { Boton } from './ventas.js';
 
@@ -50,6 +52,10 @@ export interface DepsDeReels extends DepsDeAnuncios {
   mandarVideo?: (archivo: string, pie: string) => Promise<void>;
   /** En los tests no se espera de verdad. */
   esperar?: (ms: number) => Promise<void>;
+  /** El estudio de Sincro Agents (ESTUDIO_URL): arma los reels de Homero. Sin esto no hay reels propios. */
+  estudio?: Estudio;
+  /** Para pedirle a Openverse la direccion de un tema del banco que no la guardo (tests: falso). */
+  pedirMusica?: typeof fetch;
 }
 
 /** Un texto que no se puede publicar: el publicista lo tiene que rehacer. */
@@ -325,6 +331,10 @@ export async function publicarReel(payload: unknown, deps: DepsDeReels): Promise
     ...(fbVideo ? { fbVideo } : {}),
     ...(motivoFb ? { motivo: motivoFb } : {}),
   });
+  // Si es de un experimento, se mira ya si estan los que hacen falta para armar la campaña (si no, lo hace la vuelta de cada hora).
+  if ((await leerExperimento(deps.store))?.reelIds.includes(id)) {
+    await deps.store.encolar({ tipo: 'experimento_paso', payload: {}, requiereIa: false, clave: `experimento:paso:reel:${id}` });
+  }
   await deps.avisar(
     [
       `🚀 Publiqué el reel #${id} en Instagram${
@@ -338,7 +348,7 @@ export async function publicarReel(payload: unknown, deps: DepsDeReels): Promise
   );
 }
 
-const rutaDePortada = (id: number, deps: Pick<DepsDeReels, 'medios'>) => join(deps.medios, 'portadas', `reel-${id}.png`);
+export const rutaDePortada = (id: number, deps: Pick<DepsDeReels, 'medios'>) => join(deps.medios, 'portadas', `reel-${id}.png`);
 
 // ------------------------------------------------------------ numeros y promocion
 
@@ -391,13 +401,15 @@ export async function leerReels(deps: DepsDeReels): Promise<void> {
   if (!deps.meta) return;
   const ahora = deps.ahora();
   const publicados = await deps.store.reels(['publicado']);
+  // Los reels del experimento ya tienen su anuncio (en su campaña, con su tope): no se promocionan aparte.
+  const delExperimento = new Set((await leerExperimento(deps.store))?.reelIds ?? []);
   for (const r of publicados) {
     if (!r.igMedia || !r.publicadoEn || ahora.getTime() - r.publicadoEn.getTime() > VENTANA_DE_NUMEROS_MS) continue;
     try {
       const m = await deps.meta.metricasDeReel(r.igMedia);
       const metricas = { ...m, leido: ahora.toISOString() };
       await deps.store.actualizarReel(r.id, { metricas });
-      if (r.anuncioId !== undefined || r.propuestaPromoEn) continue;
+      if (r.anuncioId !== undefined || r.propuestaPromoEn || delExperimento.has(r.id)) continue;
       const anteriores = publicados.filter((x) => x.id !== r.id && x.publicadoEn && x.publicadoEn < r.publicadoEn!);
       const v = rinde({ ...r, metricas }, anteriores, ahora);
       if (!v.rinde) continue;

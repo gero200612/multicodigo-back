@@ -40,8 +40,8 @@ export function metaFalsa() {
       anotar('cuenta');
       return { nombre: 'Homer', moneda: 'ARS', estado: 1, gastado: 0, limite: datos.limite };
     },
-    async crearCampana(nombre) {
-      anotar('crearCampana', nombre);
+    async crearCampana(nombre, o) {
+      anotar('crearCampana', ...(o ? [nombre, o] : [nombre]));
       return id('camp');
     },
     async subirImagen(png, nombre) {

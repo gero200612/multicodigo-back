@@ -45,6 +45,8 @@ import { bajarPaginaConDestino, recibeMail } from './web.js';
 import { adminWa, atenderIa, bucle, clienteWa, pedidorWa, recibirLeads, reenviarAlertas } from './whatsapp.js';
 import { asegurarPlantilla, VIGILAR_PLANTILLA_MS, vigilarPlantilla } from './primer-whatsapp.js';
 import { PLANTILLA_LINK, recibirMeet } from './meet.js';
+import { clienteDeEstudio } from './estudio.js';
+import { cancelarExperimento, estadoDelExperimento, iniciarExperimento, iniciarReels, sumarReel } from './experimento.js';
 import {
   aprobarRevision,
   arrancarExperimento,
@@ -63,6 +65,7 @@ import {
   type LeadParaElAnfitrion,
 } from './anfitrion.js';
 import { armarBancoDeMusica, buscarEnPixabay, leerBanco } from './medios.js';
+import { reelDePrueba } from './reels-estudio.js';
 import { aprobarReel, cambiarReel, descartarReel, promocionarReel, recibirVideo, reintentarReel, retomarReels } from './publicar-reel.js';
 import { hojaDeContacto, medirVideo, portadaDe } from './video.js';
 
@@ -154,6 +157,7 @@ async function main() {
     mandarFoto: (png, pie) => mandarFoto(png, pie).catch((e) => console.error('[homero] no pude mandar la imagen:', e)),
     // Los reels que manda Gero: el video vive en el volumen de medios hasta publicarlo.
     medios: config.medios.dir,
+    estudio: config.estudio ? clienteDeEstudio(config.estudio) : undefined,
     medir: medirVideo,
     hoja: hojaDeContacto,
     portada: portadaDe,
@@ -210,6 +214,27 @@ async function main() {
           estado: () => estadoDelHost(depsDelAnfitrion),
         }
       : undefined,
+    reelDePrueba: () => reelDePrueba({ ...deps, ffmpegDeRespaldo: config.ffmpegDeRespaldo, pixabay: config.medios.pixabay }),
+    experimento: {
+      async empezar(total, diario) {
+        const r = await iniciarReels({ total, diario }, deps);
+        if (!r.ok) return r;
+        return {
+          ok: true,
+          texto:
+            `🧪 Arranco el experimento: ${r.estado.cantidad} reels hechos con el estudio (sin voz, con música del banco), un dolor distinto cada uno. ` +
+            `Te llegan de a uno para aprobar (✅ Publicar). Cuando estén los ${r.estado.cantidad} publicados armo la campaña en PAUSA y te aviso el paso para arrancar: ` +
+            `$${r.estado.total.toLocaleString('es-AR')} en total, $${r.estado.diario.toLocaleString('es-AR')} por día. Hasta entonces no gasto nada.`,
+        };
+      },
+      async sumarReel() {
+        const r = await sumarReel(deps);
+        return r.ok ? { ok: true, texto: `🎬 Pedí otro reel (el ${r.n}).` } : r;
+      },
+      iniciar: () => iniciarExperimento(deps),
+      estado: () => estadoDelExperimento(deps),
+      cancelar: () => cancelarExperimento(deps),
+    },
   };
   conectar(acciones);
 

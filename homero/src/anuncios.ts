@@ -6,6 +6,7 @@ import { ErrorDePlantilla, imagenDeAnuncio, PLANTILLAS, type Plantilla } from '.
 import type { EtapaDeLead, Meta, Pregunta } from './meta.js';
 import { neutralizar } from './prompts.js';
 import { CRITERIOS, type Anuncio, type Criterio, type Lead, type Ronda, type Store } from './store.js';
+import { experimentoOcupaLaCuenta, planificarExperimento } from './experimento-estado.js';
 import { escribirPrimerWhatsapp } from './primer-whatsapp.js';
 import { casillaDeLead, ensayoActivo, type Boton, type DepsDeVentas } from './ventas.js';
 import type { ClienteWa } from './whatsapp.js';
@@ -65,7 +66,7 @@ export const PREGUNTA_WHATSAPP = {
  * los anuncios con un formulario de una version anterior se renuevan solos.
  */
 export const FORMULARIO_VERSION = 2;
-const GRACIAS = 'Te escribimos en minutos por WhatsApp o por mail para coordinar una llamada corta.';
+export const GRACIAS = 'Te escribimos en minutos por WhatsApp o por mail para coordinar una llamada corta.';
 /** Si no contesto el primer contacto, el segundo sale a las 48 h. */
 export const SEGUIMIENTO_META_MS = 48 * 3_600_000;
 
@@ -1369,6 +1370,7 @@ export async function planificarAnuncios(deps: DepsDeAnuncios): Promise<void> {
   await deps.store.encolar({ tipo: 'leer_insights', payload: {}, requiereIa: false, clave: `insights:${dia}:${hora}` });
   // Los numeros de los reels publicados, cada 6 horas (publicar-reel.ts).
   await deps.store.encolar({ tipo: 'leer_reels', payload: {}, requiereIa: false, clave: `reels:${dia}:${Math.floor(hora / 6)}` });
+  await planificarExperimento(deps);
   for (const a of await deps.store.anuncios(['activo', 'pausado'])) {
     if (!a.metaIds.anuncio || (a.metaIds.formularioVersion ?? 1) >= FORMULARIO_VERSION) continue;
     await deps.store.encolar({
@@ -1378,7 +1380,9 @@ export async function planificarAnuncios(deps: DepsDeAnuncios): Promise<void> {
       clave: `renovar_formulario:${a.id}:v${FORMULARIO_VERSION}`,
     });
   }
-  if (hora >= 10) {
+  // El experimento de reels (experimento.ts) tiene su propia campaña y su tope; mientras gasta, el publicista no propone otros anuncios.
+  const experimento = await experimentoOcupaLaCuenta(deps.store);
+  if (hora >= 10 && !experimento) {
     await deps.store.encolar({ tipo: 'agente_publicitar', payload: {}, requiereIa: true, clave: `publicitar:${dia}` });
   }
   if (hora >= 20) {

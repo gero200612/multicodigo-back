@@ -250,7 +250,7 @@ export class CorridaSinCerrar extends Error {}
  * `debeCerrar`: el vendedor y atencion tienen que terminar con su herramienta
  * de salida. Si no, la corrida queda fallida y la tarea se reintenta.
  */
-async function correr(
+export async function correr(
   agente: Agente,
   objetivo: string,
   herramientas: (registro: Registro) => Herramienta<any>[],

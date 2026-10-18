@@ -29,6 +29,9 @@ export type TipoDeTarea =
   | 'agente_reel'
   | 'publicar_reel'
   | 'leer_reels'
+  | 'agente_reel_estudio'
+  | 'renderizar_reel'
+  | 'experimento_paso'
   | 'pedir_meet';
 
 export type EstadoDeLead =

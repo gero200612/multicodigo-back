@@ -6,6 +6,7 @@ import { finanzasDelDia } from './finanzas.js';
 import { presupuestar } from './precios.js';
 import { cuandoReintentar, ErrorDeCuenta, ErrorDeLimite } from './ia.js';
 import { agenteAtender, agenteBuscar, agentePublicitar, agenteReel, agenteRevisar, agenteVender, agenteWhatsApp, type DepsDeAgentes } from './agentes.js';
+import { agenteReelDeEstudio, pasoDelExperimento, renderizarReel } from './experimento.js';
 import { leerReels, publicarReel } from './publicar-reel.js';
 import { pedirMeet } from './meet.js';
 import { escribirALeadMeta, leerInsights, publicarAnuncio, renovarFormulario, resumenDeAnuncios, seguimientoDeLeadMeta } from './anuncios.js';
@@ -222,6 +223,12 @@ async function ejecutar(tarea: Tarea, deps: DepsDeCola): Promise<{ reprogramarPa
       return publicarReel(tarea.payload, deps);
     case 'leer_reels':
       return leerReels(deps);
+    case 'agente_reel_estudio':
+      return agenteReelDeEstudio(tarea.payload, deps);
+    case 'renderizar_reel':
+      return renderizarReel(tarea.payload, deps);
+    case 'experimento_paso':
+      return pasoDelExperimento(deps);
     case 'pedir_meet':
       return pedirMeet(tarea.payload, deps);
   }

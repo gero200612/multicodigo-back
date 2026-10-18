@@ -55,6 +55,15 @@ const Env = z.object({
   // banco de musica, en el volumen del contenedor.
   PIXABAY_API_KEY: opcional(z.string().min(10)),
   HOMERO_MEDIOS_DIR: opcional(z.string()).transform((v) => v ?? '/srv/medios'),
+  // El Estudio de Sincro Agents (sincro-agents/estudio): arma los reels con
+  // Remotion. Va en la red interna (http://estudio:3700), con la clave de la
+  // empresa "sincro". Sin esto no hay reels propios ni experimento.
+  ESTUDIO_URL: opcional(z.string().url()),
+  ESTUDIO_EMPRESA: opcional(z.string().min(1)).transform((v) => v ?? 'sincro'),
+  ESTUDIO_CLAVE: opcional(z.string().min(16)),
+  // /reel_prueba: si el estudio no contesta, el armado de antes (ffmpeg) como
+  // respaldo, diciendolo. `0` lo apaga: sin estudio, no hay reel de muestra.
+  HOMERO_FFMPEG_DE_RESPALDO: opcional(z.enum(['0', '1', 'false', 'true'])).transform((v) => v !== '0' && v !== 'false'),
   // Sincro Host (sincro-agents/apps/sincro-host): quien piensa el experimento de anuncios. Homero es su canal de Telegram: le muestra
   // las tarjetas de calibracion y le reenvia los leads. Van juntas; sin ellas Homero anda como antes.
   SINCRO_HOST_URL: opcional(z.string().url()),
@@ -84,6 +93,10 @@ const Env = z.object({
 export interface Config {
   /** Los medios de los reels: donde viven y la clave de Pixabay. */
   medios: { dir: string; pixabay?: string };
+  /** El estudio de reels (sincro-agents/estudio). Sin URL y clave, no hay. */
+  estudio?: { url: string; empresa: string; clave: string };
+  /** El armado con ffmpeg como respaldo del reel de muestra cuando el estudio no esta. */
+  ffmpegDeRespaldo: boolean;
   /** Sincro Host. Sin URL y token no hay tarjetas de calibracion ni reenvio de leads. */
   anfitrion?: { url: string; token: string };
   /** False: los anuncios propios de Homero estan en pausa (los maneja el host). */
@@ -155,6 +168,8 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
     anfitrion: e.SINCRO_HOST_URL && e.SINCRO_HOST_TOKEN ? { url: e.SINCRO_HOST_URL, token: e.SINCRO_HOST_TOKEN } : undefined,
     anunciosPropios: e.HOMERO_ANUNCIOS_PROPIOS,
     medios: { dir: e.HOMERO_MEDIOS_DIR, ...(e.PIXABAY_API_KEY ? { pixabay: e.PIXABAY_API_KEY } : {}) },
+    estudio: e.ESTUDIO_URL && e.ESTUDIO_CLAVE ? { url: e.ESTUDIO_URL, empresa: e.ESTUDIO_EMPRESA, clave: e.ESTUDIO_CLAVE } : undefined,
+    ffmpegDeRespaldo: e.HOMERO_FFMPEG_DE_RESPALDO,
     ...configDeMeta(e),
   };
 }

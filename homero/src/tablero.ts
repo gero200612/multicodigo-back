@@ -41,7 +41,7 @@ const TIPOS: Record<Agente, TipoDeTarea[]> = {
   buscador: ['agente_buscar', 'prospectar'],
   vendedor: ['agente_vender', 'investigar'],
   atencion: ['agente_atender', 'resumir_respuesta'],
-  publicista: ['agente_publicitar', 'agente_reel'],
+  publicista: ['agente_publicitar', 'agente_reel', 'agente_reel_estudio'],
   revisor: ['agente_revisar'],
 };
 

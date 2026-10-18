@@ -46,6 +46,8 @@ export interface ConjuntoNuevo {
   nombre: string;
   /** En pesos. La conversion a centavos la hace el cliente. */
   diario: number;
+  /** Se crea en pausa (el experimento de reels no gasta hasta que Gero lo arranca). */
+  pausado?: boolean;
   /** Ids de intereses de Meta (de `buscarIntereses`). Vacio = sin intereses. */
   intereses: { id: string; name: string }[];
 }
@@ -70,6 +72,8 @@ export interface FilaDeInsights {
   gasto: number;
   impresiones: number;
   consultas: number;
+  /** Clics del anuncio (todos): con pocos leads, el experimento de reels compara por CTR. */
+  clics?: number;
 }
 
 export interface LeadDeMeta {
@@ -135,13 +139,13 @@ export interface ConjuntoEnMeta {
 
 export interface Meta {
   cuenta(): Promise<CuentaDeMeta>;
-  crearCampana(nombre: string): Promise<string>;
+  crearCampana(nombre: string, o?: { pausada?: boolean }): Promise<string>;
   subirImagen(png: Buffer, nombre: string): Promise<string>;
   crearFormulario(f: FormularioNuevo): Promise<string>;
   buscarIntereses(texto: string): Promise<{ id: string; name: string }[]>;
   crearConjunto(c: ConjuntoNuevo): Promise<string>;
   crearCreativo(c: CreativoNuevo): Promise<string>;
-  crearAnuncio(a: { nombre: string; conjunto: string; creativo: string }): Promise<string>;
+  crearAnuncio(a: { nombre: string; conjunto: string; creativo: string; pausado?: boolean }): Promise<string>;
   /** Campaña, conjunto o anuncio. */
   cambiarEstado(id: string, estado: EstadoEnMeta): Promise<void>;
   /** Le pone otro creativo a un anuncio que ya existe (Meta lo vuelve a revisar). */
@@ -225,8 +229,12 @@ export class ErrorDeMeta extends Error {
   }
 }
 
-/** Las acciones de insights que cuentan como una consulta (un formulario enviado). */
-const ACCIONES_DE_LEAD = new Set(['lead', 'onsite_conversion.lead_grouped', 'leadgen_grouped']);
+/**
+ * La accion de insights que cuenta como una consulta (un formulario enviado).
+ * Meta repite el mismo lead con otros nombres (`onsite_conversion.lead_grouped`,
+ * `leadgen_grouped`): contar mas de uno suma el mismo lead dos o tres veces.
+ */
+const ACCION_DE_LEAD = 'lead';
 
 type Pedir = typeof fetch;
 
@@ -247,11 +255,9 @@ function preguntasDeMeta(ps: Pregunta[]) {
 
 export function consultasDe(acciones: unknown): number {
   if (!Array.isArray(acciones)) return 0;
-  // Meta repite el mismo lead en varias acciones (`lead` y el agrupado): se
-  // toma la mayor, no la suma.
   let n = 0;
   for (const a of acciones as { action_type?: string; value?: string }[]) {
-    if (a.action_type && ACCIONES_DE_LEAD.has(a.action_type)) n = Math.max(n, Number(a.value) || 0);
+    if (a.action_type === ACCION_DE_LEAD) n += Number(a.value) || 0;
   }
   return n;
 }
@@ -386,12 +392,12 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
       };
     },
 
-    async crearCampana(nombre) {
+    async crearCampana(nombre, o) {
       return id(
         await llamar('POST', `${cuenta}/campaigns`, {
           name: nombre,
           objective: 'OUTCOME_LEADS',
-          status: 'ACTIVE',
+          status: o?.pausada ? 'PAUSED' : 'ACTIVE',
           special_ad_categories: [],
           // El presupuesto va en cada conjunto (uno por anuncio), no en la campaña.
           is_adset_budget_sharing_enabled: false,
@@ -462,7 +468,7 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
             // publico fijo (2026-10-13). Pais y edad minima siguen siendo limites.
             targeting_automation: { advantage_audience: 1 },
           },
-          status: 'ACTIVE',
+          status: c.pausado ? 'PAUSED' : 'ACTIVE',
         }),
       );
     },
@@ -493,7 +499,7 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
           name: a.nombre,
           adset_id: a.conjunto,
           creative: { creative_id: a.creativo },
-          status: 'ACTIVE',
+          status: a.pausado ? 'PAUSED' : 'ACTIVE',
         }),
       );
     },
@@ -513,7 +519,7 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
     async insights(desde, hasta) {
       const filas = await todo(`${cuenta}/insights`, {
         level: 'ad',
-        fields: 'ad_id,adset_id,campaign_id,spend,impressions,actions',
+        fields: 'ad_id,adset_id,campaign_id,spend,impressions,clicks,actions',
         time_range: { since: desde, until: hasta },
         time_increment: 1,
         limit: 500,
@@ -527,6 +533,7 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
         gasto: Number(f.spend ?? 0),
         impresiones: Number(f.impressions ?? 0),
         consultas: consultasDe(f.actions),
+        clics: Number(f.clicks ?? 0),
       }));
     },
 
