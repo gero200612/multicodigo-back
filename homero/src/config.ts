@@ -55,6 +55,13 @@ const Env = z.object({
   // banco de musica, en el volumen del contenedor.
   PIXABAY_API_KEY: opcional(z.string().min(10)),
   HOMERO_MEDIOS_DIR: opcional(z.string()).transform((v) => v ?? '/srv/medios'),
+  // Sincro Host (sincro-agents/apps/sincro-host): quien piensa el experimento de anuncios. Homero es su canal de Telegram: le muestra
+  // las tarjetas de calibracion y le reenvia los leads. Van juntas; sin ellas Homero anda como antes.
+  SINCRO_HOST_URL: opcional(z.string().url()),
+  SINCRO_HOST_TOKEN: opcional(z.string().min(24)),
+  // `no` (o `0`): mientras el experimento corre en el host, Homero NO crea campañas, formularios ni anuncios ni cambia presupuestos.
+  // Sigue leyendo, publicando reels organicos y atendiendo WhatsApp.
+  HOMERO_ANUNCIOS_PROPIOS: opcional(z.enum(['0', '1', 'no', 'si', 'false', 'true'])).transform((v) => v !== '0' && v !== 'no' && v !== 'false'),
   // Fija a proposito: un cambio de version se prueba antes con scripts/meta-humo.ts.
   META_API_VERSION: opcional(z.string().regex(/^v\d+\.\d+$/)).transform((v) => v ?? 'v23.0'),
   // El bot general de WhatsApp (sincro-wa, en el VPS), por la VPN. La clave de
@@ -77,6 +84,10 @@ const Env = z.object({
 export interface Config {
   /** Los medios de los reels: donde viven y la clave de Pixabay. */
   medios: { dir: string; pixabay?: string };
+  /** Sincro Host. Sin URL y token no hay tarjetas de calibracion ni reenvio de leads. */
+  anfitrion?: { url: string; token: string };
+  /** False: los anuncios propios de Homero estan en pausa (los maneja el host). */
+  anunciosPropios: boolean;
   telegramToken: string;
   chatId?: number;
   databaseUrl: string;
@@ -141,6 +152,8 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
           numerosDePrueba: e.SINCRO_WA_PRUEBA ? e.SINCRO_WA_PRUEBA.split(',') : [],
         }
       : undefined,
+    anfitrion: e.SINCRO_HOST_URL && e.SINCRO_HOST_TOKEN ? { url: e.SINCRO_HOST_URL, token: e.SINCRO_HOST_TOKEN } : undefined,
+    anunciosPropios: e.HOMERO_ANUNCIOS_PROPIOS,
     medios: { dir: e.HOMERO_MEDIOS_DIR, ...(e.PIXABAY_API_KEY ? { pixabay: e.PIXABAY_API_KEY } : {}) },
     ...configDeMeta(e),
   };

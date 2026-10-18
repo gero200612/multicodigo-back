@@ -15,6 +15,7 @@ import { CONFIG_DEL_BUSCADOR, type ConfigDelBuscador } from './agentes.js';
 import type { Actividad } from './mcp.js';
 import { muestraDe, type Boton } from './ventas.js';
 import { rutasDeWhatsApp, type AdminWa } from './whatsapp.js';
+import { Aprobacion, Aviso } from './anfitrion.js';
 
 /**
  * La API interna de Homero: lo que usa punchi.dev para manejarlo entero desde
@@ -38,6 +39,11 @@ export interface DepsDeApi {
   enCurso?: () => Actividad[];
   /** El bot de WhatsApp con la clave de admin. Sin esto la seccion dice que falta. */
   whatsapp?: AdminWa;
+  /** Lo que el Sincro Host le pide a Homero (Telegram). Sin esto esas rutas contestan 503. */
+  anfitrion?: {
+    aviso: (texto: string) => Promise<void>;
+    aprobacion: (cuerpo: unknown) => Promise<{ ok: true; n: number; repetido?: boolean } | { ok: false; motivo: string }>;
+  };
 }
 
 const DIAS_DE_REUNIONES_PASADAS = 7;
@@ -74,6 +80,23 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
   const quitar = async (msg: number | undefined) => {
     if (msg) await d.cambiarBotones(msg, undefined);
   };
+
+  // ------------------------------------------------------------ Sincro Host (canal de Telegram)
+
+  app.post('/anfitrion/aviso', async (request, reply) => {
+    if (!d.anfitrion) return reply.code(503).send({ code: 'sin_anfitrion', message: 'Homero no tiene configurado el host' });
+    const cuerpo = Aviso.safeParse(request.body);
+    if (!cuerpo.success) return invalido(reply);
+    await d.anfitrion.aviso(cuerpo.data.texto);
+    return { ok: true };
+  });
+
+  app.post('/anfitrion/aprobacion', async (request, reply) => {
+    if (!d.anfitrion) return reply.code(503).send({ code: 'sin_anfitrion', message: 'Homero no tiene configurado el host' });
+    if (!Aprobacion.safeParse(request.body).success) return invalido(reply);
+    const r = await d.anfitrion.aprobacion(request.body);
+    return r.ok ? { ok: true, n: r.n, repetido: r.repetido ?? false } : noSe(reply, r.motivo);
+  });
 
   // ------------------------------------------------------------ lectura
 

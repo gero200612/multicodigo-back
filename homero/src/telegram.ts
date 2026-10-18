@@ -34,6 +34,8 @@ export const COMANDOS = [
   { command: 'presupuesto', description: 'Anuncios: /presupuesto [monto del mes]' },
   { command: 'anunciar', description: 'Anuncios: que el publicista proponga ya' },
   { command: 'promocionar', description: 'Promocionar ya el último reel publicado: /promocionar [n]' },
+  { command: 'arrancar_experimento', description: 'Arranca el experimento de anuncios (Sincro Host): /arrancar_experimento [límite de gasto de la cuenta]' },
+  { command: 'experimento_agentes', description: 'Cómo va el experimento de anuncios de Sincro Host' },
   { command: 'ensayo', description: 'Modo ensayo: /ensayo [mail] | off' },
   { command: 'modo', description: 'Pedir OK o automático: /modo aprobar | auto' },
   { command: 'probar_ia', description: 'Probar que Claude responde' },
@@ -89,6 +91,16 @@ export interface Acciones {
   /** ✏️ Cambiar: lo que pidio Gero, para que el publicista rehaga el texto. */
   cambiarReel(id: number, pedido: string): Promise<ResultadoDeReel>;
   promocionarReel(id: number): Promise<{ ok: true; anuncioId: number } | { ok: false; motivo: string }>;
+  /** Sincro Host (anfitrion.ts): las tarjetas de calibracion y el arranque del experimento. Ausente = Homero sin host. */
+  anfitrion?: {
+    aprobar(n: number): Promise<string>;
+    pedirMotivo(n: number): Promise<string>;
+    /** El numero de reel al que Gero le esta por dar el motivo (y deja de esperarlo). */
+    motivoPendiente(): Promise<number | undefined>;
+    rechazar(n: number, motivo: string): Promise<string>;
+    arrancar(tope: number): Promise<string>;
+    estado(): Promise<string>;
+  };
 }
 
 /** Clave en homero.estado: el reel al que se le esta pidiendo un cambio (despues de ✏️). */
@@ -280,6 +292,24 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
     await ctx.reply(
       `Hoy: ${m.leads} leads nuevos, ${m.enviados} mails enviados, ${m.respuestas} respuestas, ${m.reuniones} reuniones agendadas.`,
     );
+  });
+
+  // El experimento de anuncios de Sincro Host: Homero solo pasa el limite que da Gero; los topes y la plata los maneja el host.
+  bot.command('arrancar_experimento', async (ctx) => {
+    if (!acciones?.anfitrion) {
+      await ctx.reply('Homero no tiene configurado el host (SINCRO_HOST_URL).');
+      return;
+    }
+    const tope = leerMonto((ctx.match ?? '').trim());
+    if (!tope) {
+      await ctx.reply('Mandame el límite de gasto de la cuenta, en pesos: /arrancar_experimento 150000 (lo que ya gastó la cuenta más lo del experimento).');
+      return;
+    }
+    await ctx.reply(await acciones.anfitrion.arrancar(tope));
+  });
+
+  bot.command('experimento_agentes', async (ctx) => {
+    if (acciones?.anfitrion) await ctx.reply(await acciones.anfitrion.estado());
   });
 
   bot.command('promocionar', async (ctx) => {
@@ -667,6 +697,12 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
       case 'rx':
         resultado = 'Listo, ese no lo promociono.';
         break;
+      case 'ha':
+        resultado = acciones.anfitrion ? await acciones.anfitrion.aprobar(id) : 'Homero no tiene configurado el host.';
+        break;
+      case 'hn':
+        resultado = acciones.anfitrion ? await acciones.anfitrion.pedirMotivo(id) : 'Homero no tiene configurado el host.';
+        break;
       case 'ls':
       case 'ln': {
         const ok = await acciones.marcarCalidad(id, accion === 'ls' ? 'sirve' : 'no_sirve');
@@ -684,6 +720,12 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
 
   // Corregir un borrador: responderle a la tarjeta con el texto nuevo.
   bot.on('message:text', async (ctx) => {
+    // El motivo de un reel que Gero rechazo (❌ Rechazar en la tarjeta de calibracion): el mensaje que sigue.
+    const rechazado = acciones?.anfitrion ? await acciones.anfitrion.motivoPendiente() : undefined;
+    if (rechazado !== undefined && acciones?.anfitrion) {
+      await ctx.reply(await acciones.anfitrion.rechazar(rechazado, ctx.message.text));
+      return;
+    }
     const citado = ctx.message.reply_to_message?.message_id;
     // El link de Meet de una reunion: respuesta al mensaje que lo pidio.
     const meet = citado && acciones ? await acciones.pasarMeet(citado, ctx.message.text) : undefined;

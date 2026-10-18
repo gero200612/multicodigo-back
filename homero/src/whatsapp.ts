@@ -236,11 +236,18 @@ export const JUNTAR_MENSAJES_MS = 6_000;
  * Lo que llega del numero de Sincro: cada mensaje es una tarea del agente, y
  * cada envio del formulario de la web, una tarea que guarda el lead y le escribe.
  */
-export async function recibirLeads(wa: ClienteWa, store: Store, ahora: () => Date): Promise<void> {
+export async function recibirLeads(
+  wa: ClienteWa,
+  store: Store,
+  ahora: () => Date,
+  /** Avisa de cada charla o formulario nuevo (para el Sincro Host). Recibe el contacto solo para armar un id con hash: el telefono no sale. */
+  alLead?: (l: { fuente: 'whatsapp' | 'web'; contacto?: string; evento: number }) => void,
+): Promise<void> {
   const eventos = await wa.eventos();
   const vistos: number[] = [];
   for (const e of eventos) {
     if (e.tipo === 'mensaje') {
+      if (typeof e.datos.contacto === 'string') alLead?.({ fuente: 'whatsapp', contacto: e.datos.contacto, evento: e.id });
       await store.encolar({
         tipo: 'agente_whatsapp',
         payload: e.datos,
@@ -249,6 +256,7 @@ export async function recibirLeads(wa: ClienteWa, store: Store, ahora: () => Dat
         disponibleDesde: new Date(ahora().getTime() + JUNTAR_MENSAJES_MS),
       });
     } else if (e.tipo === 'formulario') {
+      alLead?.({ fuente: 'web', evento: e.id });
       await store.encolar({
         tipo: 'formulario_web',
         payload: { ...e.datos, evento: e.id },

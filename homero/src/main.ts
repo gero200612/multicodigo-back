@@ -45,6 +45,23 @@ import { bajarPaginaConDestino, recibeMail } from './web.js';
 import { adminWa, atenderIa, bucle, clienteWa, pedidorWa, recibirLeads, reenviarAlertas } from './whatsapp.js';
 import { asegurarPlantilla, VIGILAR_PLANTILLA_MS, vigilarPlantilla } from './primer-whatsapp.js';
 import { PLANTILLA_LINK, recibirMeet } from './meet.js';
+import {
+  aprobarRevision,
+  arrancarExperimento,
+  clienteDelAnfitrion,
+  estadoDelHost,
+  idDeLeadDeLaWeb,
+  idDeLeadDeMeta,
+  idDeLeadDeWhatsapp,
+  metaSinAnuncios,
+  motivoPendiente,
+  pedirMotivo,
+  recibirAprobacion,
+  rechazarRevision,
+  reenviarLead,
+  type DepsDelAnfitrion,
+  type LeadParaElAnfitrion,
+} from './anfitrion.js';
 import { armarBancoDeMusica, buscarEnPixabay, leerBanco } from './medios.js';
 import { aprobarReel, cambiarReel, descartarReel, promocionarReel, recibirVideo, reintentarReel, retomarReels } from './publicar-reel.js';
 import { hojaDeContacto, medirVideo, portadaDe } from './video.js';
@@ -80,6 +97,10 @@ async function main() {
   const { bot, avisar, proponer, mandarFoto, mandarVideo, conectar, cambiarBotones } = crearBot(config, store);
 
   const aviso = (t: string) => avisar(t).catch((e) => console.error('[homero] no pude avisar:', e));
+  // Sincro Host: quien piensa el experimento de anuncios. Homero le pone Telegram y le reenvia los leads (sin datos de personas).
+  const anfitrion = config.anfitrion ? clienteDelAnfitrion(config.anfitrion) : undefined;
+  const alLeadDelAnfitrion = (l: LeadParaElAnfitrion) => void reenviarLead(anfitrion, l);
+  if (!config.anunciosPropios) console.log('[homero] anuncios propios en pausa (HOMERO_ANUNCIOS_PROPIOS=no): el experimento lo maneja Sincro Host');
   // Las cuentas de Claude son un fondo comun que maneja el gateway: Homero no
   // tiene ninguna. Sin gateway configurado, todo lo que piensa espera en la
   // cola (con un error que dice por que) y lo ya escrito se sigue mandando.
@@ -127,7 +148,9 @@ async function main() {
       config.bridge && config.chatId !== undefined
         ? clienteDePunchi({ ...config.bridge, chatId: config.chatId })
         : undefined,
-    meta: config.meta ? clienteDeMeta(config.meta) : undefined,
+    // Con los anuncios propios en pausa, Homero lee Meta pero no crea ni cambia anuncios, formularios ni presupuestos.
+    meta: config.meta ? (config.anunciosPropios ? clienteDeMeta(config.meta) : metaSinAnuncios(clienteDeMeta(config.meta))) : undefined,
+    alLeadNuevo: (l) => alLeadDelAnfitrion({ id: idDeLeadDeMeta(l.id), fuente: l.fuente, anuncio: l.anuncio, creado: l.creado, estado: 'nuevo' }),
     mandarFoto: (png, pie) => mandarFoto(png, pie).catch((e) => console.error('[homero] no pude mandar la imagen:', e)),
     // Los reels que manda Gero: el video vive en el volumen de medios hasta publicarlo.
     medios: config.medios.dir,
@@ -138,6 +161,14 @@ async function main() {
     wa,
     waAdmin,
     numerosDePrueba: config.whatsapp?.numerosDePrueba ?? [],
+  };
+  const depsDelAnfitrion: DepsDelAnfitrion = {
+    store,
+    anfitrion,
+    medios: config.medios.dir,
+    mandarVideo: deps.mandarVideo,
+    proponer: async (t, b) => proponer(t, b),
+    avisar: aviso,
   };
   const acciones: Acciones = {
     aprobarLead: (id) => aprobarLead(id, deps),
@@ -169,6 +200,16 @@ async function main() {
     descartarReel: (id) => descartarReel(id, deps),
     cambiarReel: (id, pedido) => cambiarReel(id, pedido, deps),
     promocionarReel: (id) => promocionarReel(id, deps),
+    anfitrion: anfitrion
+      ? {
+          aprobar: (n) => aprobarRevision(n, depsDelAnfitrion),
+          pedirMotivo: (n) => pedirMotivo(n, depsDelAnfitrion),
+          motivoPendiente: () => motivoPendiente(depsDelAnfitrion),
+          rechazar: (n, motivo) => rechazarRevision(n, motivo, depsDelAnfitrion),
+          arrancar: (tope) => arrancarExperimento(tope, depsDelAnfitrion),
+          estado: () => estadoDelHost(depsDelAnfitrion),
+        }
+      : undefined,
   };
   conectar(acciones);
 
@@ -176,7 +217,8 @@ async function main() {
   // sola) no le llegan a Gero; el publicista los reemplaza con las nuevas.
   const viejos = await descartarPlantillasViejas({ ...deps, cambiarBotones });
   if (viejos > 0) console.log(`[homero] descarté ${viejos} anuncio(s) con la plantilla vieja`);
-  const retomados = await retomarPublicaciones(deps);
+  // Con los anuncios propios en pausa no se vuelve a publicar nada aprobado antes.
+  const retomados = config.anunciosPropios ? await retomarPublicaciones(deps) : 0;
   if (retomados > 0) console.log(`[homero] vuelvo a publicar ${retomados} anuncio(s) aprobado(s)`);
   const reelsRetomados = await retomarReels(deps);
   if (reelsRetomados > 0) console.log(`[homero] retomo ${reelsRetomados} reel(s): subidas a medias o tarjetas que no salieron`);
@@ -190,6 +232,9 @@ async function main() {
         ahora: deps.ahora,
         enCurso: () => sesiones.enCurso(),
         whatsapp: waAdmin,
+        anfitrion: anfitrion
+          ? { aviso: (texto) => avisar(texto), aprobacion: (cuerpo) => recibirAprobacion(cuerpo, depsDelAnfitrion) }
+          : undefined,
       })
     : undefined;
   if (api) {
@@ -248,7 +293,7 @@ async function main() {
   const bandeja = setInterval(barrer, config.bandejaCadaMs);
 
   const plan = () =>
-    Promise.all([planificar(deps), planificarAnuncios(deps), planificarFinanzas(deps)]).catch((err) =>
+    Promise.all([planificar(deps), config.anunciosPropios ? planificarAnuncios(deps) : undefined, planificarFinanzas(deps)]).catch((err) =>
       console.error('[homero] planificador:', err),
     );
   void plan();
@@ -309,7 +354,12 @@ async function main() {
   // contesta; la Toshiba no abre ningun puerto para esto.
   const sigue = () => corriendo;
   const buclesWa = [
-    wa ? bucle('leads', () => recibirLeads(wa, store, deps.ahora), sigue) : undefined,
+    wa ? bucle('leads', () => recibirLeads(wa, store, deps.ahora, (l) => alLeadDelAnfitrion({
+      id: l.fuente === 'web' ? idDeLeadDeLaWeb(l.evento) : idDeLeadDeWhatsapp(l.contacto ?? String(l.evento)),
+      fuente: l.fuente,
+      creado: deps.ahora(),
+      estado: l.fuente === 'web' ? 'nuevo' : 'en_conversacion',
+    })), sigue) : undefined,
     waAdmin ? bucle('alertas', () => reenviarAlertas(waAdmin, aviso), sigue) : undefined,
     waAdmin ? bucle('ia', () => atenderIa({ admin: waAdmin, gateway, sesiones, modelo: config.modelo }), sigue) : undefined,
   ];

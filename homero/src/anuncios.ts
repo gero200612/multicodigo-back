@@ -28,6 +28,8 @@ export interface DepsDeAnuncios extends DepsDeVentas {
   mandarFoto?: (png: Buffer, pie: string) => Promise<void>;
   /** El numero de Sincro en el bot: el primer WhatsApp a quien lo pidio en el formulario. */
   wa?: ClienteWa;
+  /** Cada consulta nueva de un formulario de Meta, para el Sincro Host (anfitrion.ts). Sin datos de personas. */
+  alLeadNuevo?: (lead: { id: string; fuente: 'meta_form'; anuncio?: string; creado: Date }) => void;
 }
 
 /** Clave en homero.estado: el presupuesto del mes en pesos. */
@@ -994,6 +996,8 @@ async function entrarLead(a: Anuncio, leadgenId: string, campos: Record<string, 
     investigacion: { resumen_empresa: '', dolor: '', idea: '', formulario, contacto: persona },
   });
   if (!r) return false;
+  // Solo el id del lead de Meta y el anuncio: ni nombre, ni mail, ni telefono salen de Homero.
+  if (r.nuevo) deps.alLeadNuevo?.({ id: leadgenId, fuente: 'meta_form', anuncio: a.metaIds.anuncio, creado: deps.ahora() });
 
   const wa = linkDeWhatsapp(telefono);
   // Tildo que le escribamos por WhatsApp: la plantilla sale ya, ademas del mail.
