@@ -40,11 +40,12 @@ NOMBRES = {
     '100.96.251.50': 'laptop (salchinator)',
     '100.113.60.114': 'el propio VPS',
     '127.0.0.1': 'el propio servidor',
+    '100.107.200.15': 'Pedro',
 }
 MAX_PENDIENTES = 5
 # Un Autorizar vale RECORDAR segundos para la MISMA clave, el mismo usuario,
 # el mismo servidor y el mismo origen. Cualquier otra combinacion pregunta.
-RECORDAR = int(os.environ.get('ACCESO_RECORDAR', '1800'))
+RECORDAR = int(os.environ.get('ACCESO_RECORDAR', '3600'))
 recordados = {}  # (servidor, usuario, desde, clave) -> vence (epoch)
 
 API = f'https://api.telegram.org/bot{TOKEN}'
