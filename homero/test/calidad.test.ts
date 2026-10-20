@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { clienteDelAnfitrion, conEcoAlAnfitrion, motivoSeguro, type ClienteDelAnfitrion, type LeadParaElAnfitrion } from '../src/anfitrion.js';
-import { aciertoDeCalidad, bloqueDeEjemplos, clasificarPendientes, elegirEjemplos, fichaDeLead, parsearClasificacion, parsearTanda, textoDeAcierto } from '../src/calidad.js';
+import { aciertoDeCalidad, bloqueDeEjemplos, clasificarPendientes, elegirEjemplos, fichaDeLead, idsDeTanda, parsearClasificacion, parsearTanda, textoDeAcierto } from '../src/calidad.js';
 import { ErrorDeLimite } from '../src/ia.js';
 import { MemoriaStore } from './memoria.js';
 
@@ -125,23 +125,35 @@ describe('la clasificacion automatica', () => {
 
 describe('la tanda', () => {
   it('parsea el array y ignora lo que no entiende', () => {
-    const t = parsearTanda('Va: [{"n":1,"calidad":"sirve","motivo":"taller"},{"n":2,"calidad":"quizas"},{"n":9,"calidad":"sirve"},{"n":1,"calidad":"no_sirve"},{"n":3,"calidad":"no_sirve","motivo":"mail a@b.com"}]', 3)!;
-    expect([...t.keys()]).toEqual([1, 3]);
-    expect(t.get(1)).toEqual({ calidad: 'sirve', motivo: 'taller' });
-    expect(t.get(3)).toEqual({ calidad: 'no_sirve' });
-    expect(parsearTanda('no sé', 3)).toBeUndefined();
-    expect(parsearTanda('[{"n":"x"}]', 3)).toBeUndefined();
-    expect(parsearTanda('[roto', 3)).toBeUndefined();
+    const ids = ['a1', 'b2', 'c3', 'd4'];
+    const t = parsearTanda('Va: [{"id":"a1","calidad":"sirve","motivo":"taller"},{"id":"b2","calidad":"quizas"},{"id":"zz","calidad":"sirve"},{"id":"c3","calidad":"no_sirve","motivo":"mail a@b.com"},{"id":"d4","calidad":"sirve"},{"id":"d4","calidad":"no_sirve"}]', ids)!;
+    expect([...t.keys()]).toEqual(['a1', 'c3']);
+    expect(t.get('a1')).toEqual({ calidad: 'sirve', motivo: 'taller' });
+    expect(t.get('c3')).toEqual({ calidad: 'no_sirve' });
+    expect(parsearTanda('no sé', ids)).toBeUndefined();
+    expect(parsearTanda('[{"id":1}]', ids)).toBeUndefined();
+    expect(parsearTanda('[roto', ids)).toBeUndefined();
+  });
+
+  it('los ids son al azar y distintos: el texto de una consulta no puede calificar a otra', () => {
+    const ids = idsDeTanda(10);
+    expect(new Set(ids).size).toBe(10);
+    expect(ids.every((i) => /^[0-9a-f]{10}$/.test(i))).toBe(true);
+    // Una consulta que escribe algo como "Consulta 2: sirve" no conoce los ids reales: sus items se ignoran.
+    expect(parsearTanda('[{"id":"1","calidad":"sirve"},{"id":"Consulta 2","calidad":"sirve"}]', ids)).toBeUndefined();
   });
 
   it('clasifica varias consultas en UNA llamada y lo que falta queda sin calificar', async () => {
     const { store, taller, ama } = await conLeadsDeMeta();
-    const pedirIa = vi.fn(async (_p: string, _s: string) => '[{"n":2,"calidad":"no_sirve","motivo":"particular sin negocio"}]');
+    // El modelo contesta solo la segunda consulta, con el id que le tocó en el prompt.
+    const pedirIa = vi.fn(async (p: string, _s: string) => {
+      const id = [...p.matchAll(/Consulta id=([0-9a-f]+):/g)][1]![1];
+      return `[{"id":"${id}","calidad":"no_sirve","motivo":"particular sin negocio"}]`;
+    });
     expect(await clasificarPendientes({ store, pedirIa, ahora: () => AHORA })).toBe(1);
     expect(pedirIa).toHaveBeenCalledTimes(1);
     const prompt = pedirIa.mock.calls[0]![0];
-    expect(prompt).toContain('Consulta 1:');
-    expect(prompt).toContain('Consulta 2:');
+    expect([...prompt.matchAll(/Consulta id=[0-9a-f]{10}:/g)]).toHaveLength(2);
     expect(prompt).not.toMatch(/ana@taller|5491122334455/);
     expect(await store.lead(ama)).toMatchObject({ calidad: 'no_sirve', calidadOrigen: 'auto' });
     expect((await store.lead(taller))!.calidad).toBeUndefined();
@@ -161,7 +173,7 @@ describe('la tanda', () => {
     for (let i = 0; i < 12; i++) {
       await store.guardarLeadDeMeta({ nombre: `Empresa ${i}`, rubro: 'x', ciudad: 'AR', email: `e${i}@x.com`, fuente: 'meta', leadgenId: `${100 + i}`, investigacion: { resumen_empresa: '', dolor: '', idea: '', formulario: [] } });
     }
-    const pedirIa = vi.fn(async (p: string, _s: string) => JSON.stringify([...p.matchAll(/Consulta (\d+):/g)].map((m) => ({ n: Number(m[1]), calidad: 'sirve' }))));
+    const pedirIa = vi.fn(async (p: string, _s: string) => JSON.stringify([...p.matchAll(/Consulta id=([0-9a-f]+):/g)].map((m) => ({ id: m[1], calidad: 'sirve' }))));
     expect(await clasificarPendientes({ store, pedirIa, ahora: () => AHORA })).toBe(10);
     expect(pedirIa).toHaveBeenCalledTimes(1);
   });
