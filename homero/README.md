@@ -151,7 +151,8 @@ pliego y el motivo, y se reintenta con el mismo botón.
 | `TELEGRAM_BOT_TOKEN` | — | En el compose sale de `HOMERO_TELEGRAM_BOT_TOKEN` |
 | `HOMERO_CHAT_ID` | — | Sin esto no obedece a nadie |
 | `DATABASE_URL` | — | La misma del bridge |
-| `HOMERO_MODELO` | `sonnet` | |
+| `HOMERO_MODELO` | `sonnet` | Alias que acepta el gateway: `sonnet`, `haiku` u `opus` |
+| `HOMERO_MODELO_CHICO` | — | Opcional. Modelo para las tareas chicas (hoy: clasificar consultas, hasta 10 por llamada). Mismos alias; `haiku` es el indicado. Sin esto usa `HOMERO_MODELO` |
 | `HOMERO_REMITENTE` | `Geronimo Enrici` | Nombre que ve el destinatario |
 | `HOMERO_FIRMA` | `Geronimo Enrici\nSincro_ar` | Cómo firma los mails (`\n` = salto de línea) |
 | `HOMERO_EMAIL_GERO` | — | Te copia las invitaciones de reunión |

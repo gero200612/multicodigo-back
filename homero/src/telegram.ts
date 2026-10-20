@@ -5,6 +5,7 @@ import type { Config } from './config.js';
 import { horaArgentina, inicioDelDia } from './horas.js';
 import { ErrorDeCuenta, ErrorDeLimite } from './ia.js';
 import { SinLugar } from './gateway.js';
+import { aciertoDeCalidad, textoDeAcierto } from './calidad.js';
 import { PAUSA_MANUAL } from './cola.js';
 import { CIUDADES } from './rubros.js';
 import type { CambioDeEnsayo, EstadoDeHomero } from './comandos.js';
@@ -31,6 +32,7 @@ export const COMANDOS = [
   { command: 'ocupado', description: 'Bloquear un día: /ocupado 30/9' },
   { command: 'libre', description: 'Liberar un día: /libre 30/9' },
   { command: 'rubros', description: 'Cómo responde cada rubro' },
+  { command: 'acierto', description: 'Cuánto acierta Homero al calificar consultas' },
   { command: 'presupuesto', description: 'Anuncios: /presupuesto [monto del mes]' },
   { command: 'anunciar', description: 'Anuncios: que el publicista proponga ya' },
   { command: 'promocionar', description: 'Promocionar ya el último reel publicado: /promocionar [n]' },
@@ -244,6 +246,7 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
         '/modo aprobar | auto · si te pido OK para cada mail',
         '/buscar [rubro] [ciudad] · salgo a buscar ya',
         '/rubros · cómo responde cada rubro',
+        '/acierto · cuánto acierto al calificar consultas',
         '/presupuesto [monto] · anuncios: cómo va el mes, o cambiar el presupuesto',
         'Mandame un video vertical (hasta 20 MB) y lo publico como reel, con tu OK',
         '/promocionar [n] · promociono ya el último reel publicado (o el #n)',
@@ -479,6 +482,10 @@ export function crearBot(config: Config, store: Store, ahora: () => Date = () =>
 
   bot.command('rubros', async (ctx) => {
     await ctx.reply(`Respuestas / contactados por rubro:\n${await tablaDeRubros(store)}`);
+  });
+
+  bot.command('acierto', async (ctx) => {
+    await ctx.reply(textoDeAcierto(await aciertoDeCalidad(store)));
   });
 
   for (const [comando, ocupado] of [

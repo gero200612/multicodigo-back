@@ -557,6 +557,7 @@ export class MemoriaStore implements Store {
   async marcarCalidad(leadId: number, calidad: 'sirve' | 'no_sirve') {
     const l = this.leads.find((x) => x.id === leadId);
     if (!l) return undefined;
+    if (l.calidadOrigen === 'auto') l.calidadAuto = l.calidad;
     l.calidad = calidad;
     l.calidadOrigen = 'dueño';
     l.calidadMotivo = undefined;
@@ -575,6 +576,14 @@ export class MemoriaStore implements Store {
   async leadsSinCalidad(limite: number, desde: Date) {
     return this.leads
       .filter((l) => !l.calidad && l.leadgenId && (/^\d+$/.test(l.leadgenId) || l.leadgenId.startsWith('web:')) && l.creado.getTime() >= desde.getTime() && !['baja', 'rebotado'].includes(l.estado))
+      .slice(0, limite)
+      .map((l) => ({ ...l }));
+  }
+
+  async leadsCalificadosPorElDueño(limite: number) {
+    return this.leads
+      .filter((l) => l.calidad && l.calidadOrigen !== 'auto')
+      .sort((a, b) => (b.calidadEn?.getTime() ?? 0) - (a.calidadEn?.getTime() ?? 0) || b.id - a.id)
       .slice(0, limite)
       .map((l) => ({ ...l }));
   }

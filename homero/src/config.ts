@@ -19,6 +19,8 @@ const Env = z.object({
   HOMERO_CHAT_ID: opcional(z.coerce.number().int()),
   DATABASE_URL: z.string().min(1),
   HOMERO_MODELO: z.string().min(1).default('sonnet'),
+  // Para las tareas chicas (clasificar consultas): un alias que acepte el gateway (`haiku`, `sonnet`, `opus`). Sin esto usan HOMERO_MODELO.
+  HOMERO_MODELO_CHICO: opcional(z.string().min(1)),
   // El nombre que ve el destinatario en la bandeja.
   HOMERO_REMITENTE: opcional(z.string().min(1)).transform((v) => v ?? 'Geronimo Enrici'),
   HOMERO_BANDEJA_MIN: z.coerce.number().int().min(1).default(10),
@@ -92,6 +94,8 @@ export interface Config {
   chatId?: number;
   databaseUrl: string;
   modelo: string;
+  /** El modelo de las tareas chicas; sin dato, `modelo`. */
+  modeloChico?: string;
   remitente: string;
   bandejaCadaMs: number;
   firma: string;
@@ -130,6 +134,7 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
     chatId: e.HOMERO_CHAT_ID,
     databaseUrl: e.DATABASE_URL,
     modelo: e.HOMERO_MODELO,
+    modeloChico: e.HOMERO_MODELO_CHICO,
     remitente: e.HOMERO_REMITENTE,
     bandejaCadaMs: e.HOMERO_BANDEJA_MIN * 60_000,
     firma: e.HOMERO_FIRMA,

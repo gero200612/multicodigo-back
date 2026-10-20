@@ -68,7 +68,7 @@ import { armarBancoDeMusica, buscarEnPixabay, leerBanco } from './medios.js';
 import { aprobarReel, cambiarReel, descartarReel, promocionarReel, recibirVideo, reintentarReel, retomarReels } from './publicar-reel.js';
 import { hojaDeContacto, medirVideo, portadaDe } from './video.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql', '013_calidad_de_leads.sql', '014_variantes.sql', '015_reels.sql', '016_calidad_origen.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql', '013_calidad_de_leads.sql', '014_variantes.sql', '015_reels.sql', '016_calidad_origen.sql', '017_calidad_auto.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
@@ -301,7 +301,7 @@ async function main() {
   const clasificar = () =>
     clasificarPendientes({
       store,
-      pedirIa: (prompt, sistema) => pedirTexto(prompt, { sistema, modelo: config.modelo, gateway }),
+      pedirIa: (prompt, sistema) => pedirTexto(prompt, { sistema, modelo: config.modeloChico ?? config.modelo, gateway }),
       ahora: deps.ahora,
     }).then((n) => n > 0 && console.log(`[homero] ${n} consulta(s) clasificada(s) solas`));
   const plan = () =>

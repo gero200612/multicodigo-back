@@ -92,6 +92,10 @@ export interface Lead {
   calidadOrigen?: OrigenDeCalidad;
   /** Por que, en pocas palabras y sin datos de personas (solo la automatica lo trae). */
   calidadMotivo?: string;
+  /** Lo que habia dicho la automatica cuando el dueño la pisó o confirmó (sin dato si nunca hubo una automatica). */
+  calidadAuto?: CalidadDeLead;
+  /** Cuando se calificó (la última vez). */
+  calidadEn?: Date;
   /** El id del formulario de Meta (`123...`) o de la web (`web:<evento>`). */
   leadgenId?: string;
   creado?: Date;
@@ -632,6 +636,8 @@ export interface Store {
   guardarCalidadAuto(leadId: number, calidad: CalidadDeLead, motivo?: string): Promise<Lead | undefined>;
   /** Consultas de formularios (Meta y web) de los ultimos dias que todavia no tienen calidad, las mas viejas primero. */
   leadsSinCalidad(limite: number, desde: Date): Promise<Lead[]>;
+  /** Las consultas que calificó el dueño (las mas recientes primero): ejemplos para el modelo y base de la métrica de acierto. */
+  leadsCalificadosPorElDueño(limite: number): Promise<Lead[]>;
 
   // ---- Reels
   /** Nace `escribiendo`. */
@@ -1574,7 +1580,8 @@ export class PgStore implements Store {
 
   async marcarCalidad(leadId: number, calidad: CalidadDeLead) {
     const r = await this.pool.query(
-      `UPDATE homero.leads SET calidad = $2, calidad_en = now(), calidad_origen = 'dueño', calidad_motivo = NULL, actualizado = now()
+      `UPDATE homero.leads SET calidad = $2, calidad_en = now(), calidad_origen = 'dueño', calidad_motivo = NULL,
+              calidad_auto = CASE WHEN calidad_origen = 'auto' THEN calidad ELSE calidad_auto END, actualizado = now()
        WHERE id = $1 RETURNING *`,
       [leadId, calidad],
     );
@@ -1597,6 +1604,16 @@ export class PgStore implements Store {
          AND creado >= $2 AND estado NOT IN ('baja', 'rebotado')
        ORDER BY id LIMIT $1`,
       [limite, desde],
+    );
+    return r.rows.map(aLead);
+  }
+
+  async leadsCalificadosPorElDueño(limite: number) {
+    const r = await this.pool.query(
+      `SELECT * FROM homero.leads
+       WHERE calidad IS NOT NULL AND calidad_origen IS DISTINCT FROM 'auto'
+       ORDER BY calidad_en DESC NULLS LAST, id DESC LIMIT $1`,
+      [limite],
     );
     return r.rows.map(aLead);
   }
@@ -1880,6 +1897,8 @@ function aLead(f: Fila): Lead {
     // Las de antes de la clasificacion automatica las marco Gero.
     calidadOrigen: f.calidad ? ((opc(f.calidad_origen) as OrigenDeCalidad | undefined) ?? 'dueño') : undefined,
     calidadMotivo: opc(f.calidad_motivo),
+    calidadAuto: opc(f.calidad_auto) as CalidadDeLead | undefined,
+    calidadEn: f.calidad_en ? new Date(f.calidad_en as string) : undefined,
     leadgenId: opc(f.leadgen_id),
     creado: f.creado ? new Date(f.creado as string) : undefined,
   };
