@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { Meta } from './meta.js';
 import { ErrorDeMeta } from './meta.js';
-import type { Store } from './store.js';
+import type { CalidadDeLead, EstadoDeLead, Lead, OrigenDeCalidad, Store } from './store.js';
 import type { Boton } from './ventas.js';
 
 /**
@@ -40,7 +40,16 @@ export interface LeadParaElAnfitrion {
   /** El anuncio de Meta del que vino, si se sabe. */
   anuncio?: string;
   estado?: 'nuevo' | 'en_conversacion' | 'link_enviado' | 'registrado' | 'perdido';
+  /** Sirve o no sirve (la marco Gero o la clasifico Homero solo). */
+  calidad?: CalidadDeLead;
+  origen_calidad?: OrigenDeCalidad;
+  /** Corto y sin datos de personas: pasa por {@link motivoSeguro}. */
+  motivo_calidad?: string;
+  /** Hasta donde llego: respondio, tiene reunion, es cliente o se perdio. */
+  etapa?: EtapaDeLead;
 }
+
+export type EtapaDeLead = 'respondio' | 'reunion' | 'cliente' | 'perdido';
 
 export class ErrorDelAnfitrion extends Error {
   constructor(mensaje: string) {
@@ -108,6 +117,10 @@ export function clienteDelAnfitrion(cfg: ConfigDelAnfitrion, pedir: Pedir = fetc
         creado: l.creado.toISOString(),
         ...(l.anuncio ? { anuncio: l.anuncio } : {}),
         ...(l.estado ? { estado: l.estado } : {}),
+        ...(l.calidad ? { calidad: l.calidad } : {}),
+        ...(l.calidad && l.origen_calidad ? { origen_calidad: l.origen_calidad } : {}),
+        ...(l.calidad && l.motivo_calidad ? { motivo_calidad: l.motivo_calidad } : {}),
+        ...(l.etapa ? { etapa: l.etapa } : {}),
       });
     },
     async arrancar(tope) {
@@ -149,6 +162,120 @@ export async function reenviarLead(host: ClienteDelAnfitrion | undefined, l: Lea
     }
   }
   return false;
+}
+
+/**
+ * El motivo de una calidad, apto para salir de Homero: una sola linea, hasta 120 caracteres y sin nada que parezca un dato
+ * de una persona (un mail o 6+ digitos seguidos, que es un telefono). Si lo tiene, no sale: `undefined`.
+ */
+export function motivoSeguro(motivo: string | undefined | null): string | undefined {
+  const m = (motivo ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!m || m.includes('@') || /\d{6,}/.test(m)) return undefined;
+  return m;
+}
+
+/** Del estado del lead en Homero a la etapa que entiende el host. Lo demas no cambia la etapa. */
+export function etapaDeEstado(estado: EstadoDeLead): EtapaDeLead | undefined {
+  switch (estado) {
+    case 'respondio':
+      return 'respondio';
+    case 'reunion':
+      return 'reunion';
+    case 'cerrado':
+      return 'cliente';
+    case 'baja':
+    case 'descartado':
+      return 'perdido';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * El id con el que el host conoce a un lead (el mismo que cuando entro): `meta-<leadgen>`, `web-<evento>` o `wa-<hash>`.
+ * Los leads de prospeccion (OSM, Google) y los que escriben por mail no van al host.
+ */
+export function idParaElAnfitrion(l: Pick<Lead, 'leadgenId' | 'telefono' | 'fuente'>): { id: string; fuente: FuenteDeLead } | undefined {
+  if (l.leadgenId && /^\d+$/.test(l.leadgenId)) return { id: idDeLeadDeMeta(l.leadgenId), fuente: 'meta_form' };
+  if (l.leadgenId?.startsWith('web:')) return { id: idDeLeadDeLaWeb(l.leadgenId.slice(4)), fuente: 'web' };
+  if (l.fuente === 'whatsapp' && l.telefono) return { id: idDeLeadDeWhatsapp(l.telefono), fuente: 'whatsapp' };
+  return undefined;
+}
+
+/** Lo que se le cuenta al host de un lead de Homero. Nunca nombre, mail ni telefono. */
+export function leadParaElAnfitrion(l: Lead, etapa?: EtapaDeLead, anuncio?: string): LeadParaElAnfitrion | undefined {
+  const destino = idParaElAnfitrion(l);
+  if (!destino) return undefined;
+  const motivo = l.calidadOrigen === 'auto' ? motivoSeguro(l.calidadMotivo) : undefined;
+  return {
+    id: destino.id,
+    fuente: destino.fuente,
+    creado: l.creado ?? new Date(),
+    ...(anuncio ? { anuncio } : {}),
+    ...(l.calidad ? { calidad: l.calidad, origen_calidad: l.calidadOrigen ?? 'dueño' } : {}),
+    ...(l.calidad && motivo ? { motivo_calidad: motivo } : {}),
+    ...(etapa ? { etapa } : {}),
+  };
+}
+
+type EcoDelAnfitrion = Pick<Store, 'lead' | 'anuncio'>;
+
+/**
+ * El store con un eco al host: cada vez que cambia la calidad de un lead (la automatica o el boton de Gero) o llega a una etapa
+ * (respondio, reunion, cliente, perdido), se lo cuenta. Va por aca y no en cada lugar que cambia el estado porque son muchos
+ * (WhatsApp, mail, agentes, Telegram). Sin host no hace nada; el aviso sale en segundo plano (no frena a quien cambia el lead) y si el host no contesta se reintenta una vez.
+ */
+export function conEcoAlAnfitrion<S extends Store>(store: S, host: ClienteDelAnfitrion | undefined, log: (t: string) => void = console.warn): S {
+  if (!host) return store;
+  // Una etapa repetida (WhatsApp marca "respondio" en cada mensaje) no se vuelve a mandar mientras el proceso siga vivo.
+  const mandadas = new Set<string>();
+  async function eco(leadId: number, etapa?: EtapaDeLead): Promise<void> {
+    try {
+      const clave = etapa ? `${leadId}:${etapa}` : undefined;
+      if (clave && mandadas.has(clave)) return;
+      // Se anota ya: dos cambios seguidos al mismo estado no salen dos veces; si no llega, se desanota para el proximo intento.
+      if (clave) mandadas.add(clave);
+      const lead = await (store as EcoDelAnfitrion).lead(leadId);
+      if (!lead) return void (clave && mandadas.delete(clave));
+      const anuncio = lead.anuncioId === undefined ? undefined : (await (store as EcoDelAnfitrion).anuncio(lead.anuncioId))?.metaIds.anuncio;
+      const l = leadParaElAnfitrion(lead, etapa, anuncio);
+      if (!l) return void (clave && mandadas.delete(clave));
+      if (!(await reenviarLead(host, l, log)) && clave) mandadas.delete(clave);
+    } catch (err) {
+      if (etapa) mandadas.delete(`${leadId}:${etapa}`);
+      log(`[homero] no pude armar el aviso del lead ${leadId} para el host: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return new Proxy(store, {
+    get(destino, propiedad, receptor) {
+      const valor = Reflect.get(destino, propiedad, receptor) as unknown;
+      if (typeof valor !== 'function') return valor;
+      const f = valor as (...a: unknown[]) => unknown;
+      switch (propiedad) {
+        case 'marcarCalidad':
+        case 'guardarCalidadAuto':
+          return async (leadId: number, ...resto: unknown[]) => {
+            const r = (await f.call(destino, leadId, ...resto)) as Lead | undefined;
+            if (r) void eco(leadId);
+            return r;
+          };
+        case 'actualizarLead':
+          return async (id: number, cambios: { estado?: EstadoDeLead }) => {
+            await f.call(destino, id, cambios);
+            const etapa = cambios.estado ? etapaDeEstado(cambios.estado) : undefined;
+            if (etapa) void eco(id, etapa);
+          };
+        case 'crearReunion':
+          return async (r: { leadId: number }) => {
+            const id = await f.call(destino, r);
+            if (id !== undefined) void eco(r.leadId, 'reunion');
+            return id;
+          };
+        default:
+          return f.bind(destino);
+      }
+    },
+  });
 }
 
 // ------------------------------------------------------------ tarjetas de calibracion

@@ -529,8 +529,8 @@ export class MemoriaStore implements Store {
       if (l.anuncioId === undefined || (desde && l.creado.getTime() < desde.getTime())) continue;
       const r = porAnuncio.get(l.anuncioId) ?? { leads: 0, reuniones: 0, utiles: 0, basura: 0 };
       r.leads++;
-      if (l.calidad === 'sirve') r.utiles++;
-      if (l.calidad === 'no_sirve') r.basura++;
+      if (l.calidad === 'sirve' && l.calidadOrigen !== 'auto') r.utiles++;
+      if (l.calidad === 'no_sirve' && l.calidadOrigen !== 'auto') r.basura++;
       if (this.reuniones.some((x) => x.leadId === l.id && !x.cancelada)) r.reuniones++;
       porAnuncio.set(l.anuncioId, r);
     }
@@ -548,7 +548,7 @@ export class MemoriaStore implements Store {
           creado: l.creado,
           ...(l.email ? { email: l.email } : {}),
           ...(l.telefono ? { telefono: l.telefono } : {}),
-          ...(l.calidad ? { calidad: l.calidad, calidadEn: (l as { calidadEn?: Date }).calidadEn ?? this.ahora() } : {}),
+          ...(l.calidad && l.calidadOrigen !== 'auto' ? { calidad: l.calidad, calidadEn: (l as { calidadEn?: Date }).calidadEn ?? this.ahora() } : {}),
           ...(reunion ? { reunionEn: this.ahora() } : {}),
         };
       });
@@ -558,8 +558,25 @@ export class MemoriaStore implements Store {
     const l = this.leads.find((x) => x.id === leadId);
     if (!l) return undefined;
     l.calidad = calidad;
+    l.calidadOrigen = 'dueño';
+    l.calidadMotivo = undefined;
     (l as { calidadEn?: Date }).calidadEn = this.ahora();
     return { ...l };
+  }
+  async guardarCalidadAuto(leadId: number, calidad: 'sirve' | 'no_sirve', motivo?: string) {
+    const l = this.leads.find((x) => x.id === leadId);
+    if (!l || l.calidad) return undefined;
+    l.calidad = calidad;
+    l.calidadOrigen = 'auto';
+    l.calidadMotivo = motivo;
+    (l as { calidadEn?: Date }).calidadEn = this.ahora();
+    return { ...l };
+  }
+  async leadsSinCalidad(limite: number, desde: Date) {
+    return this.leads
+      .filter((l) => !l.calidad && l.leadgenId && (/^\d+$/.test(l.leadgenId) || l.leadgenId.startsWith('web:')) && l.creado.getTime() >= desde.getTime() && !['baja', 'rebotado'].includes(l.estado))
+      .slice(0, limite)
+      .map((l) => ({ ...l }));
   }
 
   // ---------------------------------------------------------------- reels

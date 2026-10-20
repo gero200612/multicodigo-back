@@ -86,11 +86,19 @@ export interface Lead {
   externo?: string;
   /** El anuncio del que vino, si lleno un formulario. */
   anuncioId?: number;
-  /** Lo que dijo Gero de la consulta (botones del aviso). */
+  /** Lo que se sabe de la consulta: la marco Gero (botones del aviso) o la clasifico Homero solo. */
   calidad?: CalidadDeLead;
+  /** Quien la marco. Sin dato (las de antes de la clasificacion automatica) es del dueño. */
+  calidadOrigen?: OrigenDeCalidad;
+  /** Por que, en pocas palabras y sin datos de personas (solo la automatica lo trae). */
+  calidadMotivo?: string;
+  /** El id del formulario de Meta (`123...`) o de la web (`web:<evento>`). */
+  leadgenId?: string;
+  creado?: Date;
 }
 
 export type CalidadDeLead = 'sirve' | 'no_sirve';
+export type OrigenDeCalidad = 'auto' | 'dueño';
 
 export type NuevoLead = Omit<Lead, 'id' | 'estado' | 'investigacion' | 'casilla'>;
 
@@ -618,8 +626,12 @@ export interface Store {
       reunionEn?: Date;
     }[]
   >;
-  /** Lo que dijo Gero de una consulta. Devuelve el lead, o nada si no existe. */
+  /** Lo que dijo Gero de una consulta (pisa siempre a la automatica). Devuelve el lead, o nada si no existe. */
   marcarCalidad(leadId: number, calidad: CalidadDeLead): Promise<Lead | undefined>;
+  /** La clasificacion automatica: solo si la consulta sigue sin calificar. Devuelve el lead, o nada si ya tenia calidad. */
+  guardarCalidadAuto(leadId: number, calidad: CalidadDeLead, motivo?: string): Promise<Lead | undefined>;
+  /** Consultas de formularios (Meta y web) de los ultimos dias que todavia no tienen calidad, las mas viejas primero. */
+  leadsSinCalidad(limite: number, desde: Date): Promise<Lead[]>;
 
   // ---- Reels
   /** Nace `escribiendo`. */
@@ -1523,8 +1535,8 @@ export class PgStore implements Store {
       `SELECT l.anuncio_id, count(*) AS leads,
               count(*) FILTER (WHERE EXISTS (
                 SELECT 1 FROM homero.reuniones r WHERE r.lead_id = l.id AND r.estado = 'confirmada')) AS reuniones,
-              count(*) FILTER (WHERE l.calidad = 'sirve') AS utiles,
-              count(*) FILTER (WHERE l.calidad = 'no_sirve') AS basura
+              count(*) FILTER (WHERE l.calidad = 'sirve' AND l.calidad_origen IS DISTINCT FROM 'auto') AS utiles,
+              count(*) FILTER (WHERE l.calidad = 'no_sirve' AND l.calidad_origen IS DISTINCT FROM 'auto') AS basura
        FROM homero.leads l
        WHERE l.anuncio_id IS NOT NULL AND ($1::timestamptz IS NULL OR l.creado >= $1)
        GROUP BY l.anuncio_id`,
@@ -1541,7 +1553,9 @@ export class PgStore implements Store {
 
   async etapasDeLeadsDeMeta() {
     const r = await this.pool.query(
-      `SELECT l.id, l.leadgen_id, l.creado, l.email, l.telefono, l.calidad, l.calidad_en,
+      `SELECT l.id, l.leadgen_id, l.creado, l.email, l.telefono,
+              CASE WHEN l.calidad_origen IS DISTINCT FROM 'auto' THEN l.calidad END AS calidad,
+              CASE WHEN l.calidad_origen IS DISTINCT FROM 'auto' THEN l.calidad_en END AS calidad_en,
               (SELECT min(r.creada) FROM homero.reuniones r WHERE r.lead_id = l.id AND r.estado = 'confirmada') AS reunion_en
        FROM homero.leads l
        WHERE l.leadgen_id ~ '^[0-9]+$' AND l.creado > now() - interval '90 days'`,
@@ -1560,10 +1574,31 @@ export class PgStore implements Store {
 
   async marcarCalidad(leadId: number, calidad: CalidadDeLead) {
     const r = await this.pool.query(
-      'UPDATE homero.leads SET calidad = $2, calidad_en = now(), actualizado = now() WHERE id = $1 RETURNING *',
+      `UPDATE homero.leads SET calidad = $2, calidad_en = now(), calidad_origen = 'dueño', calidad_motivo = NULL, actualizado = now()
+       WHERE id = $1 RETURNING *`,
       [leadId, calidad],
     );
     return r.rows[0] ? aLead(r.rows[0]) : undefined;
+  }
+
+  async guardarCalidadAuto(leadId: number, calidad: CalidadDeLead, motivo?: string) {
+    const r = await this.pool.query(
+      `UPDATE homero.leads SET calidad = $2, calidad_en = now(), calidad_origen = 'auto', calidad_motivo = $3, actualizado = now()
+       WHERE id = $1 AND calidad IS NULL RETURNING *`,
+      [leadId, calidad, motivo ?? null],
+    );
+    return r.rows[0] ? aLead(r.rows[0]) : undefined;
+  }
+
+  async leadsSinCalidad(limite: number, desde: Date) {
+    const r = await this.pool.query(
+      `SELECT * FROM homero.leads
+       WHERE calidad IS NULL AND leadgen_id IS NOT NULL AND (leadgen_id ~ '^[0-9]+$' OR leadgen_id LIKE 'web:%')
+         AND creado >= $2 AND estado NOT IN ('baja', 'rebotado')
+       ORDER BY id LIMIT $1`,
+      [limite, desde],
+    );
+    return r.rows.map(aLead);
   }
 
   // ---------------------------------------------------------------- reels
@@ -1842,6 +1877,11 @@ function aLead(f: Fila): Lead {
     externo: opc(f.externo),
     anuncioId: num(f.anuncio_id),
     calidad: opc(f.calidad) as CalidadDeLead | undefined,
+    // Las de antes de la clasificacion automatica las marco Gero.
+    calidadOrigen: f.calidad ? ((opc(f.calidad_origen) as OrigenDeCalidad | undefined) ?? 'dueño') : undefined,
+    calidadMotivo: opc(f.calidad_motivo),
+    leadgenId: opc(f.leadgen_id),
+    creado: f.creado ? new Date(f.creado as string) : undefined,
   };
 }
 

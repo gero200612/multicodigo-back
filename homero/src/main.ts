@@ -11,6 +11,7 @@ import {
   pedirCambio,
   planificarAnuncios,
 } from './anuncios.js';
+import { clasificarPendientes } from './calidad.js';
 import { crearApi } from './api.js';
 import { crearBuzonGmail, revisarBandejas } from './bandeja.js';
 import { cambiarEnsayo, estadoDeHomero } from './comandos.js';
@@ -49,6 +50,7 @@ import {
   aprobarRevision,
   arrancarExperimento,
   clienteDelAnfitrion,
+  conEcoAlAnfitrion,
   estadoDelHost,
   idDeLeadDeLaWeb,
   idDeLeadDeMeta,
@@ -66,7 +68,7 @@ import { armarBancoDeMusica, buscarEnPixabay, leerBanco } from './medios.js';
 import { aprobarReel, cambiarReel, descartarReel, promocionarReel, recibirVideo, reintentarReel, retomarReels } from './publicar-reel.js';
 import { hojaDeContacto, medirVideo, portadaDe } from './video.js';
 
-const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql', '013_calidad_de_leads.sql', '014_variantes.sql', '015_reels.sql'].map((f) =>
+const MIGRACIONES = ['001_homero.sql', '002_prospeccion.sql', '003_demos.sql', '004_patan.sql', '005_agentes.sql', '006_resumen.sql', '008_anuncios.sql', '009_plantillas.sql', '010_finanzas.sql', '011_cuenta_es_gasto.sql', '012_corrida_contacto.sql', '013_calidad_de_leads.sql', '014_variantes.sql', '015_reels.sql', '016_calidad_origen.sql'].map((f) =>
   fileURLToPath(new URL('../migrations/' + f, import.meta.url)),
 );
 /** Cuanto duerme la cola cuando no hay nada listo. */
@@ -90,15 +92,18 @@ async function main() {
   // solo se supo leyendo `docker logs`. El handler reporta y despues sale con
   // 1, igual que sin el.
   if (reportar) reportarCrashes('homero', reportar);
-  const store = await PgStore.conectar(config.databaseUrl, MIGRACIONES);
-  for (const c of config.casillas) await store.registrarCuenta(c.email);
+  const tienda = await PgStore.conectar(config.databaseUrl, MIGRACIONES);
+  for (const c of config.casillas) await tienda.registrarCuenta(c.email);
 
-  const rescatadas = await store.rescatarColgadas();
+  // Sincro Host: quien piensa el experimento de anuncios. Homero le pone Telegram y le reenvia los leads (sin datos de personas).
+  const anfitrion = config.anfitrion ? clienteDelAnfitrion(config.anfitrion) : undefined;
+  // Con eco al host: cada cambio de calidad (la automatica o el boton de Gero) y cada etapa del lead (respondio, reunion, cliente, perdido) se le cuenta.
+  const store = conEcoAlAnfitrion(tienda, anfitrion);
+
+  const rescatadas = await tienda.rescatarColgadas();
   const { bot, avisar, proponer, mandarFoto, mandarVideo, conectar, cambiarBotones } = crearBot(config, store);
 
   const aviso = (t: string) => avisar(t).catch((e) => console.error('[homero] no pude avisar:', e));
-  // Sincro Host: quien piensa el experimento de anuncios. Homero le pone Telegram y le reenvia los leads (sin datos de personas).
-  const anfitrion = config.anfitrion ? clienteDelAnfitrion(config.anfitrion) : undefined;
   const alLeadDelAnfitrion = (l: LeadParaElAnfitrion) => void reenviarLead(anfitrion, l);
   if (!config.anunciosPropios) console.log('[homero] anuncios propios en pausa (HOMERO_ANUNCIOS_PROPIOS=no): el experimento lo maneja Sincro Host');
   // Las cuentas de Claude son un fondo comun que maneja el gateway: Homero no
@@ -292,8 +297,15 @@ async function main() {
   void barrer();
   const bandeja = setInterval(barrer, config.bandejaCadaMs);
 
+  // La calidad de cada consulta nueva (sirve / no sirve + motivo) con el modelo del gateway. Sin gateway no se califica y se reintenta.
+  const clasificar = () =>
+    clasificarPendientes({
+      store,
+      pedirIa: (prompt, sistema) => pedirTexto(prompt, { sistema, modelo: config.modelo, gateway }),
+      ahora: deps.ahora,
+    }).then((n) => n > 0 && console.log(`[homero] ${n} consulta(s) clasificada(s) solas`));
   const plan = () =>
-    Promise.all([planificar(deps), config.anunciosPropios ? planificarAnuncios(deps) : undefined, planificarFinanzas(deps)]).catch((err) =>
+    Promise.all([planificar(deps), config.anunciosPropios ? planificarAnuncios(deps) : undefined, planificarFinanzas(deps), clasificar()]).catch((err) =>
       console.error('[homero] planificador:', err),
     );
   void plan();
@@ -328,7 +340,10 @@ async function main() {
     ? setInterval(
         () =>
           void leerLeadsDeMeta(deps)
-            .then((n) => n > 0 && console.log(`[homero] ${n} consulta(s) nueva(s) de Meta`))
+            .then(async (n) => {
+              if (n > 0) console.log(`[homero] ${n} consulta(s) nueva(s) de Meta`);
+              if (n > 0) await clasificar();
+            })
             .catch((err) => console.error('[homero] leads de Meta:', err instanceof Error ? err.message : err)),
         LEADS_DE_META_MS,
       )

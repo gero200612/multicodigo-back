@@ -1063,7 +1063,7 @@ export async function encolarSeguimiento(leadId: number, clave: string, deps: Pi
 export async function seguimientoDeLeadMeta(payload: unknown, deps: DepsDeAnuncios): Promise<{ reprogramarPara: Date } | void> {
   const { leadId } = z.object({ leadId: z.number().int() }).parse(payload);
   const lead = await deps.store.lead(leadId);
-  if (!lead?.email || lead.estado !== 'caliente' || lead.calidad === 'no_sirve') return;
+  if (!lead?.email || lead.estado !== 'caliente' || (lead.calidad === 'no_sirve' && lead.calidadOrigen !== 'auto')) return;
   const numero = linkDeWhatsapp(lead.telefono)?.slice('https://wa.me/'.length);
   if (deps.wa && numero) {
     const charla = await deps.wa.charla(numero).catch(() => undefined);
