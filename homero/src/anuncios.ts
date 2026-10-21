@@ -30,6 +30,8 @@ export interface DepsDeAnuncios extends DepsDeVentas {
   wa?: ClienteWa;
   /** Cada consulta nueva de un formulario de Meta, para el Sincro Host (anfitrion.ts). Sin datos de personas. */
   alLeadNuevo?: (lead: { id: string; fuente: 'meta_form'; anuncio?: string; creado: Date }) => void;
+  /** `false` con HOMERO_ANUNCIOS_PROPIOS=no: se siguen leyendo los numeros de Meta, pero no se crea, renueva ni pausa nada. */
+  anunciosPropios?: boolean;
 }
 
 /** Clave en homero.estado: el presupuesto del mes en pesos. */
@@ -794,7 +796,8 @@ export async function leerInsights(deps: DepsDeAnuncios): Promise<void> {
         'que no conozco. Ese gasto no lo cuento en el presupuesto. Si lo armaste a mano, pausalo o avisame.',
     );
   }
-  await controlarTope(deps);
+  // Con los anuncios propios en pausa no se puede pausar en Meta: el tope lo maneja Sincro Host.
+  if (deps.anunciosPropios !== false) await controlarTope(deps);
   await controlarEntrega(deps);
 }
 
@@ -1369,6 +1372,8 @@ export async function planificarAnuncios(deps: DepsDeAnuncios): Promise<void> {
   await deps.store.encolar({ tipo: 'leer_insights', payload: {}, requiereIa: false, clave: `insights:${dia}:${hora}` });
   // Los numeros de los reels publicados, cada 6 horas (publicar-reel.ts).
   await deps.store.encolar({ tipo: 'leer_reels', payload: {}, requiereIa: false, clave: `reels:${dia}:${Math.floor(hora / 6)}` });
+  // Con los anuncios propios en pausa solo se leen los numeros: la pagina de anuncios los sigue mostrando al dia.
+  if (deps.anunciosPropios === false) return;
   for (const a of await deps.store.anuncios(['activo', 'pausado'])) {
     if (!a.metaIds.anuncio || (a.metaIds.formularioVersion ?? 1) >= FORMULARIO_VERSION) continue;
     await deps.store.encolar({

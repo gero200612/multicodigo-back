@@ -154,6 +154,7 @@ async function main() {
         ? clienteDePunchi({ ...config.bridge, chatId: config.chatId })
         : undefined,
     // Con los anuncios propios en pausa, Homero lee Meta pero no crea ni cambia anuncios, formularios ni presupuestos.
+    anunciosPropios: config.anunciosPropios,
     meta: config.meta ? (config.anunciosPropios ? clienteDeMeta(config.meta) : metaSinAnuncios(clienteDeMeta(config.meta))) : undefined,
     alLeadNuevo: (l) => alLeadDelAnfitrion({ id: idDeLeadDeMeta(l.id), fuente: l.fuente, anuncio: l.anuncio, creado: l.creado, estado: 'nuevo' }),
     mandarFoto: (png, pie) => mandarFoto(png, pie).catch((e) => console.error('[homero] no pude mandar la imagen:', e)),
@@ -305,7 +306,7 @@ async function main() {
       ahora: deps.ahora,
     }).then((n) => n > 0 && console.log(`[homero] ${n} consulta(s) clasificada(s) solas`));
   const plan = () =>
-    Promise.all([planificar(deps), config.anunciosPropios ? planificarAnuncios(deps) : undefined, planificarFinanzas(deps), clasificar()]).catch((err) =>
+    Promise.all([planificar(deps), planificarAnuncios(deps), planificarFinanzas(deps), clasificar()]).catch((err) =>
       console.error('[homero] planificador:', err),
     );
   void plan();

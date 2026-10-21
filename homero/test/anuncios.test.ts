@@ -179,6 +179,21 @@ describe('el tope de plata', () => {
     expect(r).toMatchObject({ ok: false });
   });
 
+  // 2026-10-21: con HOMERO_ANUNCIOS_PROPIOS=no no se encolaba leer_insights y la pagina de anuncios quedo con los numeros del 18/10.
+  it('con los anuncios propios en pausa se siguen leyendo los números, sin publicitar ni pausar', async () => {
+    const h = conMeta({ ahora: new Date('2026-09-29T13:05:00Z') }); // 10:05
+    h.deps.anunciosPropios = false;
+    await planificarAnuncios(h.deps);
+    expect(h.store.tareas.map((t) => t.tipo).sort()).toEqual(['leer_insights', 'leer_reels']);
+
+    const a = await activo(h, 2000, 1);
+    h.f.datos.insights = [{ anuncio: 'ad1', dia: '2026-09-28', gasto: 49_000, impresiones: 9000, consultas: 12 }];
+    await leerInsights(h.deps);
+    expect(await h.store.gastos('2026-09-01')).toEqual([{ dia: '2026-09-28', anuncioId: a, gasto: 49_000, impresiones: 9000, consultas: 12 }]);
+    expect(h.f.de('cambiarEstado')).toHaveLength(0);
+    expect((await h.store.anuncio(a))!.estado).toBe('activo');
+  });
+
   // 2026-10-09: aprobados y ACTIVE en la API, pero Meta no los mostraba (pedía
   // verificar un teléfono) y nada lo decía. Homero avisa por el síntoma.
   it('un activo sin impresiones pasadas las 6 h se avisa, una vez por día', async () => {
