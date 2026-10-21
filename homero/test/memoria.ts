@@ -575,7 +575,7 @@ export class MemoriaStore implements Store {
   }
   async leadsSinCalidad(limite: number, desde: Date) {
     return this.leads
-      .filter((l) => !l.calidad && l.leadgenId && (/^\d+$/.test(l.leadgenId) || l.leadgenId.startsWith('web:')) && l.creado.getTime() >= desde.getTime() && !['baja', 'rebotado'].includes(l.estado))
+      .filter((l) => !l.calidad && l.leadgenId && (/^\d+$/.test(l.leadgenId) || l.leadgenId.startsWith('web:')) && l.creado.getTime() >= desde.getTime() && l.estado !== 'baja')
       .slice(0, limite)
       .map((l) => ({ ...l }));
   }

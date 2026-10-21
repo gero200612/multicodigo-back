@@ -54,6 +54,16 @@ describe('la clasificacion automatica', () => {
     expect(malo.match(/<\/no_confiable>/g)).toHaveLength(1);
   });
 
+  it('un lead con el mail rebotado se califica igual (el rebote no dice si el negocio sirve); uno dado de baja no', async () => {
+    const { store, taller, ama } = await conLeadsDeMeta();
+    await store.actualizarLead(taller, { estado: 'rebotado' });
+    await store.actualizarLead(ama, { estado: 'baja' });
+    const pedirIa = vi.fn(async (_p: string, _s: string) => '{"calidad":"sirve","motivo":"taller que quiere ordenar turnos"}');
+    expect(await clasificarPendientes({ store, pedirIa, ahora: () => AHORA })).toBe(1);
+    expect((await store.lead(taller))!.calidad).toBe('sirve');
+    expect((await store.lead(ama))!.calidad).toBeUndefined();
+  });
+
   it('clasifica los leads nuevos con origen auto y no pisa lo que marco el dueño', async () => {
     const { store, taller, ama } = await conLeadsDeMeta();
     await store.marcarCalidad(ama, 'sirve'); // Gero ya dijo: sirve

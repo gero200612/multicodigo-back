@@ -1601,7 +1601,7 @@ export class PgStore implements Store {
     const r = await this.pool.query(
       `SELECT * FROM homero.leads
        WHERE calidad IS NULL AND leadgen_id IS NOT NULL AND (leadgen_id ~ '^[0-9]+$' OR leadgen_id LIKE 'web:%')
-         AND creado >= $2 AND estado NOT IN ('baja', 'rebotado')
+         AND creado >= $2 AND estado <> 'baja'
        ORDER BY id LIMIT $1`,
       [limite, desde],
     );
