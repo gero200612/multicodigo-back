@@ -2,12 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { categoriasPermitidas, tiene } from './capacidades.js';
 import { tokenDe, type Contexto } from './contexto.js';
-import { enviarAviso, enviarTexto, numeroPara, Rechazo } from './envio.js';
+import { enviarAviso, enviarTexto, marcarTokenCaido, numeroPara, Rechazo } from './envio.js';
+import { DIA_MS } from './horas.js';
 import { cuerpoDeEvento, esperarEventos } from './eventos.js';
-import { ErrorDeMeta } from './meta.js';
+import { ErrorDeMeta, esTokenCaido } from './meta.js';
 import { negocioDe } from './privado.js';
 import { ventanaAbierta } from './reglas.js';
-import type { Plantilla } from './store.js';
+import type { Numero, Plantilla } from './store.js';
 
 /**
  * Las rutas de las apps. La puerta (privado.ts) ya decidio que la clave tiene
@@ -15,7 +16,9 @@ import type { Plantilla } from './store.js';
  * busca por el negocio de la clave: una app no puede nombrar otro negocio.
  */
 
-const Contacto = z.string().regex(/^\d{8,15}$/, 'solo dígitos, de 8 a 15');
+// Un numero de WhatsApp tiene hasta 15 digitos; los ids de Instagram y Messenger, algunos mas.
+const Contacto = z.string().regex(/^\d{8,20}$/, 'solo dígitos, de 8 a 20');
+const CanalDeEnvio = z.enum(['whatsapp', 'instagram', 'messenger']).default('whatsapp');
 const Id = z.coerce.number().int().positive();
 
 const Boton = z.string().trim().min(1).max(20);
@@ -30,6 +33,7 @@ const Mensaje = z
       .refine((b) => new Set(b).size === b.length, 'botones repetidos')
       .optional(),
     link: z.object({ texto: Boton, url: z.string().url().startsWith('https://') }).optional(),
+    canal: CanalDeEnvio,
   })
   // Meta no deja botones de respuesta y de link en el mismo mensaje, y el
   // cuerpo de un interactivo llega hasta 1024.
@@ -71,13 +75,13 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
 
   app.post('/mensajes', async (req) => {
     const negocio = negocioDe(req);
-    const { a, texto, botones, link } = Mensaje.parse(req.body);
+    const { a, texto, botones, link, canal } = Mensaje.parse(req.body);
     // Con `atender` (y sin `leads`) la app solo contesta charlas que la IA le derivo.
     if (!contestaTodo(negocio.capacidades)) {
       const charlas = await store.contactosDe(negocio.id, a);
       if (!charlas.some((c) => c.derivada)) throw new Rechazo(409, 'no_derivada');
     }
-    const numero = await numeroPara(ctx, negocio.id, a);
+    const numero = await numeroPara(ctx, negocio.id, a, canal);
     const interactivo = botones ? { botones } : link ? { link } : undefined;
     const m = await enviarTexto(ctx, negocio, numero, a, texto, { interactivo });
     return { id: m.id, wamid: m.wamid };
@@ -94,7 +98,8 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
     }
     const ultimo = (await store.charla(negocio.id, a, 10)).filter((m) => m.direccion === 'entra' && m.wamid).at(-1);
     const numero = ultimo ? await store.numero(ultimo.numeroId) : undefined;
-    if (!ultimo || !numero || numero.negocioId !== negocio.id) return { ok: false };
+    // «Escribiendo…» es de WhatsApp; en Instagram y Messenger no se manda.
+    if (!ultimo || !numero || numero.negocioId !== negocio.id || numero.canal !== 'whatsapp') return { ok: false };
     if (!ventanaAbierta(await store.contacto(numero.id, a), ctx.ahora())) return { ok: false };
     try {
       await ctx.meta.escribiendo(tokenDe(ctx, numero), numero.phoneNumberId, ultimo.wamid!);
@@ -108,8 +113,10 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
   app.get('/charlas/:contacto', async (req) => {
     const negocio = negocioDe(req);
     const contacto = Contacto.parse((req.params as { contacto: string }).contacto);
-    const { limite } = z.object({ limite: z.coerce.number().int().min(1).max(200).default(30) }).parse(req.query);
-    const charlas = await store.contactosDe(negocio.id, contacto);
+    const { limite, canal } = z.object({ limite: z.coerce.number().int().min(1).max(200).default(30), canal: z.enum(['whatsapp', 'instagram', 'messenger']).optional() }).parse(req.query);
+    // Con `canal`, la ventana y la baja son las de las cuentas de ese canal.
+    const delCanal = canal ? new Set((await store.numerosDe(negocio.id)).filter((n) => n.canal === canal).map((n) => n.id)) : undefined;
+    const charlas = (await store.contactosDe(negocio.id, contacto)).filter((c) => !delCanal || delCanal.has(c.numeroId));
     const ahora = ctx.ahora();
     const mensajes = await store.charla(negocio.id, contacto, limite);
     return {
@@ -137,6 +144,69 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
     for (const c of await store.contactosDe(negocio.id, contacto)) {
       if (!c.baja) await store.cambiarContacto(c.numeroId, contacto, { baja: true, bajaDesde: ahora });
     }
+    return { ok: true };
+  });
+
+  // ---- Comentarios publicos (Instagram y pagina de Facebook) ----
+
+  const comentarioDe = async (negocioId: number, id: string) => {
+    const c = await store.comentario(negocioId, z.string().regex(/^[\w.-]{3,100}$/).parse(id));
+    if (!c) throw new Rechazo(404, 'no_existe');
+    const numero = await store.numero(c.numeroId);
+    if (!numero || numero.negocioId !== negocioId) throw new Rechazo(404, 'no_existe');
+    return { c, numero, canal: numero.canal as 'instagram' | 'messenger' };
+  };
+
+  /** Una llamada a Meta sobre un comentario: si el token esta caido se frena todo, si Meta rechaza vuelve 502. */
+  const conMeta = async <T>(numero: Numero, f: () => Promise<T>): Promise<T> => {
+    if (numero.tokenCaido) throw new Rechazo(409, 'token_caido');
+    try {
+      return await f();
+    } catch (e) {
+      if (!(e instanceof ErrorDeMeta)) throw e;
+      if (esTokenCaido(e)) await marcarTokenCaido(ctx, numero.id, e.message);
+      throw new Rechazo(502, 'meta', e.message);
+    }
+  };
+
+  // Una respuesta en publico por comentario: no hay forma de que dos corridas se contesten entre si.
+  app.post('/comentarios/:id/responder', async (req) => {
+    const negocio = negocioDe(req);
+    const { texto } = z.object({ texto: z.string().trim().min(1).max(2000) }).parse(req.body);
+    const { c, numero, canal } = await comentarioDe(negocio.id, (req.params as { id: string }).id);
+    if (canal !== 'instagram' && canal !== 'messenger') throw new Rechazo(409, 'sin_comentarios_en_canal');
+    if (c.respondido) throw new Rechazo(409, 'ya_respondido');
+    const r = await conMeta(numero, () => ctx.meta.responderComentario(tokenDe(ctx, numero), canal, c.comentarioId, texto));
+    await store.cambiarComentario(c.id, { respondido: true });
+    return { ok: true, id: r.id };
+  });
+
+  // La respuesta privada: una sola y dentro de los 7 dias del comentario (la regla de Meta). Nunca a quien pidio la baja.
+  app.post('/comentarios/:id/privado', async (req) => {
+    const negocio = negocioDe(req);
+    const { texto } = z.object({ texto: z.string().trim().min(1).max(1000) }).parse(req.body);
+    const { c, numero } = await comentarioDe(negocio.id, (req.params as { id: string }).id);
+    if (c.respuestaPrivada) throw new Rechazo(409, 'ya_respondido_en_privado');
+    if (ctx.ahora().getTime() - c.fecha.getTime() > 7 * DIA_MS) throw new Rechazo(409, 'fuera_de_plazo');
+    if (c.autorId && (await store.contactosDe(negocio.id, c.autorId)).some((k) => k.baja)) throw new Rechazo(409, 'baja');
+    const r = await conMeta(numero, () => ctx.meta.respuestaPrivada(tokenDe(ctx, numero), numero.phoneNumberId, c.comentarioId, texto));
+    await store.cambiarComentario(c.id, { respuestaPrivada: true });
+    if (c.autorId) {
+      await store.guardarMensaje({
+        negocioId: negocio.id, numeroId: numero.id, contacto: c.autorId, direccion: 'sale', tipo: 'text', texto, mediaId: null, referral: null,
+        plantilla: null, wamid: r.wamid, categoria: 'service', costoEstimado: 0, costoReal: null, estado: 'aceptado', error: null, fecha: ctx.ahora(),
+      });
+    }
+    return { ok: true, wamid: r.wamid };
+  });
+
+  app.post('/comentarios/:id/ocultar', async (req) => {
+    const negocio = negocioDe(req);
+    const { c, numero, canal } = await comentarioDe(negocio.id, (req.params as { id: string }).id);
+    if (canal !== 'instagram' && canal !== 'messenger') throw new Rechazo(409, 'sin_comentarios_en_canal');
+    if (c.oculto) return { ok: true };
+    await conMeta(numero, () => ctx.meta.ocultarComentario(tokenDe(ctx, numero), canal, c.comentarioId));
+    await store.cambiarComentario(c.id, { oculto: true });
     return { ok: true };
   });
 

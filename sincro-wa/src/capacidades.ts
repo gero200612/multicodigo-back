@@ -10,7 +10,7 @@
 export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender', 'puente'] as const;
 export type Capacidad = (typeof CAPACIDADES)[number];
 
-export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar' | 'conexion' | 'baja' | 'alta';
+export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar' | 'conexion' | 'baja' | 'alta' | 'comentario';
 export type CategoriaDePlantilla = 'MARKETING' | 'UTILITY' | 'AUTHENTICATION';
 
 interface Entrada {
@@ -49,12 +49,15 @@ const CATALOGO: Record<Capacidad, Entrada> = {
   // los estados de entrega y los avisos de la conexion (token caido). Plantillas de utilidad; las de
   // marketing exigen ademas `promociones`. NO usa la IA de este bot: piensa Puente, en la app.
   puente: {
-    eventos: ['mensaje', 'estado', 'conexion', 'baja', 'alta'],
+    eventos: ['mensaje', 'estado', 'conexion', 'baja', 'alta', 'comentario'],
     rutas: [
       'POST /mensajes',
       'POST /escribiendo',
       'GET /charlas/:contacto',
       'POST /charlas/:contacto/baja',
+      'POST /comentarios/:id/responder',
+      'POST /comentarios/:id/privado',
+      'POST /comentarios/:id/ocultar',
       'GET /media/:id',
       'POST /avisos',
       ...PLANTILLAS,

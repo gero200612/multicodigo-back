@@ -66,6 +66,32 @@ export class MetaFalsa implements ClienteMeta {
     this.creadas.push({ wabaId, nombre: p.nombre, categoria: p.categoria });
     return { id: `tpl-${++this.n}`, estado: 'PENDING', categoria: this.categoriaAlCrear ?? p.categoria };
   }
+  mensajeria: { token: string; cuentaId: string; a: string; texto: string }[] = [];
+  comentarios: { tipo: 'publico' | 'privado' | 'ocultar'; canal?: string; cuentaId?: string; id: string; texto?: string }[] = [];
+  probadas: string[] = [];
+  async enviarMensajeria(token: string, cuentaId: string, a: string, texto: string) {
+    this.revisar();
+    this.mensajeria.push({ token, cuentaId, a, texto });
+    return { wamid: `mid.sale.${++this.n}` };
+  }
+  async responderComentario(_token: string, canal: 'instagram' | 'messenger', id: string, texto: string) {
+    this.revisar();
+    this.comentarios.push({ tipo: 'publico', canal, id, texto });
+    return { id: `respuesta.${++this.n}` };
+  }
+  async respuestaPrivada(_token: string, cuentaId: string, id: string, texto: string) {
+    this.revisar();
+    this.comentarios.push({ tipo: 'privado', cuentaId, id, texto });
+    return { wamid: `mid.privado.${++this.n}` };
+  }
+  async ocultarComentario(_token: string, canal: 'instagram' | 'messenger', id: string) {
+    this.revisar();
+    this.comentarios.push({ tipo: 'ocultar', canal, id });
+  }
+  async probarCuenta(_token: string, cuentaId: string) {
+    this.revisar();
+    this.probadas.push(cuentaId);
+  }
   async datosDelNumero() {
     this.revisar();
     return this.datos;

@@ -54,7 +54,7 @@ reemplaza `/EAA[A-Za-z0-9_-]{10,}/g` por `EAA…` y las claves `swa_…` por `sw
 | `avisos` | `estado` | `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` |
 | `promociones` | `estado` | `POST /avisos`, `GET/POST /plantillas` | `MARKETING` |
 | `atender` | `mensaje` (solo si la charla está derivada), `derivar` | `POST /mensajes`, `GET /charlas/:contacto`, `PUT /atender/contexto`, `POST /charlas/:contacto/liberar`, `GET /media/:id` | — |
-| `puente` | `mensaje` (todos, con `canal` y `wamid`), `estado`, `conexion`, `baja`, `alta` | `POST /mensajes`, `POST /escribiendo`, `GET /charlas/:contacto`, `POST /charlas/:contacto/baja`, `GET /media/:id`, `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` (`MARKETING` pide además `promociones`) |
+| `puente` | `mensaje` (todos, con `canal` y `wamid`), `estado`, `conexion`, `baja`, `alta`, `comentario` | `POST /mensajes`, `POST /escribiendo`, `GET /charlas/:contacto`, `POST /charlas/:contacto/baja`, `POST /comentarios/:id/responder`, `POST /comentarios/:id/privado`, `POST /comentarios/:id/ocultar`, `GET /media/:id`, `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` (`MARKETING` pide además `promociones`) |
 
 Todas las claves de app ven `GET /eventos`, `POST /eventos/ack` y `GET /yo`.
 `POST /mensajes` con `atender` solo funciona en una charla derivada.
@@ -138,6 +138,7 @@ queda para `GET /eventos`.
 - `estado`: `{"mensaje_id","wamid","estado":"sent"|"delivered"|"read"|"failed","error":{"codigo","detalle"}|null}`
 - `derivar`: `{"contacto","motivo"}`
 - `baja` / `alta` (solo `puente`): `{"contacto","canal","motivo"?}`. La persona escribió una de las palabras de baja (o ALTA). Esos mensajes no se pasan como `mensaje`.
+- `comentario` (solo `puente`): `{"canal":"instagram"|"messenger","cuenta","comentario_id","publicacion_id","autor_id","autor_nombre","padre_id","texto","fecha"}`. No incluye lo que comenta la propia cuenta.
 - `conexion` (solo `puente`): `{"estado":"token_caido"|"token_ok","numero"}`. Sale una vez por caída.
 - `formulario`: `{"nombre","negocio","whatsapp":"549…"|null,"mail"|null,"tema","mensaje","acepta_whatsapp"}`
 
@@ -191,6 +192,20 @@ Toda ruta que cambia algo lleva `quien` en el cuerpo (`"gero"` / `"punchi"`).
     `{"es_factura":bool,"datos":{...como el evento...},"falta":["vencimiento",...]}`.
   - `atender` entrada: `{"contexto","charla":[{"direccion","texto"}],"negocio"}`; salida:
     `{"respuesta":"...","derivar":bool,"motivo":"..."}`.
+
+## Instagram y Messenger
+
+Una cuenta de Instagram o de Messenger es un «número» con su `canal`: `POST /admin/numeros` acepta `canal` (`whatsapp` por defecto, `instagram`, `messenger`);
+para los dos últimos `phone_number_id` es el id de la cuenta (`ig_user_id` o id de la página) y `waba_id` el de la página. El webhook de Meta
+trae `object: "instagram"` y `object: "page"` por la misma URL y con la misma firma.
+
+- `POST /mensajes` acepta `canal` (por defecto `whatsapp`). La ventana de 24 h, la baja y el registro son los de siempre y de cada canal: escribir por WhatsApp no abre la ventana de Instagram.
+  Pasadas las 24 h no se escribe en Instagram ni en Messenger (no hay plantillas ni «agente humano»): `409 fuera_de_ventana`. `POST /avisos` y las plantillas son solo de WhatsApp.
+- `GET /charlas/:contacto?canal=` mira solo las cuentas de ese canal. Los ids de Instagram y Messenger tienen hasta 20 dígitos.
+- `POST /comentarios/:id/responder` `{"texto"}`: respuesta pública, una por comentario (`409 ya_respondido`).
+- `POST /comentarios/:id/privado` `{"texto"}`: la respuesta privada, una sola y dentro de los 7 días (`409 ya_respondido_en_privado`, `409 fuera_de_plazo`); nunca a quien pidió la baja (`409 baja`).
+- `POST /comentarios/:id/ocultar`: oculta el comentario.
+- La prueba de cada 30 min de una cuenta de Instagram o Messenger solo mira que el token ande (no hay calidad ni tope): un 190 frena los envíos como en WhatsApp.
 
 ## Reglas comunes
 

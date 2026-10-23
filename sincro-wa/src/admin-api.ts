@@ -55,6 +55,8 @@ const NuevoNumero = z.object({
   phone_number_id: z.string().regex(/^\d{5,30}$/),
   waba_id: z.string().regex(/^\d{5,30}$/),
   token: z.string().min(10).optional(),
+  // Instagram y Messenger: `phone_number_id` es el id de la cuenta (ig_user_id o de la pagina) y `waba_id` el de la pagina.
+  canal: z.enum(['whatsapp', 'instagram', 'messenger']).default('whatsapp'),
   quien: Quien,
 });
 
@@ -63,6 +65,7 @@ function vistaDeNumero(n: Numero) {
     id: n.id,
     phone_number_id: n.phoneNumberId,
     waba_id: n.wabaId,
+    canal: n.canal,
     calidad: n.calidad,
     tope_meta: n.topeMeta,
     estado: n.estado,
@@ -188,6 +191,7 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
       phoneNumberId: b.phone_number_id,
       wabaId: b.waba_id,
       tokenCifrado: b.token ? cifrar(ctx.claveCifrado, b.token) : null,
+      canal: b.canal,
     });
     if (!numero) throw new Rechazo(409, 'ya_existe');
     await store.registrarCambios([

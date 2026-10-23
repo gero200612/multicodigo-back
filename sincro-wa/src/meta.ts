@@ -46,6 +46,17 @@ export interface ClienteMeta {
   bajarMedia(token: string, url: string): Promise<Buffer>;
   crearPlantilla(token: string, wabaId: string, p: NuevaPlantillaEnMeta): Promise<{ id: string; estado: string; categoria: string }>;
   datosDelNumero(token: string, phoneNumberId: string): Promise<DatosDelNumero>;
+
+  // Instagram y Messenger (la cuenta es `cuentaId`: el ig_user_id o el id de la pagina).
+  /** Un mensaje privado dentro de las 24 h. Devuelve el id del mensaje (`mid`). */
+  enviarMensajeria(token: string, cuentaId: string, a: string, texto: string): Promise<{ wamid: string }>;
+  /** Contesta un comentario en publico. */
+  responderComentario(token: string, canal: 'instagram' | 'messenger', comentarioId: string, texto: string): Promise<{ id: string }>;
+  /** La respuesta privada a un comentario: una sola, dentro de los 7 dias. */
+  respuestaPrivada(token: string, cuentaId: string, comentarioId: string, texto: string): Promise<{ wamid: string }>;
+  ocultarComentario(token: string, canal: 'instagram' | 'messenger', comentarioId: string): Promise<void>;
+  /** Prueba que el token ande para esa cuenta (el 190 salta aca aunque nadie este escribiendo). */
+  probarCuenta(token: string, cuentaId: string): Promise<void>;
 }
 
 /** Meta contesto con error o no contesto. El detalle ya viene tapado. */
@@ -100,6 +111,12 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     const wamid = msgs?.[0]?.id;
     if (!wamid) throw new ErrorDeMeta('Meta no devolvio el id del mensaje');
     return { wamid };
+  }
+
+  function midDe(json: Record<string, unknown>): { wamid: string } {
+    const mid = json.message_id;
+    if (typeof mid !== 'string' || !mid) throw new ErrorDeMeta('Meta no devolvio el id del mensaje');
+    return { wamid: mid };
   }
 
   return {
@@ -203,6 +220,24 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
         estado: typeof json.status === 'string' ? json.status : 'PENDING',
         categoria: typeof json.category === 'string' ? json.category : p.categoria,
       };
+    },
+    async enviarMensajeria(token, cuentaId, a, texto) {
+      const json = await pedir(token, 'POST', `${cuentaId}/messages`, { recipient: { id: a }, messaging_type: 'RESPONSE', message: { text: texto } });
+      return midDe(json);
+    },
+    async responderComentario(token, canal, comentarioId, texto) {
+      const json = await pedir(token, 'POST', `${comentarioId}/${canal === 'instagram' ? 'replies' : 'comments'}`, { message: texto });
+      return { id: String(json.id ?? '') };
+    },
+    async respuestaPrivada(token, cuentaId, comentarioId, texto) {
+      const json = await pedir(token, 'POST', `${cuentaId}/messages`, { recipient: { comment_id: comentarioId }, message: { text: texto } });
+      return midDe(json);
+    },
+    async ocultarComentario(token, canal, comentarioId) {
+      await pedir(token, 'POST', comentarioId, canal === 'instagram' ? { hide: true } : { is_hidden: true });
+    },
+    async probarCuenta(token, cuentaId) {
+      await pedir(token, 'GET', `${cuentaId}?fields=id`);
     },
     async datosDelNumero(token, phoneNumberId) {
       return (await pedir(

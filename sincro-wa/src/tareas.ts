@@ -19,7 +19,13 @@ const CALIDAD_MALA = new Set(['YELLOW', 'RED']);
 export async function refrescarNumero(ctx: Contexto, numero: Numero): Promise<void> {
   let datos;
   try {
-    datos = await ctx.meta.datosDelNumero(tokenDe(ctx, numero), numero.phoneNumberId);
+    if (numero.canal !== 'whatsapp') {
+      // Instagram y Messenger no tienen calidad ni tope: solo se prueba que el token ande.
+      await ctx.meta.probarCuenta(tokenDe(ctx, numero), numero.phoneNumberId);
+      datos = {} as Awaited<ReturnType<typeof ctx.meta.datosDelNumero>>;
+    } else {
+      datos = await ctx.meta.datosDelNumero(tokenDe(ctx, numero), numero.phoneNumberId);
+    }
   } catch (e) {
     // La prueba cada 30 min es la que descubre un token invalidado aunque nadie esté escribiendo.
     if (esTokenCaido(e)) await marcarTokenCaido(ctx, numero.id, e instanceof Error ? e.message : '');

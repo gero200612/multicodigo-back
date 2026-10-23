@@ -5,7 +5,7 @@ import { DIA_MS, diaDe } from './horas.js';
 import { emitir } from './eventos.js';
 import { ErrorDeMeta, esTokenCaido, type Interactivo } from './meta.js';
 import { gastoDelMes, precioDe, revisarTopeDeGasto, ventanaAbierta } from './reglas.js';
-import type { CategoriaDeMensaje, ContenidoDeMensaje, Mensaje, Negocio, NuevoMensaje, Numero } from './store.js';
+import type { Canal, CategoriaDeMensaje, ContenidoDeMensaje, Mensaje, Negocio, NuevoMensaje, Numero } from './store.js';
 import { textoDeError } from './tapar.js';
 
 /**
@@ -31,11 +31,11 @@ export class Rechazo extends Error {
  * que escribio el; si nunca escribio, el primero del negocio. Una app nunca
  * elige el numero, asi que no puede mandar desde el de otro negocio.
  */
-export async function numeroPara(ctx: Contexto, negocioId: number, contacto: string): Promise<Numero> {
-  const numeros = await ctx.store.numerosDe(negocioId);
+export async function numeroPara(ctx: Contexto, negocioId: number, contacto: string, canal: Canal = 'whatsapp'): Promise<Numero> {
+  const numeros = (await ctx.store.numerosDe(negocioId)).filter((n) => n.canal === canal);
   if (!numeros.length) throw new Rechazo(409, 'sin_numero');
   const charlas = (await ctx.store.contactosDe(negocioId, contacto))
-    .filter((c) => c.ultimaEntrada)
+    .filter((c) => c.ultimaEntrada && numeros.some((n) => n.id === c.numeroId))
     .sort((a, b) => b.ultimaEntrada!.getTime() - a.ultimaEntrada!.getTime());
   return numeros.find((n) => n.id === charlas[0]?.numeroId) ?? numeros[0]!;
 }
@@ -85,6 +85,8 @@ export async function enviarTexto(
   opciones: { saltearBaja?: boolean; interactivo?: Interactivo } = {},
 ): Promise<Mensaje> {
   const { interactivo } = opciones;
+  // Instagram y Messenger no tienen botones de este tipo: mejor rechazarlo que mandarlo sin ellos.
+  if (interactivo && numero.canal !== 'whatsapp') throw new Rechazo(400, 'sin_botones_en_canal');
   const contacto = await ctx.store.contacto(numero.id, a);
   if (contacto?.baja && !opciones.saltearBaja) throw new Rechazo(409, 'baja');
   if (numero.tokenCaido) throw new Rechazo(409, 'token_caido');
@@ -109,7 +111,9 @@ export async function enviarTexto(
   try {
     ({ wamid } = interactivo
       ? await ctx.meta.enviarInteractivo(tokenDe(ctx, numero), numero.phoneNumberId, a, texto, interactivo)
-      : await ctx.meta.enviarTexto(tokenDe(ctx, numero), numero.phoneNumberId, a, texto));
+      : numero.canal === 'whatsapp'
+        ? await ctx.meta.enviarTexto(tokenDe(ctx, numero), numero.phoneNumberId, a, texto)
+        : await ctx.meta.enviarMensajeria(tokenDe(ctx, numero), numero.phoneNumberId, a, texto));
   } catch (e) {
     return fallaDeMeta(ctx, e, base);
   }

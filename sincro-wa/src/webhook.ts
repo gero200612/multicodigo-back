@@ -7,6 +7,7 @@ import { responder } from './envio.js';
 import { encolar, MENSAJES_DE_CONTEXTO, TEXTO_FACTURA_ILEGIBLE, TEXTO_FACTURA_PDF } from './ia.js';
 import { esAlta, esBaja, precioDe, revisarTopeDeGasto, TEXTO_DE_ALTA, TEXTO_DE_BAJA } from './reglas.js';
 import type { ContenidoDeMensaje, Negocio, Numero } from './store.js';
+import { procesarMensajeria } from './mensajeria.js';
 import { refrescarNumero } from './tareas.js';
 import { taparTokens, textoDeError } from './tapar.js';
 
@@ -27,6 +28,9 @@ export function firmaValida(crudo: Buffer, encabezado: string | undefined, secre
 type Json = Record<string, any>;
 
 export async function procesarWebhook(ctx: Contexto, cuerpo: Json): Promise<void> {
+  // Instagram y Messenger llegan por el mismo webhook, con otro object.
+  if (cuerpo.object === 'instagram') return procesarMensajeria(ctx, 'instagram', cuerpo);
+  if (cuerpo.object === 'page') return procesarMensajeria(ctx, 'messenger', cuerpo);
   if (cuerpo.object !== 'whatsapp_business_account') return;
   for (const entrada of asArray(cuerpo.entry)) {
     const waba = String(entrada.id ?? '');
