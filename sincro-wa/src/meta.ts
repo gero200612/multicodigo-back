@@ -27,6 +27,17 @@ export interface NuevaPlantillaEnMeta {
 /** Botones de respuesta (hasta 3) o un boton con link: Meta no deja los dos en el mismo mensaje. */
 export type Interactivo = { botones: string[] } | { link: { texto: string; url: string } };
 
+export interface ReelDeInstagram {
+  id: string;
+  texto: string | null;
+  enlace: string | null;
+  fecha: string | null;
+  duracion_s: number | null;
+  mediaUrl: string | null;
+  me_gusta: number | null;
+  comentarios: number | null;
+}
+
 export interface ClienteMeta {
   enviarTexto(token: string, phoneNumberId: string, a: string, texto: string): Promise<{ wamid: string }>;
   enviarInteractivo(token: string, phoneNumberId: string, a: string, texto: string, i: Interactivo): Promise<{ wamid: string }>;
@@ -55,6 +66,12 @@ export interface ClienteMeta {
   /** La respuesta privada a un comentario: una sola, dentro de los 7 dias. */
   respuestaPrivada(token: string, cuentaId: string, comentarioId: string, texto: string): Promise<{ wamid: string }>;
   ocultarComentario(token: string, canal: 'instagram' | 'messenger', comentarioId: string): Promise<void>;
+  /** Los reels publicados de la cuenta de Instagram, con lo que Graph da de cada uno (sin metricas). */
+  reelsDeLaCuenta(token: string, igId: string, limite: number): Promise<ReelDeInstagram[]>;
+  /** Alcance, reproducciones, interacciones, guardados y compartidos de un reel. */
+  metricasDelReel(token: string, mediaId: string): Promise<Record<string, number>>;
+  /** Un reel por id (null si no existe o no es un reel). */
+  reel(token: string, mediaId: string): Promise<ReelDeInstagram | null>;
   /** Prueba que el token ande para esa cuenta (el 190 salta aca aunque nadie este escribiendo). */
   probarCuenta(token: string, cuentaId: string): Promise<void>;
 }
@@ -75,6 +92,18 @@ export class ErrorDeMeta extends Error {
 export const esTokenCaido = (e: unknown): boolean => e instanceof ErrorDeMeta && e.codigo === 190;
 
 const TECHO_MS = 20_000;
+const CAMPOS_REEL = 'id,caption,permalink,timestamp,media_product_type,media_url,like_count,comments_count';
+
+const aReel = (f: Record<string, unknown>): ReelDeInstagram => ({
+  id: String(f.id ?? ''),
+  texto: typeof f.caption === 'string' ? f.caption : null,
+  enlace: typeof f.permalink === 'string' ? f.permalink : null,
+  fecha: typeof f.timestamp === 'string' ? f.timestamp : null,
+  duracion_s: null,
+  mediaUrl: typeof f.media_url === 'string' ? f.media_url : null,
+  me_gusta: typeof f.like_count === 'number' ? f.like_count : null,
+  comentarios: typeof f.comments_count === 'number' ? f.comments_count : null,
+});
 // Una foto de factura entra holgada; un video de 100 MB no tiene por que.
 const MEDIA_MAXIMO = 20 * 1024 * 1024;
 
@@ -235,6 +264,24 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     },
     async ocultarComentario(token, canal, comentarioId) {
       await pedir(token, 'POST', comentarioId, canal === 'instagram' ? { hide: true } : { is_hidden: true });
+    },
+    async reelsDeLaCuenta(token, igId, limite) {
+      const json = await pedir(token, 'GET', `${igId}/media?fields=${CAMPOS_REEL}&limit=${Math.min(Math.max(limite, 1), 100)}`);
+      const filas = Array.isArray(json.data) ? (json.data as Record<string, unknown>[]) : [];
+      return filas.filter((f) => f.media_product_type === 'REELS').map(aReel);
+    },
+    async reel(token, mediaId) {
+      const f = await pedir(token, 'GET', `${encodeURIComponent(mediaId)}?fields=${CAMPOS_REEL}`);
+      return f.media_product_type === 'REELS' ? aReel(f) : null;
+    },
+    async metricasDelReel(token, mediaId) {
+      const json = await pedir(token, 'GET', `${encodeURIComponent(mediaId)}/insights?metric=reach,views,total_interactions,saved,shares`);
+      const out: Record<string, number> = {};
+      for (const m of Array.isArray(json.data) ? (json.data as Record<string, any>[]) : []) {
+        const v = m.values?.[0]?.value ?? m.total_value?.value;
+        if (typeof m.name === 'string' && typeof v === 'number') out[m.name] = v;
+      }
+      return out;
     },
     async probarCuenta(token, cuentaId) {
       await pedir(token, 'GET', `${cuentaId}?fields=id`);

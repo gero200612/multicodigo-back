@@ -236,3 +236,40 @@ describe('comentarios públicos', () => {
     expect((await pedir(b, leads.clave, 'POST', '/mensajes', { a: PERSONA, texto: 'x', canal: 'instagram' })).status).toBe(409);
   });
 });
+
+describe('lectura de Instagram (instagram_lectura)', () => {
+  it('lista los reels con sus métricas, uno por uno y su archivo, con la misma cuenta', async () => {
+    const n = await negocioConNumero(b, ['puente', 'instagram_lectura']);
+    await cuenta(n.id, 'instagram', IG);
+    b.meta.reelsDeCuenta = [{ id: '17900000000001' }, { id: '17900000000002' }];
+
+    const lista = (await pedir(b, n.clave, 'GET', '/instagram/reels?limite=5')).json;
+    expect(lista).toHaveLength(2);
+    expect(lista[0]).toMatchObject({ id: '17900000000001', metricas: { alcance: 1200, reproducciones: 3400, interacciones: 150, guardados: 20, compartidos: 7, me_gusta: 10, comentarios: 2 } });
+    expect((await pedir(b, n.clave, 'GET', '/instagram/reels/17900000000002')).json.id).toBe('17900000000002');
+    expect((await pedir(b, n.clave, 'GET', '/instagram/reels/17900000000999')).status).toBe(404);
+  });
+
+  it('sin la capacidad la ruta no existe, y sin cuenta de Instagram es sin_numero', async () => {
+    const solo = await negocioConNumero(b, ['puente']);
+    expect((await pedir(b, solo.clave, 'GET', '/instagram/reels')).status).toBe(404);
+    const lectura = await negocioConNumero(b, ['instagram_lectura']);
+    expect(await pedir(b, lectura.clave, 'GET', '/instagram/reels')).toMatchObject({ status: 409, json: { code: 'sin_numero' } });
+  });
+
+  it('con el token caído se frena y la lectura de un negocio no ve la cuenta de otro', async () => {
+    const a = await negocioConNumero(b, ['instagram_lectura']);
+    const otro = await negocioConNumero(b, ['instagram_lectura']);
+    const id = await cuenta(a.id, 'instagram', IG);
+    b.meta.reelsDeCuenta = [{ id: '17900000000001' }];
+    expect(await pedir(b, otro.clave, 'GET', '/instagram/reels')).toMatchObject({ status: 409 });
+
+    b.meta.fallar = '401 190 Error validating access token EAAxxxxxxxxxxxxxxxxxxx';
+    const r = await pedir(b, a.clave, 'GET', '/instagram/reels');
+    expect(r.status).toBe(502);
+    expect(JSON.stringify(r.json)).not.toContain('EAAxxxx');
+    expect((await b.store.numero(id))!.tokenCaido).toBe(true);
+    b.meta.fallar = null;
+    expect(await pedir(b, a.clave, 'GET', '/instagram/reels')).toMatchObject({ status: 409, json: { code: 'token_caido' } });
+  });
+});

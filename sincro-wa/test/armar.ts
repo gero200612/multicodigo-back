@@ -88,6 +88,20 @@ export class MetaFalsa implements ClienteMeta {
     this.revisar();
     this.comentarios.push({ tipo: 'ocultar', canal, id });
   }
+  reelsDeCuenta: { id: string }[] = [];
+  async reelsDeLaCuenta(_token: string, _ig: string, limite: number) {
+    this.revisar();
+    return this.reelsDeCuenta.slice(0, limite).map((r) => ({ id: r.id, texto: `reel ${r.id}`, enlace: `https://instagram.com/reel/${r.id}`, fecha: '2026-10-01T10:00:00+0000', duracion_s: null, mediaUrl: `https://meta.falsa/${r.id}`, me_gusta: 10, comentarios: 2 }));
+  }
+  async reel(_token: string, id: string) {
+    this.revisar();
+    const r = this.reelsDeCuenta.find((x) => x.id === id);
+    return r ? { id, texto: `reel ${id}`, enlace: null, fecha: null, duracion_s: null, mediaUrl: `https://meta.falsa/${id}`, me_gusta: 10, comentarios: 2 } : null;
+  }
+  async metricasDelReel(_token: string, _id: string) {
+    this.revisar();
+    return { reach: 1200, views: 3400, total_interactions: 150, saved: 20, shares: 7 };
+  }
   async probarCuenta(_token: string, cuentaId: string) {
     this.revisar();
     this.probadas.push(cuentaId);

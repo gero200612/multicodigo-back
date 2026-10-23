@@ -7,7 +7,7 @@
  * una entrada aca; lo demas lo lee de este catalogo.
  */
 
-export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender', 'puente'] as const;
+export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender', 'puente', 'instagram_lectura'] as const;
 export type Capacidad = (typeof CAPACIDADES)[number];
 
 export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar' | 'conexion' | 'baja' | 'alta' | 'comentario';
@@ -43,6 +43,12 @@ const CATALOGO: Record<Capacidad, Entrada> = {
       'POST /charlas/:contacto/liberar',
       'GET /media/:id',
     ],
+    plantillas: [],
+  },
+  // La lectura de Instagram para el agente de contenido: reels publicados, su archivo y sus metricas. Solo lee.
+  instagram_lectura: {
+    eventos: [],
+    rutas: ['GET /instagram/reels', 'GET /instagram/reels/:id', 'GET /instagram/reels/:id/archivo'],
     plantillas: [],
   },
   // Sincro Puente: contesta en nombre de la empresa. Recibe todos los mensajes (no solo los derivados),

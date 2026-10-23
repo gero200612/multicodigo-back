@@ -54,6 +54,7 @@ reemplaza `/EAA[A-Za-z0-9_-]{10,}/g` por `EAA…` y las claves `swa_…` por `sw
 | `avisos` | `estado` | `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` |
 | `promociones` | `estado` | `POST /avisos`, `GET/POST /plantillas` | `MARKETING` |
 | `atender` | `mensaje` (solo si la charla está derivada), `derivar` | `POST /mensajes`, `GET /charlas/:contacto`, `PUT /atender/contexto`, `POST /charlas/:contacto/liberar`, `GET /media/:id` | — |
+| `instagram_lectura` | — | `GET /instagram/reels`, `GET /instagram/reels/:id`, `GET /instagram/reels/:id/archivo` | — |
 | `puente` | `mensaje` (todos, con `canal` y `wamid`), `estado`, `conexion`, `baja`, `alta`, `comentario` | `POST /mensajes`, `POST /escribiendo`, `GET /charlas/:contacto`, `POST /charlas/:contacto/baja`, `POST /comentarios/:id/responder`, `POST /comentarios/:id/privado`, `POST /comentarios/:id/ocultar`, `GET /media/:id`, `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` (`MARKETING` pide además `promociones`) |
 
 Todas las claves de app ven `GET /eventos`, `POST /eventos/ack` y `GET /yo`.
@@ -206,6 +207,15 @@ trae `object: "instagram"` y `object: "page"` por la misma URL y con la misma fi
 - `POST /comentarios/:id/privado` `{"texto"}`: la respuesta privada, una sola y dentro de los 7 días (`409 ya_respondido_en_privado`, `409 fuera_de_plazo`); nunca a quien pidió la baja (`409 baja`).
 - `POST /comentarios/:id/ocultar`: oculta el comentario.
 - La prueba de cada 30 min de una cuenta de Instagram o Messenger solo mira que el token ande (no hay calidad ni tope): un 190 frena los envíos como en WhatsApp.
+
+## Lectura de Instagram (`instagram_lectura`)
+
+Para el agente de contenido, con la misma cuenta de Instagram del negocio (la dada de alta con `canal: "instagram"`). Solo lee.
+
+- `GET /instagram/reels?limite=12` → `[{"id","texto","enlace","fecha","duracion_s","metricas":{"alcance","reproducciones","interacciones","guardados","compartidos","me_gusta","comentarios"}}]`. Una métrica que Meta no da queda en `null`.
+- `GET /instagram/reels/:id` → un reel igual que arriba (`404 reel_no_existe`).
+- `GET /instagram/reels/:id/archivo` → el video (`video/mp4`); la URL de Instagram vence en minutos, por eso se baja por acá.
+- Sin cuenta de Instagram: `409 sin_numero`. Con el token caído: `409 token_caido`.
 
 ## Reglas comunes
 

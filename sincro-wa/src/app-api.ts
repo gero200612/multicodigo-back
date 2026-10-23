@@ -5,7 +5,7 @@ import { tokenDe, type Contexto } from './contexto.js';
 import { enviarAviso, enviarTexto, marcarTokenCaido, numeroPara, Rechazo } from './envio.js';
 import { DIA_MS } from './horas.js';
 import { cuerpoDeEvento, esperarEventos } from './eventos.js';
-import { ErrorDeMeta, esTokenCaido } from './meta.js';
+import { ErrorDeMeta, esTokenCaido, type ReelDeInstagram } from './meta.js';
 import { negocioDe } from './privado.js';
 import { ventanaAbierta } from './reglas.js';
 import type { Numero, Plantilla } from './store.js';
@@ -208,6 +208,78 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
     await conMeta(numero, () => ctx.meta.ocultarComentario(tokenDe(ctx, numero), canal, c.comentarioId));
     await store.cambiarComentario(c.id, { oculto: true });
     return { ok: true };
+  });
+
+  // ---- Lectura de Instagram (agente de contenido) ----
+
+  const cuentaDeInstagram = async (negocioId: number): Promise<Numero> => {
+    const cuenta = (await store.numerosDe(negocioId)).find((n) => n.canal === 'instagram');
+    if (!cuenta) throw new Rechazo(409, 'sin_numero');
+    if (cuenta.tokenCaido) throw new Rechazo(409, 'token_caido');
+    return cuenta;
+  };
+  const leerInstagram = async <T>(cuenta: Numero, f: () => Promise<T>): Promise<T> => {
+    try {
+      return await f();
+    } catch (e) {
+      if (!(e instanceof ErrorDeMeta)) throw e;
+      if (esTokenCaido(e)) await marcarTokenCaido(ctx, cuenta.id, e.message);
+      throw new Rechazo(502, 'meta', e.message);
+    }
+  };
+  const idDeReel = z.string().regex(/^\d{5,30}$/);
+  const vistaDeReel = (r: ReelDeInstagram, m: Record<string, number>) => ({
+    id: r.id,
+    texto: r.texto,
+    enlace: r.enlace,
+    fecha: r.fecha,
+    duracion_s: r.duracion_s,
+    metricas: {
+      alcance: m.reach ?? null,
+      reproducciones: m.views ?? null,
+      interacciones: m.total_interactions ?? null,
+      guardados: m.saved ?? null,
+      compartidos: m.shares ?? null,
+      me_gusta: r.me_gusta,
+      comentarios: r.comentarios,
+    },
+  });
+
+  app.get('/instagram/reels', async (req) => {
+    const negocio = negocioDe(req);
+    const { limite } = z.object({ limite: z.coerce.number().int().min(1).max(100).default(12) }).parse(req.query);
+    const cuenta = await cuentaDeInstagram(negocio.id);
+    const token = tokenDe(ctx, cuenta);
+    return leerInstagram(cuenta, async () => {
+      const reels = await ctx.meta.reelsDeLaCuenta(token, cuenta.phoneNumberId, limite);
+      // Las metricas de un reel que Meta no da (muy nuevo, sin permiso) quedan en null: no tumban la lista.
+      return Promise.all(reels.map(async (r) => vistaDeReel(r, await ctx.meta.metricasDelReel(token, r.id).catch(() => ({})))));
+    });
+  });
+
+  app.get('/instagram/reels/:id', async (req) => {
+    const negocio = negocioDe(req);
+    const id = idDeReel.parse((req.params as { id: string }).id);
+    const cuenta = await cuentaDeInstagram(negocio.id);
+    const token = tokenDe(ctx, cuenta);
+    return leerInstagram(cuenta, async () => {
+      const reel = await ctx.meta.reel(token, id);
+      if (!reel) throw new Rechazo(404, 'reel_no_existe');
+      return vistaDeReel(reel, await ctx.meta.metricasDelReel(token, id).catch(() => ({})));
+    });
+  });
+
+  app.get('/instagram/reels/:id/archivo', async (req, reply) => {
+    const negocio = negocioDe(req);
+    const id = idDeReel.parse((req.params as { id: string }).id);
+    const cuenta = await cuentaDeInstagram(negocio.id);
+    const token = tokenDe(ctx, cuenta);
+    const datos = await leerInstagram(cuenta, async () => {
+      const reel = await ctx.meta.reel(token, id);
+      if (!reel?.mediaUrl) throw new Rechazo(404, 'reel_no_existe');
+      return ctx.meta.bajarMedia(token, reel.mediaUrl);
+    });
+    return reply.type('video/mp4').send(datos);
   });
 
   app.get('/media/:id', async (req, reply) => {
