@@ -57,6 +57,9 @@ export function vistaDePlantilla(p: Plantilla) {
   return { id: p.id, nombre: p.nombre, idioma: p.idioma, categoria: p.categoria, estado: p.estado, motivo: p.motivo, bloqueada: p.bloqueada };
 }
 
+/** `leads` y `puente` contestan cualquier charla; `atender` solo las que la IA le derivó. */
+const contestaTodo = (caps: Parameters<typeof tiene>[0]) => tiene(caps, 'leads') || tiene(caps, 'puente');
+
 export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
   const { store } = ctx;
 
@@ -70,7 +73,7 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
     const negocio = negocioDe(req);
     const { a, texto, botones, link } = Mensaje.parse(req.body);
     // Con `atender` (y sin `leads`) la app solo contesta charlas que la IA le derivo.
-    if (!tiene(negocio.capacidades, 'leads')) {
+    if (!contestaTodo(negocio.capacidades)) {
       const charlas = await store.contactosDe(negocio.id, a);
       if (!charlas.some((c) => c.derivada)) throw new Rechazo(409, 'no_derivada');
     }
@@ -86,7 +89,7 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
     const negocio = negocioDe(req);
     const { a } = z.object({ a: Contacto }).parse(req.body);
     // Igual que /mensajes: con `atender` solo en las charlas que le derivaron.
-    if (!tiene(negocio.capacidades, 'leads') && !(await store.contactosDe(negocio.id, a)).some((c) => c.derivada)) {
+    if (!contestaTodo(negocio.capacidades) && !(await store.contactosDe(negocio.id, a)).some((c) => c.derivada)) {
       throw new Rechazo(409, 'no_derivada');
     }
     const ultimo = (await store.charla(negocio.id, a, 10)).filter((m) => m.direccion === 'entra' && m.wamid).at(-1);

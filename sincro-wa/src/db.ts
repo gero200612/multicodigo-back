@@ -69,6 +69,7 @@ const numero = (r: Fila): Numero => ({
   estado: r.estado,
   nombreVerificado: r.nombre_verificado,
   sinMensajesAlertado: r.sin_mensajes_alertado,
+  tokenCaido: r.token_caido,
 });
 
 const contacto = (r: Fila): Contacto => ({

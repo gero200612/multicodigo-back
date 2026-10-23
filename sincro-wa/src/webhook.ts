@@ -148,7 +148,7 @@ async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json
   // Una foto mandada "como documento" sigue siendo una foto.
   const esFoto = tipo === 'image' || (tipo === 'document' && mime.startsWith('image/'));
   const caps = negocio.capacidades;
-  const pasaALaApp = tiene(caps, 'leads') || (tiene(caps, 'atender') && charla.derivada);
+  const pasaALaApp = tiene(caps, 'leads') || tiene(caps, 'puente') || (tiene(caps, 'atender') && charla.derivada);
   const facturas = tiene(caps, 'facturas');
 
   let mediaId: number | null = null;
@@ -166,6 +166,8 @@ async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json
       media_id: mediaId,
       referral: mensaje.referral,
       mensaje_id: mensaje.id,
+      // Puente atiende varios canales; el resto de las apps solo ve WhatsApp.
+      ...(tiene(caps, 'puente') ? { canal: 'whatsapp', wamid: String(m.id) } : {}),
     });
   }
 

@@ -31,7 +31,7 @@ export class MetaFalsa implements ClienteMeta {
   private n = 0;
 
   private revisar() {
-    if (this.fallar) throw new ErrorDeMeta(this.fallar);
+    if (this.fallar) throw new ErrorDeMeta(this.fallar, Number(/^\d+ (\d+)/.exec(this.fallar)?.[1]) || undefined);
   }
   async enviarTexto(token: string, desde: string, a: string, texto: string) {
     this.revisar();
@@ -67,6 +67,7 @@ export class MetaFalsa implements ClienteMeta {
     return { id: `tpl-${++this.n}`, estado: 'PENDING', categoria: this.categoriaAlCrear ?? p.categoria };
   }
   async datosDelNumero() {
+    this.revisar();
     return this.datos;
   }
 }

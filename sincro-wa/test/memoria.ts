@@ -107,6 +107,7 @@ export class MemoriaStore implements Store {
       estado: null,
       nombreVerificado: null,
       sinMensajesAlertado: false,
+      tokenCaido: false,
     };
     this.numerosT.push(nuevo);
     return { ...nuevo };

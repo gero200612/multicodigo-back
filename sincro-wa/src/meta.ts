@@ -50,11 +50,18 @@ export interface ClienteMeta {
 
 /** Meta contesto con error o no contesto. El detalle ya viene tapado. */
 export class ErrorDeMeta extends Error {
-  constructor(detalle: string) {
+  /** El código de error de Graph (190: token vencido o revocado), si vino. */
+  constructor(
+    detalle: string,
+    readonly codigo?: number,
+  ) {
     super(taparTokens(detalle));
     this.name = 'ErrorDeMeta';
   }
 }
+
+/** Meta invalidó el token: no sirve para nada hasta que se reconecte. */
+export const esTokenCaido = (e: unknown): boolean => e instanceof ErrorDeMeta && e.codigo === 190;
 
 const TECHO_MS = 20_000;
 // Una foto de factura entra holgada; un video de 100 MB no tiene por que.
@@ -83,7 +90,7 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     }
     if (!res.ok) {
       const error = (json.error ?? {}) as { message?: string; code?: number; error_user_msg?: string };
-      throw new ErrorDeMeta(`${res.status} ${error.code ?? ''} ${error.error_user_msg ?? error.message ?? 'sin detalle'}`.replace(/\s+/g, ' '));
+      throw new ErrorDeMeta(`${res.status} ${error.code ?? ''} ${error.error_user_msg ?? error.message ?? 'sin detalle'}`.replace(/\s+/g, ' '), error.code);
     }
     return json;
   }

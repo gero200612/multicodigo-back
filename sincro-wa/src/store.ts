@@ -51,10 +51,12 @@ export interface Numero {
   estado: string | null;
   nombreVerificado: string | null;
   sinMensajesAlertado: boolean;
+  /** Meta devolvió 190: se frenan los envíos hasta que el token vuelva a andar. */
+  tokenCaido: boolean;
 }
 
 export type CambiosDeNumero = Partial<
-  Pick<Numero, 'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado'>
+  Pick<Numero, 'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado' | 'tokenCaido'>
 >;
 
 export interface Contacto {
@@ -234,7 +236,7 @@ export interface Store {
 
   // Numeros
   /** Undefined si el phone_number_id ya esta dado de alta. */
-  crearNumero(n: Omit<Numero, 'id' | 'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado'>): Promise<Numero | undefined>;
+  crearNumero(n: Omit<Numero, 'id' | 'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado' | 'tokenCaido'>): Promise<Numero | undefined>;
   numero(id: number): Promise<Numero | undefined>;
   numeroPorPhoneId(phoneNumberId: string): Promise<Numero | undefined>;
   numerosDe(negocioId: number): Promise<Numero[]>;

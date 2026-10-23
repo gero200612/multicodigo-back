@@ -54,6 +54,7 @@ reemplaza `/EAA[A-Za-z0-9_-]{10,}/g` por `EAA…` y las claves `swa_…` por `sw
 | `avisos` | `estado` | `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` |
 | `promociones` | `estado` | `POST /avisos`, `GET/POST /plantillas` | `MARKETING` |
 | `atender` | `mensaje` (solo si la charla está derivada), `derivar` | `POST /mensajes`, `GET /charlas/:contacto`, `PUT /atender/contexto`, `POST /charlas/:contacto/liberar`, `GET /media/:id` | — |
+| `puente` | `mensaje` (todos, con `canal` y `wamid`), `estado`, `conexion` | `POST /mensajes`, `POST /escribiendo`, `GET /charlas/:contacto`, `GET /media/:id`, `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` (`MARKETING` pide además `promociones`) |
 
 Todas las claves de app ven `GET /eventos`, `POST /eventos/ack` y `GET /yo`.
 `POST /mensajes` con `atender` solo funciona en una charla derivada.
@@ -133,6 +134,7 @@ queda para `GET /eventos`.
 - `factura`: `{"contacto","media_id","datos":{"proveedor","cuit","numero","fecha","vencimiento","total","moneda","impuestos":[{"nombre","monto"}]}}`
 - `estado`: `{"mensaje_id","wamid","estado":"sent"|"delivered"|"read"|"failed","error":{"codigo","detalle"}|null}`
 - `derivar`: `{"contacto","motivo"}`
+- `conexion` (solo `puente`): `{"estado":"token_caido"|"token_ok","numero"}`. Sale una vez por caída.
 - `formulario`: `{"nombre","negocio","whatsapp":"549…"|null,"mail"|null,"tema","mensaje","acepta_whatsapp"}`
 
 ## El formulario de la web (puerto público)
@@ -187,6 +189,9 @@ Toda ruta que cambia algo lleva `quien` en el cuerpo (`"gero"` / `"punchi"`).
     `{"respuesta":"...","derivar":bool,"motivo":"..."}`.
 
 ## Reglas comunes
+
+- **Puente:** `puente` no usa la IA de este bot (`atender` sigue en Homero). Recibe todos los mensajes, no solo los derivados, y sus datos suman `canal` (`whatsapp`) y `wamid`.
+- **Token caído (190):** un envío, o la prueba de calidad cada 30 min, que recibe de Meta el código 190 marca el número `token_caido`: `POST /mensajes` y `POST /avisos` contestan `409 {"code":"token_caido"}` sin llegar a Meta, sale la alerta `token_caido` (Homero la manda por Telegram) y el evento `conexion` a la app. Lo que entra sigue entrando. Cuando la prueba vuelve a andar: alerta `token_ok`, evento `conexion` y se reanudan los envíos.
 
 - **Bajas:** texto entrante que matchea `baja|stop|no me escrib|no me manden|no quiero (mas|más) mensajes|dej(a|á) de escrib|desuscrib` (sin distinguir mayúsculas, como mensaje completo o casi: hasta 60 caracteres) → contacto en baja para ese número, se contesta UNA vez "Listo, no te vamos a escribir más. Si querés volver, escribí ALTA." y no se pasa a la app. "alta" revierte.
 - **Ventana:** se abre con cada mensaje entrante; dura 24 h.

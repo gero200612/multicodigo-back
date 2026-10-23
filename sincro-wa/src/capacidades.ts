@@ -7,10 +7,10 @@
  * una entrada aca; lo demas lo lee de este catalogo.
  */
 
-export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender'] as const;
+export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender', 'puente'] as const;
 export type Capacidad = (typeof CAPACIDADES)[number];
 
-export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar';
+export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar' | 'conexion';
 export type CategoriaDePlantilla = 'MARKETING' | 'UTILITY' | 'AUTHENTICATION';
 
 interface Entrada {
@@ -44,6 +44,21 @@ const CATALOGO: Record<Capacidad, Entrada> = {
       'GET /media/:id',
     ],
     plantillas: [],
+  },
+  // Sincro Puente: contesta en nombre de la empresa. Recibe todos los mensajes (no solo los derivados),
+  // los estados de entrega y los avisos de la conexion (token caido). Plantillas de utilidad; las de
+  // marketing exigen ademas `promociones`. NO usa la IA de este bot: piensa Puente, en la app.
+  puente: {
+    eventos: ['mensaje', 'estado', 'conexion'],
+    rutas: [
+      'POST /mensajes',
+      'POST /escribiendo',
+      'GET /charlas/:contacto',
+      'GET /media/:id',
+      'POST /avisos',
+      ...PLANTILLAS,
+    ],
+    plantillas: ['UTILITY'],
   },
 };
 
