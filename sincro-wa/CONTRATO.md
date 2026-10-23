@@ -54,7 +54,7 @@ reemplaza `/EAA[A-Za-z0-9_-]{10,}/g` por `EAA…` y las claves `swa_…` por `sw
 | `avisos` | `estado` | `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` |
 | `promociones` | `estado` | `POST /avisos`, `GET/POST /plantillas` | `MARKETING` |
 | `atender` | `mensaje` (solo si la charla está derivada), `derivar` | `POST /mensajes`, `GET /charlas/:contacto`, `PUT /atender/contexto`, `POST /charlas/:contacto/liberar`, `GET /media/:id` | — |
-| `puente` | `mensaje` (todos, con `canal` y `wamid`), `estado`, `conexion` | `POST /mensajes`, `POST /escribiendo`, `GET /charlas/:contacto`, `GET /media/:id`, `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` (`MARKETING` pide además `promociones`) |
+| `puente` | `mensaje` (todos, con `canal` y `wamid`), `estado`, `conexion`, `baja`, `alta` | `POST /mensajes`, `POST /escribiendo`, `GET /charlas/:contacto`, `POST /charlas/:contacto/baja`, `GET /media/:id`, `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` (`MARKETING` pide además `promociones`) |
 
 Todas las claves de app ven `GET /eventos`, `POST /eventos/ack` y `GET /yo`.
 `POST /mensajes` con `atender` solo funciona en una charla derivada.
@@ -79,6 +79,9 @@ el cliente no los ve.
 `200 {"contacto", "ventana_abierta": bool, "baja": bool, "derivada": bool,
 "mensajes": [{"id","direccion":"entra"|"sale","tipo","texto","media_id","referral","fecha"}]}`
 (del más viejo al más nuevo).
+
+### `POST /charlas/:contacto/baja` (solo `puente`)
+La baja que decide la empresa cuando la persona no usó las palabras exactas. `{"canal"?}`. `200 {"ok":true}`; desde ahí `POST /mensajes` y `POST /avisos` a ese contacto dan `409 baja`.
 
 ### `GET /media/:id`
 Binario con su `content-type`. Solo media del propio negocio (si no, 404).
@@ -134,6 +137,7 @@ queda para `GET /eventos`.
 - `factura`: `{"contacto","media_id","datos":{"proveedor","cuit","numero","fecha","vencimiento","total","moneda","impuestos":[{"nombre","monto"}]}}`
 - `estado`: `{"mensaje_id","wamid","estado":"sent"|"delivered"|"read"|"failed","error":{"codigo","detalle"}|null}`
 - `derivar`: `{"contacto","motivo"}`
+- `baja` / `alta` (solo `puente`): `{"contacto","canal","motivo"?}`. La persona escribió una de las palabras de baja (o ALTA). Esos mensajes no se pasan como `mensaje`.
 - `conexion` (solo `puente`): `{"estado":"token_caido"|"token_ok","numero"}`. Sale una vez por caída.
 - `formulario`: `{"nombre","negocio","whatsapp":"549…"|null,"mail"|null,"tema","mensaje","acepta_whatsapp"}`
 

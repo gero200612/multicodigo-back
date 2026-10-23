@@ -109,3 +109,32 @@ describe('alerta de token caído (190)', () => {
     expect(await pedir(b, n.clave, 'POST', '/avisos', { a: CONTACTO, plantilla: 'turno', idioma: 'es_AR' })).toMatchObject({ status: 409, json: { code: 'token_caido' } });
   });
 });
+
+describe('bajas para puente', () => {
+  it('la baja y el alta por texto le llegan a la app, y la que decide la empresa frena los envíos', async () => {
+    const n = await negocioConNumero(b, ['puente']);
+    await webhook(b, texto(n.phoneNumberId, CONTACTO, 'hola'));
+    await webhook(b, texto(n.phoneNumberId, CONTACTO, 'baja'));
+    let eventos = (await pedir(b, n.clave, 'GET', '/eventos?esperar=0')).json;
+    expect(eventos.find((e: { tipo: string }) => e.tipo === 'baja').datos).toMatchObject({ contacto: CONTACTO, canal: 'whatsapp' });
+    // Lo de la baja no se pasa como mensaje.
+    expect(eventos.filter((e: { tipo: string }) => e.tipo === 'mensaje')).toHaveLength(1);
+
+    await webhook(b, texto(n.phoneNumberId, CONTACTO, 'alta'));
+    eventos = (await pedir(b, n.clave, 'GET', '/eventos?esperar=0')).json;
+    expect(eventos.some((e: { tipo: string }) => e.tipo === 'alta')).toBe(true);
+  });
+
+  it('POST /charlas/:contacto/baja marca la baja y después nada sale', async () => {
+    const n = await negocioConNumero(b, ['puente']);
+    await webhook(b, texto(n.phoneNumberId, CONTACTO, 'hola'));
+    expect((await pedir(b, n.clave, 'POST', `/charlas/${CONTACTO}/baja`, {})).json).toEqual({ ok: true });
+    expect((await pedir(b, n.clave, 'GET', `/charlas/${CONTACTO}`)).json.baja).toBe(true);
+    expect(await pedir(b, n.clave, 'POST', '/mensajes', { a: CONTACTO, texto: 'x' })).toMatchObject({ status: 409, json: { code: 'baja' } });
+  });
+
+  it('una app sin puente no puede marcar bajas (404)', async () => {
+    const n = await negocioConNumero(b, ['leads']);
+    expect((await pedir(b, n.clave, 'POST', `/charlas/${CONTACTO}/baja`, {})).status).toBe(404);
+  });
+});

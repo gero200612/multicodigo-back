@@ -129,6 +129,17 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
     };
   });
 
+  // La baja que decide la empresa (la persona no usó las palabras exactas): desde ahora nada sale a ese contacto.
+  app.post('/charlas/:contacto/baja', async (req) => {
+    const negocio = negocioDe(req);
+    const contacto = Contacto.parse((req.params as { contacto: string }).contacto);
+    const ahora = ctx.ahora();
+    for (const c of await store.contactosDe(negocio.id, contacto)) {
+      if (!c.baja) await store.cambiarContacto(c.numeroId, contacto, { baja: true, bajaDesde: ahora });
+    }
+    return { ok: true };
+  });
+
   app.get('/media/:id', async (req, reply) => {
     const negocio = negocioDe(req);
     const id = Id.parse((req.params as { id: string }).id);

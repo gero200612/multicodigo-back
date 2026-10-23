@@ -132,6 +132,8 @@ async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json
   if (tipo === 'text' && charla.baja && esAlta(texto)) {
     await ctx.store.cambiarContacto(numero.id, contacto, { baja: false, bajaDesde: null });
     await responder(ctx, negocio, numero, contacto, TEXTO_DE_ALTA);
+    // Puente tiene que enterarse: la baja vale para la persona en todos los canales.
+    await emitir(ctx, negocio, 'alta', { contacto, canal: 'whatsapp' });
     return;
   }
   if (tipo === 'text' && esBaja(texto)) {
@@ -139,6 +141,7 @@ async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json
       await ctx.store.cambiarContacto(numero.id, contacto, { baja: true, bajaDesde: ahora });
       // Se contesta UNA vez: un segundo "baja" no recibe nada.
       await responder(ctx, negocio, numero, contacto, TEXTO_DE_BAJA, { saltearBaja: true });
+      await emitir(ctx, negocio, 'baja', { contacto, canal: 'whatsapp', motivo: 'baja' });
     }
     return;
   }
