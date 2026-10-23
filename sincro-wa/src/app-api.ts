@@ -264,7 +264,8 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
     const token = tokenDe(ctx, cuenta);
     return leerInstagram(cuenta, async () => {
       const reel = await ctx.meta.reel(token, id);
-      if (!reel) throw new Rechazo(404, 'reel_no_existe');
+      // Con un token compartido, un id de otra cuenta no se lee: 404 antes de pedir metricas.
+      if (!reel || reel.ownerId !== cuenta.phoneNumberId) throw new Rechazo(404, 'reel_no_existe');
       return vistaDeReel(reel, await ctx.meta.metricasDelReel(token, id).catch(() => ({})));
     });
   });
@@ -276,7 +277,7 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
     const token = tokenDe(ctx, cuenta);
     const datos = await leerInstagram(cuenta, async () => {
       const reel = await ctx.meta.reel(token, id);
-      if (!reel?.mediaUrl) throw new Rechazo(404, 'reel_no_existe');
+      if (!reel?.mediaUrl || reel.ownerId !== cuenta.phoneNumberId) throw new Rechazo(404, 'reel_no_existe');
       return ctx.meta.bajarMedia(token, reel.mediaUrl);
     });
     return reply.type('video/mp4').send(datos);

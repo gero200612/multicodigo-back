@@ -250,6 +250,15 @@ describe('lectura de Instagram (instagram_lectura)', () => {
     expect((await pedir(b, n.clave, 'GET', '/instagram/reels/17900000000999')).status).toBe(404);
   });
 
+  it('un reel de otra cuenta con el token compartido da 404 y no se bajan ni sus métricas ni su archivo', async () => {
+    const n = await negocioConNumero(b, ['instagram_lectura']);
+    await cuenta(n.id, 'instagram', IG);
+    b.meta.reelsDeCuenta = [{ id: '17900000000001' }, { id: '17900000000555', owner: '17841499999999999' }];
+    expect((await pedir(b, n.clave, 'GET', '/instagram/reels/17900000000555')).status).toBe(404);
+    expect((await pedir(b, n.clave, 'GET', '/instagram/reels/17900000000555/archivo')).status).toBe(404);
+    expect((await pedir(b, n.clave, 'GET', '/instagram/reels/17900000000001')).status).toBe(200);
+  });
+
   it('sin la capacidad la ruta no existe, y sin cuenta de Instagram es sin_numero', async () => {
     const solo = await negocioConNumero(b, ['puente']);
     expect((await pedir(b, solo.clave, 'GET', '/instagram/reels')).status).toBe(404);

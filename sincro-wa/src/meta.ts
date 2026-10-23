@@ -34,6 +34,8 @@ export interface ReelDeInstagram {
   fecha: string | null;
   duracion_s: number | null;
   mediaUrl: string | null;
+  /** La cuenta de Instagram duena del reel (owner.id): una clave compartida no puede leer reels de otra cuenta. */
+  ownerId: string | null;
   me_gusta: number | null;
   comentarios: number | null;
 }
@@ -92,7 +94,7 @@ export class ErrorDeMeta extends Error {
 export const esTokenCaido = (e: unknown): boolean => e instanceof ErrorDeMeta && e.codigo === 190;
 
 const TECHO_MS = 20_000;
-const CAMPOS_REEL = 'id,caption,permalink,timestamp,media_product_type,media_url,like_count,comments_count';
+const CAMPOS_REEL = 'id,caption,permalink,timestamp,media_product_type,media_url,owner{id},like_count,comments_count';
 
 const aReel = (f: Record<string, unknown>): ReelDeInstagram => ({
   id: String(f.id ?? ''),
@@ -101,6 +103,7 @@ const aReel = (f: Record<string, unknown>): ReelDeInstagram => ({
   fecha: typeof f.timestamp === 'string' ? f.timestamp : null,
   duracion_s: null,
   mediaUrl: typeof f.media_url === 'string' ? f.media_url : null,
+  ownerId: typeof (f.owner as { id?: unknown } | undefined)?.id === 'string' ? String((f.owner as { id: string }).id) : null,
   me_gusta: typeof f.like_count === 'number' ? f.like_count : null,
   comentarios: typeof f.comments_count === 'number' ? f.comments_count : null,
 });
