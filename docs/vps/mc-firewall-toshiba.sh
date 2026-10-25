@@ -4,12 +4,17 @@
 # de Cloudflare, que es solo de salida. Lo que Docker publica (dockdeck 8088,
 # etc.) tambien queda solo por la VPN.
 #
+# Unica excepcion: el panel DockDeck (ESP32, no puede usar Tailscale) llega al
+# 8088 por la LAN, filtrado por su MAC. Igual cada pedido va firmado con HMAC.
+#
 # `--quitar` saca todo (lo corre el seguro si algo sale mal).
 LAN="enp3s0 wlp2s0"
+DOCKDECK_MAC="20:50:0d:1a:03:88"
 for ipt in iptables ip6tables; do
   for i in $LAN; do
     $ipt -D INPUT -i $i -j MC-LAN-IN 2>/dev/null
     $ipt -D DOCKER-USER -i $i -m conntrack --ctstate NEW -j DROP 2>/dev/null
+    $ipt -D DOCKER-USER -i $i -m mac --mac-source $DOCKDECK_MAC -p tcp -m conntrack --ctorigdstport 8088 -j ACCEPT 2>/dev/null
   done
   $ipt -F MC-LAN-IN 2>/dev/null; $ipt -X MC-LAN-IN 2>/dev/null
 done
@@ -32,6 +37,8 @@ for ipt in iptables ip6tables; do
   for i in $LAN; do
     $ipt -I INPUT 1 -i $i -j MC-LAN-IN
     $ipt -I DOCKER-USER 1 -i $i -m conntrack --ctstate NEW -j DROP
+    # Va antes del DROP: el DockDeck al 8088.
+    $ipt -I DOCKER-USER 1 -i $i -m mac --mac-source $DOCKDECK_MAC -p tcp -m conntrack --ctorigdstport 8088 -j ACCEPT
   done
 done
-echo "firewall de la LAN puesto: desde $LAN no entra nada"
+echo "firewall de la LAN puesto: desde $LAN solo entra el DockDeck ($DOCKDECK_MAC) al 8088"

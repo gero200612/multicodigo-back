@@ -5,17 +5,24 @@ Corre SOLO en el VPS: un bot de Telegram lo puede escuchar un programa a la
 vez. La Toshiba le pide la autorizacion por la VPN (Tailscale) y espera la
 respuesta en el mismo pedido.
 
+Aprobadores: el pedido le llega siempre a ACCESO_TELEGRAM_USUARIO (Gero) y,
+ademas, a quien figure para ese origen en APROBADORES (una linea por persona:
+"<ip> <chat_id>"). Cualquiera de los dos puede decidir; al resolverse se
+actualiza y se borra en todos los chats. El archivo se lee en cada pedido:
+agregar a alguien no pide reiniciar el servicio.
+
 Flujo:
   sshd (clave SSH OK) -> PAM -> mc-acceso-pam -> POST /pedir -> este proceso
   -> mensaje a Telegram con [Autorizar] [Rechazar] -> el toque vuelve aca
   -> se contesta el POST -> PAM deja pasar o corta.
 
 Sin respuesta en 90 s, se corta. Solo cuentan los toques del usuario de
-Telegram autorizado (ACCESO_TELEGRAM_USUARIO). Solo stdlib.
+Telegram que recibieron ese pedido. Solo stdlib.
 
 Archivos (0600, root):
   /root/telegram-acceso.token  token del bot
   /root/mc-acceso.secret       clave que comparten el VPS y la Toshiba
+  /root/mc-acceso.aprobadores  "<ip> <chat_id>" por linea (# comenta)
 """
 import hmac
 import json
@@ -42,6 +49,7 @@ NOMBRES = {
     '127.0.0.1': 'el propio servidor',
     '100.107.200.15': 'Pedro',
 }
+APROBADORES = '/root/mc-acceso.aprobadores'
 MAX_PENDIENTES = 5
 # Un Autorizar vale RECORDAR segundos para la MISMA clave, el mismo usuario,
 # el mismo servidor y el mismo origen. Cualquier otra combinacion pregunta.
@@ -49,8 +57,21 @@ RECORDAR = int(os.environ.get('ACCESO_RECORDAR', '3600'))
 recordados = {}  # (servidor, usuario, desde, clave) -> vence (epoch)
 
 API = f'https://api.telegram.org/bot{TOKEN}'
-pendientes = {}  # id -> {'evento': Event, 'ok': bool|None, 'msg': int}
+pendientes = {}  # id -> {'evento', 'ok': bool|None, 'msgs': {chat: msg}, 'chats', 'quien'}
 lock = threading.Lock()
+
+
+def aprobadores(desde):
+    """Gero siempre primero; despues los que tengan ese origen en el archivo."""
+    chats = [USUARIO]
+    try:
+        for linea in open(APROBADORES):
+            partes = linea.split('#')[0].split()
+            if len(partes) == 2 and partes[0] == desde and int(partes[1]) not in chats:
+                chats.append(int(partes[1]))
+    except (OSError, ValueError) as e:
+        print('aprobadores:', type(e).__name__, flush=True)
+    return chats
 
 
 def tg(metodo, **datos):
@@ -76,27 +97,37 @@ def tg(metodo, **datos):
 def escuchar_telegram():
     offset = 0
     while True:
-        r = tg('getUpdates', offset=offset, timeout=50, allowed_updates=['callback_query'])
+        r = tg('getUpdates', offset=offset, timeout=50, allowed_updates=['callback_query', 'message'])
         if not r.get('ok'):
             time.sleep(5)
             continue
         for u in r.get('result', []):
             offset = u['update_id'] + 1
+            m = u.get('message')
+            if m:
+                # Para sumar a alguien: le escribe al bot y su chat_id queda en
+                # el journal (y se lo contesta). No da ningun permiso por si solo.
+                de = m.get('from', {})
+                print(f"mensaje de {de.get('id')} ({de.get('first_name', '')} @{de.get('username', '')})", flush=True)
+                tg('sendMessage', chat_id=m['chat']['id'], text=f"Tu chat_id es {m['chat']['id']}.")
+                continue
             q = u.get('callback_query')
             if not q:
                 continue
             quien = q.get('from', {}).get('id')
             accion, _, pid = (q.get('data') or '').partition(':')
             print(f"toque: {accion} {pid} de {quien}", flush=True)
-            if quien != USUARIO:
-                tg('answerCallbackQuery', callback_query_id=q['id'], text='No autorizado')
-                continue
             with lock:
                 p = pendientes.get(pid)
+            # Solo vale el toque de alguien a quien le llego ESE pedido.
+            if quien not in (p['chats'] if p else [USUARIO]):
+                tg('answerCallbackQuery', callback_query_id=q['id'], text='No autorizado')
+                continue
             if not p or p['ok'] is not None:
                 tg('answerCallbackQuery', callback_query_id=q['id'], text='Ese pedido ya venció')
                 continue
             p['ok'] = accion == 'si'
+            p['quien'] = q.get('from', {}).get('first_name') or str(quien)
             p['evento'].set()
             tg('answerCallbackQuery', callback_query_id=q['id'], text='Autorizado' if p['ok'] else 'Rechazado')
 
@@ -113,34 +144,41 @@ def pedir(servidor, usuario, desde, clave=''):
         if sum(1 for p in pendientes.values() if p['ok'] is None) >= MAX_PENDIENTES:
             return False
         pid = f"{servidor.lower()}-{secrets.token_hex(4)}"
-        p = {'evento': threading.Event(), 'ok': None, 'msg': None}
+        p = {'evento': threading.Event(), 'ok': None, 'msgs': {}, 'chats': aprobadores(desde), 'quien': ''}
         pendientes[pid] = p
     origen = NOMBRES.get(desde, desde or 'desconocido')
     texto = f"🔐 <b>{usuario}</b> quiere entrar a <b>{servidor}</b>\ndesde {origen} ({desde})\n\nVence en {ESPERA} s."
-    r = tg('sendMessage', chat_id=USUARIO, text=texto, parse_mode='HTML', reply_markup={'inline_keyboard': [[
-        {'text': '✅ Autorizar', 'callback_data': f'si:{pid}'},
-        {'text': '⛔ Rechazar', 'callback_data': f'no:{pid}'},
-    ]]})
-    if r.get('ok'):
-        p['msg'] = r['result']['message_id']
-    else:
+    for chat in p['chats']:
+        r = tg('sendMessage', chat_id=chat, text=texto, parse_mode='HTML', reply_markup={'inline_keyboard': [[
+            {'text': '✅ Autorizar', 'callback_data': f'si:{pid}'},
+            {'text': '⛔ Rechazar', 'callback_data': f'no:{pid}'},
+        ]]})
+        if r.get('ok'):
+            p['msgs'][chat] = r['result']['message_id']
+        else:
+            print(f"no llego a {chat}: {r.get('description', '')}", flush=True)
+    if not p['msgs']:
         with lock:
             pendientes.pop(pid, None)
         return False
     p['evento'].wait(ESPERA)
     ok = p['ok'] is True
     final = '✅ Autorizado' if ok else ('⛔ Rechazado' if p['ok'] is False else '⌛ Venció sin respuesta')
+    if p['quien']:
+        final += f" por {p['quien']}"
     print(f"{final} | {pid} | usuario={usuario} desde={desde}", flush=True)
     p['ok'] = ok
     if ok and clave:
         with lock:
             recordados[llave] = time.time() + RECORDAR
-    tg('editMessageText', chat_id=USUARIO, message_id=p['msg'], parse_mode='HTML',
-       reply_markup={'inline_keyboard': []},
-       text=f"{texto.split(chr(10) + chr(10))[0]}\n\n{final}")
-    # El resultado se ve unos segundos y el mensaje se borra: el chat queda
-    # limpio, con el mensaje fijo arriba. El registro queda en el journal.
-    threading.Timer(8, lambda: tg('deleteMessage', chat_id=USUARIO, message_id=p['msg'])).start()
+    # El resultado se ve unos segundos y el mensaje se borra en todos los
+    # chats: quedan limpios, con el mensaje fijo arriba. El registro queda en
+    # el journal.
+    for chat, mid in p['msgs'].items():
+        tg('editMessageText', chat_id=chat, message_id=mid, parse_mode='HTML',
+           reply_markup={'inline_keyboard': []},
+           text=f"{texto.split(chr(10) + chr(10))[0]}\n\n{final}")
+        threading.Timer(8, lambda c=chat, m=mid: tg('deleteMessage', chat_id=c, message_id=m)).start()
     with lock:
         pendientes.pop(pid, None)
     return ok
