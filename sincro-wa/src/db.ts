@@ -13,7 +13,10 @@ import type {
   CambiosDeEvento,
   CambiosDeMensaje,
   CambiosDeNegocio,
+  CambiosDeComentario,
   CambiosDeNumero,
+  Canal,
+  Comentario,
   CambiosDePlantilla,
   CambiosDeTrabajo,
   Contacto,
@@ -25,6 +28,7 @@ import type {
   NuevoMensaje,
   NuevoNegocio,
   NuevoTrabajo,
+  NuevoComentario,
   Numero,
   Plantilla,
   Precio,
@@ -69,6 +73,27 @@ const numero = (r: Fila): Numero => ({
   estado: r.estado,
   nombreVerificado: r.nombre_verificado,
   sinMensajesAlertado: r.sin_mensajes_alertado,
+  tokenCaido: r.token_caido,
+  canal: r.canal,
+  telefono: r.telefono,
+  coexistencia: r.coexistencia,
+  pinCifrado: r.pin_cifrado,
+});
+
+const comentario = (r: Fila): Comentario => ({
+  id: Number(r.id),
+  negocioId: r.negocio_id,
+  numeroId: r.numero_id,
+  comentarioId: r.comentario_id,
+  publicacionId: r.publicacion_id,
+  autorId: r.autor_id,
+  autorNombre: r.autor_nombre,
+  texto: r.texto,
+  padreId: r.padre_id,
+  fecha: r.fecha,
+  respondido: r.respondido,
+  respuestaPrivada: r.respuesta_privada,
+  oculto: r.oculto,
 });
 
 const contacto = (r: Fila): Contacto => ({
@@ -252,11 +277,13 @@ export class PgStore implements Store {
 
   // Numeros
 
-  async crearNumero(n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'>) {
+  async crearNumero(
+    n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'> & Partial<Pick<Numero, 'coexistencia' | 'pinCifrado'>> & { canal?: Canal },
+  ) {
     const [r] = await this.filas(
-      `INSERT INTO numeros (negocio_id, phone_number_id, waba_id, token_cifrado) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (phone_number_id) DO NOTHING RETURNING *`,
-      [n.negocioId, n.phoneNumberId, n.wabaId, n.tokenCifrado],
+      `INSERT INTO numeros (negocio_id, phone_number_id, waba_id, token_cifrado, canal, coexistencia, pin_cifrado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (phone_number_id) DO NOTHING RETURNING *`,
+      [n.negocioId, n.phoneNumberId, n.wabaId, n.tokenCifrado, n.canal ?? 'whatsapp', n.coexistencia ?? false, n.pinCifrado ?? null],
     );
     return r ? numero(r) : undefined;
   }
@@ -285,6 +312,26 @@ export class PgStore implements Store {
 
   async cambiarNumero(id: number, c: CambiosDeNumero) {
     await this.actualizar('numeros', 'id = $1', [id], c);
+  }
+
+  // Comentarios
+
+  async guardarComentario(c: NuevoComentario) {
+    const [r] = await this.filas(
+      `INSERT INTO comentarios (negocio_id, numero_id, comentario_id, publicacion_id, autor_id, autor_nombre, texto, padre_id, fecha)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (numero_id, comentario_id) DO NOTHING RETURNING *`,
+      [c.negocioId, c.numeroId, c.comentarioId, c.publicacionId, c.autorId, c.autorNombre, c.texto, c.padreId, c.fecha],
+    );
+    return r ? comentario(r) : undefined;
+  }
+
+  async comentario(negocioId: number, comentarioId: string) {
+    const [r] = await this.filas('SELECT * FROM comentarios WHERE negocio_id = $1 AND comentario_id = $2', [negocioId, comentarioId]);
+    return r ? comentario(r) : undefined;
+  }
+
+  async cambiarComentario(id: number, c: CambiosDeComentario) {
+    await this.actualizar('comentarios', 'id = $1', [id], c);
   }
 
   // Contactos

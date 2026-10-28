@@ -24,6 +24,7 @@ Traefik.
 | `META_VERIFY_TOKEN` | El que se pone en Meta al configurar el webhook |
 | `META_TOKEN` | Token del system user: lo usan los números sin token propio (el de Sincro) |
 | `META_API_VERSION` | Por defecto `v23.0` |
+| `META_APP_ID` | Id de la app "Homero Sincro" (`1410095257330902`). Con `META_APP_SECRET` canjea el código del Embedded Signup. Sin esto `POST /conectar` da `503 sin_configurar` |
 | `SINCRO_WA_ADMIN_KEY` | Clave de administrador (la usa solo Homero). Mínimo 32 caracteres |
 | `SINCRO_WA_CIFRADO` | 32 bytes en base64: AES-256-GCM para tokens de Meta de clientes y secretos de eventos |
 | `PUERTO_PUBLICO` / `PUERTO_PRIVADO` | 3000 / 3001 |
@@ -54,6 +55,9 @@ reemplaza `/EAA[A-Za-z0-9_-]{10,}/g` por `EAA…` y las claves `swa_…` por `sw
 | `avisos` | `estado` | `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` |
 | `promociones` | `estado` | `POST /avisos`, `GET/POST /plantillas` | `MARKETING` |
 | `atender` | `mensaje` (solo si la charla está derivada), `derivar` | `POST /mensajes`, `GET /charlas/:contacto`, `PUT /atender/contexto`, `POST /charlas/:contacto/liberar`, `GET /media/:id` | — |
+| `conectar` | `conexion` | `POST /conectar`, `GET /conexion` | — |
+| `instagram_lectura` | — | `GET /instagram/reels`, `GET /instagram/reels/:id`, `GET /instagram/reels/:id/archivo` | — |
+| `puente` | `mensaje` (todos, con `canal` y `wamid`), `estado`, `conexion`, `baja`, `alta`, `comentario` | `POST /mensajes`, `POST /escribiendo`, `GET /charlas/:contacto`, `POST /charlas/:contacto/baja`, `POST /comentarios/:id/responder`, `POST /comentarios/:id/privado`, `POST /comentarios/:id/ocultar`, `GET /media/:id`, `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` (`MARKETING` pide además `promociones`) |
 
 Todas las claves de app ven `GET /eventos`, `POST /eventos/ack` y `GET /yo`.
 `POST /mensajes` con `atender` solo funciona en una charla derivada.
@@ -78,6 +82,29 @@ el cliente no los ve.
 `200 {"contacto", "ventana_abierta": bool, "baja": bool, "derivada": bool,
 "mensajes": [{"id","direccion":"entra"|"sale","tipo","texto","media_id","referral","fecha"}]}`
 (del más viejo al más nuevo).
+
+### `POST /charlas/:contacto/baja` (solo `puente`)
+La baja que decide la empresa cuando la persona no usó las palabras exactas. `{"canal"?}`. `200 {"ok":true}`; desde ahí `POST /mensajes` y `POST /avisos` a ese contacto dan `409 baja`.
+
+### `POST /conectar` (solo `conectar`)
+La empresa conecta su número con el Embedded Signup de Meta (Sincro es Tech
+Provider). La app abre el flujo con el SDK de Facebook y manda lo que le dio Meta:
+```json
+{ "codigo": "<code de FB.login>", "phone_number_id": "1234…", "waba_id": "5678…", "coexistencia": false }
+```
+El bot canjea el código por el token del cliente, comprueba con `debug_token`
+que sea de la app y que llegue a esa WABA, que el número sea de esa WABA,
+suscribe la app (`subscribed_apps`) y registra el número con un PIN de dos pasos
+propio (cifrado; al reconectar usa el mismo). Con `coexistencia: true` no
+registra: pide `smb_app_state_sync` e `history`, y lo que se contesta desde el
+celu llega por `smb_message_echoes` y queda en la charla como mensaje que sale.
+Volver a conectar el mismo número cambia el token y, si estaba caído, se
+reanudan los envíos (evento `conexion` `token_ok` para `puente`).
+- `200 {"numero": {"phone_number_id","waba_id","telefono","nombre","calidad","estado","tope_meta","token_caido","coexistencia"}}`
+- `409 de_otro_negocio` (el número es de otro negocio), `409 token_invalido`, `409 waba_ajena`, `409 numero_ajeno`, `502 meta` (con `detalle`), `503 sin_configurar`.
+
+### `GET /conexion` (solo `conectar`)
+`200 {"numeros": [ …como arriba… ]}`: los números de WhatsApp del negocio. Nunca el token ni el PIN.
 
 ### `GET /media/:id`
 Binario con su `content-type`. Solo media del propio negocio (si no, 404).
@@ -133,6 +160,9 @@ queda para `GET /eventos`.
 - `factura`: `{"contacto","media_id","datos":{"proveedor","cuit","numero","fecha","vencimiento","total","moneda","impuestos":[{"nombre","monto"}]}}`
 - `estado`: `{"mensaje_id","wamid","estado":"sent"|"delivered"|"read"|"failed","error":{"codigo","detalle"}|null}`
 - `derivar`: `{"contacto","motivo"}`
+- `baja` / `alta` (solo `puente`): `{"contacto","canal","motivo"?}`. La persona escribió una de las palabras de baja (o ALTA). Esos mensajes no se pasan como `mensaje`.
+- `comentario` (solo `puente`): `{"canal":"instagram"|"messenger","cuenta","comentario_id","publicacion_id","autor_id","autor_nombre","padre_id","texto","fecha"}`. No incluye lo que comenta la propia cuenta.
+- `conexion` (solo `puente`): `{"estado":"token_caido"|"token_ok","numero"}`. Sale una vez por caída.
 - `formulario`: `{"nombre","negocio","whatsapp":"549…"|null,"mail"|null,"tema","mensaje","acepta_whatsapp"}`
 
 ## El formulario de la web (puerto público)
@@ -186,7 +216,33 @@ Toda ruta que cambia algo lleva `quien` en el cuerpo (`"gero"` / `"punchi"`).
   - `atender` entrada: `{"contexto","charla":[{"direccion","texto"}],"negocio"}`; salida:
     `{"respuesta":"...","derivar":bool,"motivo":"..."}`.
 
+## Instagram y Messenger
+
+Una cuenta de Instagram o de Messenger es un «número» con su `canal`: `POST /admin/numeros` acepta `canal` (`whatsapp` por defecto, `instagram`, `messenger`);
+para los dos últimos `phone_number_id` es el id de la cuenta (`ig_user_id` o id de la página) y `waba_id` el de la página. El webhook de Meta
+trae `object: "instagram"` y `object: "page"` por la misma URL y con la misma firma.
+
+- `POST /mensajes` acepta `canal` (por defecto `whatsapp`). La ventana de 24 h, la baja y el registro son los de siempre y de cada canal: escribir por WhatsApp no abre la ventana de Instagram.
+  Pasadas las 24 h no se escribe en Instagram ni en Messenger (no hay plantillas ni «agente humano»): `409 fuera_de_ventana`. `POST /avisos` y las plantillas son solo de WhatsApp.
+- `GET /charlas/:contacto?canal=` mira solo las cuentas de ese canal. Los ids de Instagram y Messenger tienen hasta 20 dígitos.
+- `POST /comentarios/:id/responder` `{"texto"}`: respuesta pública, una por comentario (`409 ya_respondido`).
+- `POST /comentarios/:id/privado` `{"texto"}`: la respuesta privada, una sola y dentro de los 7 días (`409 ya_respondido_en_privado`, `409 fuera_de_plazo`); nunca a quien pidió la baja (`409 baja`).
+- `POST /comentarios/:id/ocultar`: oculta el comentario.
+- La prueba de cada 30 min de una cuenta de Instagram o Messenger solo mira que el token ande (no hay calidad ni tope): un 190 frena los envíos como en WhatsApp.
+
+## Lectura de Instagram (`instagram_lectura`)
+
+Para el agente de contenido, con la misma cuenta de Instagram del negocio (la dada de alta con `canal: "instagram"`). Solo lee.
+
+- `GET /instagram/reels?limite=12` → `[{"id","texto","enlace","fecha","duracion_s","metricas":{"alcance","reproducciones","interacciones","guardados","compartidos","me_gusta","comentarios"}}]`. Una métrica que Meta no da queda en `null`.
+- `GET /instagram/reels/:id` → un reel igual que arriba (`404 reel_no_existe`).
+- `GET /instagram/reels/:id/archivo` → el video (`video/mp4`); la URL de Instagram vence en minutos, por eso se baja por acá.
+- Sin cuenta de Instagram: `409 sin_numero`. Con el token caído: `409 token_caido`.
+
 ## Reglas comunes
+
+- **Puente:** `puente` no usa la IA de este bot (`atender` sigue en Homero). Recibe todos los mensajes, no solo los derivados, y sus datos suman `canal` (`whatsapp`) y `wamid`.
+- **Token caído (190):** un envío, o la prueba de calidad cada 30 min, que recibe de Meta el código 190 marca el número `token_caido`: `POST /mensajes` y `POST /avisos` contestan `409 {"code":"token_caido"}` sin llegar a Meta, sale la alerta `token_caido` (Homero la manda por Telegram) y el evento `conexion` a la app. Lo que entra sigue entrando. Cuando la prueba vuelve a andar: alerta `token_ok`, evento `conexion` y se reanudan los envíos.
 
 - **Bajas:** texto entrante que matchea `baja|stop|no me escrib|no me manden|no quiero (mas|más) mensajes|dej(a|á) de escrib|desuscrib` (sin distinguir mayúsculas, como mensaje completo o casi: hasta 60 caracteres) → contacto en baja para ese número, se contesta UNA vez "Listo, no te vamos a escribir más. Si querés volver, escribí ALTA." y no se pasa a la app. "alta" revierte.
 - **Ventana:** se abre con cada mensaje entrante; dura 24 h.

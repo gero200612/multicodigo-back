@@ -15,7 +15,19 @@ export interface DatosDelNumero {
   messaging_limit_tier?: string;
   status?: string;
   verified_name?: string;
+  display_phone_number?: string;
 }
+
+/** Lo que dice Meta de un token de cliente (debug_token). */
+export interface RevisionDeToken {
+  valido: boolean;
+  appId: string | null;
+  /** Las WABA a las que el token llega con whatsapp_business_management (target_ids). */
+  wabas: string[];
+}
+
+/** Las dos sincronizaciones que pide la coexistencia, dentro de las 24 h de conectar. */
+export type Sincronizacion = 'smb_app_state_sync' | 'history';
 
 export interface NuevaPlantillaEnMeta {
   nombre: string;
@@ -26,6 +38,19 @@ export interface NuevaPlantillaEnMeta {
 
 /** Botones de respuesta (hasta 3) o un boton con link: Meta no deja los dos en el mismo mensaje. */
 export type Interactivo = { botones: string[] } | { link: { texto: string; url: string } };
+
+export interface ReelDeInstagram {
+  id: string;
+  texto: string | null;
+  enlace: string | null;
+  fecha: string | null;
+  duracion_s: number | null;
+  mediaUrl: string | null;
+  /** La cuenta de Instagram duena del reel (owner.id): una clave compartida no puede leer reels de otra cuenta. */
+  ownerId: string | null;
+  me_gusta: number | null;
+  comentarios: number | null;
+}
 
 export interface ClienteMeta {
   enviarTexto(token: string, phoneNumberId: string, a: string, texto: string): Promise<{ wamid: string }>;
@@ -46,17 +71,67 @@ export interface ClienteMeta {
   bajarMedia(token: string, url: string): Promise<Buffer>;
   crearPlantilla(token: string, wabaId: string, p: NuevaPlantillaEnMeta): Promise<{ id: string; estado: string; categoria: string }>;
   datosDelNumero(token: string, phoneNumberId: string): Promise<DatosDelNumero>;
+
+  // Instagram y Messenger (la cuenta es `cuentaId`: el ig_user_id o el id de la pagina).
+  /** Un mensaje privado dentro de las 24 h. Devuelve el id del mensaje (`mid`). */
+  enviarMensajeria(token: string, cuentaId: string, a: string, texto: string): Promise<{ wamid: string }>;
+  /** Contesta un comentario en publico. */
+  responderComentario(token: string, canal: 'instagram' | 'messenger', comentarioId: string, texto: string): Promise<{ id: string }>;
+  /** La respuesta privada a un comentario: una sola, dentro de los 7 dias. */
+  respuestaPrivada(token: string, cuentaId: string, comentarioId: string, texto: string): Promise<{ wamid: string }>;
+  ocultarComentario(token: string, canal: 'instagram' | 'messenger', comentarioId: string): Promise<void>;
+  /** Los reels publicados de la cuenta de Instagram, con lo que Graph da de cada uno (sin metricas). */
+  reelsDeLaCuenta(token: string, igId: string, limite: number): Promise<ReelDeInstagram[]>;
+  /** Alcance, reproducciones, interacciones, guardados y compartidos de un reel. */
+  metricasDelReel(token: string, mediaId: string): Promise<Record<string, number>>;
+  /** Un reel por id (null si no existe o no es un reel). */
+  reel(token: string, mediaId: string): Promise<ReelDeInstagram | null>;
+  /** Prueba que el token ande para esa cuenta (el 190 salta aca aunque nadie este escribiendo). */
+  probarCuenta(token: string, cuentaId: string): Promise<void>;
+
+  // Embedded Signup: la empresa conecta su numero.
+  /** Cambia el codigo que devolvio el Embedded Signup por el token del cliente (business integration token). */
+  canjearCodigo(app: { id: string; secreto: string }, codigo: string): Promise<string>;
+  revisarToken(app: { id: string; secreto: string }, token: string): Promise<RevisionDeToken>;
+  /** Los phone_number_id de la WABA. */
+  numerosDeLaWaba(token: string, wabaId: string): Promise<string[]>;
+  /** Suscribe la app a la WABA: sin esto no llegan los webhooks de ese numero. */
+  suscribirApp(token: string, wabaId: string): Promise<void>;
+  /** Registra el numero en la Cloud API con un PIN de dos pasos. No va con coexistencia. */
+  registrarNumero(token: string, phoneNumberId: string, pin: string): Promise<void>;
+  /** Coexistencia: pide a Meta los contactos y el historial del celu (llegan por webhook). */
+  sincronizar(token: string, phoneNumberId: string, tipo: Sincronizacion): Promise<void>;
 }
 
 /** Meta contesto con error o no contesto. El detalle ya viene tapado. */
 export class ErrorDeMeta extends Error {
-  constructor(detalle: string) {
+  /** El código de error de Graph (190: token vencido o revocado), si vino. */
+  constructor(
+    detalle: string,
+    readonly codigo?: number,
+  ) {
     super(taparTokens(detalle));
     this.name = 'ErrorDeMeta';
   }
 }
 
+/** Meta invalidó el token: no sirve para nada hasta que se reconecte. */
+export const esTokenCaido = (e: unknown): boolean => e instanceof ErrorDeMeta && e.codigo === 190;
+
 const TECHO_MS = 20_000;
+const CAMPOS_REEL = 'id,caption,permalink,timestamp,media_product_type,media_url,owner{id},like_count,comments_count';
+
+const aReel = (f: Record<string, unknown>): ReelDeInstagram => ({
+  id: String(f.id ?? ''),
+  texto: typeof f.caption === 'string' ? f.caption : null,
+  enlace: typeof f.permalink === 'string' ? f.permalink : null,
+  fecha: typeof f.timestamp === 'string' ? f.timestamp : null,
+  duracion_s: null,
+  mediaUrl: typeof f.media_url === 'string' ? f.media_url : null,
+  ownerId: typeof (f.owner as { id?: unknown } | undefined)?.id === 'string' ? String((f.owner as { id: string }).id) : null,
+  me_gusta: typeof f.like_count === 'number' ? f.like_count : null,
+  comentarios: typeof f.comments_count === 'number' ? f.comments_count : null,
+});
 // Una foto de factura entra holgada; un video de 100 MB no tiene por que.
 const MEDIA_MAXIMO = 20 * 1024 * 1024;
 
@@ -68,7 +143,8 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     try {
       res = await fetch(`${raiz}/${ruta}`, {
         method: metodo,
-        headers: { authorization: `Bearer ${token}`, ...(cuerpo ? { 'content-type': 'application/json' } : {}) },
+        // Sin token: el canje del codigo, que va con el id y el secreto de la app en la URL.
+        headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cuerpo ? { 'content-type': 'application/json' } : {}) },
         body: cuerpo ? JSON.stringify(cuerpo) : undefined,
         signal: AbortSignal.timeout(TECHO_MS),
       });
@@ -83,7 +159,7 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     }
     if (!res.ok) {
       const error = (json.error ?? {}) as { message?: string; code?: number; error_user_msg?: string };
-      throw new ErrorDeMeta(`${res.status} ${error.code ?? ''} ${error.error_user_msg ?? error.message ?? 'sin detalle'}`.replace(/\s+/g, ' '));
+      throw new ErrorDeMeta(`${res.status} ${error.code ?? ''} ${error.error_user_msg ?? error.message ?? 'sin detalle'}`.replace(/\s+/g, ' '), error.code);
     }
     return json;
   }
@@ -93,6 +169,12 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     const wamid = msgs?.[0]?.id;
     if (!wamid) throw new ErrorDeMeta('Meta no devolvio el id del mensaje');
     return { wamid };
+  }
+
+  function midDe(json: Record<string, unknown>): { wamid: string } {
+    const mid = json.message_id;
+    if (typeof mid !== 'string' || !mid) throw new ErrorDeMeta('Meta no devolvio el id del mensaje');
+    return { wamid: mid };
   }
 
   return {
@@ -197,12 +279,73 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
         categoria: typeof json.category === 'string' ? json.category : p.categoria,
       };
     },
+    async enviarMensajeria(token, cuentaId, a, texto) {
+      const json = await pedir(token, 'POST', `${cuentaId}/messages`, { recipient: { id: a }, messaging_type: 'RESPONSE', message: { text: texto } });
+      return midDe(json);
+    },
+    async responderComentario(token, canal, comentarioId, texto) {
+      const json = await pedir(token, 'POST', `${comentarioId}/${canal === 'instagram' ? 'replies' : 'comments'}`, { message: texto });
+      return { id: String(json.id ?? '') };
+    },
+    async respuestaPrivada(token, cuentaId, comentarioId, texto) {
+      const json = await pedir(token, 'POST', `${cuentaId}/messages`, { recipient: { comment_id: comentarioId }, message: { text: texto } });
+      return midDe(json);
+    },
+    async ocultarComentario(token, canal, comentarioId) {
+      await pedir(token, 'POST', comentarioId, canal === 'instagram' ? { hide: true } : { is_hidden: true });
+    },
+    async reelsDeLaCuenta(token, igId, limite) {
+      const json = await pedir(token, 'GET', `${igId}/media?fields=${CAMPOS_REEL}&limit=${Math.min(Math.max(limite, 1), 100)}`);
+      const filas = Array.isArray(json.data) ? (json.data as Record<string, unknown>[]) : [];
+      return filas.filter((f) => f.media_product_type === 'REELS').map(aReel);
+    },
+    async reel(token, mediaId) {
+      const f = await pedir(token, 'GET', `${encodeURIComponent(mediaId)}?fields=${CAMPOS_REEL}`);
+      return f.media_product_type === 'REELS' ? aReel(f) : null;
+    },
+    async metricasDelReel(token, mediaId) {
+      const json = await pedir(token, 'GET', `${encodeURIComponent(mediaId)}/insights?metric=reach,views,total_interactions,saved,shares`);
+      const out: Record<string, number> = {};
+      for (const m of Array.isArray(json.data) ? (json.data as Record<string, any>[]) : []) {
+        const v = m.values?.[0]?.value ?? m.total_value?.value;
+        if (typeof m.name === 'string' && typeof v === 'number') out[m.name] = v;
+      }
+      return out;
+    },
+    async probarCuenta(token, cuentaId) {
+      await pedir(token, 'GET', `${cuentaId}?fields=id`);
+    },
     async datosDelNumero(token, phoneNumberId) {
       return (await pedir(
         token,
         'GET',
-        `${phoneNumberId}?fields=quality_rating,messaging_limit_tier,status,verified_name`,
+        `${phoneNumberId}?fields=quality_rating,messaging_limit_tier,status,verified_name,display_phone_number`,
       )) as DatosDelNumero;
+    },
+    async canjearCodigo(app, codigo) {
+      const q = new URLSearchParams({ client_id: app.id, client_secret: app.secreto, code: codigo });
+      const json = await pedir('', 'GET', `oauth/access_token?${q}`);
+      if (typeof json.access_token !== 'string' || !json.access_token) throw new ErrorDeMeta('Meta no devolvio el token');
+      return json.access_token;
+    },
+    async revisarToken(app, token) {
+      const json = await pedir(`${app.id}|${app.secreto}`, 'GET', `debug_token?input_token=${encodeURIComponent(token)}`);
+      const d = (json.data ?? {}) as { is_valid?: boolean; app_id?: string; granular_scopes?: { scope?: string; target_ids?: string[] }[] };
+      const gestion = (d.granular_scopes ?? []).find((g) => g.scope === 'whatsapp_business_management');
+      return { valido: d.is_valid === true, appId: d.app_id ? String(d.app_id) : null, wabas: (gestion?.target_ids ?? []).map(String) };
+    },
+    async numerosDeLaWaba(token, wabaId) {
+      const json = await pedir(token, 'GET', `${wabaId}/phone_numbers?fields=id&limit=100`);
+      return (Array.isArray(json.data) ? (json.data as { id?: unknown }[]) : []).map((f) => String(f.id ?? '')).filter(Boolean);
+    },
+    async suscribirApp(token, wabaId) {
+      await pedir(token, 'POST', `${wabaId}/subscribed_apps`);
+    },
+    async registrarNumero(token, phoneNumberId, pin) {
+      await pedir(token, 'POST', `${phoneNumberId}/register`, { messaging_product: 'whatsapp', pin });
+    },
+    async sincronizar(token, phoneNumberId, tipo) {
+      await pedir(token, 'POST', `${phoneNumberId}/smb_app_data`, { messaging_product: 'whatsapp', sync_type: tipo });
     },
   };
 }

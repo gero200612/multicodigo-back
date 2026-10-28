@@ -17,6 +17,8 @@ export interface Contexto {
   claveCifrado: Buffer;
   /** El del system user: lo usan los numeros sin token propio. */
   tokenMeta: string;
+  /** La app de Meta, para el Embedded Signup. Sin ella `POST /conectar` contesta 503 `sin_configurar`. */
+  appMeta?: { id: string; secreto: string };
   despertador: Despertador;
   push: Push;
   log: (texto: string) => void;

@@ -38,8 +38,12 @@ export type CambiosDeNegocio = Partial<
   Pick<Negocio, 'capacidades' | 'topeMensualArs' | 'urlBase' | 'activo' | 'contextoAtender' | 'claveHash'>
 >;
 
+/** Por donde habla la gente: WhatsApp, Instagram o Messenger. Cada cuenta de Instagram y de Messenger es un «numero» con su canal. */
+export type Canal = 'whatsapp' | 'instagram' | 'messenger';
+
 export interface Numero {
   id: number;
+  canal: Canal;
   negocioId: number;
   phoneNumberId: string;
   wabaId: string;
@@ -51,10 +55,21 @@ export interface Numero {
   estado: string | null;
   nombreVerificado: string | null;
   sinMensajesAlertado: boolean;
+  /** Meta devolvió 190: se frenan los envíos hasta que el token vuelva a andar. */
+  tokenCaido: boolean;
+  /** El número visible (display_phone_number). Null hasta que Meta lo dé. */
+  telefono: string | null;
+  /** Conectado con coexistencia: sigue en la app WhatsApp Business del celu. */
+  coexistencia: boolean;
+  /** Cifrado. El PIN de dos pasos que puso el bot al registrarlo; null si no lo registró el bot. */
+  pinCifrado: string | null;
 }
 
 export type CambiosDeNumero = Partial<
-  Pick<Numero, 'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado'>
+  Pick<
+    Numero,
+    'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado' | 'tokenCaido' | 'tokenCifrado' | 'telefono' | 'coexistencia' | 'pinCifrado' | 'wabaId'
+  >
 >;
 
 export interface Contacto {
@@ -109,6 +124,26 @@ export interface ContenidoDeMensaje {
 }
 
 export type NuevoMensaje = Omit<Mensaje, 'id'>;
+
+/** Un comentario publico en Instagram o en la pagina de Facebook. */
+export interface Comentario {
+  id: number;
+  negocioId: number;
+  numeroId: number;
+  comentarioId: string;
+  publicacionId: string | null;
+  autorId: string | null;
+  autorNombre: string | null;
+  texto: string | null;
+  padreId: string | null;
+  fecha: Date;
+  respondido: boolean;
+  respuestaPrivada: boolean;
+  oculto: boolean;
+}
+
+export type NuevoComentario = Omit<Comentario, 'id' | 'respondido' | 'respuestaPrivada' | 'oculto'>;
+export type CambiosDeComentario = Partial<Pick<Comentario, 'respondido' | 'respuestaPrivada' | 'oculto'>>;
 
 export type CambiosDeMensaje = Partial<Pick<Mensaje, 'estado' | 'costoReal' | 'error' | 'mediaId'>>;
 
@@ -234,7 +269,9 @@ export interface Store {
 
   // Numeros
   /** Undefined si el phone_number_id ya esta dado de alta. */
-  crearNumero(n: Omit<Numero, 'id' | 'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado'>): Promise<Numero | undefined>;
+  crearNumero(
+    n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'> & Partial<Pick<Numero, 'coexistencia' | 'pinCifrado'>> & { canal?: Canal },
+  ): Promise<Numero | undefined>;
   numero(id: number): Promise<Numero | undefined>;
   numeroPorPhoneId(phoneNumberId: string): Promise<Numero | undefined>;
   numerosDe(negocioId: number): Promise<Numero[]>;
@@ -266,6 +303,12 @@ export interface Store {
   contactosConPlantilla(numeroId: number, desde: Date): Promise<string[]>;
   costosDelPeriodo(negocioId: number, desde: Date, hasta: Date): Promise<{ metaArs: number; iaUsd: number }>;
   salientes(desde: Date, hasta: Date, negocioId?: number): Promise<Saliente[]>;
+
+  // Comentarios
+  /** Undefined si ya estaba: Meta repite webhooks. */
+  guardarComentario(c: NuevoComentario): Promise<Comentario | undefined>;
+  comentario(negocioId: number, comentarioId: string): Promise<Comentario | undefined>;
+  cambiarComentario(id: number, c: CambiosDeComentario): Promise<void>;
 
   // Media
   guardarMedia(negocioId: number, mime: string, datos: Buffer, fecha: Date): Promise<number>;

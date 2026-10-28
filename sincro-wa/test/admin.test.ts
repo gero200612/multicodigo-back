@@ -51,7 +51,7 @@ describe('negocios', () => {
     expect(Object.keys(v).sort()).toEqual(
       ['activo', 'app', 'capacidades', 'clave_ultimo_uso', 'gasto_mes_ars', 'id', 'nombre', 'numeros', 'porcentaje_tope', 'tope_mensual_ars'].sort(),
     );
-    expect(Object.keys(v.numeros[0]).sort()).toEqual(['calidad', 'estado', 'id', 'phone_number_id', 'tope_meta', 'waba_id']);
+    expect(Object.keys(v.numeros[0]).sort()).toEqual(['calidad', 'canal', 'estado', 'id', 'phone_number_id', 'tope_meta', 'waba_id']);
     const detalle = (await pedir(b, CLAVE_ADMIN, 'GET', `/admin/negocios/${n.id}`)).json;
     expect(detalle).toMatchObject({ id: n.id, nombre: 'Taller X', url_base: 'http://taller.interno', numeros: v.numeros });
 

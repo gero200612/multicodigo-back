@@ -7,10 +7,10 @@
  * una entrada aca; lo demas lo lee de este catalogo.
  */
 
-export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender'] as const;
+export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender', 'puente', 'instagram_lectura', 'conectar'] as const;
 export type Capacidad = (typeof CAPACIDADES)[number];
 
-export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar';
+export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar' | 'conexion' | 'baja' | 'alta' | 'comentario';
 export type CategoriaDePlantilla = 'MARKETING' | 'UTILITY' | 'AUTHENTICATION';
 
 interface Entrada {
@@ -44,6 +44,33 @@ const CATALOGO: Record<Capacidad, Entrada> = {
       'GET /media/:id',
     ],
     plantillas: [],
+  },
+  // La lectura de Instagram para el agente de contenido: reels publicados, su archivo y sus metricas. Solo lee.
+  instagram_lectura: {
+    eventos: [],
+    rutas: ['GET /instagram/reels', 'GET /instagram/reels/:id', 'GET /instagram/reels/:id/archivo'],
+    plantillas: [],
+  },
+  // La empresa conecta su propio numero desde su app (Embedded Signup) y ve como esta. No manda ni lee mensajes.
+  conectar: { eventos: ['conexion'], rutas: ['POST /conectar', 'GET /conexion'], plantillas: [] },
+  // Sincro Puente: contesta en nombre de la empresa. Recibe todos los mensajes (no solo los derivados),
+  // los estados de entrega y los avisos de la conexion (token caido). Plantillas de utilidad; las de
+  // marketing exigen ademas `promociones`. NO usa la IA de este bot: piensa Puente, en la app.
+  puente: {
+    eventos: ['mensaje', 'estado', 'conexion', 'baja', 'alta', 'comentario'],
+    rutas: [
+      'POST /mensajes',
+      'POST /escribiendo',
+      'GET /charlas/:contacto',
+      'POST /charlas/:contacto/baja',
+      'POST /comentarios/:id/responder',
+      'POST /comentarios/:id/privado',
+      'POST /comentarios/:id/ocultar',
+      'GET /media/:id',
+      'POST /avisos',
+      ...PLANTILLAS,
+    ],
+    plantillas: ['UTILITY'],
   },
 };
 

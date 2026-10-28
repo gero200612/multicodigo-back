@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { ZodError } from 'zod';
 import { registrarRutasDeAdmin } from './admin-api.js';
 import { registrarRutasDeApp } from './app-api.js';
+import { registrarRutasDeConexion } from './conectar.js';
 import { rutaPermitida } from './capacidades.js';
 import { mismaClave, negocioDeClave } from './claves.js';
 import type { Contexto } from './contexto.js';
@@ -106,6 +107,7 @@ export function crearPrivado(ctx: Contexto, cfg: { claveAdmin: string }): Fastif
   app.setNotFoundHandler((_req, reply) => reply.code(404).send(NO_EXISTE));
 
   registrarRutasDeApp(app, ctx);
+  registrarRutasDeConexion(app, ctx);
   registrarRutasDeAdmin(app, ctx);
   return app;
 }

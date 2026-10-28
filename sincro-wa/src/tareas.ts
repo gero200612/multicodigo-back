@@ -2,7 +2,9 @@ import { alertar } from './alertas.js';
 import { tokenDe, type Contexto } from './contexto.js';
 import { reintentarPushes } from './eventos.js';
 import { DIA_MS, HORA_MS } from './horas.js';
-import { topeDeTier } from './meta.js';
+import { emitir } from './eventos.js';
+import { marcarTokenCaido } from './envio.js';
+import { esTokenCaido, topeDeTier } from './meta.js';
 import type { Numero } from './store.js';
 import { textoDeError } from './tapar.js';
 
@@ -15,7 +17,31 @@ const CALIDAD_MALA = new Set(['YELLOW', 'RED']);
 
 /** Pide a Meta calidad, tier, estado y nombre del numero. Alerta si la calidad baja. */
 export async function refrescarNumero(ctx: Contexto, numero: Numero): Promise<void> {
-  const datos = await ctx.meta.datosDelNumero(tokenDe(ctx, numero), numero.phoneNumberId);
+  let datos;
+  try {
+    if (numero.canal !== 'whatsapp') {
+      // Instagram y Messenger no tienen calidad ni tope: solo se prueba que el token ande.
+      await ctx.meta.probarCuenta(tokenDe(ctx, numero), numero.phoneNumberId);
+      datos = {} as Awaited<ReturnType<typeof ctx.meta.datosDelNumero>>;
+    } else {
+      datos = await ctx.meta.datosDelNumero(tokenDe(ctx, numero), numero.phoneNumberId);
+    }
+  } catch (e) {
+    // La prueba cada 30 min es la que descubre un token invalidado aunque nadie esté escribiendo.
+    if (esTokenCaido(e)) await marcarTokenCaido(ctx, numero.id, e instanceof Error ? e.message : '');
+    throw e;
+  }
+  if (numero.tokenCaido) {
+    // Volvió a andar (reconectaron o Meta lo rehabilitó): se reanudan los envíos.
+    await ctx.store.cambiarNumero(numero.id, { tokenCaido: false });
+    const negocio = await ctx.store.negocio(numero.negocioId);
+    await alertar(ctx, {
+      negocioId: numero.negocioId,
+      tipo: 'token_ok',
+      texto: `El token del número ${numero.phoneNumberId} (${negocio?.nombre ?? '?'}) volvió a andar: se reanudan los envíos.`,
+    });
+    if (negocio) await emitir(ctx, negocio, 'conexion', { estado: 'token_ok', numero: numero.phoneNumberId });
+  }
   const calidad = datos.quality_rating ?? numero.calidad;
   const tope = topeDeTier(datos.messaging_limit_tier);
   await ctx.store.cambiarNumero(numero.id, {
@@ -23,6 +49,7 @@ export async function refrescarNumero(ctx: Contexto, numero: Numero): Promise<vo
     ...(tope !== undefined ? { topeMeta: tope } : {}),
     estado: datos.status ?? numero.estado,
     nombreVerificado: datos.verified_name ?? numero.nombreVerificado,
+    telefono: datos.display_phone_number ?? numero.telefono,
   });
   if (calidad && calidad !== numero.calidad && CALIDAD_MALA.has(calidad)) {
     const negocio = await ctx.store.negocio(numero.negocioId);

@@ -9,6 +9,7 @@ import { MemoriaStore } from './memoria.js';
 
 export const SECRETO_APP = 'secreto-de-la-app-de-meta';
 export const VERIFY = 'verificame';
+export const APP_ID = '1410095257330902';
 export const CLAVE_ADMIN = 'admin-'.padEnd(40, 'x');
 
 /** Un Meta que anota todo y contesta lo que el test le diga. */
@@ -31,7 +32,7 @@ export class MetaFalsa implements ClienteMeta {
   private n = 0;
 
   private revisar() {
-    if (this.fallar) throw new ErrorDeMeta(this.fallar);
+    if (this.fallar) throw new ErrorDeMeta(this.fallar, Number(/^\d+ (\d+)/.exec(this.fallar)?.[1]) || undefined);
   }
   async enviarTexto(token: string, desde: string, a: string, texto: string) {
     this.revisar();
@@ -66,8 +67,81 @@ export class MetaFalsa implements ClienteMeta {
     this.creadas.push({ wabaId, nombre: p.nombre, categoria: p.categoria });
     return { id: `tpl-${++this.n}`, estado: 'PENDING', categoria: this.categoriaAlCrear ?? p.categoria };
   }
+  mensajeria: { token: string; cuentaId: string; a: string; texto: string }[] = [];
+  comentarios: { tipo: 'publico' | 'privado' | 'ocultar'; canal?: string; cuentaId?: string; id: string; texto?: string }[] = [];
+  probadas: string[] = [];
+  async enviarMensajeria(token: string, cuentaId: string, a: string, texto: string) {
+    this.revisar();
+    this.mensajeria.push({ token, cuentaId, a, texto });
+    return { wamid: `mid.sale.${++this.n}` };
+  }
+  async responderComentario(_token: string, canal: 'instagram' | 'messenger', id: string, texto: string) {
+    this.revisar();
+    this.comentarios.push({ tipo: 'publico', canal, id, texto });
+    return { id: `respuesta.${++this.n}` };
+  }
+  async respuestaPrivada(_token: string, cuentaId: string, id: string, texto: string) {
+    this.revisar();
+    this.comentarios.push({ tipo: 'privado', cuentaId, id, texto });
+    return { wamid: `mid.privado.${++this.n}` };
+  }
+  async ocultarComentario(_token: string, canal: 'instagram' | 'messenger', id: string) {
+    this.revisar();
+    this.comentarios.push({ tipo: 'ocultar', canal, id });
+  }
+  reelsDeCuenta: { id: string; owner?: string }[] = [];
+  cuentaPropia = '17841400000000001';
+  async reelsDeLaCuenta(_token: string, _ig: string, limite: number) {
+    this.revisar();
+    return this.reelsDeCuenta.slice(0, limite).map((r) => ({ id: r.id, texto: `reel ${r.id}`, enlace: `https://instagram.com/reel/${r.id}`, fecha: '2026-10-01T10:00:00+0000', duracion_s: null, mediaUrl: `https://meta.falsa/${r.id}`, ownerId: r.owner ?? this.cuentaPropia, me_gusta: 10, comentarios: 2 }));
+  }
+  async reel(_token: string, id: string) {
+    this.revisar();
+    const r = this.reelsDeCuenta.find((x) => x.id === id);
+    return r ? { id, texto: `reel ${id}`, enlace: null, fecha: null, duracion_s: null, mediaUrl: `https://meta.falsa/${id}`, ownerId: r.owner ?? this.cuentaPropia, me_gusta: 10, comentarios: 2 } : null;
+  }
+  async metricasDelReel(_token: string, _id: string) {
+    this.revisar();
+    return { reach: 1200, views: 3400, total_interactions: 150, saved: 20, shares: 7 };
+  }
+  async probarCuenta(_token: string, cuentaId: string) {
+    this.revisar();
+    this.probadas.push(cuentaId);
+  }
   async datosDelNumero() {
+    this.revisar();
     return this.datos;
+  }
+
+  // Embedded Signup: el codigo `codigo-<waba>` da un token que llega a esa WABA, con estos numeros.
+  numerosPorWaba = new Map<string, string[]>();
+  tokenDeOtraApp = false;
+  conexion: { tipo: 'canje' | 'suscribir' | 'registrar' | 'sincronizar'; token?: string; id?: string; pin?: string; sync?: string }[] = [];
+  async canjearCodigo(_app: { id: string; secreto: string }, codigo: string) {
+    this.revisar();
+    this.conexion.push({ tipo: 'canje' });
+    if (!codigo.startsWith('codigo-')) throw new ErrorDeMeta('400 100 Invalid verification code format.', 100);
+    return `EAAcliente${codigo.slice(7)}xxxxxxxx`;
+  }
+  async revisarToken(app: { id: string; secreto: string }, token: string) {
+    this.revisar();
+    const waba = /^EAAcliente(\d+)x/.exec(token)?.[1];
+    return { valido: !!waba, appId: this.tokenDeOtraApp ? '999999' : app.id, wabas: waba ? [waba] : [] };
+  }
+  async numerosDeLaWaba(_token: string, waba: string) {
+    this.revisar();
+    return this.numerosPorWaba.get(waba) ?? [];
+  }
+  async suscribirApp(token: string, waba: string) {
+    this.revisar();
+    this.conexion.push({ tipo: 'suscribir', token, id: waba });
+  }
+  async registrarNumero(token: string, phone: string, pin: string) {
+    this.revisar();
+    this.conexion.push({ tipo: 'registrar', token, id: phone, pin });
+  }
+  async sincronizar(token: string, phone: string, sync: string) {
+    this.conexion.push({ tipo: 'sincronizar', token, id: phone, sync });
   }
 }
 
@@ -105,6 +179,7 @@ export function armar(): Banco {
     ahora: () => reloj.ahora,
     claveCifrado: randomBytes(32),
     tokenMeta: 'EAAtokenDelSystemUser123',
+    appMeta: { id: APP_ID, secreto: SECRETO_APP },
     despertador: new Despertador(),
     push,
     log: (t) => logs.push(t),

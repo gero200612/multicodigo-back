@@ -19,6 +19,7 @@ async function main(): Promise<void> {
     ahora: () => new Date(),
     claveCifrado: cfg.claveCifrado,
     tokenMeta: cfg.tokenMeta,
+    appMeta: cfg.appId ? { id: cfg.appId, secreto: cfg.appSecret } : undefined,
     despertador: new Despertador(),
     push: pushConFetch,
     log,

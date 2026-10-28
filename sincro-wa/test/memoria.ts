@@ -4,7 +4,11 @@ import type {
   CambiosDeEvento,
   CambiosDeMensaje,
   CambiosDeNegocio,
+  CambiosDeComentario,
   CambiosDeNumero,
+  Canal,
+  Comentario,
+  NuevoComentario,
   CambiosDePlantilla,
   CambiosDeTrabajo,
   Contacto,
@@ -97,16 +101,40 @@ export class MemoriaStore implements Store {
     return this.cambiosT.filter((c) => negocioId === undefined || c.negocioId === negocioId).reverse();
   }
 
-  async crearNumero(n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'>) {
+  comentariosT: Comentario[] = [];
+
+  async guardarComentario(c: NuevoComentario) {
+    if (this.comentariosT.some((x) => x.numeroId === c.numeroId && x.comentarioId === c.comentarioId)) return undefined;
+    const nuevo: Comentario = { ...c, id: this.id('comentarios'), respondido: false, respuestaPrivada: false, oculto: false };
+    this.comentariosT.push(nuevo);
+    return { ...nuevo };
+  }
+  async comentario(negocioId: number, comentarioId: string) {
+    const c = this.comentariosT.find((x) => x.negocioId === negocioId && x.comentarioId === comentarioId);
+    return c ? { ...c } : undefined;
+  }
+  async cambiarComentario(id: number, c: CambiosDeComentario) {
+    const x = this.comentariosT.find((k) => k.id === id);
+    if (x) Object.assign(x, sinIndefinidos(c));
+  }
+
+  async crearNumero(
+    n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'> & Partial<Pick<Numero, 'coexistencia' | 'pinCifrado'>> & { canal?: Canal },
+  ) {
     if (this.numerosT.some((x) => x.phoneNumberId === n.phoneNumberId)) return undefined;
     const nuevo: Numero = {
       ...n,
+      canal: n.canal ?? 'whatsapp',
+      coexistencia: n.coexistencia ?? false,
+      pinCifrado: n.pinCifrado ?? null,
+      telefono: null,
       id: this.id('numeros'),
       calidad: null,
       topeMeta: null,
       estado: null,
       nombreVerificado: null,
       sinMensajesAlertado: false,
+      tokenCaido: false,
     };
     this.numerosT.push(nuevo);
     return { ...nuevo };

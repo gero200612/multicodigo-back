@@ -7,6 +7,7 @@ import { responder } from './envio.js';
 import { encolar, MENSAJES_DE_CONTEXTO, TEXTO_FACTURA_ILEGIBLE, TEXTO_FACTURA_PDF } from './ia.js';
 import { esAlta, esBaja, precioDe, revisarTopeDeGasto, TEXTO_DE_ALTA, TEXTO_DE_BAJA } from './reglas.js';
 import type { ContenidoDeMensaje, Negocio, Numero } from './store.js';
+import { procesarMensajeria } from './mensajeria.js';
 import { refrescarNumero } from './tareas.js';
 import { taparTokens, textoDeError } from './tapar.js';
 
@@ -27,6 +28,9 @@ export function firmaValida(crudo: Buffer, encabezado: string | undefined, secre
 type Json = Record<string, any>;
 
 export async function procesarWebhook(ctx: Contexto, cuerpo: Json): Promise<void> {
+  // Instagram y Messenger llegan por el mismo webhook, con otro object.
+  if (cuerpo.object === 'instagram') return procesarMensajeria(ctx, 'instagram', cuerpo);
+  if (cuerpo.object === 'page') return procesarMensajeria(ctx, 'messenger', cuerpo);
   if (cuerpo.object !== 'whatsapp_business_account') return;
   for (const entrada of asArray(cuerpo.entry)) {
     const waba = String(entrada.id ?? '');
@@ -35,6 +39,9 @@ export async function procesarWebhook(ctx: Contexto, cuerpo: Json): Promise<void
       switch (cambio.field) {
         case 'messages':
           await procesarMensajes(ctx, valor);
+          break;
+        case 'smb_message_echoes':
+          await procesarEcos(ctx, valor);
           break;
         case 'message_template_status_update':
           await estadoDePlantilla(ctx, waba, valor);
@@ -75,6 +82,41 @@ async function procesarMensajes(ctx: Contexto, valor: Json): Promise<void> {
   for (const c of asArray(valor.contacts)) if (c.wa_id && c.profile?.name) nombres.set(String(c.wa_id), String(c.profile.name));
   for (const m of asArray(valor.messages)) await entrante(ctx, negocio, numero, m, nombres.get(String(m.from)) ?? null);
   for (const s of asArray(valor.statuses)) await estadoDeMensaje(ctx, negocio, s);
+}
+
+/**
+ * Coexistencia: lo que la empresa contesta desde la app WhatsApp Business del
+ * celu. Se guarda como mensaje que sale (gratis: lo cobra Meta como si fuera
+ * del celu) para que la charla quede entera. No se le pasa a la app.
+ */
+async function procesarEcos(ctx: Contexto, valor: Json): Promise<void> {
+  const numero = await ctx.store.numeroPorPhoneId(String(valor.metadata?.phone_number_id ?? ''));
+  if (!numero) return;
+  const negocio = await ctx.store.negocio(numero.negocioId);
+  if (!negocio?.activo) return;
+  for (const m of asArray(valor.message_echoes)) {
+    const contacto = String(m.to ?? '');
+    if (!contacto || !m.id) continue;
+    await ctx.store.guardarMensaje({
+      negocioId: negocio.id,
+      numeroId: numero.id,
+      contacto,
+      direccion: 'sale',
+      tipo: String(m.type ?? 'unknown'),
+      texto: textoDe(m),
+      mediaId: null,
+      referral: null,
+      plantilla: null,
+      contenido: { ...contenidoDe(m), pie: 'desde el celu' },
+      wamid: String(m.id),
+      categoria: null,
+      costoEstimado: 0,
+      costoReal: null,
+      estado: 'sent',
+      error: null,
+      fecha: ctx.ahora(),
+    });
+  }
 }
 
 const TIPOS_CON_MEDIA = new Set(['image', 'document', 'audio', 'video', 'sticker']);
@@ -132,6 +174,8 @@ async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json
   if (tipo === 'text' && charla.baja && esAlta(texto)) {
     await ctx.store.cambiarContacto(numero.id, contacto, { baja: false, bajaDesde: null });
     await responder(ctx, negocio, numero, contacto, TEXTO_DE_ALTA);
+    // Puente tiene que enterarse: la baja vale para la persona en todos los canales.
+    await emitir(ctx, negocio, 'alta', { contacto, canal: 'whatsapp' });
     return;
   }
   if (tipo === 'text' && esBaja(texto)) {
@@ -139,6 +183,7 @@ async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json
       await ctx.store.cambiarContacto(numero.id, contacto, { baja: true, bajaDesde: ahora });
       // Se contesta UNA vez: un segundo "baja" no recibe nada.
       await responder(ctx, negocio, numero, contacto, TEXTO_DE_BAJA, { saltearBaja: true });
+      await emitir(ctx, negocio, 'baja', { contacto, canal: 'whatsapp', motivo: 'baja' });
     }
     return;
   }
@@ -148,7 +193,7 @@ async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json
   // Una foto mandada "como documento" sigue siendo una foto.
   const esFoto = tipo === 'image' || (tipo === 'document' && mime.startsWith('image/'));
   const caps = negocio.capacidades;
-  const pasaALaApp = tiene(caps, 'leads') || (tiene(caps, 'atender') && charla.derivada);
+  const pasaALaApp = tiene(caps, 'leads') || tiene(caps, 'puente') || (tiene(caps, 'atender') && charla.derivada);
   const facturas = tiene(caps, 'facturas');
 
   let mediaId: number | null = null;
@@ -166,6 +211,8 @@ async function entrante(ctx: Contexto, negocio: Negocio, numero: Numero, m: Json
       media_id: mediaId,
       referral: mensaje.referral,
       mensaje_id: mensaje.id,
+      // Puente atiende varios canales; el resto de las apps solo ve WhatsApp.
+      ...(tiene(caps, 'puente') ? { canal: 'whatsapp', wamid: String(m.id) } : {}),
     });
   }
 

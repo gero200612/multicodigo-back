@@ -9,6 +9,7 @@ app, negocio) lo reusa, guiándose por /root/env/sincro-wa.estado.json.
     python3 sincro-wa-desplegar.py webhook    # apunta el webhook de Meta al bot
     python3 sincro-wa-desplegar.py homero     # imprime las 3 líneas para /root/mc.env de la Toshiba (con secretos)
     python3 sincro-wa-desplegar.py formulario # el formulario de la web: avisos para Sincro + FORMULARIO_* + redeploy
+    python3 sincro-wa-desplegar.py efaysto <config_id>  # negocio Efaysto (conectar) + sus variables en el back del CRM
 
 Nunca imprime un secreto, salvo `homero`, que está hecho para mandarse por un
 pipe directo a la Toshiba (ssh vps ... | ssh toshiba ...), sin pasar por la pantalla.
@@ -49,7 +50,15 @@ WEB_SINCRO = 'https://sincro.apps.punchi.dev'
 # leads: las charlas y el formulario. avisos: la plantilla UTILITY del primer
 # WhatsApp a quien lo pidió (Gero lo pidió el 2026-10-12). Nada de promociones.
 CAPACIDADES_SINCRO = ['leads', 'avisos']
-CAMPOS_WEBHOOK = 'messages,message_template_status_update,template_category_update,phone_number_quality_update,account_update'
+# smb_message_echoes, history y smb_app_state_sync: los números conectados con coexistencia (lo que se contesta desde el celu).
+CAMPOS_WEBHOOK = ('messages,message_template_status_update,template_category_update,phone_number_quality_update,account_update,'
+                  'smb_message_echoes,history,smb_app_state_sync')
+# Efaysto conecta su número desde el CRM (Embedded Signup). `puente` se suma el día de la mudanza.
+CAPACIDADES_EFAYSTO = ['conectar']
+TOPE_EFAYSTO_ARS = 100000
+# El back del CRM de Efaysto en este Coolify. Llega al bot por la VPN (la IP de este VPS en Tailscale).
+APP_EFAYSTO_BACK = 'yhc9pjghxw9u6v7kq8apckd3'
+PRIVADO_POR_VPN = f'http://100.113.60.114:{PUERTO_PRIVADO_HOST}'
 
 
 def tapar(texto):
@@ -181,6 +190,7 @@ def app():
         'META_TOKEN': s['META_TOKEN'],
         'META_VERIFY_TOKEN': s['META_VERIFY_TOKEN'],
         'META_API_VERSION': VERSION_META,
+        'META_APP_ID': APP_META,
         'SINCRO_WA_ADMIN_KEY': s['SINCRO_WA_ADMIN_KEY'],
         'SINCRO_WA_CIFRADO': s['SINCRO_WA_CIFRADO'],
         'PUERTO_PUBLICO': '3000',
@@ -298,6 +308,38 @@ def webhook():
         sys.exit(1)
 
 
+def efaysto():
+    """El negocio Efaysto (solo `conectar`) y las variables del back del CRM: la
+    clave va directo a Coolify, sin pasar por la pantalla. Repetirlo no crea otro
+    negocio; vuelve a cargar las variables (por ejemplo, con otro config_id)."""
+    if len(sys.argv) != 3 or not re.fullmatch(r'\d{5,30}', sys.argv[2]):
+        sys.exit('uso: efaysto <config_id de Facebook Login for Business>')
+    e = leer_estado()
+    s = leer_env(SECRETOS)
+    if not e.get('negocio_efaysto'):
+        status, j = admin('POST', '/admin/negocios', {
+            'nombre': 'Efaysto', 'app': 'efaysto-crm', 'capacidades': CAPACIDADES_EFAYSTO,
+            'tope_mensual_ars': TOPE_EFAYSTO_ARS, 'quien': 'gero',
+        })
+        if status != 201:
+            sys.exit(f'no pude crear el negocio: {status} {tapar(json.dumps(j))[:300]}')
+        e['negocio_efaysto'] = j['negocio']['id']
+        s['SINCRO_WA_KEY_EFAYSTO'] = j['clave']
+        escribir_env(SECRETOS, s)
+        guardar_estado(e)
+        print('negocio Efaysto creado:', ', '.join(CAPACIDADES_EFAYSTO))
+    variables = {
+        'SincroWa__BaseUrl': PRIVADO_POR_VPN,
+        'SincroWa__Key': s['SINCRO_WA_KEY_EFAYSTO'],
+        'Meta__AppId': APP_META,
+        'Meta__SignupConfigId': sys.argv[2],
+    }
+    coolify('PATCH', f'/applications/{APP_EFAYSTO_BACK}/envs/bulk', {
+        'data': [{'key': k, 'value': v, 'is_preview': False, 'is_literal': True} for k, v in variables.items()],
+    })
+    print('variables cargadas en el back del CRM; se toman en el próximo deploy')
+
+
 def homero():
     s = leer_env(SECRETOS)
     if not s.get('SINCRO_WA_KEY_HOMERO'):
@@ -310,7 +352,7 @@ def homero():
 
 
 if __name__ == '__main__':
-    pasos = {'app': app, 'negocio': negocio, 'webhook': webhook, 'homero': homero, 'formulario': formulario}
-    if len(sys.argv) != 2 or sys.argv[1] not in pasos:
+    pasos = {'app': app, 'negocio': negocio, 'webhook': webhook, 'homero': homero, 'formulario': formulario, 'efaysto': efaysto}
+    if len(sys.argv) not in (2, 3) or sys.argv[1] not in pasos:
         sys.exit(__doc__)
     pasos[sys.argv[1]]()

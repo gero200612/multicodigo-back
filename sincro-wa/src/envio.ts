@@ -2,9 +2,10 @@ import { alertar } from './alertas.js';
 import { categoriasPermitidas } from './capacidades.js';
 import { tokenDe, type Contexto } from './contexto.js';
 import { DIA_MS, diaDe } from './horas.js';
-import { ErrorDeMeta, type Interactivo } from './meta.js';
+import { emitir } from './eventos.js';
+import { ErrorDeMeta, esTokenCaido, type Interactivo } from './meta.js';
 import { gastoDelMes, precioDe, revisarTopeDeGasto, ventanaAbierta } from './reglas.js';
-import type { CategoriaDeMensaje, ContenidoDeMensaje, Mensaje, Negocio, NuevoMensaje, Numero } from './store.js';
+import type { Canal, CategoriaDeMensaje, ContenidoDeMensaje, Mensaje, Negocio, NuevoMensaje, Numero } from './store.js';
 import { textoDeError } from './tapar.js';
 
 /**
@@ -30,11 +31,11 @@ export class Rechazo extends Error {
  * que escribio el; si nunca escribio, el primero del negocio. Una app nunca
  * elige el numero, asi que no puede mandar desde el de otro negocio.
  */
-export async function numeroPara(ctx: Contexto, negocioId: number, contacto: string): Promise<Numero> {
-  const numeros = await ctx.store.numerosDe(negocioId);
+export async function numeroPara(ctx: Contexto, negocioId: number, contacto: string, canal: Canal = 'whatsapp'): Promise<Numero> {
+  const numeros = (await ctx.store.numerosDe(negocioId)).filter((n) => n.canal === canal);
   if (!numeros.length) throw new Rechazo(409, 'sin_numero');
   const charlas = (await ctx.store.contactosDe(negocioId, contacto))
-    .filter((c) => c.ultimaEntrada)
+    .filter((c) => c.ultimaEntrada && numeros.some((n) => n.id === c.numeroId))
     .sort((a, b) => b.ultimaEntrada!.getTime() - a.ultimaEntrada!.getTime());
   return numeros.find((n) => n.id === charlas[0]?.numeroId) ?? numeros[0]!;
 }
@@ -45,9 +46,28 @@ async function guardarSaliente(ctx: Contexto, m: Omit<NuevoMensaje, 'direccion' 
   return guardado;
 }
 
+/**
+ * Meta invalido el token (190): se frenan los envios de ese numero, se avisa a Gero (alerta de admin, que
+ * Homero manda por Telegram) y a la app del negocio (evento `conexion`, para que avise a la empresa por mail
+ * y muestre "Reconectar Meta"). Una sola vez por caida. Lo que entra sigue entrando.
+ */
+export async function marcarTokenCaido(ctx: Contexto, numeroId: number, detalle: string): Promise<void> {
+  const numero = await ctx.store.numero(numeroId);
+  if (!numero || numero.tokenCaido) return;
+  await ctx.store.cambiarNumero(numero.id, { tokenCaido: true });
+  const negocio = await ctx.store.negocio(numero.negocioId);
+  await alertar(ctx, {
+    negocioId: numero.negocioId,
+    tipo: 'token_caido',
+    texto: `Meta invalidó el token del número ${numero.phoneNumberId} (${negocio?.nombre ?? '?'}): se frenaron los envíos. Hay que reconectarlo. ${detalle}`,
+  });
+  if (negocio) await emitir(ctx, negocio, 'conexion', { estado: 'token_caido', numero: numero.phoneNumberId });
+}
+
 /** Meta no lo acepto: queda registrado el intento y la app recibe el error tapado. */
 async function fallaDeMeta(ctx: Contexto, e: unknown, base: Omit<NuevoMensaje, 'direccion' | 'fecha' | 'referral' | 'wamid'>): Promise<never> {
   if (!(e instanceof ErrorDeMeta)) throw e;
+  if (esTokenCaido(e)) await marcarTokenCaido(ctx, base.numeroId, e.message);
   await guardarSaliente(ctx, { ...base, wamid: null, estado: 'failed', error: { codigo: 'meta', detalle: e.message } });
   throw new Rechazo(502, 'meta', e.message);
 }
@@ -65,8 +85,11 @@ export async function enviarTexto(
   opciones: { saltearBaja?: boolean; interactivo?: Interactivo } = {},
 ): Promise<Mensaje> {
   const { interactivo } = opciones;
+  // Instagram y Messenger no tienen botones de este tipo: mejor rechazarlo que mandarlo sin ellos.
+  if (interactivo && numero.canal !== 'whatsapp') throw new Rechazo(400, 'sin_botones_en_canal');
   const contacto = await ctx.store.contacto(numero.id, a);
   if (contacto?.baja && !opciones.saltearBaja) throw new Rechazo(409, 'baja');
+  if (numero.tokenCaido) throw new Rechazo(409, 'token_caido');
   if (!ventanaAbierta(contacto, ctx.ahora())) throw new Rechazo(409, 'fuera_de_ventana');
   const base = {
     negocioId: negocio.id,
@@ -88,7 +111,9 @@ export async function enviarTexto(
   try {
     ({ wamid } = interactivo
       ? await ctx.meta.enviarInteractivo(tokenDe(ctx, numero), numero.phoneNumberId, a, texto, interactivo)
-      : await ctx.meta.enviarTexto(tokenDe(ctx, numero), numero.phoneNumberId, a, texto));
+      : numero.canal === 'whatsapp'
+        ? await ctx.meta.enviarTexto(tokenDe(ctx, numero), numero.phoneNumberId, a, texto)
+        : await ctx.meta.enviarMensajeria(tokenDe(ctx, numero), numero.phoneNumberId, a, texto));
   } catch (e) {
     return fallaDeMeta(ctx, e, base);
   }
@@ -135,6 +160,7 @@ export async function enviarAviso(ctx: Contexto, negocio: Negocio, p: PedidoDeAv
   const numero = await numeroPara(ctx, negocio.id, p.a);
   const contacto = await ctx.store.contacto(numero.id, p.a);
   if (contacto?.baja) throw new Rechazo(409, 'baja');
+  if (numero.tokenCaido) throw new Rechazo(409, 'token_caido');
 
   const ahora = ctx.ahora();
   const usados = numero.topeMeta === null ? 0 : await usoDelTopeMeta(ctx, numero, p.a, ahora);
