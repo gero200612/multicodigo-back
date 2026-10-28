@@ -12,8 +12,8 @@ importers:
         specifier: 0.1.77
         version: 0.1.77(zod@3.25.76)
       '@multicodigo/shared':
-        specifier: github:gero200612/multicodigo-shared#v0.1.6
-        version: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05
+        specifier: github:gero200612/multicodigo-shared#v0.1.7
+        version: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/2913683d3b5e5eb343c35aeb23b56bea7d26418a
       '@resvg/resvg-js':
         specifier: 2.6.2
         version: 2.6.2
@@ -321,9 +321,9 @@ packages:
   '@jridgewell/sourcemap-codec@1.6.0':
     resolution: {integrity: sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==}
 
-  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05':
-    resolution: {gitHosted: true, integrity: sha512-WTBrNGFfyZRipPyKy9KpjcHSbBslUM8BPLZr4+YUb/S2H3PX7vSmi1BDtK68bUrJPT53Luxrzm4w++1MCiL83A==, tarball: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05}
-    version: 0.1.6
+  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/2913683d3b5e5eb343c35aeb23b56bea7d26418a':
+    resolution: {gitHosted: true, integrity: sha512-9SvXwiWUht/gDDSM9zoeUcxGlG2Py8xhWQmz0EM9hrgt3iHYbcbBHtPSgbMpkRN7E/ZTGh1OLGYRUCAm73j0Qw==, tarball: https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/2913683d3b5e5eb343c35aeb23b56bea7d26418a}
+    version: 0.1.7
     engines: {node: '>=22'}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
@@ -1239,7 +1239,7 @@ snapshots:
   '@fastify/ajv-compiler@4.0.6':
     dependencies:
       ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
+      ajv-formats: 3.0.1
       fast-uri: 4.2.1
 
   '@fastify/error@4.2.0': {}
@@ -1322,7 +1322,7 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.6.0': {}
 
-  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/f453f5390c94707c370140e13437131a55079b05':
+  '@multicodigo/shared@https://codeload.github.com/gero200612/multicodigo-shared/tar.gz/2913683d3b5e5eb343c35aeb23b56bea7d26418a':
     dependencies:
       zod: 3.25.76
 
@@ -1542,8 +1542,8 @@ snapshots:
 
   abstract-logging@2.0.1: {}
 
-  ajv-formats@3.0.1(ajv@8.20.0):
-    optionalDependencies:
+  ajv-formats@3.0.1:
+    dependencies:
       ajv: 8.20.0
 
   ajv@8.20.0:
@@ -1656,7 +1656,7 @@ snapshots:
     dependencies:
       '@fastify/merge-json-schemas': 0.2.1
       ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
+      ajv-formats: 3.0.1
       fast-uri: 4.2.1
       json-schema-ref-resolver: 3.0.0
       rfdc: 1.4.1
