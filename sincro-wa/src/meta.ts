@@ -15,7 +15,19 @@ export interface DatosDelNumero {
   messaging_limit_tier?: string;
   status?: string;
   verified_name?: string;
+  display_phone_number?: string;
 }
+
+/** Lo que dice Meta de un token de cliente (debug_token). */
+export interface RevisionDeToken {
+  valido: boolean;
+  appId: string | null;
+  /** Las WABA a las que el token llega con whatsapp_business_management (target_ids). */
+  wabas: string[];
+}
+
+/** Las dos sincronizaciones que pide la coexistencia, dentro de las 24 h de conectar. */
+export type Sincronizacion = 'smb_app_state_sync' | 'history';
 
 export interface NuevaPlantillaEnMeta {
   nombre: string;
@@ -76,6 +88,19 @@ export interface ClienteMeta {
   reel(token: string, mediaId: string): Promise<ReelDeInstagram | null>;
   /** Prueba que el token ande para esa cuenta (el 190 salta aca aunque nadie este escribiendo). */
   probarCuenta(token: string, cuentaId: string): Promise<void>;
+
+  // Embedded Signup: la empresa conecta su numero.
+  /** Cambia el codigo que devolvio el Embedded Signup por el token del cliente (business integration token). */
+  canjearCodigo(app: { id: string; secreto: string }, codigo: string): Promise<string>;
+  revisarToken(app: { id: string; secreto: string }, token: string): Promise<RevisionDeToken>;
+  /** Los phone_number_id de la WABA. */
+  numerosDeLaWaba(token: string, wabaId: string): Promise<string[]>;
+  /** Suscribe la app a la WABA: sin esto no llegan los webhooks de ese numero. */
+  suscribirApp(token: string, wabaId: string): Promise<void>;
+  /** Registra el numero en la Cloud API con un PIN de dos pasos. No va con coexistencia. */
+  registrarNumero(token: string, phoneNumberId: string, pin: string): Promise<void>;
+  /** Coexistencia: pide a Meta los contactos y el historial del celu (llegan por webhook). */
+  sincronizar(token: string, phoneNumberId: string, tipo: Sincronizacion): Promise<void>;
 }
 
 /** Meta contesto con error o no contesto. El detalle ya viene tapado. */
@@ -118,7 +143,8 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     try {
       res = await fetch(`${raiz}/${ruta}`, {
         method: metodo,
-        headers: { authorization: `Bearer ${token}`, ...(cuerpo ? { 'content-type': 'application/json' } : {}) },
+        // Sin token: el canje del codigo, que va con el id y el secreto de la app en la URL.
+        headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(cuerpo ? { 'content-type': 'application/json' } : {}) },
         body: cuerpo ? JSON.stringify(cuerpo) : undefined,
         signal: AbortSignal.timeout(TECHO_MS),
       });
@@ -293,8 +319,33 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
       return (await pedir(
         token,
         'GET',
-        `${phoneNumberId}?fields=quality_rating,messaging_limit_tier,status,verified_name`,
+        `${phoneNumberId}?fields=quality_rating,messaging_limit_tier,status,verified_name,display_phone_number`,
       )) as DatosDelNumero;
+    },
+    async canjearCodigo(app, codigo) {
+      const q = new URLSearchParams({ client_id: app.id, client_secret: app.secreto, code: codigo });
+      const json = await pedir('', 'GET', `oauth/access_token?${q}`);
+      if (typeof json.access_token !== 'string' || !json.access_token) throw new ErrorDeMeta('Meta no devolvio el token');
+      return json.access_token;
+    },
+    async revisarToken(app, token) {
+      const json = await pedir(`${app.id}|${app.secreto}`, 'GET', `debug_token?input_token=${encodeURIComponent(token)}`);
+      const d = (json.data ?? {}) as { is_valid?: boolean; app_id?: string; granular_scopes?: { scope?: string; target_ids?: string[] }[] };
+      const gestion = (d.granular_scopes ?? []).find((g) => g.scope === 'whatsapp_business_management');
+      return { valido: d.is_valid === true, appId: d.app_id ? String(d.app_id) : null, wabas: (gestion?.target_ids ?? []).map(String) };
+    },
+    async numerosDeLaWaba(token, wabaId) {
+      const json = await pedir(token, 'GET', `${wabaId}/phone_numbers?fields=id&limit=100`);
+      return (Array.isArray(json.data) ? (json.data as { id?: unknown }[]) : []).map((f) => String(f.id ?? '')).filter(Boolean);
+    },
+    async suscribirApp(token, wabaId) {
+      await pedir(token, 'POST', `${wabaId}/subscribed_apps`);
+    },
+    async registrarNumero(token, phoneNumberId, pin) {
+      await pedir(token, 'POST', `${phoneNumberId}/register`, { messaging_product: 'whatsapp', pin });
+    },
+    async sincronizar(token, phoneNumberId, tipo) {
+      await pedir(token, 'POST', `${phoneNumberId}/smb_app_data`, { messaging_product: 'whatsapp', sync_type: tipo });
     },
   };
 }

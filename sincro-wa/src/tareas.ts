@@ -49,6 +49,7 @@ export async function refrescarNumero(ctx: Contexto, numero: Numero): Promise<vo
     ...(tope !== undefined ? { topeMeta: tope } : {}),
     estado: datos.status ?? numero.estado,
     nombreVerificado: datos.verified_name ?? numero.nombreVerificado,
+    telefono: datos.display_phone_number ?? numero.telefono,
   });
   if (calidad && calidad !== numero.calidad && CALIDAD_MALA.has(calidad)) {
     const negocio = await ctx.store.negocio(numero.negocioId);

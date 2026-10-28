@@ -57,10 +57,19 @@ export interface Numero {
   sinMensajesAlertado: boolean;
   /** Meta devolvió 190: se frenan los envíos hasta que el token vuelva a andar. */
   tokenCaido: boolean;
+  /** El número visible (display_phone_number). Null hasta que Meta lo dé. */
+  telefono: string | null;
+  /** Conectado con coexistencia: sigue en la app WhatsApp Business del celu. */
+  coexistencia: boolean;
+  /** Cifrado. El PIN de dos pasos que puso el bot al registrarlo; null si no lo registró el bot. */
+  pinCifrado: string | null;
 }
 
 export type CambiosDeNumero = Partial<
-  Pick<Numero, 'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado' | 'tokenCaido'>
+  Pick<
+    Numero,
+    'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado' | 'tokenCaido' | 'tokenCifrado' | 'telefono' | 'coexistencia' | 'pinCifrado' | 'wabaId'
+  >
 >;
 
 export interface Contacto {
@@ -260,7 +269,9 @@ export interface Store {
 
   // Numeros
   /** Undefined si el phone_number_id ya esta dado de alta. */
-  crearNumero(n: Omit<Numero, 'id' | 'canal' | 'calidad' | 'topeMeta' | 'estado' | 'nombreVerificado' | 'sinMensajesAlertado' | 'tokenCaido'> & { canal?: Canal }): Promise<Numero | undefined>;
+  crearNumero(
+    n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'> & Partial<Pick<Numero, 'coexistencia' | 'pinCifrado'>> & { canal?: Canal },
+  ): Promise<Numero | undefined>;
   numero(id: number): Promise<Numero | undefined>;
   numeroPorPhoneId(phoneNumberId: string): Promise<Numero | undefined>;
   numerosDe(negocioId: number): Promise<Numero[]>;

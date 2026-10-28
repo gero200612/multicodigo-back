@@ -40,6 +40,9 @@ export async function procesarWebhook(ctx: Contexto, cuerpo: Json): Promise<void
         case 'messages':
           await procesarMensajes(ctx, valor);
           break;
+        case 'smb_message_echoes':
+          await procesarEcos(ctx, valor);
+          break;
         case 'message_template_status_update':
           await estadoDePlantilla(ctx, waba, valor);
           break;
@@ -79,6 +82,41 @@ async function procesarMensajes(ctx: Contexto, valor: Json): Promise<void> {
   for (const c of asArray(valor.contacts)) if (c.wa_id && c.profile?.name) nombres.set(String(c.wa_id), String(c.profile.name));
   for (const m of asArray(valor.messages)) await entrante(ctx, negocio, numero, m, nombres.get(String(m.from)) ?? null);
   for (const s of asArray(valor.statuses)) await estadoDeMensaje(ctx, negocio, s);
+}
+
+/**
+ * Coexistencia: lo que la empresa contesta desde la app WhatsApp Business del
+ * celu. Se guarda como mensaje que sale (gratis: lo cobra Meta como si fuera
+ * del celu) para que la charla quede entera. No se le pasa a la app.
+ */
+async function procesarEcos(ctx: Contexto, valor: Json): Promise<void> {
+  const numero = await ctx.store.numeroPorPhoneId(String(valor.metadata?.phone_number_id ?? ''));
+  if (!numero) return;
+  const negocio = await ctx.store.negocio(numero.negocioId);
+  if (!negocio?.activo) return;
+  for (const m of asArray(valor.message_echoes)) {
+    const contacto = String(m.to ?? '');
+    if (!contacto || !m.id) continue;
+    await ctx.store.guardarMensaje({
+      negocioId: negocio.id,
+      numeroId: numero.id,
+      contacto,
+      direccion: 'sale',
+      tipo: String(m.type ?? 'unknown'),
+      texto: textoDe(m),
+      mediaId: null,
+      referral: null,
+      plantilla: null,
+      contenido: { ...contenidoDe(m), pie: 'desde el celu' },
+      wamid: String(m.id),
+      categoria: null,
+      costoEstimado: 0,
+      costoReal: null,
+      estado: 'sent',
+      error: null,
+      fecha: ctx.ahora(),
+    });
+  }
 }
 
 const TIPOS_CON_MEDIA = new Set(['image', 'document', 'audio', 'video', 'sticker']);

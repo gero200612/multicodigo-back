@@ -118,11 +118,16 @@ export class MemoriaStore implements Store {
     if (x) Object.assign(x, sinIndefinidos(c));
   }
 
-  async crearNumero(n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'> & { canal?: Canal }) {
+  async crearNumero(
+    n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'> & Partial<Pick<Numero, 'coexistencia' | 'pinCifrado'>> & { canal?: Canal },
+  ) {
     if (this.numerosT.some((x) => x.phoneNumberId === n.phoneNumberId)) return undefined;
     const nuevo: Numero = {
       ...n,
       canal: n.canal ?? 'whatsapp',
+      coexistencia: n.coexistencia ?? false,
+      pinCifrado: n.pinCifrado ?? null,
+      telefono: null,
       id: this.id('numeros'),
       calidad: null,
       topeMeta: null,

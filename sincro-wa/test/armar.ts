@@ -9,6 +9,7 @@ import { MemoriaStore } from './memoria.js';
 
 export const SECRETO_APP = 'secreto-de-la-app-de-meta';
 export const VERIFY = 'verificame';
+export const APP_ID = '1410095257330902';
 export const CLAVE_ADMIN = 'admin-'.padEnd(40, 'x');
 
 /** Un Meta que anota todo y contesta lo que el test le diga. */
@@ -111,6 +112,37 @@ export class MetaFalsa implements ClienteMeta {
     this.revisar();
     return this.datos;
   }
+
+  // Embedded Signup: el codigo `codigo-<waba>` da un token que llega a esa WABA, con estos numeros.
+  numerosPorWaba = new Map<string, string[]>();
+  tokenDeOtraApp = false;
+  conexion: { tipo: 'canje' | 'suscribir' | 'registrar' | 'sincronizar'; token?: string; id?: string; pin?: string; sync?: string }[] = [];
+  async canjearCodigo(_app: { id: string; secreto: string }, codigo: string) {
+    this.revisar();
+    this.conexion.push({ tipo: 'canje' });
+    if (!codigo.startsWith('codigo-')) throw new ErrorDeMeta('400 100 Invalid verification code format.', 100);
+    return `EAAcliente${codigo.slice(7)}xxxxxxxx`;
+  }
+  async revisarToken(app: { id: string; secreto: string }, token: string) {
+    this.revisar();
+    const waba = /^EAAcliente(\d+)x/.exec(token)?.[1];
+    return { valido: !!waba, appId: this.tokenDeOtraApp ? '999999' : app.id, wabas: waba ? [waba] : [] };
+  }
+  async numerosDeLaWaba(_token: string, waba: string) {
+    this.revisar();
+    return this.numerosPorWaba.get(waba) ?? [];
+  }
+  async suscribirApp(token: string, waba: string) {
+    this.revisar();
+    this.conexion.push({ tipo: 'suscribir', token, id: waba });
+  }
+  async registrarNumero(token: string, phone: string, pin: string) {
+    this.revisar();
+    this.conexion.push({ tipo: 'registrar', token, id: phone, pin });
+  }
+  async sincronizar(token: string, phone: string, sync: string) {
+    this.conexion.push({ tipo: 'sincronizar', token, id: phone, sync });
+  }
 }
 
 export interface Banco {
@@ -147,6 +179,7 @@ export function armar(): Banco {
     ahora: () => reloj.ahora,
     claveCifrado: randomBytes(32),
     tokenMeta: 'EAAtokenDelSystemUser123',
+    appMeta: { id: APP_ID, secreto: SECRETO_APP },
     despertador: new Despertador(),
     push,
     log: (t) => logs.push(t),

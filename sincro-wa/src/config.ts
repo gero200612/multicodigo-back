@@ -10,6 +10,8 @@ const Env = z.object({
   META_APP_SECRET: z.string().min(1),
   META_VERIFY_TOKEN: z.string().min(1),
   META_TOKEN: z.string().min(1),
+  // El de la app "Homero Sincro": con el secreto cambia el codigo del Embedded Signup por el token del cliente. Sin el, no hay /conectar.
+  META_APP_ID: opcional(z.string().regex(/^\d{5,30}$/)),
   // Fija a proposito, como en Homero: un cambio de version se prueba antes.
   META_API_VERSION: opcional(z.string().regex(/^v\d+\.\d+$/)).transform((v) => v ?? 'v23.0'),
   // 32 como minimo: es la unica llave de todo lo de admin, y la usa una sola app.
@@ -28,6 +30,7 @@ export interface Config {
   verifyToken: string;
   tokenMeta: string;
   versionMeta: string;
+  appId?: string;
   claveAdmin: string;
   claveCifrado: Buffer;
   puertoPublico: number;
@@ -43,6 +46,7 @@ export function leerConfig(env: NodeJS.ProcessEnv): Config {
     verifyToken: e.META_VERIFY_TOKEN,
     tokenMeta: e.META_TOKEN,
     versionMeta: e.META_API_VERSION,
+    appId: e.META_APP_ID,
     claveAdmin: e.SINCRO_WA_ADMIN_KEY,
     // Se valida al arrancar y no al primer token de cliente: mejor no levantar
     // que descubrirlo cuando alguien conecta su numero.

@@ -75,6 +75,9 @@ const numero = (r: Fila): Numero => ({
   sinMensajesAlertado: r.sin_mensajes_alertado,
   tokenCaido: r.token_caido,
   canal: r.canal,
+  telefono: r.telefono,
+  coexistencia: r.coexistencia,
+  pinCifrado: r.pin_cifrado,
 });
 
 const comentario = (r: Fila): Comentario => ({
@@ -274,11 +277,13 @@ export class PgStore implements Store {
 
   // Numeros
 
-  async crearNumero(n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'> & { canal?: Canal }) {
+  async crearNumero(
+    n: Pick<Numero, 'negocioId' | 'phoneNumberId' | 'wabaId' | 'tokenCifrado'> & Partial<Pick<Numero, 'coexistencia' | 'pinCifrado'>> & { canal?: Canal },
+  ) {
     const [r] = await this.filas(
-      `INSERT INTO numeros (negocio_id, phone_number_id, waba_id, token_cifrado, canal) VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (phone_number_id) DO NOTHING RETURNING *`,
-      [n.negocioId, n.phoneNumberId, n.wabaId, n.tokenCifrado, n.canal ?? 'whatsapp'],
+      `INSERT INTO numeros (negocio_id, phone_number_id, waba_id, token_cifrado, canal, coexistencia, pin_cifrado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (phone_number_id) DO NOTHING RETURNING *`,
+      [n.negocioId, n.phoneNumberId, n.wabaId, n.tokenCifrado, n.canal ?? 'whatsapp', n.coexistencia ?? false, n.pinCifrado ?? null],
     );
     return r ? numero(r) : undefined;
   }

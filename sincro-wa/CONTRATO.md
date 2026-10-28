@@ -24,6 +24,7 @@ Traefik.
 | `META_VERIFY_TOKEN` | El que se pone en Meta al configurar el webhook |
 | `META_TOKEN` | Token del system user: lo usan los números sin token propio (el de Sincro) |
 | `META_API_VERSION` | Por defecto `v23.0` |
+| `META_APP_ID` | Id de la app "Homero Sincro" (`1410095257330902`). Con `META_APP_SECRET` canjea el código del Embedded Signup. Sin esto `POST /conectar` da `503 sin_configurar` |
 | `SINCRO_WA_ADMIN_KEY` | Clave de administrador (la usa solo Homero). Mínimo 32 caracteres |
 | `SINCRO_WA_CIFRADO` | 32 bytes en base64: AES-256-GCM para tokens de Meta de clientes y secretos de eventos |
 | `PUERTO_PUBLICO` / `PUERTO_PRIVADO` | 3000 / 3001 |
@@ -54,6 +55,7 @@ reemplaza `/EAA[A-Za-z0-9_-]{10,}/g` por `EAA…` y las claves `swa_…` por `sw
 | `avisos` | `estado` | `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` |
 | `promociones` | `estado` | `POST /avisos`, `GET/POST /plantillas` | `MARKETING` |
 | `atender` | `mensaje` (solo si la charla está derivada), `derivar` | `POST /mensajes`, `GET /charlas/:contacto`, `PUT /atender/contexto`, `POST /charlas/:contacto/liberar`, `GET /media/:id` | — |
+| `conectar` | `conexion` | `POST /conectar`, `GET /conexion` | — |
 | `instagram_lectura` | — | `GET /instagram/reels`, `GET /instagram/reels/:id`, `GET /instagram/reels/:id/archivo` | — |
 | `puente` | `mensaje` (todos, con `canal` y `wamid`), `estado`, `conexion`, `baja`, `alta`, `comentario` | `POST /mensajes`, `POST /escribiendo`, `GET /charlas/:contacto`, `POST /charlas/:contacto/baja`, `POST /comentarios/:id/responder`, `POST /comentarios/:id/privado`, `POST /comentarios/:id/ocultar`, `GET /media/:id`, `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` (`MARKETING` pide además `promociones`) |
 
@@ -83,6 +85,26 @@ el cliente no los ve.
 
 ### `POST /charlas/:contacto/baja` (solo `puente`)
 La baja que decide la empresa cuando la persona no usó las palabras exactas. `{"canal"?}`. `200 {"ok":true}`; desde ahí `POST /mensajes` y `POST /avisos` a ese contacto dan `409 baja`.
+
+### `POST /conectar` (solo `conectar`)
+La empresa conecta su número con el Embedded Signup de Meta (Sincro es Tech
+Provider). La app abre el flujo con el SDK de Facebook y manda lo que le dio Meta:
+```json
+{ "codigo": "<code de FB.login>", "phone_number_id": "1234…", "waba_id": "5678…", "coexistencia": false }
+```
+El bot canjea el código por el token del cliente, comprueba con `debug_token`
+que sea de la app y que llegue a esa WABA, que el número sea de esa WABA,
+suscribe la app (`subscribed_apps`) y registra el número con un PIN de dos pasos
+propio (cifrado; al reconectar usa el mismo). Con `coexistencia: true` no
+registra: pide `smb_app_state_sync` e `history`, y lo que se contesta desde el
+celu llega por `smb_message_echoes` y queda en la charla como mensaje que sale.
+Volver a conectar el mismo número cambia el token y, si estaba caído, se
+reanudan los envíos (evento `conexion` `token_ok` para `puente`).
+- `200 {"numero": {"phone_number_id","waba_id","telefono","nombre","calidad","estado","tope_meta","token_caido","coexistencia"}}`
+- `409 de_otro_negocio` (el número es de otro negocio), `409 token_invalido`, `409 waba_ajena`, `409 numero_ajeno`, `502 meta` (con `detalle`), `503 sin_configurar`.
+
+### `GET /conexion` (solo `conectar`)
+`200 {"numeros": [ …como arriba… ]}`: los números de WhatsApp del negocio. Nunca el token ni el PIN.
 
 ### `GET /media/:id`
 Binario con su `content-type`. Solo media del propio negocio (si no, 404).
