@@ -9,6 +9,8 @@
 export function taparTokens(texto: string): string {
   return texto
     .replace(/EAA[A-Za-z0-9_-]{10,}/g, 'EAA…')
+    // Los de Instagram Login (IGAA…, IGQV…): hoy no se usan, pero si alguno llega a un error no se loguea.
+    .replace(/\bIG[A-Z]{2}[A-Za-z0-9_-]{20,}/g, 'IG…')
     .replace(/swa_[A-Za-z0-9_-]+/g, 'swa_…')
     .replace(/(\d{5,30})\|[A-Za-z0-9_-]{16,}/g, '$1|…');
 }

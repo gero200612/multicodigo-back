@@ -19,6 +19,8 @@ describe('taparTokens', () => {
   });
   it('deja tranquilo lo que no es token', () => {
     expect(taparTokens('EAA corto y texto normal')).toBe('EAA corto y texto normal');
+    expect(taparTokens('token IGAAQWERTYuiop1234567890asdfgh y app 1410095257330902|abcdef0123456789abcdef')).toBe('token IG… y app 1410095257330902|…');
+    expect(taparTokens('IGTV y IGNORAR quedan como están')).toBe('IGTV y IGNORAR quedan como están');
   });
 });
 
