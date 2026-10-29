@@ -30,6 +30,23 @@ const Conectar = z.object({
   coexistencia: z.boolean().default(false),
 });
 
+const ConectarPagina = z.object({
+  codigo: z.string().min(10).max(2000),
+  // Si el token llega a mas de una pagina, la app pregunta cual y la manda aca.
+  pagina_id: Id.optional(),
+});
+
+/** Un error con `mensaje` en castellano (lo que la app le muestra a la persona) ademas del `code`. */
+const falla = (status: number, code: string, mensaje: string) => new Rechazo(status, code, mensaje, { mensaje });
+
+/** La pagina y el Instagram conectados: el nombre de la pagina y el usuario de Instagram. Nunca el token. */
+function vistaDePagina(n: Numero | undefined) {
+  return n ? { id: n.phoneNumberId, nombre: n.nombreVerificado } : null;
+}
+function vistaDeInstagram(n: Numero | undefined) {
+  return n ? { id: n.phoneNumberId, usuario: n.nombreVerificado } : null;
+}
+
 export function vistaDeConexion(n: Numero) {
   return {
     phone_number_id: n.phoneNumberId,
@@ -61,8 +78,86 @@ export function registrarRutasDeConexion(app: FastifyInstance, ctx: Contexto): v
 
   app.get('/conexion', async (req) => {
     const negocio = negocioDe(req);
-    const numeros = (await store.numerosDe(negocio.id)).filter((n) => n.canal === 'whatsapp');
-    return { numeros: numeros.map(vistaDeConexion) };
+    const todos = await store.numerosDe(negocio.id);
+    const numeros = todos.filter((n) => n.canal === 'whatsapp');
+    return {
+      numeros: numeros.map(vistaDeConexion),
+      pagina: vistaDePagina(todos.find((n) => n.canal === 'messenger')),
+      instagram: vistaDeInstagram(todos.find((n) => n.canal === 'instagram')),
+    };
+  });
+
+  /**
+   * Facebook Login for Business: la empresa elige su pagina (y el Instagram
+   * vinculado) y la app manda el codigo. Mismo cuidado que `/conectar`: el
+   * token tiene que ser de nuestra app y las paginas salen de Meta, no del
+   * navegador. Una pagina o un Instagram que ya es de otro negocio no se toca.
+   */
+  app.post('/conectar-pagina', async (req) => {
+    const negocio = negocioDe(req);
+    const appMeta = ctx.appMeta;
+    if (!appMeta) throw falla(503, 'sin_configurar', 'Falta configurar la app de Meta en el servidor.');
+    const b = ConectarPagina.parse(req.body);
+
+    const token = await conMeta(() => ctx.meta.canjearCodigo(appMeta, b.codigo));
+    const revision = await conMeta(() => ctx.meta.revisarToken(appMeta, token));
+    if (!revision.valido || revision.appId !== appMeta.id) throw falla(409, 'token_invalido', 'El permiso que dio Facebook no es de esta aplicación. Probá conectar de nuevo.');
+
+    const paginas = await conMeta(() => ctx.meta.paginasDelToken(token));
+    if (!paginas.length) throw falla(409, 'sin_paginas', 'Facebook no nos dio acceso a ninguna página. Volvé a conectar y elegí una página.');
+    let pagina = b.pagina_id ? paginas.find((p) => p.id === b.pagina_id) : undefined;
+    if (b.pagina_id && !pagina) throw falla(409, 'pagina_ajena', 'Esa página no está entre las que autorizaste.');
+    if (!pagina) {
+      if (paginas.length > 1) {
+        throw new Rechazo(409, 'elegir_pagina', 'Autorizaste más de una página: elegí cuál conectar.', {
+          mensaje: 'Autorizaste más de una página: elegí cuál conectar.',
+          paginas: paginas.map((p) => ({ id: p.id, nombre: p.nombre })),
+        });
+      }
+      pagina = paginas[0]!;
+    }
+
+    // Antes de tocar nada en Meta ni en la base: ninguna de las dos cuentas puede ser de otro negocio (ni de otro canal).
+    const antesPagina = await store.numeroPorPhoneId(pagina.id);
+    const antesInstagram = pagina.instagram ? await store.numeroPorPhoneId(pagina.instagram.id) : undefined;
+    for (const [antes, canal] of [[antesPagina, 'messenger'], [antesInstagram, 'instagram']] as const) {
+      if (antes && (antes.negocioId !== negocio.id || antes.canal !== canal)) {
+        throw falla(409, 'de_otro_negocio', `${canal === 'messenger' ? 'Esa página' : 'Ese Instagram'} ya está conectado a otra empresa.`);
+      }
+    }
+
+    await conMeta(() => ctx.meta.suscribirPagina(pagina.token, pagina.id));
+
+    const tokenCifrado = cifrar(ctx.claveCifrado, pagina.token);
+    const guardar = async (antes: Numero | undefined, canal: 'messenger' | 'instagram', id: string, nombre: string | null) => {
+      if (antes) {
+        // El token nuevo destraba los envios si estaban frenados.
+        await store.cambiarNumero(antes.id, { tokenCifrado, wabaId: pagina.id, tokenCaido: false, nombreVerificado: nombre });
+        return;
+      }
+      const nuevo = await store.crearNumero({ negocioId: negocio.id, phoneNumberId: id, wabaId: pagina.id, tokenCifrado, canal });
+      // Otro pedido lo dio de alta en el medio.
+      if (!nuevo) throw falla(409, 'ya_existe', 'Esa cuenta se acaba de conectar desde otro pedido. Probá de nuevo.');
+      await store.cambiarNumero(nuevo.id, { nombreVerificado: nombre });
+    };
+    await guardar(antesPagina, 'messenger', pagina.id, pagina.nombre || null);
+    if (pagina.instagram) await guardar(antesInstagram, 'instagram', pagina.instagram.id, pagina.instagram.usuario);
+
+    await store.registrarCambios([
+      {
+        negocioId: negocio.id,
+        campo: antesPagina ? 'reconexion' : 'pagina',
+        antes: null,
+        despues: `${pagina.id}${pagina.instagram ? ` + instagram ${pagina.instagram.id}` : ''}`,
+        quien: `app:${negocio.app}`,
+        fecha: ctx.ahora(),
+      },
+    ]);
+
+    return {
+      pagina: { id: pagina.id, nombre: pagina.nombre },
+      instagram: pagina.instagram ? { id: pagina.instagram.id, usuario: pagina.instagram.usuario } : null,
+    };
   });
 
   app.post('/conectar', async (req) => {

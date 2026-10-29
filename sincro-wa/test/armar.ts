@@ -116,7 +116,7 @@ export class MetaFalsa implements ClienteMeta {
   // Embedded Signup: el codigo `codigo-<waba>` da un token que llega a esa WABA, con estos numeros.
   numerosPorWaba = new Map<string, string[]>();
   tokenDeOtraApp = false;
-  conexion: { tipo: 'canje' | 'suscribir' | 'registrar' | 'sincronizar'; token?: string; id?: string; pin?: string; sync?: string }[] = [];
+  conexion: { tipo: 'canje' | 'suscribir' | 'registrar' | 'sincronizar' | 'paginas'; token?: string; id?: string; pin?: string; sync?: string }[] = [];
   async canjearCodigo(_app: { id: string; secreto: string }, codigo: string) {
     this.revisar();
     this.conexion.push({ tipo: 'canje' });
@@ -135,6 +135,18 @@ export class MetaFalsa implements ClienteMeta {
   async suscribirApp(token: string, waba: string) {
     this.revisar();
     this.conexion.push({ tipo: 'suscribir', token, id: waba });
+  }
+  // Facebook Login for Business: el codigo `codigo-<n>` da un token que llega a estas paginas.
+  paginas: { id: string; nombre: string; instagram?: { id: string; usuario?: string } }[] = [];
+  paginasSuscriptas: { token: string; id: string }[] = [];
+  async paginasDelToken(token: string) {
+    this.revisar();
+    this.conexion.push({ tipo: 'paginas', token });
+    return this.paginas.map((p) => ({ id: p.id, nombre: p.nombre, token: `EAApagina${p.id}xxxxxxxx`, instagram: p.instagram ? { id: p.instagram.id, usuario: p.instagram.usuario ?? null } : null }));
+  }
+  async suscribirPagina(token: string, id: string) {
+    this.revisar();
+    this.paginasSuscriptas.push({ token, id });
   }
   async registrarNumero(token: string, phone: string, pin: string) {
     this.revisar();

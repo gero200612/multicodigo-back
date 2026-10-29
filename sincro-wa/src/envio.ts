@@ -20,6 +20,8 @@ export class Rechazo extends Error {
     readonly status: number,
     readonly code: string,
     readonly detalle?: string,
+    /** Campos que se suman al cuerpo de la respuesta (`mensaje`, la lista de paginas...). */
+    readonly extra?: Record<string, unknown>,
   ) {
     super(code);
     this.name = 'Rechazo';

@@ -92,7 +92,7 @@ export function crearPrivado(ctx: Contexto, cfg: { claveAdmin: string }): Fastif
       if (e.code === 'no_existe' && req.acceso?.tipo === 'app') {
         await ctx.store.registrarIntentoNegado(req.acceso.negocio.id, req.method, req.url.split('?')[0] ?? '', ctx.ahora());
       }
-      return reply.code(e.status).send(e.detalle ? { code: e.code, detalle: e.detalle } : { code: e.code });
+      return reply.code(e.status).send({ code: e.code, ...(e.detalle ? { detalle: e.detalle } : {}), ...e.extra });
     }
     if (e instanceof ZodError) {
       const i = e.issues[0];

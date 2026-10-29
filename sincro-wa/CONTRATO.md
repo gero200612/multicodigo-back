@@ -103,8 +103,14 @@ reanudan los envíos (evento `conexion` `token_ok` para `puente`).
 - `200 {"numero": {"phone_number_id","waba_id","telefono","nombre","calidad","estado","tope_meta","token_caido","coexistencia"}}`
 - `409 de_otro_negocio` (el número es de otro negocio), `409 token_invalido`, `409 waba_ajena`, `409 numero_ajeno`, `502 meta` (con `detalle`), `503 sin_configurar`.
 
+### `POST /conectar-pagina` (solo `conectar`)
+La empresa conecta su página de Facebook y el Instagram vinculado (Facebook Login for Business, token de usuario del sistema). `{"codigo": "<code>", "pagina_id"?: "…"}`.
+El bot canjea el código, comprueba con `debug_token` que es de la app, lista las páginas con `me/accounts`, registra un número `messenger` (id de la página) y uno `instagram` (id de Instagram) con el token de la página cifrado, y suscribe la página (`subscribed_apps`: mensajes, comentarios, feed).
+- `200 {"pagina": {"id","nombre"}, "instagram": {"id","usuario"} | null}`
+- `409 elegir_pagina` con `paginas: [{id,nombre}]` si hay varias y no vino `pagina_id`; `409 pagina_ajena`, `409 sin_paginas`, `409 token_invalido`, `409 de_otro_negocio`, `502 meta`, `503 sin_configurar`. Todos con `mensaje` en castellano.
+
 ### `GET /conexion` (solo `conectar`)
-`200 {"numeros": [ …como arriba… ]}`: los números de WhatsApp del negocio. Nunca el token ni el PIN.
+`200 {"numeros": [ …como arriba… ], "pagina": {"id","nombre"} | null, "instagram": {"id","usuario"} | null}`: los números de WhatsApp, la página y el Instagram del negocio. Nunca el token ni el PIN.
 
 ### `GET /media/:id`
 Binario con su `content-type`. Solo media del propio negocio (si no, 404).

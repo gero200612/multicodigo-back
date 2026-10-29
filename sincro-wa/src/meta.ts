@@ -26,6 +26,15 @@ export interface RevisionDeToken {
   wabas: string[];
 }
 
+/** Una pagina de Facebook a la que llega el token, con su token propio y el Instagram vinculado (si tiene). */
+export interface PaginaDeMeta {
+  id: string;
+  nombre: string;
+  /** El token de la pagina: con el se contesta por Messenger e Instagram. */
+  token: string;
+  instagram: { id: string; usuario: string | null } | null;
+}
+
 /** Las dos sincronizaciones que pide la coexistencia, dentro de las 24 h de conectar. */
 export type Sincronizacion = 'smb_app_state_sync' | 'history';
 
@@ -97,6 +106,10 @@ export interface ClienteMeta {
   numerosDeLaWaba(token: string, wabaId: string): Promise<string[]>;
   /** Suscribe la app a la WABA: sin esto no llegan los webhooks de ese numero. */
   suscribirApp(token: string, wabaId: string): Promise<void>;
+  /** Las paginas a las que llega el token (con token de usuario del sistema, las que la empresa eligio al conectar). */
+  paginasDelToken(token: string): Promise<PaginaDeMeta[]>;
+  /** Suscribe la pagina (y su Instagram) a los webhooks de la app: mensajes, comentarios y feed. */
+  suscribirPagina(tokenDePagina: string, paginaId: string): Promise<void>;
   /** Registra el numero en la Cloud API con un PIN de dos pasos. No va con coexistencia. */
   registrarNumero(token: string, phoneNumberId: string, pin: string): Promise<void>;
   /** Coexistencia: pide a Meta los contactos y el historial del celu (llegan por webhook). */
@@ -117,6 +130,9 @@ export class ErrorDeMeta extends Error {
 
 /** Meta invalidó el token: no sirve para nada hasta que se reconecte. */
 export const esTokenCaido = (e: unknown): boolean => e instanceof ErrorDeMeta && e.codigo === 190;
+
+/** Lo que la app recibe de una pagina: mensajes de Messenger e Instagram, comentarios de Instagram y el feed (comentarios de la pagina). */
+export const CAMPOS_DE_PAGINA = 'messages,messaging_postbacks,message_reads,message_deliveries,feed,instagram_manage_comments';
 
 const TECHO_MS = 20_000;
 const CAMPOS_REEL = 'id,caption,permalink,timestamp,media_product_type,media_url,owner{id},like_count,comments_count';
@@ -340,6 +356,23 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     },
     async suscribirApp(token, wabaId) {
       await pedir(token, 'POST', `${wabaId}/subscribed_apps`);
+    },
+    async paginasDelToken(token) {
+      const json = await pedir(token, 'GET', 'me/accounts?fields=id,name,access_token,instagram_business_account{id,username}&limit=100');
+      const filas = Array.isArray(json.data) ? (json.data as Record<string, any>[]) : [];
+      return filas
+        .filter((f) => f.id && typeof f.access_token === 'string' && f.access_token)
+        .map((f) => ({
+          id: String(f.id),
+          nombre: String(f.name ?? ''),
+          token: f.access_token as string,
+          instagram: f.instagram_business_account?.id
+            ? { id: String(f.instagram_business_account.id), usuario: typeof f.instagram_business_account.username === 'string' ? f.instagram_business_account.username : null }
+            : null,
+        }));
+    },
+    async suscribirPagina(tokenDePagina, paginaId) {
+      await pedir(tokenDePagina, 'POST', `${encodeURIComponent(paginaId)}/subscribed_apps`, { subscribed_fields: CAMPOS_DE_PAGINA });
     },
     async registrarNumero(token, phoneNumberId, pin) {
       await pedir(token, 'POST', `${phoneNumberId}/register`, { messaging_product: 'whatsapp', pin });

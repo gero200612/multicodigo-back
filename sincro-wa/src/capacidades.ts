@@ -52,7 +52,7 @@ const CATALOGO: Record<Capacidad, Entrada> = {
     plantillas: [],
   },
   // La empresa conecta su propio numero desde su app (Embedded Signup) y ve como esta. No manda ni lee mensajes.
-  conectar: { eventos: ['conexion'], rutas: ['POST /conectar', 'GET /conexion'], plantillas: [] },
+  conectar: { eventos: ['conexion'], rutas: ['POST /conectar', 'POST /conectar-pagina', 'GET /conexion'], plantillas: [] },
   // Sincro Puente: contesta en nombre de la empresa. Recibe todos los mensajes (no solo los derivados),
   // los estados de entrega y los avisos de la conexion (token caido). Plantillas de utilidad; las de
   // marketing exigen ademas `promociones`. NO usa la IA de este bot: piensa Puente, en la app.

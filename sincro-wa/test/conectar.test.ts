@@ -139,3 +139,101 @@ describe('coexistencia: lo que se contesta desde el celu', () => {
     expect((await pedir(b, n.clave, 'GET', '/eventos?esperar=0')).json).toEqual([]);
   });
 });
+
+describe('conectar-pagina (Facebook Login for Business)', () => {
+  const PAGINA = '40000000001';
+  const IG = '17841400000000009';
+  const conectarPagina = (clave: string, extra: Record<string, unknown> = {}) =>
+    pedir(b, clave, 'POST', '/conectar-pagina', { codigo: 'codigo-5550001', ...extra });
+
+  beforeEach(() => {
+    b.meta.paginas = [{ id: PAGINA, nombre: 'Efaysto Marketing', instagram: { id: IG, usuario: 'efaysto.oficial' } }];
+  });
+
+  it('registra Messenger e Instagram con el token de la página cifrado, suscribe la página y lo muestra en /conexion', async () => {
+    const n = await negocioSinNumero(['conectar']);
+    const r = await conectarPagina(n.clave);
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ pagina: { id: PAGINA, nombre: 'Efaysto Marketing' }, instagram: { id: IG, usuario: 'efaysto.oficial' } });
+    expect(JSON.stringify(r.json)).not.toMatch(/EAA/);
+
+    const pag = (await b.store.numeroPorPhoneId(PAGINA))!;
+    const ig = (await b.store.numeroPorPhoneId(IG))!;
+    expect([pag.canal, pag.negocioId, pag.wabaId]).toEqual(['messenger', n.id, PAGINA]);
+    expect([ig.canal, ig.negocioId, ig.wabaId]).toEqual(['instagram', n.id, PAGINA]);
+    expect(pag.tokenCifrado).not.toContain('EAA');
+    expect(tokenDe(b.ctx, pag)).toBe(`EAApagina${PAGINA}xxxxxxxx`);
+    expect(tokenDe(b.ctx, ig)).toBe(`EAApagina${PAGINA}xxxxxxxx`);
+    expect(b.meta.paginasSuscriptas).toEqual([{ token: `EAApagina${PAGINA}xxxxxxxx`, id: PAGINA }]);
+
+    const c = (await pedir(b, n.clave, 'GET', '/conexion')).json;
+    expect(c.numeros).toEqual([]);
+    expect(c.pagina).toEqual({ id: PAGINA, nombre: 'Efaysto Marketing' });
+    expect(c.instagram).toEqual({ id: IG, usuario: 'efaysto.oficial' });
+  });
+
+  it('una página sin Instagram devuelve instagram: null; reconectar actualiza sin duplicar', async () => {
+    const n = await negocioSinNumero(['conectar']);
+    b.meta.paginas = [{ id: PAGINA, nombre: 'Efaysto' }];
+    expect((await conectarPagina(n.clave)).json.instagram).toBeNull();
+    b.meta.paginas = [{ id: PAGINA, nombre: 'Efaysto 2', instagram: { id: IG } }];
+    const r = await conectarPagina(n.clave);
+    expect(r.status).toBe(200);
+    expect(r.json.pagina.nombre).toBe('Efaysto 2');
+    expect(await b.store.numerosDe(n.id)).toHaveLength(2);
+  });
+
+  it('con varias páginas y sin pagina_id da 409 con la lista; con pagina_id conecta esa', async () => {
+    const n = await negocioSinNumero(['conectar']);
+    b.meta.paginas = [{ id: PAGINA, nombre: 'Una' }, { id: '40000000002', nombre: 'Otra' }];
+    const r = await conectarPagina(n.clave);
+    expect([r.status, r.json.code]).toEqual([409, 'elegir_pagina']);
+    expect(r.json.paginas).toEqual([{ id: PAGINA, nombre: 'Una' }, { id: '40000000002', nombre: 'Otra' }]);
+    expect(r.json.mensaje).toMatch(/elegí/);
+    expect(b.meta.paginasSuscriptas).toEqual([]);
+
+    const ok = await conectarPagina(n.clave, { pagina_id: '40000000002' });
+    expect(ok.json.pagina).toEqual({ id: '40000000002', nombre: 'Otra' });
+    const ajena = await conectarPagina(n.clave, { pagina_id: '40000000099' });
+    expect([ajena.status, ajena.json.code]).toEqual([409, 'pagina_ajena']);
+  });
+
+  it('una página o un Instagram que ya es de otro negocio no se toca', async () => {
+    const otro = await negocioSinNumero(['conectar']);
+    await conectarPagina(otro.clave);
+    const antes = (await b.store.numeroPorPhoneId(PAGINA))!.tokenCifrado;
+    b.meta.paginasSuscriptas = [];
+
+    const n = await negocioSinNumero(['conectar']);
+    const r = await conectarPagina(n.clave);
+    expect([r.status, r.json.code]).toEqual([409, 'de_otro_negocio']);
+    expect(r.json.mensaje).toMatch(/otra empresa/);
+    expect(b.meta.paginasSuscriptas).toEqual([]);
+    expect((await b.store.numeroPorPhoneId(PAGINA))!.negocioId).toBe(otro.id);
+    expect((await b.store.numeroPorPhoneId(PAGINA))!.tokenCifrado).toBe(antes);
+
+    // Solo el Instagram es ajeno: la página tampoco se conecta.
+    b.meta.paginas = [{ id: '40000000003', nombre: 'Nueva', instagram: { id: IG } }];
+    const ig = await conectarPagina(n.clave);
+    expect([ig.status, ig.json.code]).toEqual([409, 'de_otro_negocio']);
+    expect(await b.store.numeroPorPhoneId('40000000003')).toBeUndefined();
+  });
+
+  it('token de otra app, sin páginas, código rechazado, sin capacidad y sin app de Meta', async () => {
+    const n = await negocioSinNumero(['conectar']);
+    b.meta.tokenDeOtraApp = true;
+    expect((await conectarPagina(n.clave)).json.code).toBe('token_invalido');
+    b.meta.tokenDeOtraApp = false;
+    b.meta.paginas = [];
+    expect((await conectarPagina(n.clave)).json.code).toBe('sin_paginas');
+    const malo = await conectarPagina(n.clave, { codigo: 'vencido-0000000' });
+    expect([malo.status, malo.json.code]).toEqual([502, 'meta']);
+    expect(await b.store.numerosDe(n.id)).toEqual([]);
+
+    const sin = await negocioSinNumero(['puente']);
+    expect((await conectarPagina(sin.clave)).status).toBe(404);
+    b.ctx.appMeta = undefined;
+    const r = await conectarPagina(n.clave);
+    expect([r.status, r.json.code]).toEqual([503, 'sin_configurar']);
+  });
+});
