@@ -282,3 +282,32 @@ describe('lectura de Instagram (instagram_lectura)', () => {
     expect(await pedir(b, a.clave, 'GET', '/instagram/reels')).toMatchObject({ status: 409, json: { code: 'token_caido' } });
   });
 });
+
+describe('leads de formularios de anuncios', () => {
+  const lead = (paginaId: string, extra: Record<string, unknown> = {}) => ({
+    object: 'page',
+    entry: [{ id: paginaId, time: 1, changes: [{ field: 'leadgen', value: { leadgen_id: '9000000000001', page_id: paginaId, form_id: '8000000000001', ad_id: '7000000000001', created_time: 1760108400, ...extra } }] }],
+  });
+
+  it('le llega al negocio dueño de la página como evento lead, sin datos personales', async () => {
+    const n = await negocioConNumero(b, ['conectar']);
+    await cuenta(n.id, 'messenger', PAGINA);
+    expect((await webhook(b, lead(PAGINA))).statusCode).toBe(200);
+    const eventos = (await pedir(b, n.clave, 'GET', '/eventos?esperar=0')).json;
+    expect(eventos).toHaveLength(1);
+    expect(eventos[0]).toMatchObject({
+      tipo: 'lead',
+      datos: { tipo: 'lead', pagina_id: PAGINA, leadgen_id: '9000000000001', form_id: '8000000000001', ad_id: '7000000000001', creado: '2025-10-10T15:00:00.000Z' },
+    });
+  });
+
+  it('una página desconocida no emite nada, y un negocio sin la capacidad no lo recibe', async () => {
+    const n = await negocioConNumero(b, ['conectar']);
+    await webhook(b, lead('10000000000999'));
+    const sin = await negocioConNumero(b, ['puente']);
+    await cuenta(sin.id, 'messenger', '10000000000555');
+    await webhook(b, lead('10000000000555'));
+    expect((await pedir(b, n.clave, 'GET', '/eventos?esperar=0')).json).toEqual([]);
+    expect((await pedir(b, sin.clave, 'GET', '/eventos?esperar=0')).json).toEqual([]);
+  });
+});

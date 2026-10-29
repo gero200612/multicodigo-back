@@ -24,6 +24,16 @@ export interface RevisionDeToken {
   appId: string | null;
   /** Las WABA a las que el token llega con whatsapp_business_management (target_ids). */
   wabas: string[];
+  /** Los business (business_management) y las cuentas publicitarias (ads_management) a los que el token llega. */
+  negocios: string[];
+  cuentasPublicitarias: string[];
+}
+
+/** Una cuenta publicitaria (`act_…`). */
+export interface CuentaPublicitaria {
+  id: string;
+  nombre: string;
+  moneda: string | null;
 }
 
 /** Una pagina de Facebook a la que llega el token, con su token propio y el Instagram vinculado (si tiene). */
@@ -110,6 +120,10 @@ export interface ClienteMeta {
   paginasDelToken(token: string): Promise<PaginaDeMeta[]>;
   /** Suscribe la pagina (y su Instagram) a los webhooks de la app: mensajes, comentarios y feed. */
   suscribirPagina(tokenDePagina: string, paginaId: string): Promise<void>;
+  /** Las cuentas publicitarias a las que llega el token (`me/adaccounts`; si no da, las `owned_ad_accounts` de cada business). */
+  cuentasPublicitarias(token: string, negocios: string[]): Promise<CuentaPublicitaria[]>;
+  /** Los pixeles de una cuenta publicitaria (`act_…`). */
+  pixeles(token: string, cuentaId: string): Promise<{ id: string; nombre: string }[]>;
   /** Registra el numero en la Cloud API con un PIN de dos pasos. No va con coexistencia. */
   registrarNumero(token: string, phoneNumberId: string, pin: string): Promise<void>;
   /** Coexistencia: pide a Meta los contactos y el historial del celu (llegan por webhook). */
@@ -132,7 +146,7 @@ export class ErrorDeMeta extends Error {
 export const esTokenCaido = (e: unknown): boolean => e instanceof ErrorDeMeta && e.codigo === 190;
 
 /** Lo que la app recibe de una pagina: mensajes de Messenger e Instagram, comentarios de Instagram y el feed (comentarios de la pagina). */
-export const CAMPOS_DE_PAGINA = 'messages,messaging_postbacks,message_reads,message_deliveries,feed,instagram_manage_comments';
+export const CAMPOS_DE_PAGINA = 'messages,messaging_postbacks,message_reads,message_deliveries,feed,instagram_manage_comments,leadgen';
 
 const TECHO_MS = 20_000;
 const CAMPOS_REEL = 'id,caption,permalink,timestamp,media_product_type,media_url,owner{id},like_count,comments_count';
@@ -348,7 +362,14 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
       const json = await pedir(`${app.id}|${app.secreto}`, 'GET', `debug_token?input_token=${encodeURIComponent(token)}`);
       const d = (json.data ?? {}) as { is_valid?: boolean; app_id?: string; granular_scopes?: { scope?: string; target_ids?: string[] }[] };
       const gestion = (d.granular_scopes ?? []).find((g) => g.scope === 'whatsapp_business_management');
-      return { valido: d.is_valid === true, appId: d.app_id ? String(d.app_id) : null, wabas: (gestion?.target_ids ?? []).map(String) };
+      const ids = (scope: string) => (d.granular_scopes ?? []).filter((g) => g.scope === scope).flatMap((g) => (g.target_ids ?? []).map(String));
+      return {
+        valido: d.is_valid === true,
+        appId: d.app_id ? String(d.app_id) : null,
+        wabas: (gestion?.target_ids ?? []).map(String),
+        negocios: ids('business_management'),
+        cuentasPublicitarias: ids('ads_management'),
+      };
     },
     async numerosDeLaWaba(token, wabaId) {
       const json = await pedir(token, 'GET', `${wabaId}/phone_numbers?fields=id&limit=100`);
@@ -373,6 +394,28 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     },
     async suscribirPagina(tokenDePagina, paginaId) {
       await pedir(tokenDePagina, 'POST', `${encodeURIComponent(paginaId)}/subscribed_apps`, { subscribed_fields: CAMPOS_DE_PAGINA });
+    },
+    async cuentasPublicitarias(token, negocios) {
+      const campos = 'id,name,currency,account_id';
+      const aCuentas = (json: Record<string, unknown>): CuentaPublicitaria[] =>
+        (Array.isArray(json.data) ? (json.data as Record<string, any>[]) : [])
+          .filter((f) => f.id)
+          .map((f) => ({
+            id: String(f.id).startsWith('act_') ? String(f.id) : `act_${f.id}`,
+            nombre: String(f.name ?? ''),
+            moneda: typeof f.currency === 'string' ? f.currency : null,
+          }));
+      // Token de usuario (o de usuario del sistema con cuentas asignadas): me/adaccounts. Token de business: las del business.
+      let cuentas = aCuentas(await pedir(token, 'GET', `me/adaccounts?fields=${campos}&limit=100`));
+      for (const negocio of negocios) {
+        if (cuentas.length) break;
+        cuentas = aCuentas(await pedir(token, 'GET', `${encodeURIComponent(negocio)}/owned_ad_accounts?fields=${campos}&limit=100`));
+      }
+      return cuentas;
+    },
+    async pixeles(token, cuentaId) {
+      const json = await pedir(token, 'GET', `${encodeURIComponent(cuentaId)}/adspixels?fields=id,name&limit=100`);
+      return (Array.isArray(json.data) ? (json.data as Record<string, any>[]) : []).filter((f) => f.id).map((f) => ({ id: String(f.id), nombre: String(f.name ?? '') }));
     },
     async registrarNumero(token, phoneNumberId, pin) {
       await pedir(token, 'POST', `${phoneNumberId}/register`, { messaging_product: 'whatsapp', pin });

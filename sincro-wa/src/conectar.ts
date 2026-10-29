@@ -36,6 +36,12 @@ const ConectarPagina = z.object({
   pagina_id: Id.optional(),
 });
 
+const ConectarAnuncios = z.object({
+  codigo: z.string().min(10).max(2000),
+  // Si el token llega a mas de una cuenta publicitaria, la app pregunta cual y la manda aca.
+  cuenta_id: z.string().regex(/^act_\d{5,30}$/).optional(),
+});
+
 /** Un error con `mensaje` en castellano (lo que la app le muestra a la persona) ademas del `code`. */
 const falla = (status: number, code: string, mensaje: string) => new Rechazo(status, code, mensaje, { mensaje });
 
@@ -156,8 +162,49 @@ export function registrarRutasDeConexion(app: FastifyInstance, ctx: Contexto): v
 
     return {
       pagina: { id: pagina.id, nombre: pagina.nombre },
+      // El token de la pagina, en claro, solo en esta respuesta a la app autenticada del negocio: nunca en logs ni en /conexion.
+      token_pagina: pagina.token,
       instagram: pagina.instagram ? { id: pagina.instagram.id, usuario: pagina.instagram.usuario } : null,
     };
+  });
+
+  /**
+   * Anuncios (configuracion «Anuncios» de Facebook Login for Business). El
+   * token vuelve a la app del negocio, que publica y maneja anuncios con el;
+   * aca solo queda quien conecto que cuenta, para auditoria.
+   */
+  app.post('/conectar-anuncios', async (req) => {
+    const negocio = negocioDe(req);
+    const appMeta = ctx.appMeta;
+    if (!appMeta) throw falla(503, 'sin_configurar', 'Falta configurar la app de Meta en el servidor.');
+    const b = ConectarAnuncios.parse(req.body);
+
+    const token = await conMeta(() => ctx.meta.canjearCodigo(appMeta, b.codigo));
+    const revision = await conMeta(() => ctx.meta.revisarToken(appMeta, token));
+    if (!revision.valido || revision.appId !== appMeta.id) throw falla(409, 'token_invalido', 'El permiso que dio Facebook no es de esta aplicación. Probá conectar de nuevo.');
+
+    const cuentas = await conMeta(() => ctx.meta.cuentasPublicitarias(token, revision.negocios));
+    if (!cuentas.length) throw falla(409, 'sin_cuentas', 'Facebook no nos dio acceso a ninguna cuenta publicitaria. Volvé a conectar y elegí una cuenta.');
+    const vista = (c: { id: string; nombre: string; moneda: string | null }) => ({ id: c.id, nombre: c.nombre, moneda: c.moneda });
+    let cuenta = b.cuenta_id ? cuentas.find((c) => c.id === b.cuenta_id) : undefined;
+    if (b.cuenta_id && !cuenta) throw falla(409, 'cuenta_ajena', 'Esa cuenta publicitaria no está entre las que autorizaste.');
+    if (!cuenta) {
+      if (cuentas.length > 1) {
+        throw new Rechazo(409, 'elegir_cuenta', 'Autorizaste más de una cuenta publicitaria: elegí cuál conectar.', {
+          mensaje: 'Autorizaste más de una cuenta publicitaria: elegí cuál conectar.',
+          cuentas: cuentas.map(vista),
+        });
+      }
+      cuenta = cuentas[0]!;
+    }
+    const cuentaElegida = cuenta;
+    const pixeles = await conMeta(() => ctx.meta.pixeles(token, cuentaElegida.id));
+
+    await store.registrarCambios([
+      { negocioId: negocio.id, campo: 'anuncios', antes: null, despues: cuentaElegida.id, quien: `app:${negocio.app}`, fecha: ctx.ahora() },
+    ]);
+
+    return { token, cuenta: vista(cuentaElegida), pixel: pixeles[0] ? { id: pixeles[0].id, nombre: pixeles[0].nombre } : null };
   });
 
   app.post('/conectar', async (req) => {

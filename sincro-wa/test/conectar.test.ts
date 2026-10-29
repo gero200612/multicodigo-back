@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { CAMPOS_DE_PAGINA } from '../src/meta.js';
 import { descifrar } from '../src/cifrado.js';
 import { tokenDe } from '../src/contexto.js';
 import { armar, CLAVE_ADMIN, negocioConNumero, pedir, webhook, type Banco } from './armar.js';
@@ -154,8 +155,7 @@ describe('conectar-pagina (Facebook Login for Business)', () => {
     const n = await negocioSinNumero(['conectar']);
     const r = await conectarPagina(n.clave);
     expect(r.status).toBe(200);
-    expect(r.json).toEqual({ pagina: { id: PAGINA, nombre: 'Efaysto Marketing' }, instagram: { id: IG, usuario: 'efaysto.oficial' } });
-    expect(JSON.stringify(r.json)).not.toMatch(/EAA/);
+    expect(r.json).toEqual({ pagina: { id: PAGINA, nombre: 'Efaysto Marketing' }, token_pagina: `EAApagina${PAGINA}xxxxxxxx`, instagram: { id: IG, usuario: 'efaysto.oficial' } });
 
     const pag = (await b.store.numeroPorPhoneId(PAGINA))!;
     const ig = (await b.store.numeroPorPhoneId(IG))!;
@@ -170,6 +170,11 @@ describe('conectar-pagina (Facebook Login for Business)', () => {
     expect(c.numeros).toEqual([]);
     expect(c.pagina).toEqual({ id: PAGINA, nombre: 'Efaysto Marketing' });
     expect(c.instagram).toEqual({ id: IG, usuario: 'efaysto.oficial' });
+    expect(JSON.stringify(c)).not.toMatch(/EAA/);
+  });
+
+  it('suscribe también el campo leadgen', () => {
+    expect(CAMPOS_DE_PAGINA.split(',')).toContain('leadgen');
   });
 
   it('una página sin Instagram devuelve instagram: null; reconectar actualiza sin duplicar', async () => {
@@ -234,6 +239,73 @@ describe('conectar-pagina (Facebook Login for Business)', () => {
     expect((await conectarPagina(sin.clave)).status).toBe(404);
     b.ctx.appMeta = undefined;
     const r = await conectarPagina(n.clave);
+    expect([r.status, r.json.code]).toEqual([503, 'sin_configurar']);
+  });
+});
+
+describe('conectar-anuncios', () => {
+  const CUENTA = 'act_50000000001';
+  const OTRA = 'act_50000000002';
+  const conectarAnuncios = (clave: string, extra: Record<string, unknown> = {}) =>
+    pedir(b, clave, 'POST', '/conectar-anuncios', { codigo: 'codigo-5550001', ...extra });
+
+  beforeEach(() => {
+    b.meta.cuentasAds = [{ id: CUENTA, nombre: 'Efaysto Ads', moneda: 'ARS' }];
+    b.meta.pixelesPorCuenta.set(CUENTA, [{ id: '60000000001', nombre: 'Pixel web' }]);
+  });
+
+  it('devuelve el token, la cuenta y el píxel, y solo audita qué negocio conectó qué cuenta', async () => {
+    const n = await negocioSinNumero(['conectar']);
+    const r = await conectarAnuncios(n.clave);
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({
+      token: 'EAAcliente5550001xxxxxxxx',
+      cuenta: { id: CUENTA, nombre: 'Efaysto Ads', moneda: 'ARS' },
+      pixel: { id: '60000000001', nombre: 'Pixel web' },
+    });
+    expect(await b.store.numerosDe(n.id)).toEqual([]);
+    const cambios = (await b.store.cambios(n.id)).filter((c) => c.campo === 'anuncios');
+    expect(cambios.map((c) => c.despues)).toEqual([CUENTA]);
+    expect(JSON.stringify(cambios)).not.toMatch(/EAA/);
+  });
+
+  it('sin píxel devuelve pixel: null', async () => {
+    const n = await negocioSinNumero(['conectar']);
+    b.meta.pixelesPorCuenta.clear();
+    expect((await conectarAnuncios(n.clave)).json.pixel).toBeNull();
+  });
+
+  it('con varias cuentas y sin cuenta_id da 409 con la lista; con cuenta_id conecta esa; una ajena da 409', async () => {
+    const n = await negocioSinNumero(['conectar']);
+    b.meta.cuentasAds = [{ id: CUENTA, nombre: 'Una', moneda: 'ARS' }, { id: OTRA, nombre: 'Otra', moneda: 'USD' }];
+    const r = await conectarAnuncios(n.clave);
+    expect([r.status, r.json.code]).toEqual([409, 'elegir_cuenta']);
+    expect(r.json.cuentas).toEqual([{ id: CUENTA, nombre: 'Una', moneda: 'ARS' }, { id: OTRA, nombre: 'Otra', moneda: 'USD' }]);
+    expect(r.json.mensaje).toMatch(/elegí/);
+    expect(JSON.stringify(r.json)).not.toMatch(/EAA/);
+
+    const ok = await conectarAnuncios(n.clave, { cuenta_id: OTRA });
+    expect(ok.json.cuenta).toEqual({ id: OTRA, nombre: 'Otra', moneda: 'USD' });
+    const ajena = await conectarAnuncios(n.clave, { cuenta_id: 'act_50000000999' });
+    expect([ajena.status, ajena.json.code]).toEqual([409, 'cuenta_ajena']);
+    expect((await conectarAnuncios(n.clave, { cuenta_id: 'cualquiera' })).status).toBe(400);
+  });
+
+  it('token de otra app, sin cuentas, código rechazado, sin capacidad y sin app de Meta', async () => {
+    const n = await negocioSinNumero(['conectar']);
+    b.meta.tokenDeOtraApp = true;
+    expect((await conectarAnuncios(n.clave)).json.code).toBe('token_invalido');
+    b.meta.tokenDeOtraApp = false;
+    b.meta.cuentasAds = [];
+    expect((await conectarAnuncios(n.clave)).json.code).toBe('sin_cuentas');
+    const malo = await conectarAnuncios(n.clave, { codigo: 'vencido-0000000' });
+    expect([malo.status, malo.json.code]).toEqual([502, 'meta']);
+    expect((await b.store.cambios(n.id)).filter((c) => c.campo === 'anuncios')).toEqual([]);
+
+    const sin = await negocioSinNumero(['puente']);
+    expect((await conectarAnuncios(sin.clave)).status).toBe(404);
+    b.ctx.appMeta = undefined;
+    const r = await conectarAnuncios(n.clave);
     expect([r.status, r.json.code]).toEqual([503, 'sin_configurar']);
   });
 });

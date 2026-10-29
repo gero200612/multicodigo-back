@@ -126,7 +126,19 @@ export class MetaFalsa implements ClienteMeta {
   async revisarToken(app: { id: string; secreto: string }, token: string) {
     this.revisar();
     const waba = /^EAAcliente(\d+)x/.exec(token)?.[1];
-    return { valido: !!waba, appId: this.tokenDeOtraApp ? '999999' : app.id, wabas: waba ? [waba] : [] };
+    return { valido: !!waba, appId: this.tokenDeOtraApp ? '999999' : app.id, wabas: waba ? [waba] : [], negocios: [], cuentasPublicitarias: [] };
+  }
+  // Anuncios: el codigo `codigo-<n>` da un token que llega a estas cuentas, con estos pixeles por cuenta.
+  cuentasAds: { id: string; nombre: string; moneda: string | null }[] = [];
+  pixelesPorCuenta = new Map<string, { id: string; nombre: string }[]>();
+  async cuentasPublicitarias(token: string) {
+    this.revisar();
+    this.conexion.push({ tipo: 'paginas', token });
+    return this.cuentasAds;
+  }
+  async pixeles(_token: string, cuenta: string) {
+    this.revisar();
+    return this.pixelesPorCuenta.get(cuenta) ?? [];
   }
   async numerosDeLaWaba(_token: string, waba: string) {
     this.revisar();

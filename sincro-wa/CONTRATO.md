@@ -105,9 +105,15 @@ reanudan los envíos (evento `conexion` `token_ok` para `puente`).
 
 ### `POST /conectar-pagina` (solo `conectar`)
 La empresa conecta su página de Facebook y el Instagram vinculado (Facebook Login for Business, token de usuario del sistema). `{"codigo": "<code>", "pagina_id"?: "…"}`.
-El bot canjea el código, comprueba con `debug_token` que es de la app, lista las páginas con `me/accounts`, registra un número `messenger` (id de la página) y uno `instagram` (id de Instagram) con el token de la página cifrado, y suscribe la página (`subscribed_apps`: mensajes, comentarios, feed).
-- `200 {"pagina": {"id","nombre"}, "instagram": {"id","usuario"} | null}`
+El bot canjea el código, comprueba con `debug_token` que es de la app, lista las páginas con `me/accounts`, registra un número `messenger` (id de la página) y uno `instagram` (id de Instagram) con el token de la página cifrado, y suscribe la página (`subscribed_apps`: mensajes, comentarios, feed y `leadgen`).
+- `200 {"pagina": {"id","nombre"}, "token_pagina": "EAA…", "instagram": {"id","usuario"} | null}`. `token_pagina` es el token de la página **en claro**, solo en esta respuesta a la app autenticada del negocio (para publicar y traer leads con `leadgen_id`): el bot lo guarda cifrado, nunca lo loguea y `GET /conexion` no lo muestra. La app lo guarda cifrado de su lado.
 - `409 elegir_pagina` con `paginas: [{id,nombre}]` si hay varias y no vino `pagina_id`; `409 pagina_ajena`, `409 sin_paginas`, `409 token_invalido`, `409 de_otro_negocio`, `502 meta`, `503 sin_configurar`. Todos con `mensaje` en castellano.
+
+### `POST /conectar-anuncios` (solo `conectar`)
+La empresa da acceso a sus anuncios (Facebook Login for Business, configuración «Anuncios»: `ads_management`, `ads_read`, `business_management`). `{"codigo": "<code>", "cuenta_id"?: "act_…"}`.
+El bot canjea el código, comprueba con `debug_token` que es de la app, lista las cuentas publicitarias a las que llega el token (`me/adaccounts`; si no da, `/{business}/owned_ad_accounts` de los business del token) y los píxeles de la cuenta elegida (`/{act}/adspixels`; devuelve el primero). **No guarda el token**: solo anota en `cambios` (campo `anuncios`) qué negocio conectó qué cuenta.
+- `200 {"token": "EAA…", "cuenta": {"id":"act_…","nombre","moneda"}, "pixel": {"id","nombre"} | null}`. El `token` va en claro solo en esta respuesta; la app lo guarda cifrado.
+- `409 elegir_cuenta` con `cuentas: [{id,nombre,moneda}]` si hay varias y no vino `cuenta_id`; `409 cuenta_ajena` (la `cuenta_id` no está entre las del token), `409 sin_cuentas`, `409 token_invalido`, `400` si `cuenta_id` no es `act_<dígitos>`, `502 meta`, `503 sin_configurar`. Todos con `mensaje` en castellano.
 
 ### `GET /conexion` (solo `conectar`)
 `200 {"numeros": [ …como arriba… ], "pagina": {"id","nombre"} | null, "instagram": {"id","usuario"} | null}`: los números de WhatsApp, la página y el Instagram del negocio. Nunca el token ni el PIN.
@@ -169,6 +175,7 @@ queda para `GET /eventos`.
 - `baja` / `alta` (solo `puente`): `{"contacto","canal","motivo"?}`. La persona escribió una de las palabras de baja (o ALTA). Esos mensajes no se pasan como `mensaje`.
 - `comentario` (solo `puente`): `{"canal":"instagram"|"messenger","cuenta","comentario_id","publicacion_id","autor_id","autor_nombre","padre_id","texto","fecha"}`. No incluye lo que comenta la propia cuenta.
 - `conexion` (solo `puente`): `{"estado":"token_caido"|"token_ok","numero"}`. Sale una vez por caída.
+- `lead` (solo `conectar`): `{"tipo":"lead","pagina_id","leadgen_id","form_id","ad_id","creado"}`. Llegó una respuesta a un formulario de anuncio de lead en la página (webhook `leadgen`). Sin datos personales: la app trae el lead (`GET /{leadgen_id}`) con el `token_pagina`. Meta puede repetir el webhook: la app deduplica por `leadgen_id`. `form_id` y `ad_id` pueden ser `null`.
 - `formulario`: `{"nombre","negocio","whatsapp":"549…"|null,"mail"|null,"tema","mensaje","acepta_whatsapp"}`
 
 ## El formulario de la web (puerto público)

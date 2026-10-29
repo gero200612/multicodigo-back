@@ -43,6 +43,7 @@ export async function procesarMensajeria(ctx: Contexto, canal: Exclude<Canal, 'w
     }
     for (const cambio of asArray(entrada.changes)) {
       if (canal === 'instagram' && cambio.field === 'comments') await comentarioDeInstagram(ctx, negocio, numero, cambio.value ?? {});
+      else if (canal === 'messenger' && cambio.field === 'leadgen') await leadDeLaPagina(ctx, negocio, numero, cambio.value ?? {});
       else if (canal === 'messenger' && cambio.field === 'feed') await comentarioDeLaPagina(ctx, negocio, numero, cambio.value ?? {});
     }
   }
@@ -120,6 +121,23 @@ async function comentarioDeInstagram(ctx: Contexto, negocio: Negocio, numero: Nu
     autorNombre: v.from?.username ? String(v.from.username) : null,
     texto: typeof v.text === 'string' ? v.text : null,
     padreId: v.parent_id ? String(v.parent_id) : null,
+  });
+}
+
+/**
+ * Un formulario de anuncio de lead llenado. Sin datos personales: el CRM trae el
+ * lead (`/{leadgen_id}`) con el token de la pagina que le dio `/conectar-pagina`.
+ */
+async function leadDeLaPagina(ctx: Contexto, negocio: Negocio, numero: Numero, v: Json): Promise<void> {
+  if (!v.leadgen_id) return;
+  const creado = Number(v.created_time);
+  await emitir(ctx, negocio, 'lead', {
+    tipo: 'lead',
+    pagina_id: numero.phoneNumberId,
+    leadgen_id: String(v.leadgen_id),
+    form_id: v.form_id ? String(v.form_id) : null,
+    ad_id: v.ad_id ? String(v.ad_id) : null,
+    creado: Number.isFinite(creado) && creado > 0 ? new Date(creado * 1000).toISOString() : ctx.ahora().toISOString(),
   });
 }
 
