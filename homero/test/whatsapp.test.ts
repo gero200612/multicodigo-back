@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
-import { agenteWhatsApp, esNumeroDePrueba } from '../src/agentes.js';
+import { agenteWhatsApp, esNumeroDePrueba, PLANTILLA_AVISO_A_GERO, SOLO_AVISAR } from '../src/agentes.js';
 import {
   armarRespuesta,
   recibirLeads,
@@ -161,6 +161,31 @@ describe('whatsapp: el agente', () => {
     await agenteWhatsApp(payload, h.deps);
     expect(objetivo).toContain('Gero probando el bot');
     expect(f.mandados).toHaveLength(1);
+  });
+
+  it('a un contacto que sigue Gero no le contesta: le avisa por Telegram y por WhatsApp', async () => {
+    const f = waFalso();
+    const plantillas: { a: string; plantilla: string; variables: string[] }[] = [];
+    f.wa.avisar = async (a, plantilla, _idioma, variables) => {
+      plantillas.push({ a, plantilla, variables });
+      return { id: 1, wamid: 'wamid.1' };
+    };
+    // Fuera de la ventana con Gero: el texto libre no sale y va la plantilla.
+    f.fallar('fuera_de_ventana');
+    let corrio = false;
+    const h = armar({ agente: agenteDe({ atencion: async () => void (corrio = true) }) });
+    h.deps.wa = f.wa;
+    h.deps.numerosDePrueba = ['5491150632794'];
+    // Cargado sin el 9: Meta lo manda con el 9 igual.
+    await h.store.guardarEstado(SOLO_AVISAR, ['541155550000']);
+    await agenteWhatsApp({ ...payload, texto: 'Hola, el martes\na la tarde me viene bien' }, h.deps);
+    expect(corrio).toBe(false);
+    expect(h.avisos.some((a) => a.includes('martes'))).toBe(true);
+    expect(plantillas).toHaveLength(1);
+    expect(plantillas[0]!.a).toBe('5491150632794');
+    expect(plantillas[0]!.plantilla).toBe(PLANTILLA_AVISO_A_GERO.nombre);
+    // Meta rechaza variables con saltos de línea.
+    expect(plantillas[0]!.variables.every((v) => !v.includes('\n'))).toBe(true);
   });
 
   it('responde solo, registra el lead, guarda los horarios ofrecidos y avisa a Gero', async () => {

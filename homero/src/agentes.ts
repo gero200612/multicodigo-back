@@ -18,7 +18,8 @@ import type { Herramienta, SesionesMcp } from './mcp.js';
 import { leerLibreta, libretaComoTexto } from './libreta.js';
 import { neutralizar, SISTEMA } from './prompts.js';
 import { CIUDADES } from './rubros.js';
-import type { Agente, Anuncio, Recibido } from './store.js';
+import type { Agente, Anuncio, Lead, Recibido } from './store.js';
+import type { PlantillaDeTexto } from './primer-whatsapp.js';
 import { RONDAS_DE_REVISION } from './anuncios.js';
 import { catalogo } from './ofrecemos.js';
 import { ensayoActivo, identificarRemitente } from './ventas.js';
@@ -509,6 +510,43 @@ export function esNumeroDePrueba(contacto: string, numeros: string[]): boolean {
 export const MODELO_DE_WHATSAPP = 'wa:modelo';
 const MODELOS_DE_WHATSAPP = new Set(['sonnet', 'haiku', 'opus']);
 
+/**
+ * Contactos que sigue Gero en persona (lista de numeros en homero.estado): si
+ * escriben, el agente no les contesta y a Gero le llega el aviso por Telegram y
+ * por WhatsApp, para que se entere antes. Pedido de Gero, 2026-10-30, para un
+ * lead que pidio por mail que le escribamos por WhatsApp.
+ */
+export const SOLO_AVISAR = 'wa:solo_avisar';
+
+/**
+ * El aviso a Gero por WhatsApp fuera de la ventana de 24 h. Se da de alta con
+ * asegurarPlantilla; Meta la revisa en minutos u horas.
+ */
+export const PLANTILLA_AVISO_A_GERO: PlantillaDeTexto = {
+  nombre: 'aviso_interno',
+  idioma: 'es_AR',
+  categoria: 'UTILITY',
+  texto: '🔔 {{1}} respondió por WhatsApp:\n\n«{{2}}»\n\nLo ves en Homero, en WhatsApp → Charlas.',
+  ejemplo: ['La Óptica (+5491100000000)', 'Hola, el martes a la tarde me viene bien'],
+};
+
+async function avisarSinContestar(p: { contacto: string; nombre?: string | null }, texto: string, lead: Lead | undefined, deps: DepsDeAgentes): Promise<void> {
+  const quien = lead?.nombre ?? (p.nombre || `+${p.contacto}`);
+  await deps.avisar(`🔔 WhatsApp · ${quien} (+${p.contacto}) contestó: «${texto.slice(0, 1000)}»\nNo le contesté: lo seguís vos (Homero → WhatsApp → Charlas).`);
+  const gero = deps.numerosDePrueba?.[0];
+  if (!gero || !deps.wa) return;
+  // Meta rechaza variables con saltos de linea o muchos espacios seguidos.
+  const plano = (t: string, max: number) => t.replace(/\s+/g, ' ').trim().slice(0, max);
+  try {
+    await deps.wa.mandar(gero, `🔔 ${quien} (+${p.contacto}) contestó por WhatsApp:\n\n«${texto.slice(0, 1000)}»`);
+  } catch {
+    // Sin ventana abierta con Gero solo sale la plantilla. Si tampoco, ya tiene el Telegram.
+    await deps.wa
+      .avisar(gero, PLANTILLA_AVISO_A_GERO.nombre, PLANTILLA_AVISO_A_GERO.idioma, [plano(`${quien} (+${p.contacto})`, 120), plano(texto, 600)])
+      .catch(async (e) => deps.avisar(`⚠️ No te pude avisar por WhatsApp: ${e instanceof Error ? e.message : String(e)}`));
+  }
+}
+
 /** Contactos cuya respuesta espera una cuenta libre, desde cuando (los tres puntos no se repiten). */
 const esperandoLugar = new Map<string, number>();
 const ESPERA_SIN_PUNTOS_MS = 10 * 60_000;
@@ -521,6 +559,8 @@ export async function agenteWhatsApp(payload: unknown, deps: DepsDeAgentes): Pro
   if (yaContestado(await deps.wa.charla(p.contacto), p.mensaje_id)) return;
   const lead = await deps.store.leadPorTelefono(variantesDeTelefono(p.contacto));
   const texto = p.texto ?? `(${p.tipo})`;
+  const soloAvisar = (await deps.store.leerEstado<string[]>(SOLO_AVISAR)) ?? [];
+  if (esNumeroDePrueba(p.contacto, soloAvisar)) return avisarSinContestar(p, texto, lead, deps);
   const prueba = esNumeroDePrueba(p.contacto, deps.numerosDePrueba ?? []);
   const escribiendo = mantenerEscribiendo(deps.wa, p.contacto);
   const depsWa = { store: deps.store, wa: deps.wa, ahora: deps.ahora, avisar: deps.avisar };
