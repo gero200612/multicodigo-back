@@ -78,6 +78,20 @@ export function aceptaWhatsapp(respuesta: string | undefined): boolean {
 
 /** La campaña de Homero en Meta: una sola, cada anuncio es un conjunto adentro. */
 const CAMPANA = 'meta:campana';
+
+/**
+ * Clave en homero.estado: lo del mes de las otras campañas de la cuenta (el
+ * experimento de reels de Sincro Host). Solo para mostrarlo en la pagina de
+ * anuncios: Homero no las toca ni las cuenta en su presupuesto.
+ */
+export const OTRAS_CAMPANAS = 'meta:otras_campanas';
+
+export interface OtrasCampanas {
+  /** El primer dia del mes (AAAA-MM-01). */
+  mes: string;
+  leido: string;
+  anuncios: { anuncio: string; nombre: string; campana: string; nombreCampana: string; gasto: number; impresiones: number; consultas: number }[];
+}
 /** Desde cuando se leyeron los leads la ultima vez. */
 const LEADS_DESDE = 'meta:leads_desde';
 /** El anuncio al que Gero le toco Cambiar: su proximo mensaje es lo que hay que cambiar. */
@@ -769,8 +783,25 @@ export async function leerInsights(deps: DepsDeAnuncios): Promise<void> {
   // gasto no entraba en el presupuesto. Varios del mismo anuncio y dia se suman.
   const sumados = new Map<string, { dia: string; anuncioId: number; gasto: number; impresiones: number; consultas: number }>();
   const ajenos = new Map<string, number>();
+  const otras = new Map<string, OtrasCampanas['anuncios'][number]>();
   for (const f of filas) {
     const anuncioId = porId.get(f.anuncio) ?? (f.conjunto ? porConjunto.get(f.conjunto) : undefined);
+    if (anuncioId === undefined && f.campana && f.campana !== campana) {
+      const o = otras.get(f.anuncio) ?? {
+        anuncio: f.anuncio,
+        nombre: f.nombre ?? f.anuncio,
+        campana: f.campana,
+        nombreCampana: f.nombreCampana ?? f.campana,
+        gasto: 0,
+        impresiones: 0,
+        consultas: 0,
+      };
+      o.gasto = Math.round((o.gasto + f.gasto) * 100) / 100;
+      o.impresiones += f.impresiones;
+      o.consultas += f.consultas;
+      otras.set(f.anuncio, o);
+      continue;
+    }
     if (anuncioId === undefined) {
       // Lo de la campaña de Homero que no se puede atribuir: se avisa.
       if (campana && f.campana === campana && f.dia === mes.hoy && f.gasto > 0) ajenos.set(f.anuncio, f.gasto);
@@ -784,6 +815,11 @@ export async function leerInsights(deps: DepsDeAnuncios): Promise<void> {
     sumados.set(clave, s);
   }
   await deps.store.guardarGastos([...sumados.values()]);
+  await deps.store.guardarEstado(OTRAS_CAMPANAS, {
+    mes: mes.primerDia,
+    leido: deps.ahora().toISOString(),
+    anuncios: [...otras.values()],
+  } satisfies OtrasCampanas);
   await sincronizarConMeta(deps);
   await contarleAMeta(deps).catch((err) =>
     console.warn('[homero] no pude mandarle las etapas de los leads a Meta:', err instanceof Error ? err.message : err),

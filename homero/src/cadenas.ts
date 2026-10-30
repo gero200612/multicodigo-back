@@ -32,6 +32,38 @@ const GENERICOS = [
   'twitter.com',
 ];
 
+/** Casillas gratis: cualquiera saca una, asi que el dominio no dice de quien es. */
+const CASILLAS_GRATIS = [
+  'gmail.com',
+  'googlemail.com',
+  'hotmail.com',
+  'outlook.com',
+  'live.com',
+  'msn.com',
+  'yahoo.com',
+  'icloud.com',
+  'me.com',
+  'aol.com',
+  'protonmail.com',
+  'proton.me',
+  'fibertel.com.ar',
+  'speedy.com.ar',
+  'arnet.com.ar',
+  'ciudad.com.ar',
+];
+
+/**
+ * `info@ausus.com.ar` -> `ausus.com.ar`. Undefined si es una casilla gratis
+ * (tambien sus variantes por pais: `hotmail.com.ar`, `yahoo.com.ar`).
+ */
+export function dominioDelMail(email: string): string | undefined {
+  const host = email.split('@')[1]?.trim().toLowerCase();
+  if (!host) return undefined;
+  if (CASILLAS_GRATIS.some((g) => host === g || host.startsWith(`${g}.`) || host.endsWith(`.${g}`))) return undefined;
+  if (/^(hotmail|outlook|live|yahoo)\.[a-z.]+$/.test(host)) return undefined;
+  return dominio(host);
+}
+
 /** `https://www.megatlon.com/sedes/palermo` -> `megatlon.com`. Undefined si es generico. */
 export function dominio(web: string | undefined): string | undefined {
   if (!web) return undefined;

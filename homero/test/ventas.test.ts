@@ -189,22 +189,35 @@ describe('de la busqueda al primer mail', () => {
     expect(rechazo).toContain('no es del negocio');
   });
 
-  it('un negocio sin web no sale solo ni en modo auto: lo aprueba Gero', async () => {
-    const h = armar({
+  const sinWeb = (email: string) =>
+    armar({
       agente: agenteDe({
         buscador: async (usar) => {
-          await usar('anotar_negocio', { nombre: 'Sin Web', rubro: 'imprenta', zona: 'Rosario', email: 'hola@sinweb.com.ar', por_que: 'tiene volumen' });
+          await usar('anotar_negocio', { nombre: 'Sin Web', rubro: 'imprenta', zona: 'Rosario', email, por_que: 'tiene volumen' });
         },
         vendedor: async (usar) => {
-          await usar('dejar_mail_listo', { ...mail, email: 'hola@sinweb.com.ar' });
+          await usar('dejar_mail_listo', { ...mail, email });
         },
       }),
     });
+
+  it('un negocio sin web y con mail de gmail o hotmail no sale solo ni en modo auto: lo aprueba Gero', async () => {
+    for (const email of ['sinweb@gmail.com', 'sinweb@hotmail.com.ar']) {
+      const h = sinWeb(email);
+      await h.store.guardarEstado(MODO, 'auto');
+      await h.store.encolar({ tipo: 'agente_buscar', payload: { cantidad: 1 }, requiereIa: true });
+      await vaciar(h.deps);
+      expect(h.store.leads[0]!.estado).toBe('borrador');
+      expect(h.tarjetas.at(-1)!.datos[0]).toMatch(/^ap:/);
+    }
+  });
+
+  it('sin web pero con mail de dominio propio, en modo auto sale solo', async () => {
+    const h = sinWeb('hola@sinweb.com.ar');
     await h.store.guardarEstado(MODO, 'auto');
     await h.store.encolar({ tipo: 'agente_buscar', payload: { cantidad: 1 }, requiereIa: true });
     await vaciar(h.deps);
-    expect(h.store.leads[0]!.estado).toBe('borrador');
-    expect(h.tarjetas.at(-1)!.datos[0]).toMatch(/^ap:/);
+    expect(h.store.leads[0]!.estado).not.toBe('borrador');
   });
 
   it('la libreta va marcada como notas, no como instrucciones', async () => {

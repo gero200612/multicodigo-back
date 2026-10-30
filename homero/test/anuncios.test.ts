@@ -12,6 +12,8 @@ import {
   estadoDelMes,
   controlarEntrega,
   leerInsights,
+  OTRAS_CAMPANAS,
+  type OtrasCampanas,
   leerLeadsDeMeta,
   PUBLICADO_EN,
   linkDeWhatsapp,
@@ -177,6 +179,27 @@ describe('el tope de plata', () => {
     // Prender uno con 2.000 no entra: 46.500 + 2.000 = 48.500 sí entraría, pero 4.000 no.
     const r = await repartirPresupuesto([{ anuncioId: a, diario: 4000 }], h.deps);
     expect(r).toMatchObject({ ok: false });
+  });
+
+  // 2026-10-30: la página mostraba solo la campaña de Homero ($50.000) y en Meta
+  // iban $145.000 con el experimento de reels de Sincro Host.
+  it('lo de otras campañas de la cuenta se guarda para mostrarlo, sin contarlo en el presupuesto', async () => {
+    const h = conMeta();
+    const a = await activo(h, 2000, 1);
+    h.f.datos.insights = [
+      { anuncio: 'ad1', dia: '2026-09-28', gasto: 1000, impresiones: 100, consultas: 1 },
+      { anuncio: 'x1', campana: 'otra', nombreCampana: 'Experimento', nombre: 'A1 · Reel', dia: '2026-09-27', gasto: 3000, impresiones: 300, consultas: 2 },
+      { anuncio: 'x1', campana: 'otra', nombreCampana: 'Experimento', nombre: 'A1 · Reel', dia: '2026-09-28', gasto: 500, impresiones: 50, consultas: 1 },
+      { anuncio: 'x2', campana: 'otra', nombreCampana: 'Experimento', nombre: 'A2 · Reel', dia: '2026-09-28', gasto: 200, impresiones: 20, consultas: 0 },
+    ];
+    await leerInsights(h.deps);
+    expect(await h.store.gastos('2026-09-01')).toEqual([{ dia: '2026-09-28', anuncioId: a, gasto: 1000, impresiones: 100, consultas: 1 }]);
+    const otras = await h.store.leerEstado<OtrasCampanas>(OTRAS_CAMPANAS);
+    expect(otras!.mes).toBe('2026-09-01');
+    expect(otras!.anuncios).toEqual([
+      { anuncio: 'x1', nombre: 'A1 · Reel', campana: 'otra', nombreCampana: 'Experimento', gasto: 3500, impresiones: 350, consultas: 3 },
+      { anuncio: 'x2', nombre: 'A2 · Reel', campana: 'otra', nombreCampana: 'Experimento', gasto: 200, impresiones: 20, consultas: 0 },
+    ]);
   });
 
   // 2026-10-21: con HOMERO_ANUNCIOS_PROPIOS=no no se encolaba leer_insights y la pagina de anuncios quedo con los numeros del 18/10.

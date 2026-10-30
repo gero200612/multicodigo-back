@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dominio, sinCadenas } from '../src/cadenas.js';
+import { dominio, dominioDelMail, sinCadenas } from '../src/cadenas.js';
 import type { Hallazgo } from '../src/fuentes.js';
 
 const h = (nombre: string, web?: string, extra: Partial<Hallazgo> = {}): Hallazgo => ({
@@ -22,6 +22,18 @@ describe('dominio', () => {
     expect(dominio('https://linktr.ee/algo')).toBeUndefined();
     expect(dominio('https://algo.wixsite.com/x')).toBeUndefined();
     expect(dominio(undefined)).toBeUndefined();
+  });
+});
+
+describe('dominioDelMail', () => {
+  it('el dominio propio de un mail, y nada si es una casilla gratis', () => {
+    expect(dominioDelMail('info@ausus.com.ar')).toBe('ausus.com.ar');
+    expect(dominioDelMail('Ventas@Mail.Distri.com')).toBe('mail.distri.com');
+    expect(dominioDelMail('dannunzioyasoc@gmail.com')).toBeUndefined();
+    expect(dominioDelMail('ws_institutop@hotmail.com.ar')).toBeUndefined();
+    expect(dominioDelMail('x@yahoo.com.ar')).toBeUndefined();
+    expect(dominioDelMail('x@outlook.com')).toBeUndefined();
+    expect(dominioDelMail('sin-arroba')).toBeUndefined();
   });
 });
 

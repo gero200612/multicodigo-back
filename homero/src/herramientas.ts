@@ -14,7 +14,7 @@ import {
 } from './anuncios.js';
 import { ErrorDeTexto, proponerPublicacion, type DepsDeReels } from './publicar-reel.js';
 import { horarioEnCastellano, horariosLibres, sigueLibre } from './agenda.js';
-import { dominio } from './cadenas.js';
+import { dominio, dominioDelMail } from './cadenas.js';
 import { ErrorParaElAgente, type Herramienta } from './mcp.js';
 import { ErrorDePlantilla, imagenDeAnuncio, PLANTILLAS, type Plantilla } from './imagen.js';
 import { catalogo } from './ofrecemos.js';
@@ -497,10 +497,11 @@ export function herramientasDelVendedor(
           },
         },
         deps,
-        // Sin web propia no hay como confirmar que el mail es del negocio: lo
-        // anoto el buscador desde una pagina de terceros. Ese no sale solo ni
-        // en modo auto: lo aprueba Gero.
-        { forzarAprobacion: !dominio(lead.web) },
+        // Sin web propia, un mail de gmail o hotmail no confirma que sea del
+        // negocio: lo anoto el buscador desde una pagina de terceros. Ese no
+        // sale solo ni en modo auto, lo aprueba Gero. Uno de dominio propio
+        // (info@negocio.com.ar) si sale.
+        { forzarAprobacion: !dominio(lead.web) && !dominioDelMail(m.email) },
       );
       return 'Listo: el mail queda en la cola de envio.';
     },

@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { isTokenValid } from '@multicodigo/shared';
 import { z } from 'zod';
-import { estadoDelMes, numerosDelMes, presupuestoDelMes, textoDelResumen } from './anuncios.js';
+import { estadoDelMes, mesDe, numerosDelMes, OTRAS_CAMPANAS, presupuestoDelMes, textoDelResumen, type OtrasCampanas } from './anuncios.js';
 import { cortarBusquedas, pausar, pedirBusqueda, ponerModo, seguir } from './comandos.js';
 import { inicioDelDia } from './horas.js';
 import { ClienteNuevo, FijoNuevo, mesActual, numerosDeFinanzas, PagoNuevo, PLAN_POR_DEFECTO, PlanDeCuenta } from './finanzas.js';
@@ -415,9 +415,15 @@ export function crearApi(d: DepsDeApi): FastifyInstance {
   // mismos botones, y los numeros del mes.
 
   app.get('/anuncios', async () => {
-    const [n, todos] = await Promise.all([numerosDelMes({ store, ahora: d.ahora }), store.anuncios()]);
+    const [n, todos, otras] = await Promise.all([
+      numerosDelMes({ store, ahora: d.ahora }),
+      store.anuncios(),
+      store.leerEstado<OtrasCampanas>(OTRAS_CAMPANAS),
+    ]);
     return {
       mes: n.mes,
+      // Las campañas que no son de Homero (Sincro Host): solo para mirar, fuera del presupuesto.
+      otrasCampanas: otras && otras.mes === mesDe(d.ahora()).primerDia ? otras : null,
       consultasHoy: n.consultasHoy,
       consultasMes: n.consultasMes,
       reunionesMes: n.reunionesMes,

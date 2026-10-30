@@ -66,6 +66,9 @@ export interface FilaDeInsights {
   conjunto?: string;
   /** La campaña: lo de otras campañas de la cuenta no es de Homero. */
   campana?: string;
+  /** Los nombres, para mostrar lo de otras campañas (Homero no las conoce). */
+  nombre?: string;
+  nombreCampana?: string;
   dia: string;
   gasto: number;
   impresiones: number;
@@ -513,7 +516,7 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
     async insights(desde, hasta) {
       const filas = await todo(`${cuenta}/insights`, {
         level: 'ad',
-        fields: 'ad_id,adset_id,campaign_id,spend,impressions,actions',
+        fields: 'ad_id,ad_name,adset_id,campaign_id,campaign_name,spend,impressions,actions',
         time_range: { since: desde, until: hasta },
         time_increment: 1,
         limit: 500,
@@ -522,6 +525,8 @@ export function clienteDeMeta(cfg: ConfigDeMeta, pedir: Pedir = fetch): Meta {
         anuncio: String(f.ad_id ?? ''),
         ...(f.adset_id ? { conjunto: String(f.adset_id) } : {}),
         ...(f.campaign_id ? { campana: String(f.campaign_id) } : {}),
+        ...(f.ad_name ? { nombre: String(f.ad_name) } : {}),
+        ...(f.campaign_name ? { nombreCampana: String(f.campaign_name) } : {}),
         dia: String(f.date_start ?? ''),
         // El gasto de insights viene en pesos ("1234.56"), no en centavos.
         gasto: Number(f.spend ?? 0),
