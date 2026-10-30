@@ -353,8 +353,17 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
       )) as DatosDelNumero;
     },
     async canjearCodigo(app, codigo) {
-      const q = new URLSearchParams({ client_id: app.id, client_secret: app.secreto, code: codigo });
-      const json = await pedir('', 'GET', `oauth/access_token?${q}`);
+      const canjear = (extra: Record<string, string>) =>
+        pedir('', 'GET', `oauth/access_token?${new URLSearchParams({ client_id: app.id, client_secret: app.secreto, code: codigo, ...extra })}`);
+      let json: Record<string, unknown>;
+      try {
+        json = await canjear({});
+      } catch (e) {
+        // Las configuraciones con token de usuario piden el redirect_uri del dialogo, que con el SDK de JavaScript es vacio.
+        // Las de usuario del sistema (WhatsApp) no lo piden; un codigo que no se valido no se gasta, asi que se puede reintentar.
+        if (!(e instanceof ErrorDeMeta && /redirect_uri/i.test(e.message))) throw e;
+        json = await canjear({ redirect_uri: '' });
+      }
       if (typeof json.access_token !== 'string' || !json.access_token) throw new ErrorDeMeta('Meta no devolvio el token');
       return json.access_token;
     },
