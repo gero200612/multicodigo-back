@@ -100,6 +100,19 @@ describe('negocios', () => {
   });
 });
 
+describe('media', () => {
+  it('el panel baja un audio guardado con la clave de admin; con la de una app, no', async () => {
+    const { id: negocioId, clave } = await negocioConNumero(b, ['leads']);
+    const id = await b.store.guardarMedia(negocioId, 'audio/ogg', Buffer.from('OggS'), new Date());
+    const r = await b.privado.inject({ method: 'GET', url: `/admin/media/${id}`, headers: { authorization: `Bearer ${CLAVE_ADMIN}` } });
+    expect(r.statusCode).toBe(200);
+    expect(r.headers['content-type']).toContain('audio/ogg');
+    expect(r.body).toBe('OggS');
+    expect((await pedir(b, CLAVE_ADMIN, 'GET', '/admin/media/999999')).status).toBe(404);
+    expect((await pedir(b, clave, 'GET', `/admin/media/${id}`)).status).not.toBe(200);
+  });
+});
+
 describe('costos', () => {
   it('resumen del mes: Meta real o estimado + IA al dolar', async () => {
     const n = await negocioConNumero(b, ['leads', 'avisos']);

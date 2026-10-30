@@ -490,6 +490,23 @@ describe('whatsapp: la sección de la web', () => {
     // Un contacto que no son digitos no llega al bot.
     expect((await app.inject({ method: 'GET', url: '/whatsapp/charlas/3/..%2Fnegocios' })).statusCode).toBe(400);
   });
+
+  it('media: el audio de una charla pasa del bot al panel en binario', async () => {
+    const { admin, pedidos } = adminFalso();
+    admin.pedir = async (metodo, ruta) => {
+      pedidos.push({ metodo, ruta });
+      return { status: 200, json: null, binario: { datos: Buffer.from('OggS'), tipo: 'audio/ogg' } };
+    };
+    const app = Fastify();
+    rutasDeWhatsApp(app, admin);
+
+    const r = await app.inject({ method: 'GET', url: '/whatsapp/media/107' });
+    expect(r.statusCode).toBe(200);
+    expect(r.headers['content-type']).toContain('audio/ogg');
+    expect(r.body).toBe('OggS');
+    expect(pedidos[0]).toEqual({ metodo: 'GET', ruta: '/admin/media/107' });
+    expect((await app.inject({ method: 'GET', url: '/whatsapp/media/..%2Fnegocios' })).statusCode).toBe(400);
+  });
 });
 
 describe('whatsapp: la IA que pide el bot', () => {

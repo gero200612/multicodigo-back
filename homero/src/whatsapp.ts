@@ -890,6 +890,17 @@ export function rutasDeWhatsApp(app: FastifyInstance, admin: AdminWa, store?: Pi
     }));
     return reply.code(200).send({ ...(r.json as object), decisiones });
   });
+  // Un audio o una foto de una charla: el bot lo devuelve en binario y pasa tal cual.
+  app.get<{ Params: { id: string } }>('/whatsapp/media/:id', async (request, reply) => {
+    if (!/^\d{1,12}$/.test(request.params.id)) return reply.code(400).send({ code: 'invalido', message: 'id numerico' });
+    try {
+      const r = await admin.pedir('GET', `/admin/media/${request.params.id}`);
+      if (r.binario) return reply.code(200).type(r.binario.tipo).header('cache-control', 'private, max-age=3600').send(r.binario.datos);
+      return reply.code(r.status).send(r.json);
+    } catch {
+      return reply.code(502).send({ code: 'whatsapp_caido', message: 'No pude hablar con el bot de WhatsApp' });
+    }
+  });
   app.get<{ Params: { id: string } }>('/whatsapp/negocios/:id', async (request, reply) => {
     const r = await reenviar('GET', `/negocios/${encodeURIComponent(request.params.id)}`, {}, undefined);
     return reply.code(r.status).send(r.json);

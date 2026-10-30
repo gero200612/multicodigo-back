@@ -416,6 +416,13 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
     return (await tomarPendientes(ctx, esperar)).map((t) => ({ id: t.id, negocio_id: t.negocioId, tipo: t.tipo, entrada: t.entrada }));
   });
 
+  // Lo que mandaron por WhatsApp (audios, fotos): para escucharlo o verlo desde el panel.
+  app.get('/admin/media/:id', async (req, reply) => {
+    const media = await store.media(Id.parse((req.params as { id: string }).id));
+    if (!media) throw new Rechazo(404, 'no_existe');
+    return reply.type(media.mime).send(media.datos);
+  });
+
   app.get('/admin/ia/:id/archivo', async (req, reply) => {
     const t = await store.trabajo(Id.parse((req.params as { id: string }).id));
     const mediaId = Number(t?.entrada.media_id);
