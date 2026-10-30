@@ -414,13 +414,28 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
             nombre: String(f.name ?? ''),
             moneda: typeof f.currency === 'string' ? f.currency : null,
           }));
-      // Token de usuario (o de usuario del sistema con cuentas asignadas): me/adaccounts. Token de business: las del business.
-      let cuentas = aCuentas(await pedir(token, 'GET', `me/adaccounts?fields=${campos}&limit=100`));
-      for (const negocio of negocios) {
-        if (cuentas.length) break;
-        cuentas = aCuentas(await pedir(token, 'GET', `${encodeURIComponent(negocio)}/owned_ad_accounts?fields=${campos}&limit=100`));
+      // Se prueba en orden hasta que una devuelva cuentas: token de usuario (me/adaccounts), usuario del sistema (sus cuentas
+      // asignadas; Meta le rechaza me/adaccounts con #200) y las del business. Un error no corta: se intenta la siguiente.
+      const rutas = [
+        `me/adaccounts?fields=${campos}&limit=100`,
+        `me/assigned_ad_accounts?fields=${campos}&limit=100`,
+        ...negocios.flatMap((n) => [
+          `${encodeURIComponent(n)}/owned_ad_accounts?fields=${campos}&limit=100`,
+          `${encodeURIComponent(n)}/client_ad_accounts?fields=${campos}&limit=100`,
+        ]),
+      ];
+      let primerError: unknown;
+      for (const ruta of rutas) {
+        try {
+          const cuentas = aCuentas(await pedir(token, 'GET', ruta));
+          if (cuentas.length) return cuentas;
+        } catch (e) {
+          if (!(e instanceof ErrorDeMeta)) throw e;
+          primerError ??= e;
+        }
       }
-      return cuentas;
+      if (primerError) throw primerError;
+      return [];
     },
     async pixeles(token, cuentaId) {
       const json = await pedir(token, 'GET', `${encodeURIComponent(cuentaId)}/adspixels?fields=id,name&limit=100`);

@@ -161,3 +161,31 @@ describe('bajarMedia', () => {
     }
   });
 });
+
+describe('clienteMeta: cuentas publicitarias', () => {
+  it('si Meta rechaza me/adaccounts (usuario del sistema), usa las cuentas asignadas', async () => {
+    const { createServer } = await import('node:http');
+    const { clienteMeta } = await import('../src/meta.js');
+    const pedidas: string[] = [];
+    const srv = createServer((req, res) => {
+      pedidas.push((req.url ?? '').split('?')[0]!);
+      res.setHeader('content-type', 'application/json');
+      if (req.url?.includes('/me/adaccounts')) {
+        res.statusCode = 403;
+        return res.end(JSON.stringify({ error: { message: '(#200) Missing Permissions', code: 200 } }));
+      }
+      if (req.url?.includes('/me/assigned_ad_accounts')) return res.end(JSON.stringify({ data: [{ id: 'act_980', name: 'Homer', currency: 'ARS' }] }));
+      res.statusCode = 404;
+      res.end('{}');
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+    const meta = clienteMeta('v23.0', `http://127.0.0.1:${(srv.address() as { port: number }).port}`);
+    try {
+      expect(await meta.cuentasPublicitarias('t', ['111'])).toEqual([{ id: 'act_980', nombre: 'Homer', moneda: 'ARS' }]);
+      expect(pedidas).toEqual(['/v23.0/me/adaccounts', '/v23.0/me/assigned_ad_accounts']);
+    } finally {
+      srv.closeAllConnections();
+      srv.close();
+    }
+  });
+});
