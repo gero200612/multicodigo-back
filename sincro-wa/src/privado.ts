@@ -92,6 +92,8 @@ export function crearPrivado(ctx: Contexto, cfg: { claveAdmin: string }): Fastif
       if (e.code === 'no_existe' && req.acceso?.tipo === 'app') {
         await ctx.store.registrarIntentoNegado(req.acceso.negocio.id, req.method, req.url.split('?')[0] ?? '', ctx.ahora());
       }
+      // Lo que contesta Meta no queda en ningun otro lado: sin esto, un 502 meta no se puede diagnosticar.
+      if (e.code === 'meta') ctx.log(`${req.method} ${req.url.split('?')[0]}: meta ${e.detalle ?? ''}`);
       return reply.code(e.status).send({ code: e.code, ...(e.detalle ? { detalle: e.detalle } : {}), ...e.extra });
     }
     if (e instanceof ZodError) {
