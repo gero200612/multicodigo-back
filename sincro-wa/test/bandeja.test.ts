@@ -43,7 +43,7 @@ describe('bandeja de la empresa: lista de charlas y respuesta a mano', () => {
     // Con solo bandeja (sin Puente ni leads) contesta igual, aunque la charla no este derivada.
     const r = await pedir(b, n.clave, 'POST', '/mensajes', { a: PERSONA, texto: 'Hola, te escribe el equipo.', canal: 'instagram' });
     expect(r.status).toBe(200);
-    expect(b.meta.mensajeria[0]).toMatchObject({ cuentaId: IG, a: PERSONA });
+    expect(b.meta.mensajeria[0]).toMatchObject({ cuentaId: PAGINA, a: PERSONA });
     const despues = (await pedir(b, n.clave, 'GET', '/charlas?canal=instagram')).json;
     expect(despues[0]).toMatchObject({ mensajes: 2, ultimo: { direccion: 'sale', texto: 'Hola, te escribe el equipo.' } });
   });

@@ -115,7 +115,8 @@ export async function enviarTexto(
       ? await ctx.meta.enviarInteractivo(tokenDe(ctx, numero), numero.phoneNumberId, a, texto, interactivo)
       : numero.canal === 'whatsapp'
         ? await ctx.meta.enviarTexto(tokenDe(ctx, numero), numero.phoneNumberId, a, texto)
-        : await ctx.meta.enviarMensajeria(tokenDe(ctx, numero), numero.phoneNumberId, a, texto));
+        : // Conectado con Facebook Login, Instagram se contesta por la página vinculada (POST {pagina}/messages); a la cuenta de Instagram Meta le da #100.
+          await ctx.meta.enviarMensajeria(tokenDe(ctx, numero), numero.canal === 'instagram' && numero.wabaId ? numero.wabaId : numero.phoneNumberId, a, texto));
   } catch (e) {
     return fallaDeMeta(ctx, e, base);
   }

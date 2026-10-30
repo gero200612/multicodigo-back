@@ -50,8 +50,8 @@ describe('mensajes de Instagram y Messenger', () => {
     const r = await pedir(b, n.clave, 'POST', '/mensajes', { a: PERSONA, texto: 'Hola, soy el asistente.', canal: 'instagram' });
     expect(r.status).toBe(200);
     expect(r.json.wamid).toMatch(/^mid\.sale/);
-    // Sale por la cuenta de Instagram, no por el numero de WhatsApp.
-    expect(b.meta.mensajeria).toEqual([{ token: 'EAAtokenDelSystemUser123', cuentaId: IG, a: PERSONA, texto: 'Hola, soy el asistente.' }]);
+    // Sale por la página vinculada a la cuenta de Instagram (así lo pide Meta con Facebook Login), no por el numero de WhatsApp.
+    expect(b.meta.mensajeria).toEqual([{ token: 'EAAtokenDelSystemUser123', cuentaId: PAGINA, a: PERSONA, texto: 'Hola, soy el asistente.' }]);
     expect(b.meta.enviados).toEqual([]);
     expect((await pedir(b, n.clave, 'GET', `/charlas/${PERSONA}?canal=instagram`)).json.ventana_abierta).toBe(true);
   });
