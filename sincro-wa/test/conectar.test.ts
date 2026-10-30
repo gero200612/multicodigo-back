@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { CAMPOS_DE_PAGINA } from '../src/meta.js';
+import { CAMPOS_DE_PAGINA, ErrorDeMeta } from '../src/meta.js';
 import { descifrar } from '../src/cifrado.js';
 import { tokenDe } from '../src/contexto.js';
 import { armar, CLAVE_ADMIN, negocioConNumero, pedir, webhook, type Banco } from './armar.js';
@@ -275,6 +275,16 @@ describe('conectar-anuncios', () => {
     const n = await negocioSinNumero(['conectar']);
     b.meta.pixelesPorCuenta.clear();
     expect((await conectarAnuncios(n.clave)).json.pixel).toBeNull();
+  });
+
+  it('si Meta no deja leer los píxeles, conecta igual sin píxel', async () => {
+    const n = await negocioSinNumero(['conectar']);
+    b.meta.falloPixeles = new ErrorDeMeta('403 200 (#200) Missing Permissions', 200);
+    const r = await conectarAnuncios(n.clave);
+    b.meta.falloPixeles = null;
+    expect(r.status).toBe(200);
+    expect(r.json.cuenta.id).toBe(CUENTA);
+    expect(r.json.pixel).toBeNull();
   });
 
   it('con varias cuentas y sin cuenta_id da 409 con la lista; con cuenta_id conecta esa; una ajena da 409', async () => {

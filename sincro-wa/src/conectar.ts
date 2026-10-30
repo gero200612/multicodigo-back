@@ -67,12 +67,12 @@ export function vistaDeConexion(n: Numero) {
   };
 }
 
-/** Lo que falla en Meta vuelve a la app como 502 con el detalle (ya tapado). */
-async function conMeta<T>(f: () => Promise<T>): Promise<T> {
+/** Lo que falla en Meta vuelve a la app como 502 con el detalle (ya tapado) y, si se dice, el paso en que falló. */
+async function conMeta<T>(f: () => Promise<T>, paso?: string): Promise<T> {
   try {
     return await f();
   } catch (e) {
-    if (e instanceof ErrorDeMeta) throw new Rechazo(502, 'meta', e.message);
+    if (e instanceof ErrorDeMeta) throw new Rechazo(502, 'meta', paso ? `${paso}: ${e.message}` : e.message);
     throw e;
   }
 }
@@ -179,11 +179,11 @@ export function registrarRutasDeConexion(app: FastifyInstance, ctx: Contexto): v
     if (!appMeta) throw falla(503, 'sin_configurar', 'Falta configurar la app de Meta en el servidor.');
     const b = ConectarAnuncios.parse(req.body);
 
-    const token = await conMeta(() => ctx.meta.canjearCodigo(appMeta, b.codigo));
-    const revision = await conMeta(() => ctx.meta.revisarToken(appMeta, token));
+    const token = await conMeta(() => ctx.meta.canjearCodigo(appMeta, b.codigo), 'canje del código');
+    const revision = await conMeta(() => ctx.meta.revisarToken(appMeta, token), 'revisión del token');
     if (!revision.valido || revision.appId !== appMeta.id) throw falla(409, 'token_invalido', 'El permiso que dio Facebook no es de esta aplicación. Probá conectar de nuevo.');
 
-    const cuentas = await conMeta(() => ctx.meta.cuentasPublicitarias(token, revision.negocios));
+    const cuentas = await conMeta(() => ctx.meta.cuentasPublicitarias(token, revision.negocios), 'cuentas publicitarias');
     if (!cuentas.length) throw falla(409, 'sin_cuentas', 'Facebook no nos dio acceso a ninguna cuenta publicitaria. Volvé a conectar y elegí una cuenta.');
     const vista = (c: { id: string; nombre: string; moneda: string | null }) => ({ id: c.id, nombre: c.nombre, moneda: c.moneda });
     let cuenta = b.cuenta_id ? cuentas.find((c) => c.id === b.cuenta_id) : undefined;
@@ -198,7 +198,12 @@ export function registrarRutasDeConexion(app: FastifyInstance, ctx: Contexto): v
       cuenta = cuentas[0]!;
     }
     const cuentaElegida = cuenta;
-    const pixeles = await conMeta(() => ctx.meta.pixeles(token, cuentaElegida.id));
+    // El píxel es opcional: si la cuenta no tiene o no lo dieron, se conecta igual sin píxel.
+    const pixeles = await ctx.meta.pixeles(token, cuentaElegida.id).catch((e) => {
+      if (!(e instanceof ErrorDeMeta)) throw e;
+      ctx.log(`/conectar-anuncios: sin píxeles de ${cuentaElegida.id} (${e.message})`);
+      return [];
+    });
 
     await store.registrarCambios([
       { negocioId: negocio.id, campo: 'anuncios', antes: null, despues: cuentaElegida.id, quien: `app:${negocio.app}`, fecha: ctx.ahora() },

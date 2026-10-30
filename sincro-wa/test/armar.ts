@@ -136,8 +136,11 @@ export class MetaFalsa implements ClienteMeta {
     this.conexion.push({ tipo: 'paginas', token });
     return this.cuentasAds;
   }
+  /** Si está, pedir los píxeles falla con este error de Meta (la cuenta conecta igual). */
+  falloPixeles: Error | null = null;
   async pixeles(_token: string, cuenta: string) {
     this.revisar();
+    if (this.falloPixeles) throw this.falloPixeles;
     return this.pixelesPorCuenta.get(cuenta) ?? [];
   }
   async numerosDeLaWaba(_token: string, waba: string) {
