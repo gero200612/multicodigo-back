@@ -7,7 +7,7 @@
  * una entrada aca; lo demas lo lee de este catalogo.
  */
 
-export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender', 'puente', 'instagram_lectura', 'conectar'] as const;
+export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender', 'puente', 'instagram_lectura', 'conectar', 'bandeja'] as const;
 export type Capacidad = (typeof CAPACIDADES)[number];
 
 export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar' | 'conexion' | 'baja' | 'alta' | 'comentario' | 'lead';
@@ -26,7 +26,7 @@ const CATALOGO: Record<Capacidad, Entrada> = {
   leads: {
     // `formulario`: el de contacto de la web del negocio (ver formulario.ts).
     eventos: ['mensaje', 'formulario'],
-    rutas: ['POST /mensajes', 'POST /escribiendo', 'GET /charlas/:contacto', 'GET /media/:id'],
+    rutas: ['POST /mensajes', 'POST /escribiendo', 'GET /charlas', 'GET /charlas/:contacto', 'GET /media/:id'],
     plantillas: [],
   },
   facturas: { eventos: ['factura'], rutas: ['GET /media/:id'], plantillas: [] },
@@ -53,6 +53,9 @@ const CATALOGO: Record<Capacidad, Entrada> = {
   },
   // La empresa conecta su propio numero desde su app (Embedded Signup) y ve como esta. No manda ni lee mensajes.
   conectar: { eventos: ['conexion', 'lead'], rutas: ['POST /conectar', 'POST /conectar-pagina', 'POST /conectar-anuncios', 'GET /conexion'], plantillas: [] },
+  // La bandeja de la app de la empresa: ve las charlas (WhatsApp, Instagram y Messenger) y contesta a mano, sin recibir eventos ni
+  // depender de que Puente este prendido. Puede contestar cualquier charla (no solo las derivadas), siempre dentro de la ventana de 24 h.
+  bandeja: { eventos: [], rutas: ['GET /charlas', 'GET /charlas/:contacto', 'POST /mensajes', 'GET /media/:id'], plantillas: [] },
   // Sincro Puente: contesta en nombre de la empresa. Recibe todos los mensajes (no solo los derivados),
   // los estados de entrega y los avisos de la conexion (token caido). Plantillas de utilidad; las de
   // marketing exigen ademas `promociones`. NO usa la IA de este bot: piensa Puente, en la app.
@@ -61,6 +64,7 @@ const CATALOGO: Record<Capacidad, Entrada> = {
     rutas: [
       'POST /mensajes',
       'POST /escribiendo',
+      'GET /charlas',
       'GET /charlas/:contacto',
       'POST /charlas/:contacto/baja',
       'POST /comentarios/:id/responder',

@@ -61,8 +61,8 @@ export function vistaDePlantilla(p: Plantilla) {
   return { id: p.id, nombre: p.nombre, idioma: p.idioma, categoria: p.categoria, estado: p.estado, motivo: p.motivo, bloqueada: p.bloqueada };
 }
 
-/** `leads` y `puente` contestan cualquier charla; `atender` solo las que la IA le derivó. */
-const contestaTodo = (caps: Parameters<typeof tiene>[0]) => tiene(caps, 'leads') || tiene(caps, 'puente');
+/** `leads`, `puente` y `bandeja` contestan cualquier charla; `atender` solo las que la IA le derivó. */
+const contestaTodo = (caps: Parameters<typeof tiene>[0]) => tiene(caps, 'leads') || tiene(caps, 'puente') || tiene(caps, 'bandeja');
 
 export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
   const { store } = ctx;
@@ -108,6 +108,36 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
       if (e instanceof ErrorDeMeta) return { ok: false };
       throw e;
     }
+  });
+
+  // La lista de charlas del negocio, la mas reciente primero, con su ultimo mensaje y si todavia se puede contestar (ventana de 24 h).
+  // Una fila por contacto; el canal es el de la cuenta por la que hablo por ultima vez.
+  app.get('/charlas', async (req) => {
+    const negocio = negocioDe(req);
+    const { limite, canal } = z
+      .object({ limite: z.coerce.number().int().min(1).max(100).default(50), canal: z.enum(['whatsapp', 'instagram', 'messenger']).optional() })
+      .parse(req.query);
+    const numeros = new Map((await store.numerosDe(negocio.id)).map((n) => [n.id, n]));
+    const ahora = ctx.ahora();
+    const filas = (await store.charlas(negocio.id, 500)).filter(({ ultimo }) => {
+      const n = numeros.get(ultimo.numeroId);
+      return !!n && (!canal || n.canal === canal);
+    });
+    return Promise.all(
+      filas.slice(0, limite).map(async ({ ultimo, cantidad }) => {
+        const numero = numeros.get(ultimo.numeroId)!;
+        const contacto = await store.contacto(numero.id, ultimo.contacto);
+        return {
+          contacto: ultimo.contacto,
+          canal: numero.canal,
+          nombre: contacto?.nombre ?? null,
+          ventana_abierta: ventanaAbierta(contacto, ahora),
+          baja: contacto?.baja ?? false,
+          mensajes: cantidad,
+          ultimo: { direccion: ultimo.direccion, tipo: ultimo.tipo, texto: ultimo.texto, fecha: ultimo.fecha.toISOString() },
+        };
+      }),
+    );
   });
 
   app.get('/charlas/:contacto', async (req) => {

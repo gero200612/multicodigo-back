@@ -57,6 +57,7 @@ reemplaza `/EAA[A-Za-z0-9_-]{10,}/g` por `EAA…` y las claves `swa_…` por `sw
 | `atender` | `mensaje` (solo si la charla está derivada), `derivar` | `POST /mensajes`, `GET /charlas/:contacto`, `PUT /atender/contexto`, `POST /charlas/:contacto/liberar`, `GET /media/:id` | — |
 | `conectar` | `conexion` | `POST /conectar`, `GET /conexion` | — |
 | `instagram_lectura` | — | `GET /instagram/reels`, `GET /instagram/reels/:id`, `GET /instagram/reels/:id/archivo` | — |
+| `bandeja` | — | `GET /charlas`, `GET /charlas/:contacto`, `POST /mensajes`, `GET /media/:id` | — |
 | `puente` | `mensaje` (todos, con `canal` y `wamid`), `estado`, `conexion`, `baja`, `alta`, `comentario` | `POST /mensajes`, `POST /escribiendo`, `GET /charlas/:contacto`, `POST /charlas/:contacto/baja`, `POST /comentarios/:id/responder`, `POST /comentarios/:id/privado`, `POST /comentarios/:id/ocultar`, `GET /media/:id`, `POST /avisos`, `GET/POST /plantillas` | solo `UTILITY` (`MARKETING` pide además `promociones`) |
 
 Todas las claves de app ven `GET /eventos`, `POST /eventos/ack` y `GET /yo`.
@@ -77,6 +78,11 @@ el cliente no los ve.
   mensaje entrante de ese contacto a ese número), `409 {"code":"baja"}`,
   `502 {"code":"meta","detalle":"..."}`.
 - `200 {"id": <mensaje id>, "wamid": "wamid...."}`.
+
+### `GET /charlas?canal=&limite=50` (`bandeja`, `leads`, `puente`)
+`200 [{"contacto","canal":"whatsapp"|"instagram"|"messenger","nombre","ventana_abierta","baja","mensajes":<cantidad>,
+"ultimo":{"direccion","tipo","texto","fecha"}}]`, la charla más reciente primero (una por contacto; el canal es el de
+la cuenta por la que habló por última vez). `limite` hasta 100.
 
 ### `GET /charlas/:contacto?limite=30`
 `200 {"contacto", "ventana_abierta": bool, "baja": bool, "derivada": bool,
