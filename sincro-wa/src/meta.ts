@@ -121,7 +121,7 @@ export interface ClienteMeta {
   /** Suscribe la pagina (y su Instagram) a los webhooks de la app: mensajes, comentarios y feed. */
   suscribirPagina(tokenDePagina: string, paginaId: string): Promise<void>;
   /** Las cuentas publicitarias a las que llega el token (`me/adaccounts`; si no da, las `owned_ad_accounts` de cada business). */
-  cuentasPublicitarias(token: string, negocios: string[]): Promise<CuentaPublicitaria[]>;
+  cuentasPublicitarias(token: string, negocios: string[], elegidas?: string[]): Promise<CuentaPublicitaria[]>;
   /** Los pixeles de una cuenta publicitaria (`act_…`). */
   pixeles(token: string, cuentaId: string): Promise<{ id: string; nombre: string }[]>;
   /** Registra el numero en la Cloud API con un PIN de dos pasos. No va con coexistencia. */
@@ -404,7 +404,7 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
     async suscribirPagina(tokenDePagina, paginaId) {
       await pedir(tokenDePagina, 'POST', `${encodeURIComponent(paginaId)}/subscribed_apps`, { subscribed_fields: CAMPOS_DE_PAGINA });
     },
-    async cuentasPublicitarias(token, negocios) {
+    async cuentasPublicitarias(token, negocios, elegidas = []) {
       const campos = 'id,name,currency,account_id';
       const aCuentas = (json: Record<string, unknown>): CuentaPublicitaria[] =>
         (Array.isArray(json.data) ? (json.data as Record<string, any>[]) : [])
@@ -414,8 +414,21 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
             nombre: String(f.name ?? ''),
             moneda: typeof f.currency === 'string' ? f.currency : null,
           }));
-      // Se prueba en orden hasta que una devuelva cuentas: token de usuario (me/adaccounts), usuario del sistema (sus cuentas
-      // asignadas; Meta le rechaza me/adaccounts con #200) y las del business. Un error no corta: se intenta la siguiente.
+      // Primero las que eligió en la ventana de Meta (vienen en el token): con usuario del sistema es lo único que Meta deja leer.
+      const directas: CuentaPublicitaria[] = [];
+      let primerError: unknown;
+      for (const id of elegidas) {
+        const act = id.startsWith('act_') ? id : `act_${id}`;
+        try {
+          directas.push(...aCuentas({ data: [await pedir(token, 'GET', `${encodeURIComponent(act)}?fields=${campos}`)] }));
+        } catch (e) {
+          if (!(e instanceof ErrorDeMeta)) throw e;
+          primerError ??= e;
+        }
+      }
+      if (directas.length) return directas;
+      // Si no, se prueba en orden hasta que una devuelva cuentas: token de usuario (me/adaccounts), usuario del sistema (sus
+      // cuentas asignadas; Meta le rechaza me/adaccounts con #200) y las del business. Un error no corta: se intenta la siguiente.
       const rutas = [
         `me/adaccounts?fields=${campos}&limit=100`,
         `me/assigned_ad_accounts?fields=${campos}&limit=100`,
@@ -424,7 +437,6 @@ export function clienteMeta(version: string, base = 'https://graph.facebook.com'
           `${encodeURIComponent(n)}/client_ad_accounts?fields=${campos}&limit=100`,
         ]),
       ];
-      let primerError: unknown;
       for (const ruta of rutas) {
         try {
           const cuentas = aCuentas(await pedir(token, 'GET', ruta));

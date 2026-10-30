@@ -183,7 +183,7 @@ export function registrarRutasDeConexion(app: FastifyInstance, ctx: Contexto): v
     const revision = await conMeta(() => ctx.meta.revisarToken(appMeta, token), 'revisión del token');
     if (!revision.valido || revision.appId !== appMeta.id) throw falla(409, 'token_invalido', 'El permiso que dio Facebook no es de esta aplicación. Probá conectar de nuevo.');
 
-    const cuentas = await conMeta(() => ctx.meta.cuentasPublicitarias(token, revision.negocios), 'cuentas publicitarias');
+    const cuentas = await conMeta(() => ctx.meta.cuentasPublicitarias(token, revision.negocios, revision.cuentasPublicitarias), 'cuentas publicitarias');
     if (!cuentas.length) throw falla(409, 'sin_cuentas', 'Facebook no nos dio acceso a ninguna cuenta publicitaria. Volvé a conectar y elegí una cuenta.');
     const vista = (c: { id: string; nombre: string; moneda: string | null }) => ({ id: c.id, nombre: c.nombre, moneda: c.moneda });
     let cuenta = b.cuenta_id ? cuentas.find((c) => c.id === b.cuenta_id) : undefined;
