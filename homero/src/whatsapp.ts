@@ -895,7 +895,18 @@ export function rutasDeWhatsApp(app: FastifyInstance, admin: AdminWa, store?: Pi
     if (!/^\d{1,12}$/.test(request.params.id)) return reply.code(400).send({ code: 'invalido', message: 'id numerico' });
     try {
       const r = await admin.pedir('GET', `/admin/media/${request.params.id}`);
-      if (r.binario) return reply.code(200).type(r.binario.tipo).header('cache-control', 'private, max-age=3600').send(r.binario.datos);
+      if (r.binario) {
+        // El tipo lo informa quien manda el archivo: fuera de audio e imagenes, se baja como binario y nunca se interpreta.
+        const seguro = /^(audio\/[\w.+-]+|image\/(jpeg|png|webp|gif))(;.*)?$/i.test(r.binario.tipo);
+        return reply
+          .code(200)
+          .type(seguro ? r.binario.tipo : 'application/octet-stream')
+          .header('x-content-type-options', 'nosniff')
+          .header('content-security-policy', "sandbox; default-src 'none'")
+          .header('content-disposition', seguro ? 'inline' : 'attachment')
+          .header('cache-control', 'private, max-age=3600')
+          .send(r.binario.datos);
+      }
       return reply.code(r.status).send(r.json);
     } catch {
       return reply.code(502).send({ code: 'whatsapp_caido', message: 'No pude hablar con el bot de WhatsApp' });

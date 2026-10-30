@@ -420,7 +420,8 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
   app.get('/admin/media/:id', async (req, reply) => {
     const media = await store.media(Id.parse((req.params as { id: string }).id));
     if (!media) throw new Rechazo(404, 'no_existe');
-    return reply.type(media.mime).send(media.datos);
+    // El mime lo informa quien manda el archivo: el panel (Homero) decide si se puede mostrar.
+    return reply.type(media.mime).header('x-content-type-options', 'nosniff').send(media.datos);
   });
 
   app.get('/admin/ia/:id/archivo', async (req, reply) => {

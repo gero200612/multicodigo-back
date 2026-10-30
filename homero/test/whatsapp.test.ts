@@ -504,7 +504,14 @@ describe('whatsapp: la sección de la web', () => {
     expect(r.statusCode).toBe(200);
     expect(r.headers['content-type']).toContain('audio/ogg');
     expect(r.body).toBe('OggS');
+    expect(r.headers['x-content-type-options']).toBe('nosniff');
     expect(pedidos[0]).toEqual({ metodo: 'GET', ruta: '/admin/media/107' });
+
+    // Un archivo que dice ser HTML se baja como binario, nunca se interpreta.
+    admin.pedir = async () => ({ status: 200, json: null, binario: { datos: Buffer.from('<script>'), tipo: 'text/html' } });
+    const html = await app.inject({ method: 'GET', url: '/whatsapp/media/108' });
+    expect(html.headers['content-type']).toContain('application/octet-stream');
+    expect(html.headers['content-disposition']).toBe('attachment');
     expect((await app.inject({ method: 'GET', url: '/whatsapp/media/..%2Fnegocios' })).statusCode).toBe(400);
   });
 });
