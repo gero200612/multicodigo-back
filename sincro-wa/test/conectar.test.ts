@@ -175,6 +175,8 @@ describe('conectar-pagina (Facebook Login for Business)', () => {
 
   it('suscribe también el campo leadgen', () => {
     expect(CAMPOS_DE_PAGINA.split(',')).toContain('leadgen');
+    // Meta rechaza todo el pedido (#100) si hay un campo que no es de pagina.
+    expect(CAMPOS_DE_PAGINA.split(',')).not.toContain('instagram_manage_comments');
   });
 
   it('una página sin Instagram devuelve instagram: null; reconectar actualiza sin duplicar', async () => {

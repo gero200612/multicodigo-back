@@ -145,8 +145,8 @@ export class ErrorDeMeta extends Error {
 /** Meta invalidó el token: no sirve para nada hasta que se reconecte. */
 export const esTokenCaido = (e: unknown): boolean => e instanceof ErrorDeMeta && e.codigo === 190;
 
-/** Lo que la app recibe de una pagina: mensajes de Messenger e Instagram, comentarios de Instagram y el feed (comentarios de la pagina). */
-export const CAMPOS_DE_PAGINA = 'messages,messaging_postbacks,message_reads,message_deliveries,feed,instagram_manage_comments,leadgen';
+/** Lo que la app recibe de una pagina: mensajes de Messenger e Instagram, el feed (comentarios de la pagina) y los leads. Los comentarios de Instagram llegan por la suscripcion de la app al objeto Instagram, no por la pagina. */
+export const CAMPOS_DE_PAGINA = 'messages,messaging_postbacks,message_reads,message_deliveries,feed,leadgen';
 
 const TECHO_MS = 20_000;
 const CAMPOS_REEL = 'id,caption,permalink,timestamp,media_product_type,media_url,owner{id},like_count,comments_count';
