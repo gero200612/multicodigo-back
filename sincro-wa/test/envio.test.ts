@@ -62,6 +62,19 @@ describe('mensajes con botones', () => {
     expect(textos).toContain('La web\n[Ver la web → https://sincro.apps.punchi.dev]');
   });
 
+  it('la charla dice el estado de cada saliente: uno que Meta no aceptó queda failed', async () => {
+    const n = await negocioConNumero(b, ['leads']);
+    await webhook(b, texto(n.phoneNumberId, CONTACTO, 'hola'));
+    expect((await pedir(b, n.clave, 'POST', '/mensajes', { a: CONTACTO, texto: 'sale bien' })).status).toBe(200);
+    b.meta.fallar = '400 meta caida';
+    await pedir(b, n.clave, 'POST', '/mensajes', { a: CONTACTO, texto: 'no sale' });
+    b.meta.fallar = null;
+
+    const mensajes = (await pedir(b, n.clave, 'GET', `/charlas/${CONTACTO}`)).json.mensajes as { texto: string; estado: string }[];
+    expect(mensajes.find((m) => m.texto === 'sale bien')!.estado).not.toBe('failed');
+    expect(mensajes.find((m) => m.texto === 'no sale')!.estado).toBe('failed');
+  });
+
   it('valida: hasta 3 botones de 20, sin repetir, sin link a la vez, y respeta la ventana', async () => {
     const n = await negocioConNumero(b, ['leads']);
     await webhook(b, texto(n.phoneNumberId, CONTACTO, 'hola'));

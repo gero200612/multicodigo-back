@@ -162,6 +162,8 @@ export function registrarRutasDeApp(app: FastifyInstance, ctx: Contexto): void {
         media_id: m.mediaId,
         referral: m.referral,
         fecha: m.fecha.toISOString(),
+        // Los salientes: aceptado, sent, delivered, read o failed (Meta no lo aceptó o no lo pudo entregar).
+        estado: m.estado,
       })),
     };
   });
