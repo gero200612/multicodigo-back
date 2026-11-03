@@ -49,7 +49,7 @@ describe('negocios', () => {
     const n = await negocioConNumero(b, ['avisos'], { nombre: 'Taller X', urlBase: 'http://taller.interno' });
     const [v] = (await pedir(b, CLAVE_ADMIN, 'GET', '/admin/negocios')).json;
     expect(Object.keys(v).sort()).toEqual(
-      ['activo', 'app', 'capacidades', 'clave_ultimo_uso', 'gasto_mes_ars', 'id', 'nombre', 'numeros', 'porcentaje_tope', 'tope_mensual_ars'].sort(),
+      ['activo', 'app', 'capacidades', 'charlas_privadas', 'clave_ultimo_uso', 'gasto_mes_ars', 'id', 'nombre', 'numeros', 'porcentaje_tope', 'tope_mensual_ars'].sort(),
     );
     expect(Object.keys(v.numeros[0]).sort()).toEqual(['calidad', 'canal', 'estado', 'id', 'phone_number_id', 'tope_meta', 'waba_id']);
     const detalle = (await pedir(b, CLAVE_ADMIN, 'GET', `/admin/negocios/${n.id}`)).json;
@@ -291,6 +291,41 @@ describe('charlas', () => {
     const n = await negocioConNumero(b, ['leads']);
     expect((await pedir(b, n.clave, 'GET', '/admin/charlas')).status).not.toBe(200);
     expect((await pedir(b, n.clave, 'GET', `/admin/charlas/${n.id}/5491100000001`)).status).not.toBe(200);
+  });
+
+  it('las charlas de un negocio con charlas_privadas no salen: ni listado, ni detalle, ni media', async () => {
+    const pub = await negocioConNumero(b, ['leads'], { nombre: 'Sincro' });
+    const priv = await negocioConNumero(b, ['leads'], { nombre: 'Cliente' });
+    await webhook(b, texto(pub.phoneNumberId, '5491100000001', 'a'));
+    await webhook(b, texto(priv.phoneNumberId, '5491100000002', 'b'));
+    const mediaId = await b.store.guardarMedia(priv.id, 'audio/ogg', Buffer.from('OggS'), new Date());
+    const antes = await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas/${priv.id}/5491100000002`);
+    expect(antes.status).toBe(200);
+
+    const r = await pedir(b, CLAVE_ADMIN, 'PATCH', `/admin/negocios/${priv.id}`, { charlas_privadas: true, quien: 'gero' });
+    expect(r.json.charlas_privadas).toBe(true);
+    expect((await pedir(b, CLAVE_ADMIN, 'GET', `/admin/negocios/${priv.id}`)).json.charlas_privadas).toBe(true);
+    expect((await pedir(b, CLAVE_ADMIN, 'GET', '/admin/negocios')).json.map((n: { charlas_privadas: boolean }) => n.charlas_privadas)).toEqual([false, true]);
+
+    expect((await pedir(b, CLAVE_ADMIN, 'GET', '/admin/charlas')).json.map((c: { contacto: string }) => c.contacto)).toEqual(['5491100000001']);
+    expect((await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas?negocio=${priv.id}`)).json).toEqual([]);
+    const det = await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas/${priv.id}/5491100000002`);
+    expect(det.status).toBe(404);
+    expect(det.json.code).toBe('sin_charla');
+    expect((await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas/${pub.id}/5491100000001`)).status).toBe(200);
+    expect((await pedir(b, CLAVE_ADMIN, 'GET', `/admin/media/${mediaId}`)).status).toBe(404);
+
+    // La propia app sigue viendo su charla.
+    expect((await pedir(b, priv.clave, 'GET', '/charlas')).status).not.toBe(404);
+    // Se puede volver a abrir.
+    await pedir(b, CLAVE_ADMIN, 'PATCH', `/admin/negocios/${priv.id}`, { charlas_privadas: false, quien: 'gero' });
+    expect((await pedir(b, CLAVE_ADMIN, 'GET', `/admin/charlas/${priv.id}/5491100000002`)).status).toBe(200);
+  });
+
+  it('el alta acepta charlas_privadas', async () => {
+    const r = await pedir(b, CLAVE_ADMIN, 'POST', '/admin/negocios', { nombre: 'X', app: 'x', capacidades: [], tope_mensual_ars: 1, charlas_privadas: true, quien: 'gero' });
+    expect(r.status).toBe(201);
+    expect(r.json.negocio.charlas_privadas).toBe(true);
   });
 
   it('una charla que no existe es 404', async () => {

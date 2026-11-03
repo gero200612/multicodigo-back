@@ -39,6 +39,7 @@ const NuevoNegocio = z.object({
   capacidades: Capacidades,
   tope_mensual_ars: Tope,
   url_base: UrlBase.optional(),
+  charlas_privadas: z.boolean().optional(),
   quien: Quien,
 });
 
@@ -47,6 +48,7 @@ const CambiosPedidos = z.object({
   tope_mensual_ars: Tope.optional(),
   url_base: UrlBase.optional(),
   activo: z.boolean().optional(),
+  charlas_privadas: z.boolean().optional(),
   quien: Quien,
 });
 
@@ -80,6 +82,7 @@ function vistaDeNegocio(n: Negocio) {
     capacidades: n.capacidades,
     tope_mensual_ars: n.topeMensualArs,
     activo: n.activo,
+    charlas_privadas: n.charlasPrivadas,
     clave_ultimo_uso: n.claveUltimoUso?.toISOString() ?? null,
   };
 }
@@ -129,6 +132,7 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
         capacidades: b.capacidades,
         topeMensualArs: b.tope_mensual_ars,
         urlBase: b.url_base ?? null,
+        charlasPrivadas: b.charlas_privadas ?? false,
         secretoEventos: cifrar(ctx.claveCifrado, secreto),
       },
       ahora,
@@ -166,6 +170,7 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
     anotar('tope_mensual_ars', 'topeMensualArs', n.topeMensualArs, b.tope_mensual_ars);
     anotar('url_base', 'urlBase', n.urlBase, b.url_base);
     anotar('activo', 'activo', n.activo, b.activo);
+    anotar('charlas_privadas', 'charlasPrivadas', n.charlasPrivadas, b.charlas_privadas);
     if (!registro.length) return negocioCompleto(n);
     const nuevo = (await store.cambiarNegocio(n.id, cambios))!;
     await store.registrarCambios(registro);
@@ -293,9 +298,15 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
 
   app.get('/admin/charlas', async (req) => {
     const q = z.object({ negocio: Id.optional(), limite: z.coerce.number().int().min(1).max(500).default(100) }).parse(req.query);
-    const nombres = new Map((await store.negocios()).map((n) => [n.id, n.nombre]));
+    const negocios = await store.negocios();
+    const nombres = new Map(negocios.map((n) => [n.id, n.nombre]));
+    // Las charlas de un cliente son del cliente: no salen en el panel.
+    const privados = new Set(negocios.filter((n) => n.charlasPrivadas).map((n) => n.id));
+    if (q.negocio !== undefined && privados.has(q.negocio)) return [];
+    // Se piden de mas por si algunas son de negocios privados y se descartan.
+    const filas = (await store.charlas(q.negocio, privados.size ? 500 : q.limite)).filter((c) => !privados.has(c.ultimo.negocioId));
     return Promise.all(
-      (await store.charlas(q.negocio, q.limite)).map(async ({ ultimo, cantidad }) => {
+      filas.slice(0, q.limite).map(async ({ ultimo, cantidad }) => {
         const contenidoUltimo = await contenidoDe(ultimo);
         return {
         negocio_id: ultimo.negocioId,
@@ -314,6 +325,7 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
       .object({ negocio: Id, contacto: z.string().regex(/^\d{8,15}$/) })
       .parse(req.params);
     const { limite } = z.object({ limite: z.coerce.number().int().min(1).max(500).default(200) }).parse(req.query);
+    if ((await store.negocio(p.negocio))?.charlasPrivadas) return reply.code(404).send({ code: 'sin_charla', message: 'no hay mensajes con ese contacto' });
     const mensajes = await store.charla(p.negocio, p.contacto, limite);
     if (mensajes.length === 0) return reply.code(404).send({ code: 'sin_charla', message: 'no hay mensajes con ese contacto' });
     const completos = await Promise.all(mensajes.map(async (m) => ({ ...m, contenido: await contenidoDe(m) })));
@@ -419,7 +431,7 @@ export function registrarRutasDeAdmin(app: FastifyInstance, ctx: Contexto): void
   // Lo que mandaron por WhatsApp (audios, fotos): para escucharlo o verlo desde el panel.
   app.get('/admin/media/:id', async (req, reply) => {
     const media = await store.media(Id.parse((req.params as { id: string }).id));
-    if (!media) throw new Rechazo(404, 'no_existe');
+    if (!media || (await store.negocio(media.negocioId))?.charlasPrivadas) throw new Rechazo(404, 'no_existe');
     // El mime lo informa quien manda el archivo: el panel (Homero) decide si se puede mostrar.
     return reply.type(media.mime).header('x-content-type-options', 'nosniff').send(media.datos);
   });

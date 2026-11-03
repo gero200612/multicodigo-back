@@ -59,6 +59,7 @@ const negocio = (r: Fila): Negocio => ({
   claveUltimoUso: r.clave_ultimo_uso,
   secretoEventos: r.secreto_eventos,
   contextoAtender: r.contexto_atender,
+  charlasPrivadas: r.charlas_privadas,
   creado: r.creado,
 });
 
@@ -232,9 +233,9 @@ export class PgStore implements Store {
 
   async crearNegocio(n: NuevoNegocio, fecha: Date): Promise<Negocio> {
     const [r] = await this.filas(
-      `INSERT INTO negocios (nombre, app, capacidades, tope_mensual_ars, url_base, secreto_eventos, creado)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [n.nombre, n.app, n.capacidades, n.topeMensualArs, n.urlBase, n.secretoEventos, fecha],
+      `INSERT INTO negocios (nombre, app, capacidades, tope_mensual_ars, url_base, secreto_eventos, charlas_privadas, creado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [n.nombre, n.app, n.capacidades, n.topeMensualArs, n.urlBase, n.secretoEventos, n.charlasPrivadas ?? false, fecha],
     );
     return negocio(r!);
   }

@@ -22,6 +22,8 @@ export interface Negocio {
   /** Cifrado (cifrado.ts). */
   secretoEventos: string;
   contextoAtender: string;
+  /** Las charlas son del cliente: el panel de admin no las lista ni baja su media. */
+  charlasPrivadas: boolean;
   creado: Date;
 }
 
@@ -32,10 +34,11 @@ export interface NuevoNegocio {
   topeMensualArs: number;
   urlBase: string | null;
   secretoEventos: string;
+  charlasPrivadas?: boolean;
 }
 
 export type CambiosDeNegocio = Partial<
-  Pick<Negocio, 'capacidades' | 'topeMensualArs' | 'urlBase' | 'activo' | 'contextoAtender' | 'claveHash'>
+  Pick<Negocio, 'capacidades' | 'topeMensualArs' | 'urlBase' | 'activo' | 'contextoAtender' | 'claveHash' | 'charlasPrivadas'>
 >;
 
 /** Por donde habla la gente: WhatsApp, Instagram o Messenger. Cada cuenta de Instagram y de Messenger es un «numero» con su canal. */

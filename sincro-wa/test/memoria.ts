@@ -68,6 +68,7 @@ export class MemoriaStore implements Store {
   async crearNegocio(n: NuevoNegocio, fecha: Date) {
     const nuevo: Negocio = {
       ...n,
+      charlasPrivadas: n.charlasPrivadas ?? false,
       id: this.id('negocios'),
       activo: true,
       claveHash: null,
