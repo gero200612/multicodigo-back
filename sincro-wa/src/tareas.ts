@@ -71,27 +71,6 @@ export async function revisarCalidad(ctx: Contexto): Promise<void> {
   }
 }
 
-// Un numero con movimiento (20 eventos en la semana) que se queda 6 h sin
-// nada probablemente perdio el webhook: Meta lo desuscribio o vencio el token.
-const MOVIMIENTO_MINIMO = 20;
-const SILENCIO_MS = 6 * HORA_MS;
-
-export async function revisarSilencio(ctx: Contexto): Promise<void> {
-  const ahora = ctx.ahora().getTime();
-  for (const n of await ctx.store.todosLosNumeros()) {
-    if (n.sinMensajesAlertado) continue;
-    if ((await ctx.store.contarWebhooks(n.id, new Date(ahora - 7 * DIA_MS))) < MOVIMIENTO_MINIMO) continue;
-    if ((await ctx.store.contarWebhooks(n.id, new Date(ahora - SILENCIO_MS))) > 0) continue;
-    const negocio = await ctx.store.negocio(n.negocioId);
-    await ctx.store.cambiarNumero(n.id, { sinMensajesAlertado: true });
-    await alertar(ctx, {
-      negocioId: n.negocioId,
-      tipo: 'sin_mensajes',
-      texto: `No llegan mensajes de Meta hace 6 h al número ${n.phoneNumberId} (${negocio?.nombre ?? '?'}). Revisar el webhook y el token.`,
-    });
-  }
-}
-
 const MEDIA_DURA_MS = 30 * DIA_MS;
 const WEBHOOKS_DURAN_MS = 8 * DIA_MS;
 
@@ -125,7 +104,6 @@ export function arrancarTareas(ctx: Contexto): () => void {
   };
   const relojes = [
     cada(30 * 60_000, 'calidad', revisarCalidad),
-    cada(15 * 60_000, 'silencio', revisarSilencio),
     cada(HORA_MS, 'limpieza', limpiar),
     cada(15_000, 'push', reintentarPushes),
     cada(60_000, 'ia', liberarIa),

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DIA_MS, HORA_MS } from '../src/horas.js';
-import { limpiar, revisarSilencio } from '../src/tareas.js';
+import { limpiar } from '../src/tareas.js';
 import { armar, CLAVE_ADMIN, estado, negocioConNumero, pedir, plantillaAprobada, texto, webhook, type Banco } from './armar.js';
 
 let b: Banco;
@@ -158,22 +158,6 @@ describe('costos', () => {
 });
 
 describe('tareas', () => {
-  it('sin mensajes: alerta una vez con movimiento y 6 h de silencio, y se rearma cuando vuelve', async () => {
-    const n = await negocioConNumero(b, ['leads']);
-    for (let i = 0; i < 20; i++) {
-      await webhook(b, texto(n.phoneNumberId, '5491100000001', `m${i}`));
-      b.reloj.avanzar(HORA_MS);
-    }
-    await revisarSilencio(b.ctx);
-    expect(b.store.alertasT).toEqual([]);
-    b.reloj.avanzar(6 * HORA_MS);
-    await revisarSilencio(b.ctx);
-    await revisarSilencio(b.ctx);
-    expect(b.store.alertasT.map((a) => a.tipo)).toEqual(['sin_mensajes']);
-    await webhook(b, texto(n.phoneNumberId, '5491100000001', 'volví'));
-    expect((await b.store.numero(n.numeroId))!.sinMensajesAlertado).toBe(false);
-  });
-
   it('la media se borra a los 30 dias', async () => {
     const n = await negocioConNumero(b, ['leads']);
     await b.store.guardarMedia(n.id, 'image/jpeg', Buffer.from('x'), b.reloj.ahora);
