@@ -93,18 +93,8 @@ export function registrarRutasDeConexion(app: FastifyInstance, ctx: Contexto): v
     };
   });
 
-  /**
-   * Facebook Login for Business: la empresa elige su pagina (y el Instagram
-   * vinculado) y la app manda el codigo. Mismo cuidado que `/conectar`: el
-   * token tiene que ser de nuestra app y las paginas salen de Meta, no del
-   * navegador. Una pagina o un Instagram que ya es de otro negocio no se toca.
-   */
-  app.post('/conectar-pagina', async (req) => {
-    const negocio = negocioDe(req);
-    const appMeta = ctx.appMeta;
-    if (!appMeta) throw falla(503, 'sin_configurar', 'Falta configurar la app de Meta en el servidor.');
-    const b = ConectarPagina.parse(req.body);
-
+  /** Canjea el codigo, revisa que el token sea de nuestra app y devuelve la pagina elegida (o pide elegir si hay varias). */
+  async function paginaElegida(appMeta: { id: string; secreto: string }, b: z.infer<typeof ConectarPagina>) {
     const token = await conMeta(() => ctx.meta.canjearCodigo(appMeta, b.codigo));
     const revision = await conMeta(() => ctx.meta.revisarToken(appMeta, token));
     if (!revision.valido || revision.appId !== appMeta.id) throw falla(409, 'token_invalido', 'El permiso que dio Facebook no es de esta aplicación. Probá conectar de nuevo.');
@@ -117,11 +107,45 @@ export function registrarRutasDeConexion(app: FastifyInstance, ctx: Contexto): v
       if (paginas.length > 1) {
         throw new Rechazo(409, 'elegir_pagina', 'Autorizaste más de una página: elegí cuál conectar.', {
           mensaje: 'Autorizaste más de una página: elegí cuál conectar.',
-          paginas: paginas.map((p) => ({ id: p.id, nombre: p.nombre })),
+          paginas: paginas.map((p) => ({ id: p.id, nombre: p.nombre, instagram: p.instagram?.usuario ?? null })),
         });
       }
       pagina = paginas[0]!;
     }
+    return pagina;
+  }
+
+  /**
+   * Como `/conectar-pagina`, pero para apps que publican por su cuenta (ACM): devuelve el token de la pagina elegida
+   * y nada mas. No suscribe la pagina a los webhooks ni la registra como canal (los mensajes no pasan por aca), asi
+   * que tampoco choca con otro negocio que tenga la misma pagina conectada. Solo queda la auditoria.
+   */
+  app.post('/autorizar-pagina', async (req) => {
+    const negocio = negocioDe(req);
+    const appMeta = ctx.appMeta;
+    if (!appMeta) throw falla(503, 'sin_configurar', 'Falta configurar la app de Meta en el servidor.');
+    const pagina = await paginaElegida(appMeta, ConectarPagina.parse(req.body));
+    await store.registrarCambios([
+      { negocioId: negocio.id, campo: 'autorizar_pagina', antes: null, despues: `${pagina.id}${pagina.instagram ? ` + instagram ${pagina.instagram.id}` : ''}`, quien: `app:${negocio.app}`, fecha: ctx.ahora() },
+    ]);
+    return {
+      pagina: { id: pagina.id, nombre: pagina.nombre },
+      token_pagina: pagina.token,
+      instagram: pagina.instagram ? { id: pagina.instagram.id, usuario: pagina.instagram.usuario } : null,
+    };
+  });
+
+  /**
+   * Facebook Login for Business: la empresa elige su pagina (y el Instagram
+   * vinculado) y la app manda el codigo. Mismo cuidado que `/conectar`: el
+   * token tiene que ser de nuestra app y las paginas salen de Meta, no del
+   * navegador. Una pagina o un Instagram que ya es de otro negocio no se toca.
+   */
+  app.post('/conectar-pagina', async (req) => {
+    const negocio = negocioDe(req);
+    const appMeta = ctx.appMeta;
+    if (!appMeta) throw falla(503, 'sin_configurar', 'Falta configurar la app de Meta en el servidor.');
+    const pagina = await paginaElegida(appMeta, ConectarPagina.parse(req.body));
 
     // Antes de tocar nada en Meta ni en la base: ninguna de las dos cuentas puede ser de otro negocio (ni de otro canal).
     const antesPagina = await store.numeroPorPhoneId(pagina.id);

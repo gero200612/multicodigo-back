@@ -7,7 +7,7 @@
  * una entrada aca; lo demas lo lee de este catalogo.
  */
 
-export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender', 'puente', 'instagram_lectura', 'conectar', 'bandeja'] as const;
+export const CAPACIDADES = ['leads', 'facturas', 'avisos', 'promociones', 'atender', 'puente', 'instagram_lectura', 'conectar', 'bandeja', 'autorizar'] as const;
 export type Capacidad = (typeof CAPACIDADES)[number];
 
 export type TipoDeEvento = 'mensaje' | 'formulario' | 'factura' | 'estado' | 'derivar' | 'conexion' | 'baja' | 'alta' | 'comentario' | 'lead';
@@ -52,6 +52,9 @@ const CATALOGO: Record<Capacidad, Entrada> = {
     plantillas: [],
   },
   // La empresa conecta su propio numero desde su app (Embedded Signup) y ve como esta. No manda ni lee mensajes.
+  // Apps que publican por su cuenta (ACM): autorizan una pagina o una cuenta publicitaria con Facebook Login for Business y se
+  // llevan el token. No registran la pagina como canal ni reciben eventos: los mensajes de esa pagina no pasan por aca.
+  autorizar: { eventos: [], rutas: ['POST /autorizar-pagina', 'POST /conectar-anuncios'], plantillas: [] },
   conectar: { eventos: ['conexion', 'lead'], rutas: ['POST /conectar', 'POST /conectar-pagina', 'POST /conectar-anuncios', 'GET /conexion'], plantillas: [] },
   // La bandeja de la app de la empresa: ve las charlas (WhatsApp, Instagram y Messenger) y contesta a mano, sin recibir eventos ni
   // depender de que Puente este prendido. Puede contestar cualquier charla (no solo las derivadas), siempre dentro de la ventana de 24 h.

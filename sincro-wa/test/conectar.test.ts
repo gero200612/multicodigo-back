@@ -195,7 +195,7 @@ describe('conectar-pagina (Facebook Login for Business)', () => {
     b.meta.paginas = [{ id: PAGINA, nombre: 'Una' }, { id: '40000000002', nombre: 'Otra' }];
     const r = await conectarPagina(n.clave);
     expect([r.status, r.json.code]).toEqual([409, 'elegir_pagina']);
-    expect(r.json.paginas).toEqual([{ id: PAGINA, nombre: 'Una' }, { id: '40000000002', nombre: 'Otra' }]);
+    expect(r.json.paginas).toEqual([{ id: PAGINA, nombre: 'Una', instagram: null }, { id: '40000000002', nombre: 'Otra', instagram: null }]);
     expect(r.json.mensaje).toMatch(/elegí/);
     expect(b.meta.paginasSuscriptas).toEqual([]);
 
@@ -242,6 +242,56 @@ describe('conectar-pagina (Facebook Login for Business)', () => {
     b.ctx.appMeta = undefined;
     const r = await conectarPagina(n.clave);
     expect([r.status, r.json.code]).toEqual([503, 'sin_configurar']);
+  });
+});
+
+describe('autorizar-pagina (apps que publican por su cuenta, como ACM)', () => {
+  const PAGINA = '40000000001';
+  const IG = '17841400000000009';
+  const autorizar = (clave: string, extra: Record<string, unknown> = {}) =>
+    pedir(b, clave, 'POST', '/autorizar-pagina', { codigo: 'codigo-5550001', ...extra });
+
+  beforeEach(() => {
+    b.meta.paginas = [{ id: PAGINA, nombre: 'Sincro', instagram: { id: IG, usuario: 'sincro_ar' } }];
+  });
+
+  it('devuelve el token de la página sin suscribirla ni registrarla, y deja la auditoría', async () => {
+    const n = await negocioSinNumero(['autorizar']);
+    const r = await autorizar(n.clave);
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ pagina: { id: PAGINA, nombre: 'Sincro' }, token_pagina: `EAApagina${PAGINA}xxxxxxxx`, instagram: { id: IG, usuario: 'sincro_ar' } });
+    expect(b.meta.paginasSuscriptas).toEqual([]);
+    expect(await b.store.numeroPorPhoneId(PAGINA)).toBeUndefined();
+    const cambios = (await b.store.cambios(n.id)).filter((c) => c.campo === 'autorizar_pagina');
+    expect(cambios.map((c) => c.despues)).toEqual([`${PAGINA} + instagram ${IG}`]);
+    expect(JSON.stringify(cambios)).not.toMatch(/EAA/);
+  });
+
+  it('una página ya conectada a otra empresa se puede autorizar igual (no se toca su canal)', async () => {
+    const crm = await negocioSinNumero(['conectar']);
+    await pedir(b, crm.clave, 'POST', '/conectar-pagina', { codigo: 'codigo-5550001' });
+    const n = await negocioSinNumero(['autorizar']);
+    expect((await autorizar(n.clave)).status).toBe(200);
+    expect((await b.store.numeroPorPhoneId(PAGINA))!.negocioId).toBe(crm.id);
+  });
+
+  it('con varias páginas pide elegir (con el Instagram de cada una) y con pagina_id da esa', async () => {
+    const n = await negocioSinNumero(['autorizar']);
+    b.meta.paginas = [{ id: PAGINA, nombre: 'Una', instagram: { id: IG, usuario: 'una_ig' } }, { id: '40000000002', nombre: 'Otra' }];
+    const r = await autorizar(n.clave);
+    expect([r.status, r.json.code]).toEqual([409, 'elegir_pagina']);
+    expect(r.json.paginas).toEqual([{ id: PAGINA, nombre: 'Una', instagram: 'una_ig' }, { id: '40000000002', nombre: 'Otra', instagram: null }]);
+    expect((await autorizar(n.clave, { pagina_id: '40000000002' })).json.pagina).toEqual({ id: '40000000002', nombre: 'Otra' });
+  });
+
+  it('solo con la capacidad autorizar: no da /conectar-pagina ni /conexion, sí /conectar-anuncios', async () => {
+    const n = await negocioSinNumero(['autorizar']);
+    expect((await pedir(b, n.clave, 'POST', '/conectar-pagina', { codigo: 'codigo-5550001' })).status).toBe(404);
+    expect((await pedir(b, n.clave, 'GET', '/conexion')).status).toBe(404);
+    b.meta.cuentasAds = [{ id: 'act_50000000001', nombre: 'Ads', moneda: 'ARS' }];
+    expect((await pedir(b, n.clave, 'POST', '/conectar-anuncios', { codigo: 'codigo-5550001' })).status).toBe(200);
+    const sin = await negocioSinNumero(['conectar']);
+    expect((await autorizar(sin.clave)).status).toBe(404);
   });
 });
 
